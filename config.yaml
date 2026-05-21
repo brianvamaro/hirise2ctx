@@ -1,0 +1,68 @@
+# HiRISE -> CTX pipeline config (CLAUDE.md Section 5)
+# Stage 0-1 only fields are exercised in this scaffold; later stages read the rest.
+
+manifest: hirise_priority10.csv
+detections_root: "C:/Users/brian/Documents/PhD/HiRiseToCTXBoulders/hirise_priority10_detections"
+cache_dir: "./cache"
+output_dir: "./dataset"
+
+# Target CRS for Stage 1 reprojection.
+# Set to the canonical Murray Lab CTX mosaic CRS (IAU 2000 Mars equirectangular,
+# sphere 3,396,190 m, central meridian 0). This is the published CTX mosaic CRS per
+# Dickson et al. 2018; full programmatic verification against a real tile header is
+# deferred to Stage 2 (see DECISIONS.md 2026-05-20 entry on Stage 0.5).
+# Sentinel "from_ctx_tile" would trigger the runtime Stage 0.5 probe (src/ctx_retrieve.py).
+target_crs: |
+  PROJCRS["Mars_2000_Equidistant_Cylindrical",
+    BASEGEOGCRS["GCS_Mars_2000",
+      DATUM["D_Mars_2000",
+        ELLIPSOID["Mars_2000_IAU_IAG",3396190.0,0.0,LENGTHUNIT["metre",1]]],
+      PRIMEM["Reference_Meridian",0,ANGLEUNIT["Degree",0.0174532925199433]]],
+    CONVERSION["Equidistant Cylindrical (Spherical)",
+      METHOD["Equidistant Cylindrical (Spherical)",ID["EPSG",1029]],
+      PARAMETER["Latitude of 1st standard parallel",0,ANGLEUNIT["Degree",0.0174532925199433]],
+      PARAMETER["Longitude of natural origin",0,ANGLEUNIT["Degree",0.0174532925199433]],
+      PARAMETER["False easting",0,LENGTHUNIT["metre",1]],
+      PARAMETER["False northing",0,LENGTHUNIT["metre",1]]],
+    CS[Cartesian,2],
+      AXIS["easting",east,ORDER[1],LENGTHUNIT["metre",1]],
+      AXIS["northing",north,ORDER[2],LENGTHUNIT["metre",1]]]
+
+# Murray Lab CTX mosaic access (Stage 2). The actual file naming convention discovered
+# 2026-05-20: `https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_{murray_tile}.zip`
+# where {murray_tile} uses signed `E{lon}_N{lat}` (e.g. our manifest `W040_N20` ->
+# `E-40_N20`; `E152_S08` -> `E152_N-8`). Files are zip-wrapped GeoTIFFs.
+ctx_mosaic:
+  catalog_url: "https://murray-lab.caltech.edu/CTX/V01/tiles/"
+  url_template: "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_{tile_name}.zip"
+  probe_tile: W040_N20            # tile that matches ESP_047976_2020
+
+ctx_read: vsicurl_window          # fallback: download_then_window
+hirise_decimation_mpp: 5
+
+coregistration:
+  enabled: false                  # nominal geolocation first; CLAUDE.md default
+  method: phase_correlation_translation
+  search_radius_m: 400
+  fft_window_px: 256
+
+labeling:
+  grid_anchor: ctx_pixel_origin
+  tile_sizes_px: [8, 16, 32, 64]
+  label_type: fractional_area
+  binary_area_threshold: 0.005
+  binary_count_threshold: 5
+  categorical_bins: []
+  detection_filters:
+    min_confidence: null          # `score` column exists (0.10-0.83); leave null until tuned
+    min_size_m: null              # no DBF size column; derived from geometry.area at filter time
+  context_patch_px: null
+  features: [intensity_stats, glcm, gradient, shadow_fraction]
+
+sanity:
+  # Stage 0-1 sanity check: reprojected polygon centroid vs manifest CenterLat/CenterLon.
+  # > max_km triggers a loud failure. Threshold raised from 2 -> 15 km on 2026-05-20
+  # because legitimate detection-footprint asymmetry inside a HiRISE image easily produces
+  # 5-10 km offsets (see DECISIONS.md). Multi-hundred-km failures (real data-quality
+  # issues in 4 of 10 BoulderNet outputs) still fire loudly under this threshold.
+  centroid_max_km: 15.0

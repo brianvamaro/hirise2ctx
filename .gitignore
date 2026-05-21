@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Virtual envs / secrets
+.venv/
+venv/
+.env
+
+# Pipeline cache and large outputs (regenerable; keep out of git)
+cache/
+dataset/*
+!dataset/DATA_DICTIONARY.md
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Downloaded / large geospatial rasters (HiRISE JP2s, CTX tiles)
+*.jp2
+*.JP2
+*.tif
+*.tiff
+*.img
+
+# HiRISE JP2 download cache (~200-500 MB per image)
+cache/hirise_jp2/
+
+# Trained models (future work)
+models/
+*.pkl
+*.joblib
+
+# Editor / OS cruft
+.vscode/
+.DS_Store
+Thumbs.db
