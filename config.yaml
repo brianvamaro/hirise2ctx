@@ -68,8 +68,78 @@ labeling:
   detection_filters:
     min_confidence: null          # `score` column exists (0.10-0.83); leave null until tuned
     min_size_m: null              # no DBF size column; derived from geometry.area at filter time
+  # DEPRECATED 2026-05-23: features and context_patch_px moved to top-level `features` block
+  # below. Kept here for backwards compat; src/config.py emits a DeprecationWarning if used.
   context_patch_px: null
   features: [intensity_stats, glcm, gradient, shadow_fraction]
+
+# Stage 4b feature extraction (per CLAUDE.md acceptance #4 + PLAN_Stage4b.md):
+# Iterates the eligible-tile rows already in dataset/labels/{ObsId}.parquet -- so adding or
+# tweaking features re-runs this stage only, in seconds-to-minutes per ObsId. Reads the
+# cached CTX windows + masks from Stage 2; no Stage 1-3 dependency beyond what Stage 4
+# itself consumed. Decisions locked in via AskUserQuestion 2026-05-23 are noted inline.
+features:
+  enabled:
+    - intensity_stats
+    - glcm
+    - gradient
+    - shadow_fraction
+    - lbp
+    - lacunarity
+    - subtile_variance
+    - canny_edges
+  glcm:
+    # Scale-dependent intensity quantization per Clausi 2002 + PLAN_Stage4b.md §3.2:
+    # 8 levels at the finest scale (8 px tiles have only 64 samples), 16 at S=16/S=32,
+    # 32 at S=64 (4096 samples can fill a 32x32 matrix meaningfully).
+    levels_per_scale: {8: 8, 16: 16, 32: 16, 64: 32}
+    # Distance offsets in pixels. S=8 gets only d=1 (a 2-px offset eats 25% of the tile);
+    # coarser scales also see d=2 and d=3 which match typical boulder-shadow separation
+    # at CTX 5 m/px under realistic sun angles.
+    distances_per_scale: {8: [1], 16: [1, 2, 3], 32: [1, 2, 3], 64: [1, 2, 3]}
+    angles: [0.0, 0.7853981633974483, 1.5707963267948966, 2.356194490192345]  # 0, pi/4, pi/2, 3pi/4
+    angle_average: true            # rotation-invariant; AskUserQuestion 2026-05-23 = recommended
+    properties: [contrast, dissimilarity, homogeneity, energy, correlation, ASM]
+  gradient:
+    sigma: 1.0                     # Gaussian smoothing before Sobel (low-pass; CTX noise rejection)
+  shadow_fraction:
+    # AskUserQuestion 2026-05-23 = DN-mode + tail offset (more stable than image-percentile).
+    # Threshold = mode_DN - shadow_offset_dn; strict variant uses strict_offset_dn; bright
+    # variant uses mode_DN + bright_offset_dn. Mode is computed once per image over the
+    # HiRISE-mask-covered pixels of the cached CTX window.
+    method: dn_mode_offset
+    shadow_offset_dn: 20           # mode - 20 DN; "definitely darker than terrain"
+    strict_offset_dn: 35           # mode - 35 DN; suppresses dark-terrain false positives
+    bright_offset_dn: 30           # mode + 30 DN; sunlit boulder tops
+  lbp:
+    # AskUserQuestion 2026-05-23 = rotation-invariant uniform LBP (skimage method='uniform').
+    # P=8 R=1 -> 10 distinct labels (0..9) -> 10-bin histogram per tile.
+    method: uniform
+    P: 8
+    R: 1
+  lacunarity:
+    # Gliding-box lacunarity on the shadow mask. Degenerate below ~16 px; emit at S>=32 only.
+    box_sizes_px: [2, 4]
+    min_tile_size_px: 32
+  subtile_variance:
+    # Variance of (S/2)-block means within each (S>=16) tile. Captures internal heterogeneity
+    # the single-tile std misses; essentially free because reshape-and-reduce already runs.
+    min_tile_size_px: 16
+  canny_edges:
+    # Skimage canny on a per-image basis, then per-tile density + orientation entropy.
+    sigma: 1.0
+    low_threshold: null            # None -> skimage chooses from gradient magnitude
+    high_threshold: null
+    n_orientation_bins: 8
+    min_tile_size_px: 16
+  context_patch:
+    # AskUserQuestion 2026-05-23 = both 32 and 64 px (CNN baseline is non-optional per
+    # PLAN_modeling.md §4). Bundled per (obs_id, patch_size) into a single .npy stack to
+    # keep inode count down -- the per-tile {ti}_{tj}.npy layout in PLAN_Stage4b.md §6 would
+    # produce ~1.3M tiny files. Feature parquet stores integer indices into the stack;
+    # see dataset/DATA_DICTIONARY.md.
+    enabled: true
+    sizes_px: [32, 64]
 
 sanity:
   # Stage 0-1 sanity check: reprojected polygon centroid vs manifest CenterLat/CenterLon.

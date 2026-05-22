@@ -568,6 +568,120 @@ extraction are separable cheap re-runnable passes; the label parquet stores per-
 bounds so a future `src/features.py` module can compute features against the cached
 CTX windows without re-running anything else. This will be a Stage 4b.
 
+## 2026-05-23 — Stage 4b (per-tile CTX texture features) landed
+
+Five design choices pinned via AskUserQuestion before any code (recommended option chosen
+each time):
+
+| Question | Decision | Rationale |
+|---|---|---|
+| Shadow detector method | **DN-mode + tail offset** | One bincount per image finds the modal DN of HiRISE-mask-covered pixels; thresholds are `mode ± offset`. Stable across tiles within an image. Image-percentile alternative would drift with overall image brightness — boulder-poor scenes (median DN ~165) would get a different absolute threshold than boulder-rich (~95), defeating cross-image comparability. |
+| GLCM angle handling | **Rotation-averaged single value per property** | Average `graycoprops` output over the 4 angles `[0, π/4, π/2, 3π/4]`. 6 properties × distances columns, rotation-invariant. Per-angle would 4× the schema for negligible modeling lift on a 10-image manifest (and would couple features to sun-azimuth). |
+| Context patch sizes | **Both 32 px and 64 px, enabled by default** | PLAN_modeling.md §4 makes the CNN baseline non-optional, so patches need to exist when Week 3 modeling starts. Disk cost (~3.3 GB total) is well under the QA-artifact budget. |
+| LBP variant | **Rotation-invariant uniform (skimage `method='uniform'`, P=8 R=1)** | 10-bin histogram, illumination-robust, robust to image orientation (no coupling to scene rotation). Plain `nri_uniform` would 6× the schema (59 bins for P=8) without a strong modeling case. |
+| Deprecated `labeling.{features,context_patch_px}` keys | **Warn-only for one release** | `src/config.py` emits a `DeprecationWarning` when both `labeling.features` and the new top-level `features:` block are present. Stage 4b reads exclusively from the new block; Stage 4 still tolerates the old labeling-only path. Hard-removal is a follow-up commit after one release cycle. |
+
+**Implementation (`src/features.py`, 9 feature families per PLAN_Stage4b.md §3 + §3.5):**
+
+- **Window-once, tile-many**: per-image artifacts (Sobel gradient magnitude/direction, LBP
+  map, Canny edge map, per-quantization integer arrays, shadow/strict/bright binary masks)
+  are computed once over the full CTX window. Per-tile features are reshape-and-reduce
+  operations on rectangular blocks; vectorized via a `(n_tiles, S, S)` stack. The only
+  per-tile loops are GLCM (skimage `graycomatrix` can't be vectorised over tiles) and the
+  shadow-mask lacunarity gliding-box.
+- **GLCM scale-dependent quantization** (PLAN §3.2, citing Clausi 2002): 8 levels at S=8,
+  16 at S=16/32, 32 at S=64. Distances [1] at S=8, [1, 2, 3] elsewhere. Schema is stable
+  across scales -- finest-scale d=2/d=3 columns are NaN-padded so the concat'd parquet
+  has one column set across all scales.
+- **Shadow detector**: one `np.bincount` over HiRISE-covered pixels per image; `mode =
+  argmax(counts)`. Three derived columns per tile: `shadow_fraction` (DN < mode − 20),
+  `shadow_fraction_strict` (DN < mode − 35), `bright_cap_fraction` (DN > mode + 30). The
+  asymmetric shadow-vs-bright pair is a stronger boulder signal than either alone (Kirk
+  et al. 2008 photoclinometry intuition).
+- **Lacunarity** (S ≥ 32 only): integral-image-backed gliding-box on the shadow mask at
+  b ∈ {2, 4}. Degenerate below 16 px; emitted as NaN at finer scales.
+- **Multi-scale variance** (S ≥ 16): variance of the (S/2)-block means within each tile.
+  Essentially free since reshape-and-reduce already runs.
+- **Canny edges** (S ≥ 16): density + Shannon entropy of edge-pixel orientations binned
+  over `[0, π)` in 8 bins. Tiles with no edges get entropy = 0.
+- **Context patches**: bundled per (obs_id, patch_size) into a single `.npy` stack per
+  patch size; features parquet stores integer `patch_idx_S32` / `patch_idx_S64` columns
+  (-1 means insufficient window margin). **Deviation from PLAN_Stage4b.md §6** which
+  prescribed `dataset/context_patches/{ObsId}/S{px}/{ti}_{tj}.npy` -- that layout would
+  produce ~1.3M tiny files (NTFS hostility, slow `os.scandir`); the bundled stacks total
+  18 files instead and are `np.load(..., mmap_mode='r')`-friendly for the CNN DataLoader.
+
+**Sweep results (`scripts/run_stage4b.py --all`, 176 s wall clock for 9 ObsIds):**
+
+| ObsId | label | n_tiles | dn_mode | shadow%@S=8 | bright%@S=8 | glcm_contrast_d1@S=8 | GLCM time (s) |
+|---|---|---:|---:|---:|---:|---:|---:|
+| ESP_055714_2270 | Boulder rich | 100,558 | 115 | 15.4 | 21.4 | 0.237 | 22.1 |
+| ESP_054857_2270 | Boulder rich | 48,875 | 156 | 30.7 | 4.7 | 0.273 | 11.0 |
+| ESP_069669_2220 | Boulder rich | 96,354 | 77 | 4.2 | 28.5 | 0.174 | 27.6 |
+| ESP_071093_2210 | Boulder rich | 73,958 | 129 | 8.1 | 2.3 | 0.194 | 16.2 |
+| ESP_047976_2020 | Boulder rich | 71,449 | 135 | 16.8 | 19.7 | 0.312 | 14.7 |
+| ESP_056165_2200 | Boulder poor | 95,403 | 166 | 22.0 | 10.5 | 0.265 | 18.1 |
+| ESP_075577_2105 | Boulder poor | 58,908 | 117 | 8.1 | 1.4 | 0.264 |  9.1 |
+| ESP_039820_1750 | unknown | 65,081 | 139 | 32.6 | 15.8 | 0.269 | 10.2 |
+| ESP_065711_1545 | unknown | 33,324 |  87 |  7.5 | 11.3 | 0.164 |  5.1 |
+| **total** | | **643,910** | | | | | **134.1** |
+
+GLCM dominates the per-image budget (~75% of wall clock); everything else combined is
+~5–7 s per image. The DN-mode range 77–166 confirms the per-image absolute-threshold
+choice was right -- a single image-percentile threshold would be either too dark for
+ESP_054857_2270 or too bright for ESP_069669_2220.
+
+**Total disk after sweep:**
+- `dataset/features/{ObsId}.parquet` + `{ObsId}.json` ×9: ~210 MB
+- `dataset/context_patches/{ObsId}_S32.npy` ×9: ~660 MB (643,869 patches × 32×32 uint8)
+- `dataset/context_patches/{ObsId}_S64.npy` ×9: ~2,640 MB (643,508 patches × 64×64 uint8)
+- **Total Stage 4b artifacts: ~3.5 GB.** Patch index loss = 41 tiles at S=32 and 402 at
+  S=64 fall in the window-edge margin (centred patch can't fit); recorded as `patch_idx
+  = -1` in the parquet.
+
+**Feature → target Spearman correlations at finest scale (488,554 tiles, 97.9% zero):**
+
+Top 8 positive: `shadow_fraction_strict` (0.083), `shadow_fraction` (0.079),
+`intensity_std` (0.035), `glcm_contrast_d1` (0.033), `glcm_dissimilarity_d1` (0.033),
+`intensity_iqr` (0.031), `grad_mag_mean` (0.028), `grad_mag_p90` (0.027).
+
+Top 8 negative: `bright_cap_fraction` (-0.040), `glcm_homogeneity_d1` (-0.033),
+`glcm_ASM_d1` (-0.024), `glcm_energy_d1` (-0.024), `glcm_correlation_d1` (-0.023),
+`lbp_hist_4` (-0.020), `intensity_skewness` (-0.014), `lbp_hist_3` (-0.014).
+
+All correlations are weak (|r| ≤ 0.08) -- expected given 98% zero-inflation. Shadow
+features lead, which is consistent with the shape-from-shading intuition: boulders
+generate shadows directly. The negative `bright_cap_fraction` suggests bright/saturated
+finest tiles tend to be *less* likely to contain detected boulders (could be specular
+flat terrain, or boulders being detection-suppressed against bright backgrounds -- worth
+investigating at modeling time). Modeling should evaluate at coarser scales and on
+conditional-on-nonzero subsets where the signal is less diluted.
+
+**Test count: 88 → 108** (+20 fast unit + 0 slow integration changes net; the slow Stage
+4 integration tests still ran). New tests in `tests/test_features.py` cover:
+intensity-stats edge cases (constant/ramp), GLCM quantization + uniform-image zero
+contrast + NaN padding, gradient on step function, DN-mode threshold discovery, shadow
+fraction on bimodal image, LBP histogram normalization, subtile-variance edge cases,
+lacunarity on uniform-vs-clumped masks, tile-stacking correctness, Stage 4b
+synthetic-cache end-to-end emit, idempotency, context-patch on/off behaviour, plus two
+slow integration tests on ESP_069669_2220 (row-for-row alignment with labels parquet,
+sanity ranges on real data).
+
+**QA: `notebooks/07_features_qa.ipynb`** runs top-to-bottom in ~30 s and writes 13 figures
+to `reports/figures/07_*.png`: per-image feature heatmaps (×9), GLCM-contrast-vs-target
+scatter + gradient-vs-target scatter, Spearman correlation matrix, per-family timing
+stacked bar, context-patch samples.
+
+**Open follow-ups, not blocking Stage 5:**
+- The strongest single feature today is `shadow_fraction_strict` at r ≈ 0.08. Try
+  evaluating Spearman at coarser scales (S=32/64) -- with less zero-inflation the same
+  signals should rise.
+- `bright_cap_fraction`'s negative correlation merits a look at whether overexposed
+  patches are systematically *under*-labeled (BoulderNet may have lower confidence on
+  bright tiles).
+- Two-stage (presence + magnitude) or log1p-transformed target are the natural next
+  modeling moves -- captured in PLAN_modeling.md.
+
 ## Open at this date
 
 - **Stage 3 thresholds (flag/fail)** — collect more data first before pinning down.
@@ -582,6 +696,6 @@ CTX windows without re-running anything else. This will be a Stage 4b.
 - **`binary_count_threshold` rebalance** — current placeholder 5 is too high vs
   area threshold 0.005 (only 2 count-only tiles vs 5,504 area-only). Decide at
   modeling time which side to commit to.
-- **Stage 4b texture features** — separate cheap pass over the cached CTX windows
-  emitting per-tile intensity stats, GLCM, gradient, shadow-fraction. Reads the
-  same tile bounds from the label parquets; no re-run of Stages 1-3 needed.
+- ~~**Stage 4b texture features**~~ — landed 2026-05-23 (see entry above). 9 feature
+  families, 643,910 rows, 3.5 GB on disk including context patches. Next is Stage 5
+  splitter, then Week 3 modeling.

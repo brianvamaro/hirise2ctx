@@ -196,3 +196,161 @@ any sub-tile ineligible at coarser scales) are dropped, not written as NaN.
 | `parquet_path` | str | Absolute path of the per-tile parquet (companion to this sidecar) |
 | `config_hash` | str | Provenance |
 | `written_at_iso` | str | When the parquet was written (UTC ISO) |
+
+## Stage 4b — `dataset/features/`
+
+Per-tile CTX-derived feature vectors. One row per (scale, ti, tj), joinable 1:1 with the
+matching row in `dataset/labels/{ObsId}.parquet` on `(obs_id, scale_idx, tile_size_px,
+ti, tj)`. Iterates the eligible-tile set from Stage 4 — features are NOT recomputed for
+tiles that Stage 4 dropped.
+
+### `{ObsId}.parquet`
+Tidy table; one row per emitted tile. Schema is stable across scales — columns that only
+apply at certain scales (lacunarity at S ≥ 32, subtile_variance + canny at S ≥ 16, GLCM
+distances > 1 at S ≥ 16) are NaN at the smaller scales rather than absent.
+
+**Operational columns**
+
+| Column | Type | Meaning |
+|---|---|---|
+| `obs_id`, `scale_idx`, `tile_size_px`, `ti`, `tj` | various | Join key with the labels parquet (identical types + values per row) |
+| `valid_pixel_fraction` | float | Share of tile pixels inside the HiRISE coverage mask. 1.0 by construction today (Stage 4 eligibility = strict coverage); recorded as an explicit column so a future relaxed-eligibility config can filter downstream |
+| `config_hash` | str | Provenance |
+
+**Intensity stats** — 10 columns, available at every scale
+
+| Column | Type | Meaning |
+|---|---|---|
+| `intensity_mean`, `intensity_std` | float | Mean and population stddev of CTX DN inside the tile (uint8, so values in [0, 255]) |
+| `intensity_min`, `intensity_max` | float | Min and max DN |
+| `intensity_p10`, `intensity_p50`, `intensity_p90` | float | 10th / 50th / 90th percentile DN |
+| `intensity_iqr` | float | p75 − p25 |
+| `intensity_skewness`, `intensity_kurtosis` | float | Centered-moment skewness and excess kurtosis. 0 for uniform-intensity tiles by construction (avoids 0/0 propagation) |
+
+**GLCM (gray-level co-occurrence matrix)** — 18 columns (6 properties × 3 distance bins),
+NaN-padded at finest scale where only d=1 is computed
+
+Quantization is scale-dependent (PLAN_Stage4b.md §3.2): 8 levels at S=8, 16 at S=16/32,
+32 at S=64. Angles `[0, π/4, π/2, 3π/4]` rotation-averaged into a single value per
+(property, distance). Provenance sidecar records the exact `levels_per_scale` and
+`distances_per_scale` actually used.
+
+| Column pattern | Type | Meaning |
+|---|---|---|
+| `glcm_contrast_d{1,2,3}` | float | GLCM contrast `Σ_{i,j} (i-j)² P(i,j)` — angle-averaged; NaN where distance not computed (e.g. d2/d3 at S=8) |
+| `glcm_dissimilarity_d{1,2,3}` | float | `Σ_{i,j} |i-j| P(i,j)` |
+| `glcm_homogeneity_d{1,2,3}` | float | `Σ_{i,j} P(i,j) / (1 + (i-j)²)` |
+| `glcm_energy_d{1,2,3}` | float | `sqrt(Σ_{i,j} P(i,j)²)` |
+| `glcm_correlation_d{1,2,3}` | float | Normalized GLCM correlation; can be 0 on constant-intensity tiles (skimage emits NaN; we fill with 0 per `_GLCM_NAN_FILL`) |
+| `glcm_ASM_d{1,2,3}` | float | Angular Second Moment = `Σ_{i,j} P(i,j)²` (energy²) |
+
+**Gradient (Sobel)** — 5 columns
+
+| Column | Type | Meaning |
+|---|---|---|
+| `grad_mag_mean`, `grad_mag_std` | float | Mean and stddev of Sobel gradient magnitude over the tile (after `sigma=1.0` Gaussian smoothing) |
+| `grad_mag_p90`, `grad_mag_p99` | float | 90th and 99th percentile gradient magnitude. P99 added 2026-05-23 because boulder edges are rare bright outliers that saturate P90 in busy tiles |
+| `grad_dir_circvar` | float | Magnitude-weighted circular variance of gradient direction (angle doubled to handle 180° edge-direction ambiguity). 0 = perfectly aligned edges; 1 = isotropic |
+
+**Shadow / bright-cap** — 3 columns, all per-image DN-mode-derived
+
+Per-image absolute DN cuts are stored in the provenance sidecar (`dn_thresholds.mode`,
+`.shadow`, `.shadow_strict`, `.bright`); the per-tile columns just count pixels.
+
+| Column | Type | Meaning |
+|---|---|---|
+| `shadow_fraction` | float | Fraction of tile pixels with DN < (image_mode − 20) |
+| `shadow_fraction_strict` | float | Fraction with DN < (image_mode − 35); separates true shadows from dark terrain |
+| `bright_cap_fraction` | float | Fraction with DN > (image_mode + 30); sunlit boulder tops |
+
+**LBP (Local Binary Patterns)** — 10 columns
+
+Rotation-invariant uniform LBP (`skimage.feature.local_binary_pattern` with `P=8, R=1,
+method='uniform'`), producing 10 distinct labels (0..9 = P+2). Per-tile histogram is
+normalized to sum to 1.
+
+| Column | Type | Meaning |
+|---|---|---|
+| `lbp_hist_0` .. `lbp_hist_9` | float | Normalized count of LBP-label-k pixels in the tile. Sum = 1.0 (modulo float roundoff) |
+
+**Lacunarity** — 2 columns, S ≥ 32 only (NaN at S=8, S=16)
+
+Gliding-box lacunarity on the shadow mask: `L(b) = E[M²] / E[M]²` where M is the sum of
+shadow pixels inside a b×b sliding box. L=1 means uniform shadow distribution; L>1 means
+clustered/gappy.
+
+| Column | Type | Meaning |
+|---|---|---|
+| `lacunarity_shadow_b2`, `lacunarity_shadow_b4` | float | Lacunarity at gliding-box sizes 2 and 4 CTX pixels |
+
+**Subtile variance** — 1 column, S ≥ 16 only (NaN at S=8)
+
+Variance of the 4 sub-block means within each tile (sub-block side = S/2). Captures
+internal heterogeneity that single-tile std misses. Free given the nested ×2 ladder.
+
+| Column | Type | Meaning |
+|---|---|---|
+| `intensity_subtile_var` | float | Variance of `[(top-left mean), (top-right mean), (bottom-left mean), (bottom-right mean)]` |
+
+**Canny edges** — 2 columns, S ≥ 16 only (NaN at S=8)
+
+Canny edges computed once over the full CTX window (`sigma=1.0`, skimage-default
+thresholds). Per-tile reductions:
+
+| Column | Type | Meaning |
+|---|---|---|
+| `edge_density` | float | Canny-edge pixels / tile pixels (in [0, 1]) |
+| `edge_orientation_entropy` | float | Shannon entropy of edge-pixel gradient orientations, binned over `[0, π)` in 8 bins. 0 for tiles with no edges; up to log(8) ≈ 2.08 for perfectly isotropic edges |
+
+**Context patch references** — 2 columns when `features.context_patch.enabled` is true,
+absent otherwise
+
+| Column | Type | Meaning |
+|---|---|---|
+| `patch_idx_S32` | int32 | Row index into `dataset/context_patches/{ObsId}_S32.npy`. -1 if the tile is too close to the window edge for a centered 32-px patch |
+| `patch_idx_S64` | int32 | Row index into `dataset/context_patches/{ObsId}_S64.npy`. -1 ditto |
+
+### `{ObsId}.json` (sidecar)
+| Field | Type | Meaning |
+|---|---|---|
+| `obs_id` | str | HiRISE Observation ID |
+| `n_tiles_total` | int | Total rows in the parquet (matches Stage 4's `sum(eligible_tiles_per_scale)`) |
+| `per_scale_tile_counts` | obj | `{tile_size_px: row_count}` per scale |
+| `enabled_features` | list[str] | Feature families actually computed (subset of `intensity_stats`, `glcm`, `gradient`, `shadow_fraction`, `lbp`, `lacunarity`, `subtile_variance`, `canny_edges`) |
+| `ctx_window_tif`, `hirise_mask_tif` | str | Absolute paths of the Stage 2 inputs this feature run consumed |
+| `labels_parquet` | str | Absolute path of the Stage 4 labels parquet whose rows this feature run mirrors |
+| `mosaic_row_origin`, `mosaic_col_origin` | int | Carried from the labels sidecar so feature consumers can reconstruct (ti, tj) → mosaic-pixel without joining |
+| `dn_thresholds` | obj | `{mode, shadow, shadow_strict, bright, method}` — per-image absolute DN cuts derived from `np.bincount` on HiRISE-covered pixels. `method` is `dn_mode_offset` normally or `image_percentile_fallback` for windows with < 1000 covered pixels (ESP_057469_2215 class) |
+| `glcm` | obj or null | `levels_per_scale`, `distances_per_scale`, `angle_average`, `properties`, `max_distances_in_schema`, `nan_fill` |
+| `lbp` | obj or null | `method`, `P`, `R`, `n_bins` |
+| `lacunarity` | obj or null | `box_sizes_px`, `min_tile_size_px` |
+| `context_patch` | obj | `{enabled, sizes_px, patch_files (absolute paths), patch_counts, patch_bytes_estimate}` when patches were emitted; `{enabled: false}` otherwise |
+| `timings_per_image_seconds` | obj | Wall-clock for each per-image artifact (`dn_thresholds`, `gradient_window`, `lbp_window`, `canny_window`, `glcm_quantize`) |
+| `timings_per_scale_seconds` | obj | `{tile_size_px (str): {feature_family: seconds}}` — per-scale GLCM is the bottleneck (~5–28 s per image total) |
+| `parquet_path` | str | Absolute path of the feature parquet |
+| `config_hash` | str | Provenance |
+| `written_at_iso` | str | When the parquet was written (UTC ISO) |
+
+## Stage 4b — `dataset/context_patches/`
+
+Raw CTX uint8 chips centered on each emitted tile's center, bundled per (ObsId, patch
+size) into a single `.npy` stack instead of per-tile files (DECISIONS.md 2026-05-23
+deviation from PLAN_Stage4b.md §6: 1.3M individual files would be NTFS-hostile and slow
+to scan; 18 bundled files use `np.load(..., mmap_mode='r')` for the CNN DataLoader path).
+
+### `{ObsId}_S{patch_size}.npy`
+Uint8 array of shape `(n_valid_patches, patch_size, patch_size)`. `n_valid_patches` may
+be less than the row count of the feature parquet — tiles within `patch_size // 2` of
+the CTX-window edge can't fit a centred patch and get `patch_idx_S{patch_size} = -1` in
+the feature parquet rather than a row in the .npy. The shortfall is small (41 of 643,910
+at S=32; 402 at S=64 across the priority10 sweep).
+
+To load a specific patch by features-parquet row `i`:
+
+```python
+import numpy as np, pandas as pd
+df = pd.read_parquet("dataset/features/ESP_069669_2220.parquet")
+patches = np.load("dataset/context_patches/ESP_069669_2220_S64.npy", mmap_mode="r")
+idx = int(df.iloc[i]["patch_idx_S64"])
+patch = patches[idx]  # (64, 64) uint8 view; copy if you'll mutate
+```

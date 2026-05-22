@@ -47,6 +47,18 @@ REQUIRED_LABELING = {
 }
 REQUIRED_SANITY = {"centroid_max_km"}
 
+# Stage 4b config (PLAN_Stage4b.md §5). Optional at top level for now -- absence means
+# Stage 4b uses built-in defaults from src/features.py. When present, these nested keys
+# are required.
+REQUIRED_FEATURES_TOP = {"enabled", "context_patch"}
+REQUIRED_CONTEXT_PATCH = {"enabled", "sizes_px"}
+
+# Stage 4b deprecated `labeling.*` keys -- moved to top-level `features.*` block
+# (DECISIONS.md 2026-05-XX). Validation emits DeprecationWarning rather than hard-erroring
+# for one release; Stage 4b code reads from the new block but stays back-compat for
+# Stage 4 callers that still pass the labeling dict through unchanged.
+DEPRECATED_LABELING_KEYS = {"context_patch_px", "features"}
+
 
 @dataclass
 class Config:
@@ -114,6 +126,44 @@ def _validate(cfg: dict[str, Any], path: Path) -> None:
     missing = REQUIRED_SANITY - cfg["sanity"].keys()
     if missing:
         raise ValueError(f"{path}: sanity missing keys: {sorted(missing)}")
+
+    # Stage 4b: warn on deprecated `labeling.*` keys (moved to top-level `features.*`).
+    deprecated_present = DEPRECATED_LABELING_KEYS & cfg["labeling"].keys()
+    if deprecated_present and "features" in cfg:
+        # Both blocks present: deprecated ones are vestigial -- warn the user to remove.
+        import warnings
+        warnings.warn(
+            f"{path}: labeling.{{{', '.join(sorted(deprecated_present))}}} are deprecated; "
+            "Stage 4b reads from the top-level `features:` block instead. "
+            "Remove the deprecated labeling.* keys to silence this warning.",
+            DeprecationWarning, stacklevel=2,
+        )
+
+    # Stage 4b: validate the new top-level features block when present.
+    if "features" in cfg:
+        feats = cfg["features"]
+        if not isinstance(feats, dict):
+            raise ValueError(f"{path}: top-level `features` must be a mapping")
+        missing = REQUIRED_FEATURES_TOP - feats.keys()
+        if missing:
+            raise ValueError(f"{path}: features missing keys: {sorted(missing)}")
+        if not isinstance(feats["enabled"], list):
+            raise ValueError(f"{path}: features.enabled must be a list of family names")
+        cp = feats["context_patch"]
+        if not isinstance(cp, dict):
+            raise ValueError(f"{path}: features.context_patch must be a mapping")
+        missing = REQUIRED_CONTEXT_PATCH - cp.keys()
+        if missing:
+            raise ValueError(f"{path}: features.context_patch missing keys: {sorted(missing)}")
+        if cp["enabled"] and not (
+            isinstance(cp["sizes_px"], list)
+            and len(cp["sizes_px"]) >= 1
+            and all(isinstance(s, int) and s > 0 and (s & (s - 1)) == 0 for s in cp["sizes_px"])
+        ):
+            raise ValueError(
+                f"{path}: features.context_patch.sizes_px must be a non-empty list of "
+                "positive powers of 2 (CTX pixels)"
+            )
 
     sizes = cfg["labeling"]["tile_sizes_px"]
     if not (isinstance(sizes, list) and len(sizes) >= 1 and all(isinstance(s, int) and s > 0 for s in sizes)):

@@ -5,6 +5,7 @@
       "Bash(\"C:\\Users\\brian\\anaconda3\\Scripts\\conda.exe\" run -n geospatial python scripts/run_stage2.py *)",
       "Bash(\"C:\\Users\\brian\\anaconda3\\Scripts\\conda.exe\" run -n geospatial python scripts/run_stage3.py *)",
       "Bash(\"C:\\Users\\brian\\anaconda3\\Scripts\\conda.exe\" run -n geospatial python scripts/run_stage4.py *)",
+      "Bash(\"C:\\Users\\brian\\anaconda3\\Scripts\\conda.exe\" run -n geospatial python scripts/run_stage4b.py *)",
       "Bash(\"C:\\Users\\brian\\anaconda3\\Scripts\\conda.exe\" run -n geospatial python scripts/sweep_stage2.py *)",
       "Bash(\"C:\\Users\\brian\\anaconda3\\Scripts\\conda.exe\" run -n geospatial python scripts/_*.py *)",
       "Bash(\"C:\\Users\\brian\\anaconda3\\Scripts\\conda.exe\" run -n geospatial python scripts/probes/*.py *)",
