@@ -5,6 +5,10 @@ See [CLAUDE.md](CLAUDE.md) for the full build spec; see [DECISIONS.md](DECISIONS
 for runtime-verified facts and deviations; see [ROADMAP.md](ROADMAP.md) for the
 phase-by-phase index of planning + status.
 
+For a narrative paper-Methods-style description of the pipeline aimed at readers who
+won't touch the code (collaborators, reviewers, committee members) see
+[docs/methods.md](docs/methods.md).
+
 ## Status
 
 **End of CLAUDE.md Week 1-2 data pipeline scope: Stages 0–5 of 5 done.**
