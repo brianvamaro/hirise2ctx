@@ -1,6 +1,17 @@
 # PLAN — Stage 5: leave-image-out splits + dataset packaging
 
-**Status:** scoped (not yet implemented). Reads `dataset/labels/{ObsId}.parquet` + (eventually) `dataset/features/{ObsId}.parquet`; emits split metadata + a single packaged dataset view.
+**Status:** **shipped** in commit `aa6cd74` (2026-05-25). Results + decisions logged in
+[DECISIONS.md](DECISIONS.md) under the 2026-05-25 Stage 5 entry. Two schemes
+(`loio_9fold` primary, `loio_3fold_balanced` secondary); both materialised per-fold
+parquets + a consolidated `all.parquet`; total ~1.3 GB packaged across both schemes.
+Group-leak assertion is built into notebook 09 + the slow-integration pytest cases.
+
+This plan stays checked in as the architecture-level reference. The implementation
+follows §1-9 closely; §11b's streaming iterator path (`iter_train_batches` /
+`iter_test_batches`) is wired in but unused at 9 images -- documented in DECISIONS.md
+as the lever to pull when the manifest grows past ~50 images.
+
+Reads `dataset/labels/{ObsId}.parquet` + (eventually) `dataset/features/{ObsId}.parquet`; emits split metadata + a single packaged dataset view.
 
 **Why this matters** — CLAUDE.md §4 acceptance #5 says "splits must be by image (group-aware), never random tiles." This is the single methodological decision that, if gotten wrong, invalidates every downstream evaluation number. Random per-tile splits leak across tiles within an image because tiles only a few hundred metres apart share illumination, surface composition, and BoulderNet detector behavior. The model would learn the boilerplate of each image instead of generalising.
 

@@ -14,8 +14,8 @@ plans for phases that have started and phases that haven't.
 | Stage 2 — CTX windowed retrieval + HiRISE coverage mask | shipped | (covered in CLAUDE.md §4) | Commit `8e8645d` |
 | Stage 3 — HiRISE↔CTX co-registration | shipped | (covered in CLAUDE.md §4) | Commit `ed9003e` |
 | Stage 4 — label generation on nested ×2 grid | shipped | (covered in CLAUDE.md §4) | Commit `896cdef`; results in DECISIONS.md 2026-05-23 |
-| **Stage 4b — per-tile CTX texture features** | scoped | [PLAN_Stage4b.md](PLAN_Stage4b.md) | Reads Stage 4 outputs; emits `dataset/features/{ObsId}.parquet`. ~100-150 lines plan. |
-| **Stage 5 — leave-image-out splits + packaging** | scoped | [PLAN_Stage5.md](PLAN_Stage5.md) | Splits over images, not tiles. ~120 lines plan. |
+| Stage 4b — per-tile CTX texture features | shipped | [PLAN_Stage4b.md](PLAN_Stage4b.md) | Commit `014f645`; results in DECISIONS.md 2026-05-23. 9 feature families, 643k feature rows, 3.3 GB context patches. |
+| Stage 5 — leave-image-out splits + packaging | shipped | [PLAN_Stage5.md](PLAN_Stage5.md) | Commit `aa6cd74`; results in DECISIONS.md 2026-05-25. Two schemes (`loio_9fold` + `loio_3fold_balanced`); group-leak assertion in QA notebook. |
 | **Week 3 modeling — GBM baseline + two-stage** | scoped | [PLAN_modeling.md](PLAN_modeling.md) | LightGBM + Tweedie, LOIO CV, Spearman ρ primary metric. Deepest plan; CNN explicitly punted. |
 | THEMIS validation | future work | not yet planned | CLAUDE.md §10. Coarse-scale independent check using THEMIS rock-abundance map. |
 | Compositional analysis | future work | not yet planned | CLAUDE.md §10. Thermal / CRISM spectra in boulder-rich vs boulder-poor areas (instructor's extra goal). |
@@ -28,8 +28,10 @@ plans for phases that have started and phases that haven't.
   phase by reading its `PLAN_*.md` + the relevant DECISIONS.md entries
   without needing the others.
 - **Sequencing**: Stage 4b and Stage 5 are independent (either order works,
-  4b-then-5 slightly preferred for QA — see PLAN_Stage4b.md §10).
-  Week 3 modeling needs both 4b and 5 to land first.
+  4b-then-5 slightly preferred for QA — see PLAN_Stage4b.md §10). We landed
+  4b first then 5 in that order.
+  Week 3 modeling needs both 4b and 5 to land first — both are done as of
+  commit `aa6cd74` (2026-05-25).
 - **Open questions** in each plan's §10 (or near-end) are the things
   execution should NOT pre-decide — surface them via `AskUserQuestion` per
   the project's `[[feedback-collaboration]]` rule #1.

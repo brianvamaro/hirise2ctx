@@ -12,3 +12,6 @@ you hit the same class of issue. Inventory:
 - `_probe_murray_url_variants.py` — HEAD-probe Murray Lab URLs across sign quadrants.
 - `_extract_allowlist_candidates.py` — tabulate transcript Bash/MCP frequencies (used by `/fewer-permission-prompts`).
 - `_add_marker_cells.py` — one-off notebook cell injection for the Stage 3 marker overlay.
+- `_smoke_stage4b.py` — single-image Stage 4b smoke test (ESP_069669_2220) with timing breakdown.
+- `_summarize_stage4b.py` — per-image Stage 4b sweep summary + feature-target correlations (used to write DECISIONS.md 2026-05-23).
+- `_smoke_stage5.py` — Stage 5 splitter + packager smoke test on both schemes against real caches.

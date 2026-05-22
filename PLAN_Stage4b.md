@@ -1,6 +1,17 @@
 # PLAN — Stage 4b: per-tile CTX texture features
 
-**Status:** scoped (not yet implemented). Reads from existing Stage 2 + Stage 4 caches; emits one parquet per ObsId alongside `dataset/labels/{ObsId}.parquet`.
+**Status:** **shipped** in commit `014f645` (2026-05-23). Results + decisions logged in
+[DECISIONS.md](DECISIONS.md) under the 2026-05-23 Stage 4b entry. 9 feature families
+(the 4 from CLAUDE.md §4 plus 5 from §3.5 below) totalling 60 columns; 643,910 feature
+rows across 9 ObsIds; 3.3 GB of bundled context patches. Notebook 07 (cross-image QA) +
+notebook 08 (per-feature walkthrough + stratified patch viewer) are the visual outputs.
+
+This plan stays checked in as the architecture-level reference; minor deviations are
+recorded in the DECISIONS.md entry (most notably the context-patch storage layout,
+§6 below — patches are bundled per (ObsId, patch_size) into single `.npy` stacks
+rather than the per-tile `{ti}_{tj}.npy` files the plan originally prescribed).
+
+Reads from existing Stage 2 + Stage 4 caches; emits one parquet per ObsId alongside `dataset/labels/{ObsId}.parquet`.
 
 **Why a separate stage** — CLAUDE.md acceptance #4 requires that adding or changing features doesn't re-run Stages 1-3 or even Stage 4. Splitting feature extraction out of Stage 4 satisfies that: a config change to `labeling.features` (or to a future `features.*` block) re-runs Stage 4b only, in seconds-to-minutes.
 
