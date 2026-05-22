@@ -153,7 +153,11 @@ ground, and how spread-out are the brightnesses?" Boulder-rich terrain tends to
 **Why we picked it.** Cheapest possible features -- a baseline that any more expensive
 texture descriptor has to beat. Higher-order moments (`skewness`, `kurtosis`) were added
 2026-05-23 because shadow-induced left tails are exactly the signal a single std can't
-capture; Bandeira et al. 2007 used skewness for HiRISE-scale dune-field detection.
+capture. Texture-statistics precedent for HiRISE-class imagery:
+[Bandeira, Saraiva & Pina 2007](https://doi.org/10.1109/TGRS.2007.904948) ("Impact
+Crater Recognition on Mars Based on a Probability Volume Created by Template Matching",
+*IEEE T-GRS* 45(11), 4008-4015) -- different target (craters, not boulders), same
+imagery scale, same use of texture features beyond mean+std.
 
 **Visual example.** Below: per-image distributions of `intensity_mean`, `intensity_std`,
 and `intensity_skewness` colored by `BoulderLabel`. The mean shift between rich and
@@ -197,10 +201,11 @@ cells.append(md(
     r"""## 2. `glcm` -- gray-level co-occurrence matrix texture descriptors
 
 **What it is.** For each tile, quantize CTX DN values into `levels` bins (8/16/16/32 per
-scale; see Clausi 2002 -- tiny tiles can't fill big co-occurrence matrices). Build the
-co-occurrence matrix \(P(i,j; d, \theta)\) = "probability that pixel of intensity-bin
-$i$ is followed at offset $(d, \theta)$ by pixel of intensity-bin $j$" symmetrised over
-$\pm d$. Then compute 6 second-order moments via `skimage.feature.graycoprops`:
+scale; see [Clausi 2002](https://www.tandfonline.com/doi/abs/10.5589/m02-004) -- tiny
+tiles can't fill big co-occurrence matrices). Build the co-occurrence matrix
+\(P(i,j; d, \theta)\) = "probability that pixel of intensity-bin $i$ is followed at
+offset $(d, \theta)$ by pixel of intensity-bin $j$" symmetrised over $\pm d$. Then
+compute 6 second-order moments via `skimage.feature.graycoprops`:
 
 - `contrast` $= \sum_{i,j} (i-j)^2 P(i,j)$ -- weighted-difference energy.
 - `dissimilarity` $= \sum_{i,j} |i-j| P(i,j)$ -- linear analog of contrast.
@@ -222,7 +227,9 @@ At CTX 5 m/px under typical sun angles, a single resolved boulder produces a 1-3
 shadow next to a 1-2 px-wide bright cap -- so co-occurrence at $d \in \{1, 2, 3\}$
 brackets that signature.
 
-**Why we picked it.** Haralick GLCM features are the workhorse of remote-sensing texture
+**Why we picked it.** Haralick GLCM features
+([Haralick, Shanmugam & Dinstein 1973](https://www.haralick.org/journals/TexturalFeatures.pdf),
+*IEEE T-SMC* 3(6), the foundational paper) are the workhorse of remote-sensing texture
 analysis. They're mature, fast, robust at small tile sizes, and produce 6 features per
 distance for almost no incremental compute given the cached quantization.
 
@@ -382,8 +389,11 @@ a flat surface. A typical sun angle of 30-50 deg produces:
 - A **sunlit cap** (DN higher than terrain mean).
 
 So the shadow-bright asymmetry is the photometric signature of 3-D relief. This is the
-same intuition behind Kirk et al. 2008 photoclinometry for HiRISE DTMs, taken down to
-two scalar per-tile features instead of a per-pixel inversion.
+same intuition behind
+[Kirk et al. 2008](https://agupubs.onlinelibrary.wiley.com/doi/full/10.1029/2007JE003000)
+photoclinometry for HiRISE DTMs ("Ultrahigh resolution topographic mapping of Mars with
+MRO HiRISE stereo images", *J. Geophys. Res. Planets* 113, E00A24), taken down to two
+scalar per-tile features instead of a per-pixel inversion.
 
 **Why we picked it (and why DN-mode over image-percentile).** The DN modes we observed
 across the 9-image sweep span 77 to 166 -- more than a factor of 2. A single image-
@@ -482,8 +492,11 @@ same LBP histogram.
 **Why we picked it.** LBP gives texture information *complementary* to GLCM: GLCM
 encodes pair statistics ("how often does intensity i sit next to intensity j?"), LBP
 encodes pattern statistics ("how often does a pixel sit in a 'mostly brighter' vs
-'mostly darker' neighborhood?"). Mars precedent: Palafox et al. 2017 (geological
-landform detection on HiRISE-class imagery).
+'mostly darker' neighborhood?"). Mars precedent:
+[Palafox, Hamilton, Scheidt & Alvarez 2017](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5701651/)
+("Automated detection of geological landforms on Mars using Convolutional Neural
+Networks", *Computers & Geosciences* 101) -- different model family but same
+HiRISE-class-imagery texture-feature setting.
 
 **Visual example.** Per-image average LBP histogram, colored by label. Boulder-rich vs
 poor images should differ in which bins they put weight on -- if the dataset is too
@@ -545,11 +558,13 @@ spread across many small isolated boulders has *different geomorphology* from a 
 with the same 10% concentrated under one big boulder or a cliff face -- and that
 distinction matters for boulder counting / size-distribution downstream.
 
-**Why we picked it.** Lacunarity has a long planetary-surfaces literature (Plesko et al.
-2009, 2010 for lunar surface roughness). It directly addresses the "clustered vs
-scattered" axis that no other feature in our stack captures. We restrict it to
-$S \ge 32$ because below 16 px the number of valid box positions is too small for the
-mean-and-second-moment statistics to be stable.
+**Why we picked it.** The gliding-box formulation is exactly the one introduced by
+[Allain & Cloitre 1991](https://journals.aps.org/pra/abstract/10.1103/PhysRevA.44.3552)
+("Characterizing the lacunarity of random and deterministic fractal sets",
+*Phys. Rev. A* 44, 3552), the foundational paper on lacunarity as a texture descriptor.
+It directly addresses the "clustered vs scattered" axis that no other feature in our
+stack captures. We restrict it to $S \ge 32$ because below 16 px the number of valid
+box positions is too small for the mean-and-second-moment statistics to be stable.
 
 **Visual example.** Two synthetic tiles + their lacunarity values, then per-image
 lacunarity distribution at S=32.
@@ -634,8 +649,11 @@ and for catching half-boulder-rich, half-plains tiles.
 **Why we picked it.** *Free*. The nested x2 grid means each $S \times S$ tile is
 already 4 stacked finer tiles, and we have their means computed for `intensity_mean`
 at the next-finer scale already. Computing the variance across them is a single
-NumPy line. Standard planetary-roughness rationale: Shepard et al. 2001 ("The
-roughness of natural terrain").
+NumPy line. Standard planetary-roughness rationale:
+[Shepard, Campbell, Bulmer, Farr, Gaddis & Plaut 2001](https://agupubs.onlinelibrary.wiley.com/doi/abs/10.1029/2000JE001429)
+("The roughness of natural terrain: A planetary and remote sensing perspective",
+*J. Geophys. Res.* 106, 32777-32795) -- argues for explicitly scale-dependent
+roughness parameters, which is exactly what the nested x2 grid produces.
 
 **Visual example.** Per-image distribution at S=16 and S=64, and a scatter against
 `intensity_std` showing they're not perfectly correlated (i.e. the feature carries
@@ -708,8 +726,10 @@ follow-up: are those edges aligned (low entropy = ridges, lineations, slopes) or
 that's robust to noise + low-magnitude clutter. Orientation entropy captures the
 *structured vs isotropic texture* axis that GLCM contrast magnitude doesn't disentangle.
 We restrict to $S \ge 16$ because tiny tiles produce too few Canny pixels to make
-orientation entropy stable. Stepinski & Vilalta 2005 precedent for automated Mars
-terrain classification using edge statistics.
+orientation entropy stable. Precedent for edge-based segmentation of Mars terrain:
+[Stepinski, Ghosh & Vilalta 2006](https://link.springer.com/chapter/10.1007/11893318_26)
+("Automatic Recognition of Landforms on Mars Using Terrain Segmentation and
+Classification", *Lecture Notes in AI* 4265, 255-266).
 
 **Visual example.** A real CTX tile with its Canny overlay (left), and per-image
 distributions of edge_density and orientation_entropy at S=32 (right).
