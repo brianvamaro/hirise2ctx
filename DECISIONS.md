@@ -682,6 +682,84 @@ stacked bar, context-patch samples.
 - Two-stage (presence + magnitude) or log1p-transformed target are the natural next
   modeling moves -- captured in PLAN_modeling.md.
 
+## 2026-05-25 — Stage 5 (leave-image-out splits + dataset packaging) landed
+
+Four design choices pinned via AskUserQuestion before any code (all "recommended" options chosen):
+
+| Question | Decision | Rationale |
+|---|---|---|
+| Default fold count | **9-fold LOIO primary + 3-fold balanced secondary** | LOIO gives honest per-image variance for headline numbers (one image per test fold = one number per image); the 3-fold variant smooths fold-level metric variance for the modeling sweep when LOIO's single-image test sets are too noisy. Both written; modeler picks at training time. |
+| ESP_065711_1545 | **Include in folds with `BoulderLabel='unknown'`** | Its 25,221 finest tiles are real `boulder absent` examples (HiRISE-covered, no detections) -- valuable training signal and a clean false-positive test target. Filtering by `obs_id` at evaluation time recovers a per-image FP-rate report on demand. |
+| `all.parquet` | **Emit per scheme** | ~96 MB per scheme; saves the modeler from repeated joins for ad-hoc analysis. Each tile appears exactly once tagged with its test `fold_idx`. |
+| Loader pattern | **In-memory `package_split` as the default + streaming `iter_*_batches` as the alternative path** | At 9 images, the joined dataset is ~500 MB and in-memory is trivially fine. Streaming iterator is exposed for the 50-200+ image case per PLAN_Stage5.md §11b -- the API is shipped now so we never have to refactor downstream call sites when the manifest grows. |
+
+**Implementation (`src/dataset.py`):**
+
+- `build_image_inventory(...)` -- pulls Stage 4 sidecars + manifest BoulderLabel into a
+  per-image dataframe (one row per ObsId, columns include n_tiles_total, BoulderLabel,
+  frac_mean_finest, n_polys_after_filter). Inventory is what stratification operates on.
+- `build_split(name, n_folds, stratification, seed, inventory, config_hash)` -- pure-
+  Python split construction. Two stratification methods supported: `none` (LOIO with
+  `n_folds == n_images` required) and `boulder_label_size_balanced` (greedy: place each
+  image into the currently-smallest fold within its label group). Returns metadata dict;
+  caller writes JSON via `write_split_metadata`. Idempotent + deterministic given the
+  same seed + inventory; stable `split_hash` over the assignment.
+- `package_split(metadata, labels_dir, features_dir, output_dir, scale_filter,
+  emit_all_parquet, config_hash)` -- in-memory path. Loads each ObsId's labels +
+  features once into `per_image[obs]`, then per fold writes X_{train,test}_fold{k}.parquet,
+  y_{train,test}_fold{k}.parquet, groups_{train,test}_fold{k}.npy, plus the consolidated
+  all.parquet (every tile tagged with its test fold_idx).
+- `iter_train_batches(metadata, fold_idx, labels_dir, features_dir, scale_filter)` and
+  `iter_test_batches(...)` -- yield one DataFrame per ObsId without materialising the
+  full dataset. Same join + scale_filter logic as `package_split` internally.
+
+**Sweep results (`scripts/run_stage5.py --all`, ~23 s total):**
+
+| Scheme | n_folds | Build time | Package time | Total train rows | Disk |
+|---|---:|---:|---:|---:|---:|
+| `loio_9fold` | 9 | 0.01 s | 15.7 s | 5,151,280 (= 8/9 × 643,910 × 9) | 958 MB |
+| `loio_3fold_balanced` | 3 | 0.01 s | 7.0 s | 1,287,820 (= 2/3 × 643,910 × 3) | 385 MB |
+
+X has 55 columns (everything from `dataset/features/*.parquet` minus join keys + config_hash), y has 12 (the label columns + tile bounds context). Disk total is ~1.3 GB across both schemes; everything in `dataset/packaged/` is gitignored.
+
+**`loio_3fold_balanced` per-fold composition** (5 rich + 2 poor + 2 unknown can't produce a perfectly label-balanced 3-fold, but 3-image-balanced is achievable):
+
+| Fold | Test ObsIds | Composition | Test tiles |
+|---|---|---|---:|
+| 0 | ESP_047976_2020, ESP_055714_2270, ESP_075577_2105 | 2 rich + 1 poor | 230,915 |
+| 1 | ESP_054857_2270, ESP_065711_1545, ESP_071093_2210 | 2 rich + 1 unknown | 156,157 |
+| 2 | ESP_039820_1750, ESP_056165_2200, ESP_069669_2220 | 1 rich + 1 poor + 1 unknown | 256,838 |
+
+Sum of test tiles = 643,910 (every tile appears in exactly one test fold) ✓.
+
+**Test count: 108 → 125** (+17 in `tests/test_splits.py`):
+- Inventory: 2 (round-trip, discover_obs_ids).
+- Split construction: 7 (LOIO uniqueness, 3-fold size balance, reproducibility-with-seed,
+  different-seed-changes-assignment, group-leak assertion, growth to 12 images,
+  `stratification='none'` n_folds validation).
+- Packaging: 5 (round-trip, all.parquet emit/skip, groups.npy alignment, scale_filter).
+- Streaming iterator: 1 (yields one DataFrame per ObsId with no leak).
+- 2 slow integration tests against the real Stage 4/4b outputs.
+
+**QA notebook 09 (`notebooks/09_splits_qa.ipynb`) renders top-to-bottom in ~10 s.**
+Saves 4 figures to `reports/figures/09_*.png`: per-image inventory bar chart, per-scheme
+fold composition (stacked bars + tile-count line), per-fold target distribution (train
+vs test, finest scale, log axis), and a group-leak assertion that runs over both
+schemes' actual packaged parquets to confirm no `obs_id` overlap.
+
+**Open follow-ups, not blocking Week 3 modeling:**
+- `scale_filter` is currently `null` (every scale included). For a CNN baseline you'd
+  restrict to `[64]` (matches the largest context patch); for tabular boosting `[8]`
+  (finest, most tiles) is the typical starting point. Switch is a one-line config
+  edit + re-run of `scripts/run_stage5.py --all` (~25 s).
+- The 3-fold balanced scheme's tile counts per fold vary (156k-257k) because per-image
+  tile counts vary widely (33k-100k). Image count is balanced (3/3/3) but tile count
+  isn't. Decide at modeling time whether to weight metrics by per-image inverse-size or
+  accept the per-fold imbalance.
+- The streaming `iter_train_batches` / `iter_test_batches` paths are wired in but
+  unused at 9 images. Per PLAN_Stage5.md §11b, the switch trigger is ~50+ images;
+  document in modeling docs as the lever to pull when the manifest grows.
+
 ## Open at this date
 
 - **Stage 3 thresholds (flag/fail)** — collect more data first before pinning down.

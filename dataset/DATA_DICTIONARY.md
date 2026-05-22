@@ -354,3 +354,88 @@ patches = np.load("dataset/context_patches/ESP_069669_2220_S64.npy", mmap_mode="
 idx = int(df.iloc[i]["patch_idx_S64"])
 patch = patches[idx]  # (64, 64) uint8 view; copy if you'll mutate
 ```
+
+## Stage 5 — `dataset/splits/`
+
+Group-aware leave-image-out split metadata. One JSON file per named scheme; multiple
+schemes coexist (the modeler picks one at training time). Splits are over **images**,
+never tiles -- random per-tile splits leak per-image background into the test fold
+(CLAUDE.md acceptance #5).
+
+### `{name}.json`
+
+| Field | Type | Meaning |
+|---|---|---|
+| `name` | str | Scheme name (e.g. `loio_9fold`, `loio_3fold_balanced`) |
+| `kind` | str | Always `"leave-image-out"` today |
+| `n_folds` | int | Number of folds |
+| `stratification` | str | `"none"` (LOIO, requires n_folds == n_images) or `"boulder_label_size_balanced"` (greedy size-balanced k-fold within label groups) |
+| `seed` | int | RNG seed for the deterministic shuffle inside stratified assignment. Recorded even when unused |
+| `manifest_obs_ids` | list[str] | The ObsIds the scheme operates on -- sorted, deduped, derived from `dataset/labels/*.parquet` on disk at build time |
+| `folds[].fold_idx` | int | Zero-based fold index |
+| `folds[].test_obs_ids` | list[str] | ObsIds in this fold's test set |
+| `folds[].train_obs_ids` | list[str] | ObsIds in this fold's train set (complement of test within `manifest_obs_ids`) |
+| `folds[].test_summary` | obj | `{n_images, n_tiles_total, n_tiles_finest, boulder_labels: {label: count}, frac_mean_finest_avg}` for the test side |
+| `folds[].train_summary` | obj | Same shape, for the train side |
+| `config_hash` | str | Provenance: SHA256 of the config snapshot that produced this split |
+| `split_hash` | str | SHA256 over `{name, kind, n_folds, stratification, manifest_obs_ids, folds}` -- a stable id for the split assignment, independent of timestamps |
+| `written_at_iso` | str | UTC ISO timestamp |
+
+## Stage 5 — `dataset/packaged/{name}/`
+
+Per-fold train/test parquets ready for training, materialised from the split + label +
+feature inputs. Produced by `package_split` (in-memory concat path). For the 50-200+
+image case, the streaming `iter_train_batches` / `iter_test_batches` API yields per-
+ObsId DataFrames without materialising the full dataset (see `src/dataset.py`).
+
+### `X_{train,test}_fold{k}.parquet`
+Feature side. Schema: tile-key columns + every column in `dataset/features/{ObsId}.parquet`
+except `obs_id`/`scale_idx`/`tile_size_px`/`ti`/`tj`/`config_hash` (those are kept as
+join keys). Row order: ObsIds in the order they appear in `metadata.folds[k].{train,test}_obs_ids`,
+then per-image row order from the source parquet.
+
+| Column | Type | Meaning |
+|---|---|---|
+| `obs_id`, `scale_idx`, `tile_size_px`, `ti`, `tj` | various | Join key (matches `y_*_fold{k}.parquet` row-for-row) |
+| (everything else) | float / int / str | Feature columns -- see the Stage 4b feature-parquet schema above |
+
+### `y_{train,test}_fold{k}.parquet`
+Label side. Same tile-key columns + the label transforms + per-tile bound context:
+
+| Column | Type | Meaning |
+|---|---|---|
+| `obs_id`, `scale_idx`, `tile_size_px`, `ti`, `tj` | various | Join key (identical to X) |
+| `boulder_area`, `boulder_count`, `tile_area` | float / int | Base stats (Stage 4) |
+| `fractional_area` | float | Primary regression target (Stage 4) |
+| `binary_by_area`, `binary_by_count` | bool | Binary targets at the config thresholds |
+| `count_density` | float | `boulder_count / tile_area` |
+| `categorical` | Int64 | Emitted only when `labeling.categorical_bins` is non-empty (absent today) |
+| `xmin`, `ymin`, `xmax`, `ymax`, `tile_size_m` | float | Per-tile bound context (handy for heatmap plotting; not a label) |
+
+### `groups_{train,test}_fold{k}.npy`
+Int32 array, one entry per row in the matching X/y parquet. Value = `obs_id`'s integer
+code from `metadata.json::obs_to_int`. Use with `sklearn.model_selection.GroupKFold` etc.
+for intra-train CV that respects the image-group structure.
+
+### `all.parquet` (when `splits.emit_all_parquet=true`)
+Consolidated view: every tile appears exactly once, tagged with the `fold_idx` of the
+test fold it belongs to. Useful for ad-hoc analysis ("per-fold target distribution",
+"per-fold-per-image variance", etc.) without repeated joins.
+
+| Column | Type | Meaning |
+|---|---|---|
+| (all columns from the per-image label + feature join) | -- | Same shape as concatenating X and y on the join key |
+| `fold_idx` | int | Which fold this tile lands in as the *test* tile. For a per-fold training set, filter by `fold_idx != k` |
+
+### `metadata.json`
+| Field | Type | Meaning |
+|---|---|---|
+| `name` | str | Scheme name |
+| `split_hash` | str | Mirrors the split JSON's `split_hash`; mismatch indicates the package and split metadata are out of sync |
+| `config_hash` | str | Provenance |
+| `scale_filter` | list[int] or null | If non-null, only these `tile_size_px` values were included in the packaging |
+| `emit_all_parquet` | bool | Whether `all.parquet` was written |
+| `obs_to_int` | obj | `{obs_id: int}` mapping used by `groups_*.npy` |
+| `per_fold` | list[obj] | One entry per fold: `{fold_idx, n_train_tiles, n_test_tiles, n_train_x_cols, n_y_cols, test_obs_ids}` |
+| `all_parquet_path` | str or null | Absolute path of `all.parquet` if emitted |
+| `written_at_iso` | str | UTC ISO timestamp |

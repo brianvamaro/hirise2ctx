@@ -141,6 +141,28 @@ features:
     enabled: true
     sizes_px: [32, 64]
 
+# Stage 5 splits + packaging (per CLAUDE.md §4 acceptance #5 + PLAN_Stage5.md).
+# Splits are by image (group-aware leave-image-out), never by tile -- tiles within an
+# image are spatially correlated and random per-tile splits leak across the boundary.
+# Decisions locked in via AskUserQuestion 2026-05-24:
+#   - 9-fold LOIO primary + 3-fold balanced secondary
+#   - ESP_065711_1545 included in folds with BoulderLabel='unknown'
+#   - all.parquet (consolidated view) emitted per scheme
+#   - Both in-memory concat (default) and streaming iterator code paths exposed
+splits:
+  default_scheme: loio_9fold
+  schemes:
+    loio_9fold:
+      n_folds: 9              # true leave-one-image-out; each ObsId is the test set in exactly one fold
+      stratification: none    # 1 image per fold; stratification doesn't apply
+      seed: 0
+    loio_3fold_balanced:
+      n_folds: 3
+      stratification: boulder_label_size_balanced  # greedy: place each image into the currently-smallest fold within its label group
+      seed: 0
+  scale_filter: null          # null = all 4 scales; e.g. [8, 16] to restrict
+  emit_all_parquet: true      # consolidated view with fold_idx + split columns
+
 sanity:
   # Stage 0-1 sanity check: reprojected polygon centroid vs manifest CenterLat/CenterLon.
   # > max_km triggers a loud failure. Threshold raised from 2 -> 15 km on 2026-05-20

@@ -47,6 +47,13 @@ REQUIRED_LABELING = {
 }
 REQUIRED_SANITY = {"centroid_max_km"}
 
+# Stage 5 splits + packaging (PLAN_Stage5.md §7). Optional at top level -- absence is
+# tolerated for callers that don't need split-construction. When present these nested
+# keys are required.
+REQUIRED_SPLITS_TOP = {"default_scheme", "schemes", "emit_all_parquet"}
+REQUIRED_SPLITS_SCHEME = {"n_folds", "stratification", "seed"}
+SUPPORTED_STRATIFICATION = {"none", "boulder_label_size_balanced"}
+
 # Stage 4b config (PLAN_Stage4b.md §5). Optional at top level for now -- absence means
 # Stage 4b uses built-in defaults from src/features.py. When present, these nested keys
 # are required.
@@ -164,6 +171,40 @@ def _validate(cfg: dict[str, Any], path: Path) -> None:
                 f"{path}: features.context_patch.sizes_px must be a non-empty list of "
                 "positive powers of 2 (CTX pixels)"
             )
+
+    # Stage 5: validate the optional splits block.
+    if "splits" in cfg:
+        sp = cfg["splits"]
+        if not isinstance(sp, dict):
+            raise ValueError(f"{path}: top-level `splits` must be a mapping")
+        missing = REQUIRED_SPLITS_TOP - sp.keys()
+        if missing:
+            raise ValueError(f"{path}: splits missing keys: {sorted(missing)}")
+        if not isinstance(sp["schemes"], dict) or not sp["schemes"]:
+            raise ValueError(f"{path}: splits.schemes must be a non-empty mapping")
+        if sp["default_scheme"] not in sp["schemes"]:
+            raise ValueError(
+                f"{path}: splits.default_scheme={sp['default_scheme']!r} not in "
+                f"splits.schemes (got {sorted(sp['schemes'])})"
+            )
+        for name, scheme in sp["schemes"].items():
+            if not isinstance(scheme, dict):
+                raise ValueError(f"{path}: splits.schemes.{name} must be a mapping")
+            missing = REQUIRED_SPLITS_SCHEME - scheme.keys()
+            if missing:
+                raise ValueError(
+                    f"{path}: splits.schemes.{name} missing keys: {sorted(missing)}"
+                )
+            if not (isinstance(scheme["n_folds"], int) and scheme["n_folds"] >= 2):
+                raise ValueError(
+                    f"{path}: splits.schemes.{name}.n_folds must be int >= 2 "
+                    f"(got {scheme['n_folds']!r})"
+                )
+            if scheme["stratification"] not in SUPPORTED_STRATIFICATION:
+                raise ValueError(
+                    f"{path}: splits.schemes.{name}.stratification={scheme['stratification']!r} "
+                    f"not in {sorted(SUPPORTED_STRATIFICATION)}"
+                )
 
     sizes = cfg["labeling"]["tile_sizes_px"]
     if not (isinstance(sizes, list) and len(sizes) >= 1 and all(isinstance(s, int) and s > 0 for s in sizes)):
