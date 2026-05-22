@@ -19,6 +19,7 @@ REQUIRED_TOP_LEVEL = {
     "target_crs",
     "ctx_mosaic",
     "ctx_read",
+    "ctx_retrieve",
     "hirise_decimation_mpp",
     "coregistration",
     "labeling",
@@ -26,6 +27,13 @@ REQUIRED_TOP_LEVEL = {
 }
 
 REQUIRED_CTX_MOSAIC = {"catalog_url", "url_template", "probe_tile"}
+REQUIRED_CTX_RETRIEVE = {
+    "mode",
+    "buffer_m",
+    "nominal_hirise_width_m",
+    "nominal_hirise_length_m",
+}
+SUPPORTED_CTX_RETRIEVE_MODES = {"download_then_window"}
 REQUIRED_LABELING = {
     "grid_anchor",
     "tile_sizes_px",
@@ -89,6 +97,15 @@ def _validate(cfg: dict[str, Any], path: Path) -> None:
     missing = REQUIRED_CTX_MOSAIC - cfg["ctx_mosaic"].keys()
     if missing:
         raise ValueError(f"{path}: ctx_mosaic missing keys: {sorted(missing)}")
+
+    missing = REQUIRED_CTX_RETRIEVE - cfg["ctx_retrieve"].keys()
+    if missing:
+        raise ValueError(f"{path}: ctx_retrieve missing keys: {sorted(missing)}")
+    mode = cfg["ctx_retrieve"]["mode"]
+    if mode not in SUPPORTED_CTX_RETRIEVE_MODES:
+        raise ValueError(
+            f"{path}: ctx_retrieve.mode={mode!r} not in {sorted(SUPPORTED_CTX_RETRIEVE_MODES)}"
+        )
 
     missing = REQUIRED_LABELING - cfg["labeling"].keys()
     if missing:

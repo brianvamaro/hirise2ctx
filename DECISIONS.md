@@ -236,11 +236,108 @@ If we ever cache the 4 affected JP2s locally for Stage 3 co-registration, one-ti
 `fix_jp2_v2 <file>.JP2` on each cleans them permanently and removes the need for the
 runtime override on the imagery side.
 
+## 2026-05-21 — Stage 2 (CTX windowed retrieval) landed
+
+Stage 2 builds the cached per-ObsId CTX windows that Stage 4 will read repeatedly.
+**Mode = `download_then_window`** (config.yaml `ctx_retrieve.mode`): each unique Murray
+Lab tile is downloaded once to `cache/ctx_tiles/{murray_tile}.zip`, the inner GeoTIFF
+header is read via `/vsizip/` once, and per-ObsId windows are written to
+`cache/ctx_windows/{ObsId}.tif`. `/vsicurl/` streaming was skipped after the HiRISE
+experience (memory `feedback-collaboration` #4: ~140× slower vs bulk download).
+
+**Runtime facts pinned down by the first real fetch (`E000_N40` for ESP_069669_2220):**
+
+| Fact | Value |
+|---|---|
+| Murray Lab URL form | `MurrayLab_GlobalCTXMosaic_V01_{tile_name}.zip` |
+| Tile-name convention | Zero-padded manifest form, **not** the bare signed-int form. `E000_N40` works; `E0_N40` returns 404. The retriever in `ctx_retrieve.py` tries the murray-form first and falls back to the padded form automatically. |
+| Inner-tif path inside zip | `MurrayLab_GlobalCTXMosaic_V01_{tile_name}/MurrayLab_CTX_V01_{tile_name}_Mosaic.tif` (one nested directory; the `_Mosaic` suffix is the canonical filename) |
+| Zip size (E000_N40) | 1,764,328,807 bytes (~1.68 GB) |
+| Download throughput | ~29 MB/s sustained from Caltech (single connection, no `/vsicurl/`) |
+| Raster shape | 47420 × 47420 px at 5 m/px → ~237 km × 237 km (4° × 4° at lat 40°) |
+| Pixel size | 4.99997 m (north-up, e<0) |
+| Source band dtype | `uint8` |
+| Source CRS (read from tile) | `Mars_2015_Ocentric_Equirectangular_clon_0` — datum `Mars (2015)`, sphere **3,396,190 m** with inverse flattening **169.894447223612** (i.e. *oblate*, not pure sphere). Authority `IAU/49901`. |
+
+**Implication of the CRS finding:** our `config.yaml::target_crs` uses the IAU-2000
+sphere (3,396,190 m, **f = 0**) while the actual Murray Lab mosaic uses the IAU/2015
+oblate spheroid with f ≈ 1/170. Over a 6 km HiRISE footprint at latitude 40° this is a
+sub-pixel discrepancy (well under 5 m), so the Stage 0–1 centroid-residual sanity check
+(threshold 15 km) is unaffected and visual overlay alignment looks correct. We are
+**not switching `target_crs`** for now — the cost would be re-projecting all 10
+Stage-1 caches for a sub-meter correction, and pyproj handles the mixed-sphere
+projection of polygons-in-target-sphere onto pixels-in-source-spheroid implicitly via
+the affine transform we cache in the tile sidecar. **Open item:** revisit in Stage 3
+when phase correlation could surface this as a systematic ~1 px bias.
+
+**Inner block size pitfall (fixed):** Murray Lab's GeoTIFFs are stored with a single
+internal block equal to the full raster (47420 × 47420). Naively copying that
+`blockxsize`/`blockysize` into a much smaller output produced
+`_TIFFVSetField: Bad value 47420 for "TileWidth"`. `src.ctx_retrieve.extract_ctx_window`
+now drops `blockxsize`/`blockysize`/`tiled` from the source profile and explicitly sets
+`tiled=True, blockxsize=256, blockysize=256` for the output.
+
+**Cache layout in use:**
+```
+cache/ctx_tiles/{murray_tile}.zip                 # 1-2 GB each; murray-form filename
+cache/ctx_tiles/{murray_tile}.json                # source_url, inner_tif, inner_crs_wkt, transform, shape, dtype
+cache/ctx_windows/{obs_id}.tif                    # ~5 MB; pixel-aligned to tile origin
+cache/ctx_windows/{obs_id}.json                   # bounds, transform, shape, buffer_m, footprint_source, n_polygons_anchor, config_hash
+```
+
+**ESP_069669_2220 window provenance (the first real one):**
+- Source tile: `E0_N40` (manifest form `E000_N40`, served URL `MurrayLab_GlobalCTXMosaic_V01_E000_N40.zip`)
+- Bounds in target CRS: `[38559.80, 2469737.40, 49859.75, 2487157.31]` (m)
+- Shape: 3484 × 2260 px → 17.4 km N-S × 11.3 km E-W
+- 1462 polygon anchors, buffer 1000 m, `footprint_source = polygon_bbox`
+- Visual QA in `reports/figures/04_ctx_window_ESP_069669_2220.png`: top half of the
+  window is a boulder-rich textured ejecta surface, bottom half is smooth plains; the
+  BoulderNet polygons cluster densely in the textured region — Stages 1 + 2 align as
+  expected.
+
+**Tests delta:** 13 → 38 (+17 ctx_tiles, +6 ctx_window_geometry, +2 stage2 integration).
+Stage 2 integration tests auto-skip if the tile zip isn't cached, so they're CI-safe.
+
+## 2026-05-21 — Labels-only-on-HiRISE-coverage constraint (Stage 4 design rule landed in Stage 2 output)
+
+User-flagged constraint, confirmed before code change: **Stage 4 must NOT emit labels
+outside the HiRISE swath, and must NOT emit labels for HiRISE NaN/0 pixels inside the
+swath**. The whole pipeline's premise is HiRISE-derived ground truth; tiles outside the
+HiRISE swath have no ground truth, so calling them "boulder absent" would be wrong (it's
+"unobserved"). This is the difference between zero-inflation as a statistical property
+(real) and zero-inflation as a measurement artifact (avoidable).
+
+**Stage 2 enforcement (landed):** every `stage2_one_image` call now also writes
+`cache/ctx_windows/{ObsId}_hirise_mask.tif` — a uint8 raster, same CRS/transform/shape
+as `{ObsId}.tif`, with 1 where decimated HiRISE has a valid pixel and 0 elsewhere
+(reprojected with `nearest`-neighbor to keep the binary boundary crisp). The provenance
+JSON records `hirise_coverage_fraction`.
+
+**Cost paid:** the first stage2 call for any ObsId triggers
+`hirise_imagery.ensure_jp2_local`, downloading the JP2 (~200–500 MB). For ESP_069669_2220
+this was a no-op (JP2 already cached). For the other 8 ObsIds, ~3 GB total — user signed
+off on this disk cost (memory `feedback-collaboration` #5).
+
+**Visual check:** `reports/figures/04_hirise_vs_ctx_ESP_069669_2220.png` shows the
+HiRISE swath covers ~60% of the polygon-bbox CTX window — without the mask, ~40% of
+Stage 4 tiles would have been spurious "no-boulder" labels from HiRISE-unobserved area.
+
+**Stage 4 implementation rule:** at label-gen time, before computing any per-tile
+statistic, intersect with the mask. A tile is *eligible* iff `mask_tile.mean() >= 1.0`
+(every pixel covered) — tiles with partial mask coverage are dropped entirely rather
+than scaled, because partial-coverage tiles bias `fractional_area` low (the denominator
+is full tile area but the numerator is only the covered portion). Open detail:
+boundary-tile threshold (`>= 0.95`? `== 1.0`?) — decide in Stage 4.
+
 ## Open at this date
 
-- **Pipeline policy for the 4 mis-located images** — RESOLVED 2026-05-20 by the
-  PDS-LBL-driven SP1 fix above. All 10 images now pass the sanity check.
-- **`/vsicurl/` + `/vsizip/` against Murray Lab** — to be tested in Stage 2 once a
-  manifest → Murray-Lab tile-name translator exists (W↔E-signed, S↔N-signed). TLS
-  already handled by `truststore`.
+- **Per-image CTX windows for the remaining 9 ObsIds** — Stage 2 helpers are ready; this
+  is a 7-more-tile-downloads operation (~10 more GB on disk) plus the cheap windowing.
+  Deferred until needed by Stage 3 (co-registration) or a Stage-4 sweep.
+- **Stage 3 co-registration** — phase correlation between decimated HiRISE JP2s and
+  cached CTX windows; will need the 2 already-cached HiRISE JP2s in `cache/hirise_jp2/`
+  plus stage-2 windows for those two ObsIds (`ESP_069669_2220` ✓, `ESP_047976_2020`
+  needs its `W040_N20` → `E-40_N20` (with padding fallback to `E040_N20`) tile fetch).
+- **Sphere vs oblate-spheroid CRS mismatch (sub-pixel)** — revisit during Stage 3 if
+  phase correlation shows a systematic ~1 px bias along the equator-to-pole axis.
 - **`min_confidence` default** — leave `null` until distribution is reviewed.

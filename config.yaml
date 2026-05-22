@@ -37,8 +37,20 @@ ctx_mosaic:
   url_template: "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_{tile_name}.zip"
   probe_tile: W040_N20            # tile that matches ESP_047976_2020
 
-ctx_read: vsicurl_window          # fallback: download_then_window
+ctx_read: vsicurl_window          # DEPRECATED 2026-05-22 — superseded by ctx_retrieve.mode below.
+                                  # Kept here only because config.py's required-key check predates the move.
 hirise_decimation_mpp: 5
+
+ctx_retrieve:
+  # Stage 2 retrieval mode. 2026-05-22 decision: download whole zipped CTX tiles to
+  # cache/ctx_tiles/ once, then window-read from local. /vsicurl/ + /vsizip/ streaming
+  # is not implemented (HiRISE experience showed ~140x slowdown vs bulk download, and
+  # parsing zip central directories over HTTP would amplify that). 8 unique tiles for
+  # the priority10 manifest -> ~12 GB on disk.
+  mode: download_then_window
+  buffer_m: 1000              # buffer around polygon-footprint bbox, in CTX CRS metres
+  nominal_hirise_width_m: 6000     # used only when shapefile has 0 polygons
+  nominal_hirise_length_m: 16000   # (ESP_065711_1545; diversity pick)
 
 coregistration:
   enabled: false                  # nominal geolocation first; CLAUDE.md default
