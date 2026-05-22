@@ -138,3 +138,61 @@ nominal grid anchor (and may decide to ignore it for flagged outliers — see
 | `upsample_factor` | int | `skimage.registration.phase_cross_correlation` `upsample_factor` (default 20 → 0.05 px ≈ 0.25 m granularity at 5 m/px) |
 | `config_hash` | str | SHA256 of the config snapshot that produced this shift |
 | `solved_at_iso` | str | When the shift was solved (UTC ISO) |
+
+## Stage 4 — `dataset/labels/`
+
+Per-ObsId paired tile dataset, one row per (scale, tile) cell. Stage 4 emits all
+derived label transforms regardless of `labeling.label_type` so downstream code can
+pick its target without re-running label generation.
+
+### `{ObsId}.parquet`
+Tidy table; one row per emitted tile. Ineligible tiles (mask coverage < 1.0, or
+any sub-tile ineligible at coarser scales) are dropped, not written as NaN.
+
+| Column | Type | Meaning |
+|---|---|---|
+| `obs_id` | str | HiRISE Observation ID |
+| `scale_idx` | int | Index into `labeling.tile_sizes_px` (0 = finest) |
+| `tile_size_px` | int | Tile side in CTX pixels (8, 16, 32, or 64 today) |
+| `tile_size_m` | float | Tile side in metres (`tile_size_px * px_x`, ~40, 80, 160, 320 m) |
+| `ti` | int64 | **Absolute** tile row index in mosaic-pixel coords (`mosaic_pixel_row / tile_size_px`). Cross-image-comparable; ti at scale 2S is `ti(S) // 2`. |
+| `tj` | int64 | Absolute tile column index, same convention |
+| `xmin`, `ymin`, `xmax`, `ymax` | float | Tile bounds in the source CTX mosaic CRS (`Mars_2015_Ocentric_Equirectangular`, metres) |
+| `boulder_area` | float | Base stat: total polygon area inside the tile, in m². Computed once on the finest grid via 5×-sub-pixel rasterization, summed up the ×2 ladder. |
+| `boulder_count` | int64 | Base stat: number of polygons whose centroid lies inside the tile. Unambiguous at borders (each boulder counted once). |
+| `tile_area` | float | Constant per scale; equal to `tile_size_px^2 * px_x * px_y` (~1600, 6400, 25600, 102400 m² for 8/16/32/64-px tiles at ~5 m/px) |
+| `fractional_area` | float | Derived: `boulder_area / tile_area`. Primary regression target. Heavily zero-inflated; see DECISIONS.md 2026-05-23 distribution. |
+| `binary_by_area` | bool | Derived: `fractional_area >= labeling.binary_area_threshold` |
+| `binary_by_count` | bool | Derived: `boulder_count >= labeling.binary_count_threshold` |
+| `count_density` | float | Derived: `boulder_count / tile_area` (per-m² density) |
+| `categorical` | Int64 | Derived: bin index from `pd.cut(fractional_area, labeling.categorical_bins)`. Only emitted when `categorical_bins` is non-empty. |
+| `config_hash` | str | SHA256 of the config snapshot that produced this row |
+
+### `{ObsId}.json` (sidecar)
+| Field | Type | Meaning |
+|---|---|---|
+| `obs_id` | str | HiRISE Observation ID |
+| `n_polygons_stage1` | int | Polygon count in the Stage 1 cache (pre-filter) |
+| `n_polygons_after_filter` | int | Polygon count after applying `detection_filters.min_confidence` / `min_size_m` (equal to `n_polygons_stage1` when both are null, the current default) |
+| `detection_filters` | obj | Snapshot of `labeling.detection_filters` (`min_confidence`, `min_size_m`) |
+| `coreg_shift_applied` | bool | Whether the Stage 3 (dx, dy) was applied to polygons before rasterization |
+| `coreg_shift_m` | obj or null | `{dx, dy, magnitude}` in metres if `coreg_shift_applied` and Stage 3 cache exists |
+| `coreg_peak_correlation` | float or null | Stage 3 peak correlation when shift was applied |
+| `tile_sizes_px` | list[int] | The ×2 ladder used (`labeling.tile_sizes_px`) |
+| `tile_sizes_m` | list[float] | Same in metres |
+| `grid_anchor` | str | Always `"ctx_pixel_origin"` today |
+| `mosaic_row_origin`, `mosaic_col_origin` | int | Window (0, 0) at this integer mosaic-pixel offset. Combined with `tile_sizes_px` and `tile_size_px * (ti, tj)`, you can compute exact mosaic-pixel coords for any tile. |
+| `finest_grid_cells` | list[int] | `[n_ti, n_tj]` candidate cells on the finest grid (before mask-eligibility filtering) |
+| `eligibility_rule` | str | Always `"coverage_equals_one"` today (DECISIONS.md 2026-05-23) |
+| `eligible_tiles_per_scale` | obj | `{tile_size_px: count}` of tiles actually emitted to the parquet |
+| `total_candidate_tiles_per_scale` | obj | `{tile_size_px: count}` before mask filtering — divide eligible/total for the per-scale yield |
+| `subpixel_factor` | int | Polygon rasterization oversample (default 5; 1 m sub-pixel at 5 m/px CTX) |
+| `subpixel_area_m2` | float | `(px_x * px_y) / subpixel_factor^2` — the area precision of `boulder_area` |
+| `binary_area_threshold` | float | Snapshot used to compute `binary_by_area` |
+| `binary_count_threshold` | int | Snapshot used to compute `binary_by_count` |
+| `categorical_bins` | list | Snapshot of `labeling.categorical_bins` |
+| `label_type_primary` | str | The user-declared primary target (`fractional_area`); informational, all label columns are always emitted |
+| `ctx_window_tif`, `hirise_mask_tif` | str | Absolute paths to the Stage 2 inputs this label run consumed |
+| `parquet_path` | str | Absolute path of the per-tile parquet (companion to this sidecar) |
+| `config_hash` | str | Provenance |
+| `written_at_iso` | str | When the parquet was written (UTC ISO) |

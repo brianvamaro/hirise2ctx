@@ -471,6 +471,103 @@ overlays use a red/blue colour split (CTX = red, HiRISE = blue): the BEFORE pane
 shows clear offset, AFTER snaps into co-registration on every image with a non-zero
 shift.
 
+## 2026-05-23 — Stage 4 (label generation) landed
+
+Four design choices pinned via AskUserQuestion before any code (all "recommended"
+options chosen):
+
+| Question | Decision | Rationale |
+|---|---|---|
+| Mask-coverage threshold | **`coverage == 1.0` (strict)** | Drop any tile with even one uncovered HiRISE pixel. Zero downward bias in `fractional_area`; the relaxed `>= 0.95` would have biased frac low (numerator scales with covered area, denominator stays full). |
+| Stage 3 shifts | **Apply to polygons before rasterization** | Translates each ObsId's polygons by `(dx_m, dy_m)` so HiRISE-derived boulder positions align with CTX texture in the same tile. Grid itself stays anchored to CTX pixel origin (no resampling). Eliminates the systematic ~200 m HiRISE-vs-CTX-feature offset Stage 3 measured. |
+| `min_confidence` default | **Leave `null`** | Pass all 14,292 detections through. Tune after histogram review (notebook 06's `binary_comparison.png` is the first look). Matches the no-thresholds-yet pattern from Stage 3. |
+| ESP_057469_2215 | **Drop** | Stage 2 window covers 0.1% of HiRISE swath (tile-straddle). 9 of 10 ObsIds remain — `scripts/run_stage4.py --all` excludes by default. |
+
+**Implementation (`src/labeling.py`):**
+
+- **Grid anchoring:** computes the integer mosaic-pixel offset of each CTX window's
+  origin, then chooses the largest coarsest-scale-aligned cell range that fits inside
+  the window. This guarantees the ×2 ladder is exactly nested — at scale `S`, cell
+  `k` corresponds to the same mosaic-pixel block as cells `2k` and `2k+1` at scale
+  `S/2`. The `(ti, tj)` indices in the parquet are **absolute** (mosaic-pixel
+  coordinates / tile_size_px), so tiles from different images can be co-located in
+  CTX space by index alone.
+- **Boulder area:** rasterize polygons at 5× sub-pixel resolution (1 m/px) with
+  `rasterio.features.rasterize`, then per-tile sums via reshape-and-sum. ~1 m²
+  granularity is well under the 3.7 m² median boulder area.
+- **Boulder count:** bin polygon centroids into finest-grid cells. Unambiguous at
+  borders (each boulder counts once, in the tile owning its centroid). Cheap.
+- **Sum-up:** boulder_area and boulder_count are summed up the ×2 ladder via 2×2
+  reductions; eligibility is `all()` over the 2×2 — a coarse tile is dropped iff
+  any of its 4 sub-tiles is ineligible. Acceptance #2 (nested consistency) was
+  verified both in pytest (`test_stage4_nested_consistency_on_real_data`) and
+  visually in notebook 06 (max delta = 1.0e-09 over all eligible coarse tiles in
+  ESP_069669_2220 — floating-point noise).
+- **Label transforms (all emitted regardless of `labeling.label_type`):**
+  `fractional_area`, `binary_by_area`, `binary_by_count`, `count_density`. Base
+  stats (`boulder_area`, `boulder_count`, `tile_area`) are also stored in every
+  row, so changing thresholds re-runs label transforms in milliseconds from the
+  cached parquet.
+- **Cache:** `dataset/labels/{ObsId}.parquet` + `{ObsId}.json` sidecar. Idempotent.
+
+**Sweep results (`scripts/run_stage4.py --all`, ~2.5 s total for 9 ObsIds):**
+
+| ObsId | n_polys | S=8 eligible | S=16 | S=32 | S=64 |
+|---|---:|---:|---:|---:|---:|
+| ESP_055714_2270 | 1974 | 76,030 | 18,819 | 4,609 | 1,100 |
+| ESP_054857_2270 | 6462 | 37,292 | 9,068 | 2,096 | 419 |
+| ESP_069669_2220 | 1462 | 72,821 | 18,043 | 4,428 | 1,062 |
+| ESP_071093_2210 | 961 | 55,962 | 13,834 | 3,370 | 792 |
+| ESP_047976_2020 | 1346 | 54,054 | 13,363 | 3,259 | 773 |
+| ESP_056165_2200 | 26 | 73,335 | 17,411 | 3,901 | 756 |
+| ESP_075577_2105 | 624 | 44,560 | 11,018 | 2,691 | 639 |
+| ESP_039820_1750 | 497 | 49,279 | 12,162 | 2,953 | 687 |
+| ESP_065711_1545 | 0 | 25,221 | 6,226 | 1,518 | 359 |
+| **total** | **13,352** | **488,554** | **119,944** | **28,825** | **6,587** |
+
+The 8→16 ratio of 4.07 (vs theoretical 4.00) shows that ~1.8% of would-be
+S=16 tiles get dropped because one of their 4 sub-tiles is ineligible, mostly along
+the HiRISE swath boundary. Behaves the same way at coarser scales.
+
+**Target distribution (488,554 finest tiles, no filters):**
+- 97.88% of finest tiles have `boulder_area == 0` (CLAUDE.md §9 zero-inflation
+  warning is correct).
+- Mean `fractional_area` = 2.2e-4; median = 0; P99 = 6.25e-3; max = 0.269.
+- The maximum (~27% of a tile covered by boulders) is at the densest part of a
+  boulder-rich image and matches the visual heatmap.
+
+**Binary-rule contingency at placeholder thresholds** (area>=0.005, count>=5):
+- 169 tiles agree positive (0.03%), 482,879 agree negative (98.84%).
+- 5,504 tiles fire **binary_by_area only** (1.13%) — many small boulders summing
+  to >0.5% area without 5 polygons.
+- 2 tiles fire **binary_by_count only** (~0%) — 5+ very small boulders summing to
+  <0.5% area.
+- The strong asymmetry says the count threshold is too high relative to the area
+  threshold for these scales. Either lower it (e.g. 3) or raise the area threshold
+  if we want them aligned. This is a Stage 5 / modeling-stage decision — Stage 4
+  emits both rules so downstream can pick.
+
+**Test count: 65 → 88** (+20 fast labeling unit tests, +3 slow integration tests
+on ESP_069669_2220). `tests/test_labeling.py::test_stage4_nested_consistency_on_real_data`
+is the explicit acceptance check.
+
+**QA artifacts:** `notebooks/06_labeling_qa.ipynb` runs top-to-bottom in seconds and
+writes 13 figures to `reports/figures/06_*.png`:
+- 9 per-image fractional_area heatmaps (S=8 + S=64 side-by-side)
+- `06_target_distribution.png` — zero-inflated histogram (linear + log non-zero)
+- `06_per_image_distribution.png` — per-image overlay
+- `06_binary_comparison.png` — area-vs-count agreement scatter + contingency bars
+- `06_nested_consistency_ESP_069669_2220.png` — finest-downsampled vs coarse-emitted
+
+**Dependencies added:** `pyarrow` (parquet engine for pandas). Installed via
+`conda install -n geospatial -c conda-forge pyarrow`.
+
+**Texture features (GLCM, intensity stats, gradient, shadow-fraction) are NOT in
+this Stage 4 pass.** Per CLAUDE.md acceptance #4, label generation and feature
+extraction are separable cheap re-runnable passes; the label parquet stores per-tile
+bounds so a future `src/features.py` module can compute features against the cached
+CTX windows without re-running anything else. This will be a Stage 4b.
+
 ## Open at this date
 
 - **Stage 3 thresholds (flag/fail)** — collect more data first before pinning down.
@@ -478,6 +575,13 @@ shift.
   but Stage 4 will benefit from a few more images and a re-look at ESP_056165_2200
   (the only low-peak case so far).
 - **ESP_057469_2215 multi-tile windowing** — see the 2026-05-22 tile-straddle entry.
-  Choose option (a/b/c) at Stage 4 / Stage 5 time.
+  Currently dropped from the Stage 4 sweep. Decide whether to fix at Stage 5 / 6.
 - **`min_confidence` default for the `score` column** — leave `null` until the
-  distribution across all 10 images is reviewed.
+  per-tile distribution after labels is reviewed; the binary contingency table in
+  notebook 06 is the first data-grounded input.
+- **`binary_count_threshold` rebalance** — current placeholder 5 is too high vs
+  area threshold 0.005 (only 2 count-only tiles vs 5,504 area-only). Decide at
+  modeling time which side to commit to.
+- **Stage 4b texture features** — separate cheap pass over the cached CTX windows
+  emitting per-tile intensity stats, GLCM, gradient, shadow-fraction. Reads the
+  same tile bounds from the label parquets; no re-run of Stages 1-3 needed.
