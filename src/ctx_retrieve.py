@@ -216,21 +216,34 @@ def _download_to(url: str, dest_path: Path, *, on_progress=None, timeout: float 
 
 
 def _padded_manifest_form(murray_tile: str) -> str | None:
-    """If `murray_tile` differs from a zero-padded manifest-style form, return the padded
-    form (`E0_N40` -> `E000_N40`); else return None.
+    """Return Murray Lab's canonical zero-padded URL form for `murray_tile`, or None if
+    `murray_tile` is already in that form (no fallback needed).
 
-    Heuristic fallback used only if Murray Lab's published filename for a small/zero
-    coordinate uses the manifest-style padding instead of the bare signed-int form we
-    saw on `E160_N-20`. The retriever tries the bare form first and falls back to this.
+    Murray Lab's actual URL convention (verified 2026-05-22 across positive + negative
+    quadrants of the priority10 manifest):
+      - longitude: `E<abs(lon):03d>` if lon>=0, else `E-<abs(lon):03d>`  (always 3 abs digits)
+      - latitude:  `N<abs(lat):02d>` if lat>=0, else `N-<abs(lat):02d>`  (always 2 abs digits)
+      e.g.  lon=  0 ->  E000     lon=-40 -> E-040     lon=160 -> E160
+            lat= 40 ->  N40      lat= -8 -> N-08      lat=-20 -> N-20
+
+    Distinct from `manifest_to_murray()` (which produces the *bare* signed-int form like
+    `E-40_N20` and is preserved as our cache key for back-compat with the 2026-05-21
+    caches). The retriever tries `manifest_to_murray()` output first and falls back to
+    this padded form on 404. For positive longitudes the bare form often returns 404 but
+    a small zero-padding shim resolves it (`E0_N40` -> `E000_N40`). For negative
+    longitudes the W-prefix form we hypothesized in May (`W040_N20`) is also 404 —
+    Murray Lab uses the signed-padded form `E-040_N20` instead. Returns None if the
+    input already matches the canonical form (so we don't retry the exact same URL).
     """
     m = re.fullmatch(r"E(-?\d+)_N(-?\d+)", murray_tile)
     if m is None:
         return None
     lon_i = int(m.group(1))
     lat_i = int(m.group(2))
-    lon_padded = f"E{abs(lon_i):03d}" if lon_i >= 0 else f"W{abs(lon_i):03d}"
-    lat_padded = f"N{abs(lat_i):02d}" if lat_i >= 0 else f"S{abs(lat_i):02d}"
-    return f"{lon_padded}_{lat_padded}"
+    lon_padded = f"E{abs(lon_i):03d}" if lon_i >= 0 else f"E-{abs(lon_i):03d}"
+    lat_padded = f"N{abs(lat_i):02d}" if lat_i >= 0 else f"N-{abs(lat_i):02d}"
+    padded = f"{lon_padded}_{lat_padded}"
+    return padded if padded != murray_tile else None
 
 
 def ensure_tile_cached(

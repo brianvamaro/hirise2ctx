@@ -6,18 +6,18 @@ for runtime-verified facts and deviations.
 
 ## Status
 
-**Stages 0–2 of 5 done; verified end-to-end on ESP_069669_2220.**
+**Stages 0–3 of 5 done.**
 
 | Stage | What | Status |
 |---|---|---|
 | 0 | Load manifest + config | ✓ |
-| 1 | Per-image detection ingest + reproject to common CTX CRS (auto-corrects upstream HiRISE PDS `Standard_Parallel_1=0` bug) | ✓ all 10 manifest rows |
-| 2 | Download Murray Lab CTX tile + window around HiRISE footprint + HiRISE coverage mask | ✓ ESP_069669_2220 (other 9 unblocked) |
-| 3 | Co-registration (phase-correlation translation) | — not started |
+| 1 | Per-image detection ingest + reproject to common CTX CRS (auto-corrects upstream HiRISE PDS `Standard_Parallel_1=0` bug, polygon side) | ✓ all 10 manifest rows |
+| 2 | Download Murray Lab CTX tile + window around HiRISE footprint + HiRISE coverage mask (auto-corrects same SP1 bug on JP2 side) | ✓ full sweep |
+| 3 | Co-registration (sub-pixel phase-correlation translation) | ✓ full sweep, thresholds TBD (see `notebooks/05_coregistration_qa.ipynb`) |
 | 4 | Label generation (nested grids, configurable `label_type`) | — not started |
 | 5 | Packaging + group-aware splits | — not started |
 
-38 pytest pass. One CTX tile cached (`E000_N40`, ~1.7 GB), two HiRISE JP2s cached.
+65 pytest pass. ~10 GB of CTX tiles + ~3 GB of HiRISE JP2s cached locally for the full priority10 manifest. Stage 3 solved 9/10 ObsIds with shifts in 118–273 m (CLAUDE.md target ~200 m); ESP_057469_2215 fails gracefully due to a polygon-bbox tile straddle (see DECISIONS.md).
 
 ## Setup
 
@@ -47,8 +47,21 @@ $conda = "C:\Users\brian\anaconda3\Scripts\conda.exe"
 # Subsequent calls for the same ObsId reuse both caches.
 & $conda run -n geospatial python scripts/run_stage2.py ESP_069669_2220
 
-# Render QA notebooks (overlay polygons / mask / zooms on the CTX window).
+# Stage 2 for the entire manifest in one go.
+& $conda run -n geospatial python scripts/sweep_stage2.py
+
+# Stage 3 (co-registration) for one ObsId — needs the matching Stage 2 caches.
+# Solves a sub-pixel rigid translation (dx, dy) and writes
+# cache/coregistration/{ObsId}.json with shift + peak correlation + provenance.
+& $conda run -n geospatial python scripts/run_stage3.py ESP_069669_2220
+
+# Stage 3 for every ObsId whose Stage 2 caches exist.
+& $conda run -n geospatial python scripts/run_stage3.py --all
+
+# Render QA notebooks (overlay polygons / mask / zooms on the CTX window;
+# Stage 3 before/after shifts).
 & $conda run -n geospatial jupyter nbconvert --to notebook --execute --inplace notebooks/04_ctx_retrieval_qa.ipynb
+& $conda run -n geospatial jupyter nbconvert --to notebook --execute --inplace notebooks/05_coregistration_qa.ipynb
 ```
 
 ## Layout
@@ -63,17 +76,23 @@ src/
   ctx_tiles.py       # manifest <-> Murray Lab tile-name translator
   ctx_retrieve.py    # Stage 2: download tile zip, window + write CTX GeoTIFF,
                      # warp HiRISE -> CTX grid to build coverage mask
-  hirise_imagery.py  # JP2 cache + decimated read helpers (used by Stage 2 mask
-                     # and future Stage 3 co-registration)
+  hirise_imagery.py  # JP2 cache + decimated read helpers (auto-applies the SP1
+                     # corrected CRS from Stage 1 sidecars; used by Stage 2 mask
+                     # and Stage 3 co-registration)
+  coregister.py      # Stage 3: warp HiRISE onto CTX grid, pick a power-of-2 FFT
+                     # window, sub-pixel phase-correlate, cache (dx, dy) per ObsId
   qa.py              # assert_centroid_consistent sanity check
 scripts/
-  run_stage2.py      # headless per-ObsId Stage 2 driver with progress heartbeat
-tests/               # 38 tests; integration ones skip until caches exist
+  run_stage2.py      # headless per-ObsId Stage 2 driver
+  sweep_stage2.py    # full-manifest Stage 2 sweep (sequential, skips cached)
+  run_stage3.py      # headless Stage 3 driver (single ObsId or --all)
+tests/               # integration tests skip until caches exist
 notebooks/
   01_detections_qa.ipynb                  # Stage 1 overlay
   02_investigate_misplaced_detections.ipynb  # the SP1 bug, before the fix
   03_hirise_overlay.ipynb                 # decimated HiRISE imagery overlay
   04_ctx_retrieval_qa.ipynb               # Stage 2: window + mask + zooms
+  05_coregistration_qa.ipynb              # Stage 3: shift distribution + before/after
 cache/                # (gitignored) regenerable artifacts
   pds_labels/                  # PDS .LBL text files (~10-20 KB each)
   reprojected_detections/      # per-ObsId GPKG + provenance JSON (Stage 1)
@@ -82,6 +101,8 @@ cache/                # (gitignored) regenerable artifacts
                                # + provenance JSON (Stage 2)
   hirise_jp2/                  # cached HiRISE JP2s (~200-500 MB each)
   hirise_decimated/            # 5 mpp HiRISE GeoTIFFs for co-registration etc.
+  coregistration/              # per-ObsId Stage 3 shift JSON (dx, dy in m + px,
+                               # peak correlation, FFT window placement)
 dataset/
   DATA_DICTIONARY.md           # schema reference for cached artifacts
 reports/figures/     # PNGs from QA notebooks
@@ -107,15 +128,23 @@ new rows go through `detections.stage1_one_image`) and Stage 2 (`scripts/run_sta
 
 These have all bitten us once already and are worth knowing before you touch the code:
 
-- **HiRISE `.prj` SP1 bug** ([DECISIONS.md](DECISIONS.md) 2026-05-20): 4 of 10 BoulderNet
-  shapefiles ship with `Standard_Parallel_1 = 0` (datum `D_unnamed`) even though their
-  geometry was generated with the PDS-declared projection latitude. `src/detections.py`
-  detects this and overrides SP1 with `CENTER_LATITUDE` from the PDS `.LBL`. Don't
-  "fix" the override thinking it's wrong — it's auto-correcting an upstream bug.
-- **Murray Lab tile URL form** ([DECISIONS.md](DECISIONS.md) 2026-05-21): the URL uses
-  the *padded* manifest form (`E000_N40.zip`), not the bare signed-int form
-  (`E0_N40.zip`). `ctx_retrieve.ensure_tile_cached` tries the murray form first and
-  falls back to the padded form on 404.
+- **HiRISE `.prj` / JP2 SP1 bug** ([DECISIONS.md](DECISIONS.md) 2026-05-20, 2026-05-22):
+  4 of 10 BoulderNet shapefiles ship with `Standard_Parallel_1 = 0` (datum
+  `D_unnamed`) even though their geometry was generated with the PDS-declared
+  projection latitude. The matching JP2s inherit the same buggy metadata.
+  `src/detections.py` corrects the shapefile side; `src/hirise_imagery.py` applies
+  the symmetric correction at JP2 read time, replacing the JP2's embedded CRS with
+  the Stage 1 sidecar's corrected CRS. Caches built before the JP2-side fix are
+  detected via a literal-SP1 comparison and rebuilt automatically (pyproj's
+  `.equals()` canonicalizes spherical Equirectangular without SP1, so the literal
+  parse is necessary). Don't "fix" either override thinking it's wrong — both are
+  auto-correcting the same upstream issue.
+- **Murray Lab tile URL form** ([DECISIONS.md](DECISIONS.md) 2026-05-21/22): the URL
+  uses a signed-prefix zero-padded form universally. Positive longitudes get
+  `E<abs:03d>` (e.g. `E000`, `E012`, `E160`); negative longitudes get `E-<abs:03d>`
+  (e.g. `E-040`, NOT `W040`); latitudes follow the same rule at 2 digits (`N20`,
+  `N-08`). `ctx_retrieve.ensure_tile_cached` tries the bare `manifest_to_murray`
+  output first, then falls back to this canonical form on 404.
 - **CTX mosaic CRS surprise**: the actual Murray Lab CRS is
   `Mars_2015_Ocentric_Equirectangular` with inverse flattening 169.894 (oblate), not the
   IAU 2000 sphere we configured for `target_crs`. Sub-pixel discrepancy at 5 m/px so not

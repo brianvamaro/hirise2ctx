@@ -106,6 +106,35 @@ rotated-rectangle outline (those areas are HiRISE-unobserved too). Generated usi
 | `footprint_source` | str | `polygon_bbox` (normal path) or `nominal_from_manifest` (empty-shapefile fallback using `manifest.CenterLat`/`CenterLon_180`) |
 | `n_polygons_anchor` | int | Polygon count in the Stage-1 cache used to compute bounds (0 for the fallback path) |
 | `hirise_mask_path` | str | Absolute path of the companion `{ObsId}_hirise_mask.tif` |
-| `hirise_coverage_fraction` | float | Share of CTX-window pixels with HiRISE coverage (`mean(mask == 1)`). Typically ~0.4–0.7 because the HiRISE diagonal swath occupies only part of the polygon-bbox window. |
+| `hirise_coverage_fraction` | float | Share of CTX-window pixels with HiRISE coverage (`mean(mask == 1)`). Typically ~0.4–0.7 because the HiRISE diagonal swath occupies only part of the polygon-bbox window. A very small value (<0.05) usually means the polygon-bbox straddles a Murray Lab tile boundary — the cached window only covers the in-tile portion and the bulk of the HiRISE swath lives in the neighbouring tile. ESP_057469_2215 is the priority10 example (0.001). |
 | `config_hash` | str | SHA256 of the config snapshot that produced this cache |
 | `extracted_at_iso` | str | When the window was written (UTC ISO) |
+
+## Stage 3 — `cache/coregistration/`
+
+Per-ObsId sub-pixel rigid-translation correction from HiRISE to CTX, solved via phase
+correlation on a power-of-2 sub-window of the warped imagery. Empty `(dx, dy)`-style
+provenance is the entire deliverable; Stage 4 reads this when it wants to refine the
+nominal grid anchor (and may decide to ignore it for flagged outliers — see
+`notebooks/05_coregistration_qa.ipynb`).
+
+### `{ObsId}.json`
+| Field | Type | Meaning |
+|---|---|---|
+| `obs_id` | str | HiRISE Observation ID |
+| `ctx_window_tif` | str | Absolute path of the Stage 2 CTX window this shift is relative to |
+| `ctx_transform` | list[6] | Affine `[a, b, c, d, e, f]` of the CTX window — included so future code can convert (dx, dy) between metres and pixels without re-opening the GeoTIFF |
+| `ctx_crs_wkt` | str | WKT of the CTX window's CRS (`Mars_2015_Ocentric_Equirectangular`) |
+| `fft_window.size_px` | int | Side length of the FFT sub-window, in CTX pixels — always a power of 2, ≤ `coregistration.fft_window_px` from config |
+| `fft_window.row_off` | int | Row offset of the sub-window's top-left corner inside the CTX window |
+| `fft_window.col_off` | int | Column offset, ditto |
+| `fft_window.config_max_px` | int | Upper bound used at solve time (`coregistration.fft_window_px`) |
+| `shift_px.dy` | float | Sub-pixel translation in pixel rows: shift to apply to the HiRISE-on-CTX-grid array so it aligns with CTX |
+| `shift_px.dx` | float | Sub-pixel translation in pixel columns, same convention |
+| `shift_m.dy` | float | `dy_px * abs(ctx_transform.e)` — translation in metres |
+| `shift_m.dx` | float | `dx_px * abs(ctx_transform.a)` |
+| `shift_m.magnitude` | float | Euclidean magnitude — CLAUDE.md §3.3 expects O(200 m) |
+| `peak_correlation` | float | Pearson correlation between CTX sub-window and the shift-corrected HiRISE sub-window, computed over the still-valid interior (margin-cropped). Used as a confidence proxy — higher is better; bland-plains scenes produce low values regardless of the true shift. |
+| `upsample_factor` | int | `skimage.registration.phase_cross_correlation` `upsample_factor` (default 20 → 0.05 px ≈ 0.25 m granularity at 5 m/px) |
+| `config_hash` | str | SHA256 of the config snapshot that produced this shift |
+| `solved_at_iso` | str | When the shift was solved (UTC ISO) |

@@ -329,15 +329,155 @@ than scaled, because partial-coverage tiles bias `fractional_area` low (the deno
 is full tile area but the numerator is only the covered portion). Open detail:
 boundary-tile threshold (`>= 0.95`? `== 1.0`?) — decide in Stage 4.
 
+## 2026-05-22 — SP1 bug also poisons the JP2 metadata (fixed symmetrically)
+
+A pre-sweep probe (`scripts/_probe_jp2_crs.py`) checked the cached
+`ESP_047976_2020_RED.JP2` against its Stage 1 sidecar's `source_crs_wkt`:
+
+```
+ESP_047976_2020: Stage1='sp1_corrected_from_pds_label'  JP2_SP1=0.0  decimated_SP1=0.0
+ESP_069669_2220: Stage1='trusted_prj'                   JP2_SP1=40.0 decimated_SP1=40.0
+```
+
+So the JP2 ships with the same `Standard_Parallel_1=0` bug as the matching `.prj` for
+the 4 SP1-buggy ObsIds. Stage 2's coverage mask reprojection (and Stage 3 phase
+correlation) would silently mis-locate those images on the CTX grid if we trusted the
+JP2's embedded CRS.
+
+**Fix landed in `src/hirise_imagery.py`:**
+- `_corrected_source_crs(obs_id, cache_dir)` reads the Stage 1 sidecar's
+  `source_crs_wkt`; returns None if Stage 1 hasn't run for this ObsId.
+- `read_full_footprint_decimated` and `read_native_window` apply that CRS as an
+  override at write time (the JP2 *transform* — origin + pixel scale — is correct
+  because pixel coordinates were generated under the right projection; only the WKT
+  label is wrong, so a label-only swap suffices, no warping required).
+- A staleness check via `_crs_equal` compares cached-cache CRS to the corrected CRS
+  and triggers a rebuild on mismatch. `_crs_equal` is **not** a simple `pyproj.equals`
+  — pyproj's spherical Equirectangular canonical form drops SP1 from its equality
+  check, so a buggy SP1=0 cache would otherwise compare equal to the SP1=20 corrected
+  CRS. We also literal-parse the SP1 value out of both WKTs and require it to match.
+  The literal regex accepts both ESRI WKT1 (`"Standard_Parallel_1"`) and EPSG/WKT2
+  (`"Latitude of 1st standard parallel"`) names because pyproj rewrites between them.
+
+**Implication for cached decimated TIFFs built before this fix:** the next time
+`read_full_footprint_decimated` opens them, the staleness check fires and the cache
+is rebuilt with the corrected CRS. `scripts/_verify_sp1_fix.py` confirms the rebuild
+worked for `ESP_047976_2020` (cache SP1 went 0.0 → 20.0).
+
+**Tests:** `tests/test_hirise_imagery_sp1_override.py` covers the override + cache
+staleness in 4 fast unit tests.
+
+## 2026-05-22 — Murray Lab URL convention pinned down for all 4 sign quadrants
+
+The May padding fallback (`E0_N40` → `W040_N20`) worked for tiles already cached but
+404'd on the new western longitudes ESP_047976_2020 (`W040_N20`) etc. needed. A direct
+probe of the catalog (`scripts/_probe_murray_url_variants.py`) settled the convention:
+
+| Manifest | Bare Murray | Live Murray URL form |
+|---|---|---|
+| `E000_N40` | `E0_N40` | `E000_N40` |
+| `E152_S08` | `E152_N-8` | `E152_N-08` |
+| `E000_S28` | `E0_N-28` | `E000_N-28` |
+| `W040_N20` | `E-40_N20` | **`E-040_N20`** (NOT `W040_N20`) |
+| `W052_N36` | `E-52_N36` | **`E-052_N36`** |
+| `W024_N28` | `E-24_N28` | **`E-024_N28`** |
+| `E160_S20` | `E160_N-20` | `E160_N-20` (already canonical) |
+
+The convention is: `E<signed-abs-3digit>_N<signed-abs-2digit>`. Negatives use an
+explicit `-` between the prefix and the zero-padded absolute value, not a W/S prefix.
+
+`src/ctx_retrieve._padded_manifest_form` rewritten accordingly; `manifest_to_murray`
+left unchanged so the existing cache filenames (e.g. `E0_N40.zip`) remain stable.
+The retriever tries the bare Murray form first, then this canonical form on 404 —
+all 7 new manifest tiles resolved on the second try in the 2026-05-22 sweep.
+
+**Tests:** `tests/test_murray_url_padding.py` covers all 7 priority10 manifest tiles
+plus 3 already-canonical inputs.
+
+## 2026-05-22 — Polygon bbox straddling tile boundary (ESP_057469_2215)
+
+Found during the Stage 2 sweep: ESP_057469_2215's polygons span x ∈ [-9619, +1019] m
+in `target_crs` (~10 km west of and ~1 km east of the prime meridian). The manifest
+assigns it to `E000_N40` (Murray tile covering lon 0°-4°E), but only the +1 km east
+portion is inside that tile — the bulk lives in the neighbouring `W004_N40` tile,
+which we don't fetch. Rasterio clipped the read window to the in-tile slice:
+
+```
+requested_bounds_target_crs: [-9619.95, 2439362.55,  1019.99, 2456657.46]
+actual_bounds_target_crs:    [-9619.95, 2439362.55, -8599.96, 2456657.46]
+```
+
+Result: `actual_shape = [3459, 204]` (17.3 km N-S × 1.0 km E-W, but the strip is
+entirely WEST of x=0 so it's outside the E000_N40 tile and reads as zero pixels);
+`hirise_coverage_fraction = 0.001`.
+
+**Decision:** not fixing this in Stage 2 now. Multi-tile mosaicking is a separate
+engineering effort and would require non-trivial changes to the windowing path.
+ESP_057469_2215 is recorded as a known-bad-for-Stage-3 case; `run_stage3.py` catches
+the resulting "no power-of-2 ≥ 64 fits" RuntimeError and continues with the rest of
+the manifest. DATA_DICTIONARY.md notes the very-low `hirise_coverage_fraction` as the
+diagnostic flag for this class of issue.
+
+**Follow-up (not blocking):** at Stage 4 / Stage 5, decide whether to (a) drop
+ESP_057469_2215 from the dataset entirely, (b) fetch both neighbouring tiles and
+re-window, or (c) reproject the polygons under a different central meridian so they
+no longer straddle x=0. Option (c) is cheapest.
+
+## 2026-05-22 — Stage 3 sweep (9 of 10 solved, distribution recorded)
+
+`scripts/run_stage3.py --all` ran in ~5 s wall clock against the 10 cached
+`ctx_windows/`. One ObsId failed gracefully (the tile-straddle case below); the other
+9 all landed inside CLAUDE.md §3.3's O(200 m) acceptance band:
+
+| ObsId | label | \|shift\| (m) | dx (m) | dy (m) | peak | notes |
+|---|---|---:|---:|---:|---:|---|
+| ESP_054857_2270 | Boulder rich | 118.0 | -1.2 | -118.0 | 0.63 | SP1-corrected |
+| ESP_047976_2020 | Boulder rich | 125.5 | -8.2 | -125.2 | 0.71 | SP1-corrected, end-to-end check ✓ |
+| ESP_075577_2105 | Boulder poor | 160.3 | +30.0 | -157.5 | 0.69 | |
+| ESP_056165_2200 | Boulder poor | 164.5 | -63.0 | -152.0 | **0.28** | bland plains, weak texture |
+| ESP_039820_1750 | unknown | 178.9 | +102.0 | -147.0 | 0.68 | |
+| ESP_065711_1545 | unknown | 223.4 | +39.0 | -220.0 | 0.70 | empty-shapefile, nominal footprint |
+| ESP_055714_2270 | Boulder rich | 240.8 | +29.2 | -239.0 | 0.60 | SP1-corrected |
+| ESP_071093_2210 | Boulder rich | 247.0 | -15.5 | -246.5 | 0.77 | |
+| ESP_069669_2220 | Boulder rich | 272.6 | +122.5 | -243.5 | **0.88** | canonical good case |
+| ESP_057469_2215 | Boulder rich | — | — | — | — | FAILED — coverage 0.001 (tile straddle, see entry above) |
+
+**Distribution:** |shift| min=118 m, median=179 m, max=273 m. Peak min=0.28 (the
+boulder-poor outlier), median=0.69, max=0.88.
+
+**Systematic finding:** every solved `dy` is negative (range -118 to -247 m); `dx`
+straddles zero (range -63 to +123 m). The HiRISE imagery sits ~150-250 m NORTH of the
+matching CTX features on the polygon-bbox windows. This is the CTX mosaic's ~200 m
+N-S registration baseline that CLAUDE.md §3.3 explicitly flags as separate from CRS
+handling — so it's expected, not a bug. We don't need to apply a per-image fix; Stage
+4 can either ignore the shift (use nominal grid anchor) or apply it (refined anchor).
+Leave the policy decision to Stage 4 review.
+
+**Oblate-vs-sphere check:** if the sub-pixel CRS mismatch (DECISIONS.md 2026-05-21)
+were systematic, we'd see |shift| correlate with image latitude. The data instead
+shows |shift| largely flat across lat 30°N–47°N images and only slightly elevated for
+the southern ones, with no clean linear trend — consistent with the discrepancy being
+sub-pixel as predicted. **No CRS update needed.**
+
+**Outlier policy still TBD:** the user explicitly chose "no thresholds yet — collect
+data first" (AskUserQuestion 2026-05-22). With this data in hand, plausible thresholds
+for Stage 4 are `|shift| > 500 m` (failsafe — well above what we've seen) and
+`peak < 0.2` (catches even worse texture than ESP_056165_2200's 0.28). Pin down
+during Stage 4 design.
+
+Visuals: `reports/figures/05_shift_vs_peak.png` (scatter, labelled by ObsId), plus
+nine per-image BEFORE/AFTER overlays at `reports/figures/05_coreg_{ObsId}.png`. The
+overlays use a red/blue colour split (CTX = red, HiRISE = blue): the BEFORE panel
+shows clear offset, AFTER snaps into co-registration on every image with a non-zero
+shift.
+
 ## Open at this date
 
-- **Per-image CTX windows for the remaining 9 ObsIds** — Stage 2 helpers are ready; this
-  is a 7-more-tile-downloads operation (~10 more GB on disk) plus the cheap windowing.
-  Deferred until needed by Stage 3 (co-registration) or a Stage-4 sweep.
-- **Stage 3 co-registration** — phase correlation between decimated HiRISE JP2s and
-  cached CTX windows; will need the 2 already-cached HiRISE JP2s in `cache/hirise_jp2/`
-  plus stage-2 windows for those two ObsIds (`ESP_069669_2220` ✓, `ESP_047976_2020`
-  needs its `W040_N20` → `E-40_N20` (with padding fallback to `E040_N20`) tile fetch).
-- **Sphere vs oblate-spheroid CRS mismatch (sub-pixel)** — revisit during Stage 3 if
-  phase correlation shows a systematic ~1 px bias along the equator-to-pole axis.
-- **`min_confidence` default** — leave `null` until distribution is reviewed.
+- **Stage 3 thresholds (flag/fail)** — collect more data first before pinning down.
+  Current distribution suggests `|shift| > 500 m` + `peak < 0.2` as a starting point,
+  but Stage 4 will benefit from a few more images and a re-look at ESP_056165_2200
+  (the only low-peak case so far).
+- **ESP_057469_2215 multi-tile windowing** — see the 2026-05-22 tile-straddle entry.
+  Choose option (a/b/c) at Stage 4 / Stage 5 time.
+- **`min_confidence` default for the `score` column** — leave `null` until the
+  distribution across all 10 images is reviewed.

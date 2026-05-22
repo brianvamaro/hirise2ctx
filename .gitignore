@@ -35,6 +35,14 @@ models/
 *.pkl
 *.joblib
 
+# Background-sweep logs
+logs/
+
+# Claude Code session-local state (settings.json + settings.local.json are committed
+# manually; the lock file is per-session and must not be tracked).
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
+
 # Editor / OS cruft
 .vscode/
 .DS_Store
