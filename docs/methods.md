@@ -207,12 +207,29 @@ label fetch to complete the picture.
 
 **Implication for downstream labels.** Per-tile `fractional_area` (§6.5)
 counts every polygon present in the input shapefile, including the
-sub-threshold survivors above. No filtering is applied at Stage 1 or Stage 4
-based on the BoulderNet design floor — the decision of whether to filter
-sub-threshold detections, and at what per-image threshold, is deferred to
-the modeling stage where it can be made jointly with other detection-quality
-decisions (such as the `min_confidence` cutoff on BoulderNet's `score`
-attribute).
+sub-threshold survivors above. Both potential polygon-level filters in this
+pipeline — `labeling.detection_filters.min_size_m` (the size-based floor
+discussed here) and `labeling.detection_filters.min_confidence` (a cutoff on
+BoulderNet's `score` attribute) — are **applied at Stage 4 before polygon
+rasterization**, because once the per-tile `boulder_area` and `boulder_count`
+have been aggregated, the individual polygon contributions are no longer
+recoverable from the cached parquet. The decision of whether to filter,
+and at what per-image threshold, is therefore a Stage 4 configuration
+decision rather than a modeling-stage decision. Both filters are currently
+set to null (no filtering); the audit table above quantifies what each
+threshold choice would drop, and a one-line config edit followed by an
+~3 second-per-image re-run of `scripts/run_stage4.py --all` applies the
+chosen policy. The current pipeline state preserves the sub-threshold
+survivors so the comparison between filtered and unfiltered labels can be
+performed empirically at modeling time on the data we already have.
+
+A subtlety: because the design floor is per-image (it depends on the HiRISE
+binning), a single global `min_size_m` is conservative for fine-binned
+images (0.25 m/px, threshold 1.56 m²) and lenient for coarse-binned ones
+(0.50 m/px, threshold 6.25 m²). Tight enforcement of the Amaro 2026 design
+floor in this manifest would require extending `detection_filters` to
+accept a per-image threshold computed from each `.LBL`'s `MAP_SCALE` — a
+small code change deferred until the filter policy is decided.
 
 The 10 priority manifest images together contain **13,352 BoulderNet polygons**
 after the SP1 correction described in §3. Per-image counts range from 0

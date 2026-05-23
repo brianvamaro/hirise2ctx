@@ -808,9 +808,18 @@ user identified six issues; corrections applied and committed alongside this ent
      survived in four of the five audited images (0-2 %), and 80.77 % of
      ESP_056165_2200's 26 polygons are below threshold.
    - **Decision deferred** (user explicit, 2026-05-25): do NOT apply our own
-     `min_size_m` filter in Stage 1 or Stage 4; report sub-threshold counts but
-     keep all polygons in the pipeline. The filter-vs-keep policy is bundled with
-     the `min_confidence` threshold decision for the modeling stage.
+     `min_size_m` filter at Stage 4; report sub-threshold counts but keep all
+     polygons in the pipeline. The filter-vs-keep policy is bundled with the
+     `min_confidence` threshold decision; both are **Stage 4 configuration
+     decisions, not modeling-stage decisions**, because once per-tile
+     `boulder_area` / `boulder_count` are aggregated the individual polygon
+     contributions are gone from the cached parquet. A one-line config edit
+     (set `labeling.detection_filters.min_size_m` to a non-null value) plus
+     `scripts/run_stage4.py --all` (~3 s / ObsId) applies any chosen policy.
+   - A per-image filter (using each image's `MAP_SCALE` × 5)² as the threshold)
+     would require a small extension to `_apply_detection_filters` in
+     `src/labeling.py`; today the filter is a single global value. Deferred
+     until the filter policy itself is decided.
    - The remaining 4 polygon-bearing images (ESP_069669_2220, ESP_071093_2210,
      ESP_075577_2105, ESP_039820_1750) do not have cached `.LBL` files yet; their
      per-image thresholds will be added when those labels are fetched.
@@ -886,11 +895,15 @@ hyperlinking discipline applied at write time rather than retroactively.
 - **`binary_count_threshold` rebalance** — current placeholder 5 is too high vs
   area threshold 0.005 (only 2 count-only tiles vs 5,504 area-only). Decide at
   modeling time which side to commit to.
-- **BoulderNet 5×5-px design-floor filter (deferred to modeling)** — per the
-  2026-05-25 Methods errata entry, sub-threshold polygons survive in 4 of 5
-  audited shapefiles (0-2 % in the textured images, 80.77 % in ESP_056165_2200).
-  We do **not** filter at Stage 1 / Stage 4; modeling stage decides whether to
-  drop them, bundled with the `min_confidence` choice.
+- **BoulderNet 5×5-px design-floor filter (Stage 4 decision, not yet made)** —
+  per the 2026-05-25 Methods errata entry, sub-threshold polygons survive in
+  4 of 5 audited shapefiles (0-2 % in the textured images, 80.77 % in
+  ESP_056165_2200). The filter hook is at Stage 4
+  (`labeling.detection_filters.min_size_m`, currently null); applying a value
+  + re-running `scripts/run_stage4.py --all` is the implementation. Both this
+  and the `min_confidence` decision are Stage 4 decisions because once
+  per-tile aggregates are computed the polygon-level contributions can't be
+  undone downstream.
 - **Cache the 4 missing PDS `.LBL` files** to complete the per-image pixel-size
   audit (ESP_069669_2220, ESP_071093_2210, ESP_075577_2105, ESP_039820_1750).
   Trivial — one-time fetch, ~10-20 KB each — but currently uncached because
