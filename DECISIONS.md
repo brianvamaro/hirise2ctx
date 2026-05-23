@@ -777,15 +777,46 @@ user identified six issues; corrections applied and committed alongside this ent
    priority10 run`).
 
 2. **Minimum-boulder-size claim was wrong.** The original draft asserted boulders
-   below ~0.25 m² (one HiRISE pixel) are not reliably detected. The actual
-   empirical floor across the priority10 manifest is ~0.77 m² (~1 m
-   equivalent-circle diameter; see DECISIONS.md 2026-05-20 entry for the
-   ESP_047976_2020 polygon-area distribution). The BoulderNet model design floor
-   is characterised in
-   [Prieur et al. 2023](https://agupubs.onlinelibrary.wiley.com/doi/full/10.1029/2023JE008013)
-   and in the lunar-application paper
-   [Amaro, Prieur, Rubanenko, Hayne & Lapôtre (2026), JGR Planets](https://agupubs.onlinelibrary.wiley.com/doi/10.1029/2024JE008769);
-   the methods document now cites both rather than guessing a single number.
+   below ~0.25 m² (one HiRISE pixel) are not reliably detected. On user
+   read-through I first replaced it with "empirical floor ~0.77 m²" — also wrong,
+   because that was the per-image polygon-area minimum from one image's shapefile
+   rather than a model design floor.
+
+   The correct BoulderNet design floor, quoted verbatim from
+   [Amaro et al. 2026](https://agupubs.onlinelibrary.wiley.com/doi/10.1029/2024JE008769):
+   *"BoulderNet predictions are most accurate for boulders covering areas
+   greater than 5 × 5 pixels, regardless of pixel scale. Thus, any detections of
+   boulders smaller than this threshold area are filtered out in post-processing."*
+
+   Translating to ground area requires the HiRISE per-image pixel size from the
+   PDS `.LBL`'s `MAP_SCALE` keyword, which varies across the manifest because
+   HiRISE products are released at multiple binning levels. Audit script:
+   `scripts/probes/_boulder_size_audit.py`. Per-image results for the 5 manifest
+   images whose `.LBL` is cached locally:
+
+   | ObsId | HiRISE px (m) | 5×5-px (m²) | n polys | n < threshold | % < threshold |
+   |---|---:|---:|---:|---:|---:|
+   | ESP_055714_2270 | 0.50 | 6.25 | 1,974 | 7 | 0.35 % |
+   | ESP_054857_2270 | 0.25 | 1.56 | 6,462 | 0 | 0.00 % |
+   | ESP_057469_2215 | 0.50 | 6.25 | 940 | 2 | 0.21 % |
+   | ESP_047976_2020 | 0.25 | 1.56 | 1,346 | 22 | 1.63 % |
+   | ESP_056165_2200 | 0.50 | 6.25 | 26 | 21 | **80.77 %** |
+
+   **Observations:**
+   - The BoulderNet post-processing filter described above was **not applied
+     consistently** to the priority10 shapefile copies — sub-threshold polygons
+     survived in four of the five audited images (0-2 %), and 80.77 % of
+     ESP_056165_2200's 26 polygons are below threshold.
+   - **Decision deferred** (user explicit, 2026-05-25): do NOT apply our own
+     `min_size_m` filter in Stage 1 or Stage 4; report sub-threshold counts but
+     keep all polygons in the pipeline. The filter-vs-keep policy is bundled with
+     the `min_confidence` threshold decision for the modeling stage.
+   - The remaining 4 polygon-bearing images (ESP_069669_2220, ESP_071093_2210,
+     ESP_075577_2105, ESP_039820_1750) do not have cached `.LBL` files yet; their
+     per-image thresholds will be added when those labels are fetched.
+
+   Methods document `docs/methods.md` §2.2 carries the verbatim Amaro 2026 quote +
+   the audit table.
 
 3. **THEMIS / TES rock-abundance citation was fabricated.** The original draft
    cited a non-existent "Christensen et al. 2003" for ~100 m / pixel rock
@@ -855,6 +886,17 @@ hyperlinking discipline applied at write time rather than retroactively.
 - **`binary_count_threshold` rebalance** — current placeholder 5 is too high vs
   area threshold 0.005 (only 2 count-only tiles vs 5,504 area-only). Decide at
   modeling time which side to commit to.
+- **BoulderNet 5×5-px design-floor filter (deferred to modeling)** — per the
+  2026-05-25 Methods errata entry, sub-threshold polygons survive in 4 of 5
+  audited shapefiles (0-2 % in the textured images, 80.77 % in ESP_056165_2200).
+  We do **not** filter at Stage 1 / Stage 4; modeling stage decides whether to
+  drop them, bundled with the `min_confidence` choice.
+- **Cache the 4 missing PDS `.LBL` files** to complete the per-image pixel-size
+  audit (ESP_069669_2220, ESP_071093_2210, ESP_075577_2105, ESP_039820_1750).
+  Trivial — one-time fetch, ~10-20 KB each — but currently uncached because
+  these were `trusted_prj` images that didn't need SP1 correction at Stage 1.
+  Without these, the boulder-size audit table in `docs/methods.md` §2.2 is
+  incomplete (5 of 9 polygon-bearing images covered).
 - ~~**Stage 4b texture features**~~ — landed 2026-05-23 (see entry above). 9 feature
   families, 643,910 rows, 3.5 GB on disk including context patches. Next is Stage 5
   splitter, then Week 3 modeling.

@@ -157,19 +157,62 @@ derived from the polygon geometry. We use either `geometry.area` directly (givin
 boulder footprint area in m²) or the equivalent-circle diameter `2·√(area/π)`. For
 the boulder-rich anchor image ESP_047976_2020, this gives a polygon-area
 distribution with median 3.7 m² and mean 5.1 m² across 1,346 detected boulders.
-The empirical floor across the priority10 manifest is approximately 0.77 m²
-(equivalent-circle diameter ~1 m), corresponding to a few HiRISE pixels across at
-the ~50 cm native resolution. The BoulderNet model's effective detection lower
-limit — set by the training-data composition and by the Mask R-CNN backbone's
-receptive-field geometry rather than by HiRISE pixel size in isolation — is
-characterised in the model paper
-([Prieur et al. 2023](https://agupubs.onlinelibrary.wiley.com/doi/full/10.1029/2023JE008013))
-and in the application to lunar boulder-size distributions in
-[Amaro et al. 2026](https://agupubs.onlinelibrary.wiley.com/doi/10.1029/2024JE008769).
-Boulders below this floor are systematically absent from the input shapefiles, which
-in turn means the labels generated downstream (§6) represent the fractional area
-covered by *detectable* boulders rather than the true geological boulder
-population — a caveat carried through into model evaluation.
+
+The **design-level detection floor** for BoulderNet is set by the training-data
+composition and the Mask R-CNN backbone's receptive-field geometry rather than
+by HiRISE pixel size in isolation. As characterised in
+[Amaro et al. 2026](https://agupubs.onlinelibrary.wiley.com/doi/10.1029/2024JE008769),
+which applies the same model to lunar boulder-size distributions:
+
+> "BoulderNet predictions are most accurate for boulders covering areas
+> greater than 5 × 5 pixels, regardless of pixel scale. Thus, any detections
+> of boulders smaller than this threshold area are filtered out in
+> post-processing."
+
+In source-image pixel space the floor is therefore 25 px², independent of
+sensor or platform. Translating to area on the ground depends on the HiRISE
+ground sample distance for each manifest image, which varies across our
+manifest because HiRISE products are released at multiple binning levels.
+For the five priority10 images whose PDS `.LBL` files are cached locally,
+the `MAP_SCALE` keyword gives the projected pixel size, and the 5 × 5-pixel
+threshold area is computed per image:
+
+| ObsId | HiRISE px (m) | 5×5-px threshold (m²) | n boulders | n < threshold | % < threshold |
+|---|---:|---:|---:|---:|---:|
+| ESP_055714_2270 | 0.50 | 6.25 | 1,974 | 7 | 0.35 % |
+| ESP_054857_2270 | 0.25 | 1.56 | 6,462 | 0 | 0.00 % |
+| ESP_057469_2215 | 0.50 | 6.25 | 940 | 2 | 0.21 % |
+| ESP_047976_2020 | 0.25 | 1.56 | 1,346 | 22 | 1.63 % |
+| ESP_056165_2200 | 0.50 | 6.25 | 26 | 21 | **80.77 %** |
+
+Two observations from this audit. First, the BoulderNet post-processing
+filter described above appears to **not have been applied consistently** to
+the priority10 shapefile copies — small numbers (0-2 %) of sub-threshold
+polygons survived in four of the five audited images, and the majority of
+polygons in ESP_056165_2200 are sub-threshold. The mechanism is not
+investigated here; the relevant data-quality fact is that the input
+shapefiles contain some detections that the model's authors would not
+consider reliable at the operating pixel scale. Second, the ESP_056165_2200
+case is particularly significant: this is the boulder-poor manifest image
+with only 26 total polygons, of which 21 are sub-threshold; what survives
+as a "detected boulder" in our downstream labels may largely be
+detection-noise residuals there. This is flagged inline in the modeling
+stage's per-image evaluation rather than filtered out at the input stage.
+
+The four remaining polygon-bearing manifest images (ESP_069669_2220,
+ESP_071093_2210, ESP_075577_2105, ESP_039820_1750) do not yet have their
+PDS `.LBL` files cached locally, so their per-image thresholds are not
+recorded in the table above; the same audit can be re-run after a one-time
+label fetch to complete the picture.
+
+**Implication for downstream labels.** Per-tile `fractional_area` (§6.5)
+counts every polygon present in the input shapefile, including the
+sub-threshold survivors above. No filtering is applied at Stage 1 or Stage 4
+based on the BoulderNet design floor — the decision of whether to filter
+sub-threshold detections, and at what per-image threshold, is deferred to
+the modeling stage where it can be made jointly with other detection-quality
+decisions (such as the `min_confidence` cutoff on BoulderNet's `score`
+attribute).
 
 The 10 priority manifest images together contain **13,352 BoulderNet polygons**
 after the SP1 correction described in §3. Per-image counts range from 0
