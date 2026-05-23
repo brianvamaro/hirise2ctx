@@ -66,8 +66,13 @@ labeling:
   binary_count_threshold: 5
   categorical_bins: []
   detection_filters:
-    min_confidence: null          # `score` column exists (0.10-0.83); leave null until tuned
-    min_size_m: null              # no DBF size column; derived from geometry.area at filter time
+    min_confidence: null          # `score` column exists (0.10-0.83); leave null. AskUserQuestion 2026-05-26.
+    # BoulderNet design floor (Amaro et al. 2026): 5x5 source-image pixels regardless of pixel scale.
+    # 5x5 px at 0.25 m/px = 1.5625 m^2; at 0.50 m/px = 6.25 m^2. Global filter chosen 2026-05-26
+    # (AskUserQuestion) set to the 0.25 m/px floor (1.5625 m^2 area). _apply_detection_filters uses
+    # equivalent-circle diameter: 2*sqrt(1.5625/pi) = 1.4105 m -> matches that area threshold
+    # exactly. 0.50 m/px images are unaffected (their area_min >= 3.75 m^2 across the manifest).
+    min_size_m: 1.4105
   # DEPRECATED 2026-05-23: features and context_patch_px moved to top-level `features` block
   # below. Kept here for backwards compat; src/config.py emits a DeprecationWarning if used.
   context_patch_px: null

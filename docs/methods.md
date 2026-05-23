@@ -173,22 +173,26 @@ In source-image pixel space the floor is therefore 25 px², independent of
 sensor or platform. Translating to area on the ground depends on the HiRISE
 ground sample distance for each manifest image, which varies across our
 manifest because HiRISE products are released at multiple binning levels.
-For the five priority10 images whose PDS `.LBL` files are cached locally,
-the `MAP_SCALE` keyword gives the projected pixel size, and the 5 × 5-pixel
-threshold area is computed per image:
+For each of the nine polygon-bearing priority10 images, the `.LBL`'s
+`MAP_SCALE` keyword gives the projected pixel size, and the 5 × 5-pixel
+threshold area is computed per image (`scripts/probes/_boulder_size_audit.py`):
 
 | ObsId | HiRISE px (m) | 5×5-px threshold (m²) | n boulders | n < threshold | % < threshold |
 |---|---:|---:|---:|---:|---:|
 | ESP_055714_2270 | 0.50 | 6.25 | 1,974 | 7 | 0.35 % |
 | ESP_054857_2270 | 0.25 | 1.56 | 6,462 | 0 | 0.00 % |
+| ESP_069669_2220 | 0.25 | 1.56 | 1,462 | 1 | 0.07 % |
 | ESP_057469_2215 | 0.50 | 6.25 | 940 | 2 | 0.21 % |
+| ESP_071093_2210 | 0.25 | 1.56 | 961 | 1 | 0.10 % |
 | ESP_047976_2020 | 0.25 | 1.56 | 1,346 | 22 | 1.63 % |
 | ESP_056165_2200 | 0.50 | 6.25 | 26 | 21 | **80.77 %** |
+| ESP_075577_2105 | 0.25 | 1.56 | 624 | 9 | 1.44 % |
+| ESP_039820_1750 | 0.25 | 1.56 | 497 | 3 | 0.60 % |
 
 Two observations from this audit. First, the BoulderNet post-processing
 filter described above appears to **not have been applied consistently** to
 the priority10 shapefile copies — small numbers (0-2 %) of sub-threshold
-polygons survived in four of the five audited images, and the majority of
+polygons survived in eight of the nine audited images, and the majority of
 polygons in ESP_056165_2200 are sub-threshold. The mechanism is not
 investigated here; the relevant data-quality fact is that the input
 shapefiles contain some detections that the model's authors would not
@@ -197,39 +201,48 @@ case is particularly significant: this is the boulder-poor manifest image
 with only 26 total polygons, of which 21 are sub-threshold; what survives
 as a "detected boulder" in our downstream labels may largely be
 detection-noise residuals there. This is flagged inline in the modeling
-stage's per-image evaluation rather than filtered out at the input stage.
-
-The four remaining polygon-bearing manifest images (ESP_069669_2220,
-ESP_071093_2210, ESP_075577_2105, ESP_039820_1750) do not yet have their
-PDS `.LBL` files cached locally, so their per-image thresholds are not
-recorded in the table above; the same audit can be re-run after a one-time
-label fetch to complete the picture.
+stage's per-image evaluation.
 
 **Implication for downstream labels.** Per-tile `fractional_area` (§6.5)
-counts every polygon present in the input shapefile, including the
-sub-threshold survivors above. Both potential polygon-level filters in this
-pipeline — `labeling.detection_filters.min_size_m` (the size-based floor
-discussed here) and `labeling.detection_filters.min_confidence` (a cutoff on
+counts every polygon present in the input shapefile after Stage 4 filtering.
+Both potential polygon-level filters in this pipeline —
+`labeling.detection_filters.min_size_m` (the size-based floor discussed
+here) and `labeling.detection_filters.min_confidence` (a cutoff on
 BoulderNet's `score` attribute) — are **applied at Stage 4 before polygon
 rasterization**, because once the per-tile `boulder_area` and `boulder_count`
 have been aggregated, the individual polygon contributions are no longer
 recoverable from the cached parquet. The decision of whether to filter,
 and at what per-image threshold, is therefore a Stage 4 configuration
-decision rather than a modeling-stage decision. Both filters are currently
-set to null (no filtering); the audit table above quantifies what each
-threshold choice would drop, and a one-line config edit followed by an
-~3 second-per-image re-run of `scripts/run_stage4.py --all` applies the
-chosen policy. The current pipeline state preserves the sub-threshold
-survivors so the comparison between filtered and unfiltered labels can be
-performed empirically at modeling time on the data we already have.
+decision rather than a modeling-stage decision.
 
-A subtlety: because the design floor is per-image (it depends on the HiRISE
-binning), a single global `min_size_m` is conservative for fine-binned
-images (0.25 m/px, threshold 1.56 m²) and lenient for coarse-binned ones
-(0.50 m/px, threshold 6.25 m²). Tight enforcement of the Amaro 2026 design
-floor in this manifest would require extending `detection_filters` to
-accept a per-image threshold computed from each `.LBL`'s `MAP_SCALE` — a
-small code change deferred until the filter policy is decided.
+**Filter policy (2026-05-26, `AskUserQuestion`).** `min_size_m` is set to
+**1.4105 m**, the equivalent-circle diameter `2·√(1.5625/π)` for an area
+threshold of 1.5625 m² = (5 × 0.25 m)². This matches the Amaro 2026 design
+floor for 0.25 m/px HiRISE binning exactly. `min_confidence` is left at
+`null` (no `score` cutoff). The chosen filter drops 36 polygons out of
+13,352 across the sweep (0.27 %), all from the 0.25 m/px images:
+
+| ObsId | binning | n polys (raw) | n polys (filtered) | Δ |
+|---|---|---:|---:|---:|
+| ESP_047976_2020 | 0.25 m/px | 1,346 | 1,324 | −22 |
+| ESP_075577_2105 | 0.25 m/px | 624 | 615 | −9 |
+| ESP_039820_1750 | 0.25 m/px | 497 | 494 | −3 |
+| ESP_069669_2220 | 0.25 m/px | 1,462 | 1,461 | −1 |
+| ESP_071093_2210 | 0.25 m/px | 961 | 960 | −1 |
+
+The 0.50 m/px images (ESP_055714_2270, ESP_054857_2270 [0.25 m/px],
+ESP_056165_2200, ESP_057469_2215) are **unaffected** by this filter —
+their smallest polygon areas (4.36, 1.71, 3.75, 4.02 m² respectively in
+the cached Stage 1 GeoPackages) all sit at or above 1.5625 m². The
+sub-threshold polygons in those images per the per-image audit table
+above would only be removed by either a stricter global filter (≥ 2.5 m
+diameter = 6.25 m² area, the 0.50 m/px floor) or by extending
+`_apply_detection_filters` to use a per-image threshold computed from each
+`.LBL`'s `MAP_SCALE`. Notably, **ESP_056165_2200's 21 sub-6.25-m² polygons
+all survive** the current global filter; this is recorded here so the
+modeling-stage per-image diagnostic can account for it. Tightening the
+filter is a one-line config edit + ~3-second-per-image re-run of
+`scripts/run_stage4.py --all` away.
 
 The 10 priority manifest images together contain **13,352 BoulderNet polygons**
 after the SP1 correction described in §3. Per-image counts range from 0

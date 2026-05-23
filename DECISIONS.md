@@ -881,6 +881,63 @@ needs to be re-checked rather than the link suppressed. This pass caught
 2003, the Dickson 2018 DOI) -- all of which would have been blocked by the
 hyperlinking discipline applied at write time rather than retroactively.
 
+## 2026-05-26 — Stage 4 detection filters set; per-image MAP_SCALE coverage completed
+
+Three decisions pinned via AskUserQuestion before any code change:
+
+| Question | Decision | Rationale |
+|---|---|---|
+| Fetch the 4 missing PDS `.LBL` files | **Yes** | Trivial (~32 KB total, fetched in <1 s with retry on transient `WinError 10054`). Completes the per-image `MAP_SCALE` audit; the boulder-size audit table now covers all 9 polygon-bearing images instead of 5. |
+| `labeling.detection_filters.min_size_m` | **1.4105 m** (equivalent-circle diameter for an area threshold of 1.5625 m² = (5 × 0.25 m)²) | Matches the [Amaro et al. 2026](https://agupubs.onlinelibrary.wiley.com/doi/10.1029/2024JE008769) BoulderNet design floor for 0.25 m/px HiRISE binning exactly. Drops only the obviously-undetectable polygons (sub-1.56 m² on 0.25 m/px images); leaves the 0.50 m/px images untouched (their smallest polygons sit at 3.75–4.36 m², all above the 1.5625 m² threshold). The 0.50 m/px images' own 5×5-px floor (6.25 m²) is **not** enforced under this global filter; the 21 sub-6.25-m² polygons in ESP_056165_2200 all survive. The stricter global option (6.25 m²) would over-filter the 0.25 m/px images, where 1.56–6.25 m² polygons are legitimately resolved; a true per-image filter would require a small extension to `_apply_detection_filters` and is deferred. |
+| `labeling.detection_filters.min_confidence` | **null** (no `score` cutoff) | All 14,292 detections pass through. The distribution (0.10–0.83, mean 0.41) is broad and the modeler can weight by `score` or filter at training time. |
+
+**Boulder-size audit (all 9 polygon-bearing manifest images, `scripts/probes/_boulder_size_audit.py`):**
+
+| ObsId | HiRISE px (m) | 5×5-px threshold (m²) | n polys | n < threshold | % < threshold |
+|---|---:|---:|---:|---:|---:|
+| ESP_055714_2270 | 0.50 | 6.25 | 1,974 |  7 |  0.35 % |
+| ESP_054857_2270 | 0.25 | 1.56 | 6,462 |  0 |  0.00 % |
+| ESP_069669_2220 | 0.25 | 1.56 | 1,462 |  1 |  0.07 % |
+| ESP_057469_2215 | 0.50 | 6.25 |   940 |  2 |  0.21 % |
+| ESP_071093_2210 | 0.25 | 1.56 |   961 |  1 |  0.10 % |
+| ESP_047976_2020 | 0.25 | 1.56 | 1,346 | 22 |  1.63 % |
+| ESP_056165_2200 | 0.50 | 6.25 |    26 | 21 | **80.77 %** |
+| ESP_075577_2105 | 0.25 | 1.56 |   624 |  9 |  1.44 % |
+| ESP_039820_1750 | 0.25 | 1.56 |   497 |  3 |  0.60 % |
+
+**Stage 4 re-run (`scripts/run_stage4.py --all`, ~3 s total).** Polygon-count
+deltas after the new filter took effect (9 of 9 ObsIds solved; eligible-tile
+counts unchanged because tile eligibility depends on HiRISE mask coverage,
+not on polygon presence):
+
+| ObsId | n polys (raw) | n polys (filtered) | Δ |
+|---|---:|---:|---:|
+| ESP_047976_2020 | 1,346 | 1,324 | −22 |
+| ESP_075577_2105 |   624 |   615 |  −9 |
+| ESP_039820_1750 |   497 |   494 |  −3 |
+| ESP_069669_2220 | 1,462 | 1,461 |  −1 |
+| ESP_071093_2210 |   961 |   960 |  −1 |
+| (all 0.50 m/px images) | — | — | 0 |
+| **Total (9 ObsIds in sweep)** | **13,352** | **13,316** | **−36** (0.27 %) |
+
+**Stage 5 re-run (`scripts/run_stage5.py --all`, ~22 s total).** Both
+`loio_9fold` and `loio_3fold_balanced` schemes repackaged. Fold composition
++ per-fold tile counts are identical to the 2026-05-25 state (eligible
+tiles unchanged); only the per-tile `boulder_area` / `boulder_count` /
+derived label columns shifted, by the small amount the polygon drops imply.
+The 643,910-test-tile / 5,151,280-train-row totals for `loio_9fold` and the
+643,910-test / 1,287,820-train totals for `loio_3fold_balanced` are unchanged.
+
+**Documentation updates landed alongside this entry:**
+- `docs/methods.md` §2.2 — audit table extended to all 9 polygon-bearing
+  images; filter-policy paragraph rewritten to describe the chosen
+  `min_size_m = 1.4105`, the exact polygons it drops, and the ESP_056165_2200
+  caveat (sub-6.25 m² polygons survive under the global filter).
+- `scripts/probes/_fetch_missing_labels.py` — small probe added so the
+  `ensure_all_labels` retry-on-transient-error workflow is reproducible (the
+  bare `ensure_all_labels` call raised `WinError 10054` on the first attempt;
+  this probe wraps it in a 3-try backoff loop).
+
 ## Open at this date
 
 - **Stage 3 thresholds (flag/fail)** — collect more data first before pinning down.
@@ -889,27 +946,20 @@ hyperlinking discipline applied at write time rather than retroactively.
   (the only low-peak case so far).
 - **ESP_057469_2215 multi-tile windowing** — see the 2026-05-22 tile-straddle entry.
   Currently dropped from the Stage 4 sweep. Decide whether to fix at Stage 5 / 6.
-- **`min_confidence` default for the `score` column** — leave `null` until the
-  per-tile distribution after labels is reviewed; the binary contingency table in
-  notebook 06 is the first data-grounded input.
 - **`binary_count_threshold` rebalance** — current placeholder 5 is too high vs
   area threshold 0.005 (only 2 count-only tiles vs 5,504 area-only). Decide at
   modeling time which side to commit to.
-- **BoulderNet 5×5-px design-floor filter (Stage 4 decision, not yet made)** —
-  per the 2026-05-25 Methods errata entry, sub-threshold polygons survive in
-  4 of 5 audited shapefiles (0-2 % in the textured images, 80.77 % in
-  ESP_056165_2200). The filter hook is at Stage 4
-  (`labeling.detection_filters.min_size_m`, currently null); applying a value
-  + re-running `scripts/run_stage4.py --all` is the implementation. Both this
-  and the `min_confidence` decision are Stage 4 decisions because once
-  per-tile aggregates are computed the polygon-level contributions can't be
-  undone downstream.
-- **Cache the 4 missing PDS `.LBL` files** to complete the per-image pixel-size
-  audit (ESP_069669_2220, ESP_071093_2210, ESP_075577_2105, ESP_039820_1750).
-  Trivial — one-time fetch, ~10-20 KB each — but currently uncached because
-  these were `trusted_prj` images that didn't need SP1 correction at Stage 1.
-  Without these, the boulder-size audit table in `docs/methods.md` §2.2 is
-  incomplete (5 of 9 polygon-bearing images covered).
+- **Per-image `min_size_m` extension** — the chosen 2026-05-26 global filter
+  (1.4105 m diameter ≡ 1.5625 m² area) enforces the 0.25 m/px floor exactly but
+  is lenient for the 0.50 m/px images, where the design floor would be 6.25 m².
+  Extending `_apply_detection_filters` to use a per-image threshold computed
+  from each `.LBL`'s `MAP_SCALE` is a small code change deferred until/if the
+  ESP_056165_2200 surviving-sub-threshold polygons turn into a modeling problem.
+- ~~**Cache the 4 missing PDS `.LBL` files**~~ — done 2026-05-26 (all 9 polygon-
+  bearing images now have `.LBL` in `cache/pds_labels/`; ~32 KB total).
+- ~~**BoulderNet 5×5-px design-floor filter (Stage 4 decision)**~~ — decided
+  2026-05-26 (entry above). Global `min_size_m = 1.4105 m` (≡ 1.5625 m² area).
+- ~~**`min_confidence` default for the `score` column**~~ — reconfirmed `null`
+  2026-05-26 (entry above). Re-evaluate at modeling time if needed.
 - ~~**Stage 4b texture features**~~ — landed 2026-05-23 (see entry above). 9 feature
-  families, 643,910 rows, 3.5 GB on disk including context patches. Next is Stage 5
-  splitter, then Week 3 modeling.
+  families, 643,910 rows, 3.5 GB on disk including context patches.
