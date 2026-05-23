@@ -760,6 +760,87 @@ schemes' actual packaged parquets to confirm no `obs_id` overlap.
   unused at 9 images. Per PLAN_Stage5.md §11b, the switch trigger is ~50+ images;
   document in modeling docs as the lever to pull when the manifest grows.
 
+## 2026-05-25 — Methods document citation errata + clarifications
+
+On read-through of the freshly committed `docs/methods.md` (commit `c3b8c96`), the
+user identified six issues; corrections applied and committed alongside this entry:
+
+1. **BoulderNet attribution was fabricated.** The original draft cited the detector
+   as "Cayleigh Sirota et al., unpublished". The actual BoulderNet paper is
+   [Prieur, Amaro, Gonzalez, Kerner, Medvedev, Rubanenko, Werner, Xiao, Zastrozhnov &
+   Lapôtre (2023), JGR Planets](https://agupubs.onlinelibrary.wiley.com/doi/full/10.1029/2023JE008013).
+   The "Cayleigh" references in earlier DECISIONS.md entries (2026-05-20, 2026-05-21)
+   refer to the human who ran the published BoulderNet model on the priority10
+   imagery, not its author -- those references stand. The methods document was
+   updated to cite Prieur 2023 with no attribution for the run, per the user's
+   choice (`Cite Prieur 2023 as the BoulderNet reference and don't attribute the
+   priority10 run`).
+
+2. **Minimum-boulder-size claim was wrong.** The original draft asserted boulders
+   below ~0.25 m² (one HiRISE pixel) are not reliably detected. The actual
+   empirical floor across the priority10 manifest is ~0.77 m² (~1 m
+   equivalent-circle diameter; see DECISIONS.md 2026-05-20 entry for the
+   ESP_047976_2020 polygon-area distribution). The BoulderNet model design floor
+   is characterised in
+   [Prieur et al. 2023](https://agupubs.onlinelibrary.wiley.com/doi/full/10.1029/2023JE008013)
+   and in the lunar-application paper
+   [Amaro, Prieur, Rubanenko, Hayne & Lapôtre (2026), JGR Planets](https://agupubs.onlinelibrary.wiley.com/doi/10.1029/2024JE008769);
+   the methods document now cites both rather than guessing a single number.
+
+3. **THEMIS / TES rock-abundance citation was fabricated.** The original draft
+   cited a non-existent "Christensen et al. 2003" for ~100 m / pixel rock
+   abundance from THEMIS. The actual canonical global rock-abundance product
+   derives from **TES** (not THEMIS) at ~3 km / pixel:
+   [Nowicki & Christensen (2007), JGR](https://agupubs.onlinelibrary.wiley.com/doi/full/10.1029/2006JE002798).
+   Replaced.
+
+4. **Dickson Murray Lab CTX mosaic citation was incomplete.** The original draft
+   cited "Dickson et al. 2018" with a non-existent DOI. The 2018 work is an
+   LPSC abstract (no DOI); the peer-reviewed paper describing the V01 mosaic is
+   [Dickson, Kerber, Fassett, Sutton & Ehlmann (2024), *Earth and Space Science*](https://agupubs.onlinelibrary.wiley.com/doi/10.1029/2024EA003555).
+   Replaced with the 2024 DOI; the 2018 LPSC abstract retained as a secondary
+   reference for the original announcement.
+
+5. **"DN" terminology clarified.** The shadow-detection section described
+   thresholds in terms of "DN" (Digital Number). User asked whether the Murray
+   Lab mosaic actually contains raw DN at this level. It does not -- per Dickson
+   2024 the mosaic applies per-image radiometric normalisation, brightness
+   balancing across overlapping scenes, and seam blending before quantising to
+   uint8. The methods document now flags "DN" as a shorthand for the mosaic
+   uint8 brightness value and notes that all thresholds are computed
+   per-image-relative-to-mode, so absolute radiometric calibration is not
+   load-bearing for the feature.
+
+6. **`5×` sub-pixel rasterization rationale.** User asked for the justification.
+   Methods document now records: 5× factor places the rasterization grid at 1 m,
+   sitting between the CTX pixel (5 m) and the HiRISE pixel (~0.5 m). Going to
+   10× would match HiRISE resolution but quadruples memory (200 MB → 800 MB per
+   image) without revealing additional polygon structure, because BoulderNet
+   polygon vertices are themselves quantised to the HiRISE pixel grid. Going
+   to 20× would over-resolve below the polygon-vertex precision floor.
+
+7. **Parquet definition added.** User asked what Parquet is. Methods §1.3 now
+   has a brief "Format note" explainer.
+
+8. **Notebook count corrected.** Methods §9 said "seven QA notebooks"; actual
+   count is nine (01 detections, 02 SP1 investigation, 03 HiRISE overlay, 04
+   CTX retrieval, 05 co-registration, 06 labeling, 07 features QA, 08 features
+   explained, 09 splits QA).
+
+9. **ESP_057469_2215 exclusion reason restated in §8.3.** Was previously
+   referenced only via §4.4 cross-reference; now stated inline in the splits
+   section too.
+
+**Lesson for future doc-writing sessions.** All citations in finished
+documentation should be hyperlinked to canonical DOIs / open-access URLs at
+write time (per the existing
+[[feedback-hyperlink-citations]] memory rule). Hyperlinking acts as a
+verification step: if a citation can't resolve to a real document, the doc
+needs to be re-checked rather than the link suppressed. This pass caught
+**three citations that turned out to be fabricated or wrong** (Sirota, Christensen
+2003, the Dickson 2018 DOI) -- all of which would have been blocked by the
+hyperlinking discipline applied at write time rather than retroactively.
+
 ## Open at this date
 
 - **Stage 3 thresholds (flag/fail)** — collect more data first before pinning down.
