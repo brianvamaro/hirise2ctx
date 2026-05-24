@@ -938,16 +938,22 @@ The 643,910-test-tile / 5,151,280-train-row totals for `loio_9fold` and the
   bare `ensure_all_labels` call raised `WinError 10054` on the first attempt;
   this probe wraps it in a 3-try backoff loop).
 
-## 2026-05-27 — `binary_count_threshold` rebalance (closes 2026-05-23 open item)
+## 2026-05-27 — Week 3 modeling baseline lands (LightGBM x 3 + small CNN)
 
-The 2026-05-23 entry flagged that the placeholder `binary_count_threshold = 5`
-disagreed sharply with the `binary_by_area` rule (only 2 count-only tiles vs
-5,504 area-only) and deferred the call to "modeling time." With Week 3 modeling
-imminent, the call is resolved up front via probe
-(`scripts/probes/_pick_binary_thresholds.py`).
+Four decisions pinned via AskUserQuestion before any code change, plus one
+threshold call resolved via probe (see end of entry):
 
-Joint distribution of `fractional_area` and `boulder_count` across all 643,910
-tiles, 9 ObsIds, 4 scales:
+| Question | Decision | Rationale |
+|---|---|---|
+| Session scope | **GBM + CNN in parallel** | PLAN_modeling.md §4 explicitly calls the CNN non-optional ("the natural complement to the GBM"). Building both this session keeps the side-by-side results table honest from the first run. |
+| GBM target/loss variants | **All three** (`lightgbm_tweedie` + `lightgbm_log1p_huber` + `lightgbm_two_stage`) | PLAN §2: Tweedie is the textbook-correct loss for zero-inflated continuous targets; log1p+Huber is the variance-stabilising sanity shadow; two-stage hurdle is the cleanest decomposition of "presence vs. magnitude." All three share the LOIO harness so adding them now is cheap and the comparison is empirical instead of philosophical. |
+| Per-scale architecture | **One model per scale, all 4 scales** (`scale_idx ∈ {0, 1, 2, 3}`) | PLAN §6 Option A. ~4× the LightGBM fits but each is seconds at this dataset size. Single-model-with-scale-feature deferred to a follow-up; train-at-coarsest-only rejected outright per the PLAN §0 *preserve CTX resolution* principle. |
+| Two-stage positive rule | **`fractional_area > 0`** (strict zero-vs-nonzero) | Probe `scripts/probes/_pick_binary_thresholds.py` confirms strict-presence has 90–99 % Jaccard agreement between the area-based and count-based rules across all four scales, while matched-threshold definitions at intermediate positive rates drop to 0.20–0.55 Jaccard. Strict positivity gives ≥1,800 positives even at the coarsest scale (S=64) — enough for the magnitude regressor — and sidesteps the `binary_count_threshold` calibration mess entirely. |
+
+**Threshold probe (`scripts/probes/_pick_binary_thresholds.py`) — closes the
+DECISIONS.md 2026-05-23 `binary_count_threshold` open item.** Joint distribution
+of `fractional_area` and `boulder_count` across all 643,910 tiles, 9 ObsIds, 4
+scales (post-2026-05-27 Stage 4 re-run):
 
 | scale | tile_size_px | n tiles | n positive (fa > 0) | n binary_by_area @ 0.005 | n binary_by_count @ **placeholder 5** |
 |---|---:|---:|---:|---:|---:|
@@ -956,15 +962,11 @@ tiles, 9 ObsIds, 4 scales:
 | 2 | 32 |  28,825 |  3,770 (13.1 %) |   172 (0.60 %) |   651 (2.26 %) |
 | 3 | 64 |   6,587 |  1,843 (28.0 %) |    27 (0.41 %) |   409 (6.21 %) |
 
-The placeholder `binary_count_threshold = 5` is incoherent across scales — at
-S=8 it's impossibly high (only 169 tiles ever have ≥5 polygons), at S=64 it's
+The placeholder `binary_count_threshold=5` was incoherent across scales — at S=8
+it's impossibly high (only 169 tiles ever have ≥5 polygons), at S=64 it's
 trivially exceeded (409 tiles). No single (area_threshold, count_threshold) pair
 balances against the area rule across all scales (peak matched-threshold Jaccard
 0.91 at 2 % target positive rate for S=8, falling to ~0.63 by S=64).
-
-The probe also shows strict-presence rules agree 90–99 % (Jaccard) between
-`fractional_area > 0` and `boulder_count ≥ 1` at every scale, vs 0.20–0.55 for
-matched-threshold definitions at intermediate positive rates.
 
 **Decision: `binary_count_threshold: 5 → 1`** in `config.yaml`. This makes
 `binary_by_count` mean "any boulder by centroid rule" (≡ `boulder_count > 0`),
@@ -974,9 +976,86 @@ real "appreciable area" diagnostic, distinct from but no longer fighting against
 unchanged; only the `binary_by_count` column shifted. 643,910-tile / 5,151,280-row
 totals for `loio_9fold` reproduce exactly.
 
-The Week 3 two-stage hurdle model uses `fractional_area > 0` directly at the
-code level, independent of `binary_count_threshold` — the config column is
-diagnostic-only for the modeling stage.
+**Modeling-code level: two-stage uses `fractional_area > 0` directly** (see
+`src/modeling/gbm.py::POSITIVE_RULE_EPS`) — independent of the config-level
+`binary_count_threshold`. The config column is purely diagnostic at this point;
+the modeling does not consume it.
+
+### Windows + Python 3.14 + torch 2.12 + MKL OpenMP coexistence
+
+`import torch` on the `geospatial` env fails out-of-the-box with `OSError: [WinError
+127] ... shm.dll or one of its dependencies` because (a) torch's `_load_dll_libraries`
+does not find `torch/lib/*.dll` when invoked via `conda run`, and (b) numpy/scipy's
+MKL OpenMP runtime (`libiomp5md.dll`) clashes with torch's bundled `libomp.dll`.
+The fix landed in `src/modeling/__init__.py` and is triggered automatically the
+first time any sub-module is imported:
+
+1. `os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")` — lets the two OMP
+   runtimes coexist instead of aborting the interpreter on the second load.
+2. `os.add_dll_directory(<torch_root>/lib)` — adds torch's bundled DLL directory to
+   Windows' DLL search path.
+3. `ctypes.WinDLL("<torch_root>/lib/shm.dll")` — explicit pre-load that populates
+   shm.dll's dependency chain into the process so torch's own loader finds them.
+
+**Caller contract:** scripts and notebooks that use the modeling package must
+import `src.modeling` BEFORE any `import numpy` / `import pandas`. Numpy loading
+first pulls `libiomp5md.dll` into the process ahead of the bootstrap and breaks
+the fix order. `scripts/train_cnn.py`, `scripts/probes/_smoke_cnn_one_fold.py`,
+and `notebooks/_build_10.py` all follow this contract. Documented as a comment
+block at the top of `src/modeling/__init__.py`.
+
+### Modeling artifacts shipped this session
+
+| New | Purpose |
+|---|---|
+| `src/modeling/__init__.py` | Package init + Windows DLL bootstrap (above). |
+| `src/modeling/loaders.py` | Thin loader over `dataset/packaged/{scheme}/`; `Fold` dataclass; `iter_loio_folds()`; `gather_patches()` for CNN. 52 features per X (config_hash_feat + patch_idx_S* excluded from the feature matrix; patch_idx_S* lives on the keys frame for downstream join). |
+| `src/modeling/base.py` | `Model` Protocol — `fit / predict / save / load / model_hash`. |
+| `src/modeling/evaluate.py` | LOIO runner + Spearman + per-bin RMSE + presence AUC + aggregate (mean ± std, specificity folds split off). Inner-validation rotates training images per fold (PLAN §4) — the test fold is NEVER used as eval_set. |
+| `src/modeling/gbm.py` | LightGBM Tweedie + log1p+Huber + Two-stage. All three implement `Model`. |
+| `src/modeling/cnn.py` | Small CNN (~30k params at S=32, ~35k at S=64): 3 conv blocks → GAP → 2 FC, BN-before-ReLU, flip/rot/brightness/contrast/noise augmentation. log1p+Huber loss. |
+| `src/modeling/inference.py` | Stub for off-HiRISE prediction across an arbitrary CTX region. Defines I/O contract; full mosaic sweep is a follow-up phase. |
+| `scripts/train_gbm.py` | Single-variant LOIO driver; writes per-fold booster artifacts. |
+| `scripts/train_cnn.py` | CNN LOIO driver; writes per-fold state_dict artifacts. |
+| `scripts/sweep.py` | Fan-out over (variant, scale) → summary.parquet + aggregate.parquet. |
+| `scripts/probes/_pick_binary_thresholds.py` | Drove the `binary_count_threshold` decision above. |
+| `scripts/probes/_diag_torch_import.py` | Drove the Windows DLL bootstrap diagnosis above. |
+| `tests/test_modeling_{loaders,evaluate,gbm,group_leak}.py` | 28 unit tests + 6 slow integration tests against the real packaged dataset. Group-leak assertion duplicates the notebook check at the test level. |
+| `notebooks/_build_10.py` → `10_modeling_qa.ipynb` | Sweep table, per-fold Spearman by BoulderLabel, predicted-vs-true log-log scatter, per-bin RMSE heatmap, GBM feature importance, CNN-vs-GBM comparison. |
+| `pyproject.toml` | New `modeling` optional-dep extra: `lightgbm>=4.0`, `torch>=2.2`, `scikit-learn>=1.4`, `scipy>=1.11`, `pyarrow>=14.0`. |
+
+### Initial sweep result (defaults: 400 boosting rounds, lr=0.05, early_stopping=40)
+
+| variant | scale | tile_size_px | spearman ρ (mean ± std) | presence AUC (mean) |
+|---|---:|---:|---:|---:|
+| lightgbm_tweedie | 0 | 8 | +0.004 ± 0.020 | 0.513 |
+| lightgbm_tweedie | 1 | 16 | −0.006 ± 0.035 | 0.500 |
+| lightgbm_tweedie | 2 | 32 | +0.010 ± 0.057 | 0.528 |
+| lightgbm_tweedie | 3 | 64 | +0.031 ± 0.086 | 0.550 |
+| lightgbm_log1p_huber | 0 | 8 | +0.014 ± 0.026 | 0.528 |
+| lightgbm_log1p_huber | 1 | 16 | +0.030 ± 0.076 | 0.534 |
+| lightgbm_log1p_huber | 2 | 32 | +0.030 ± 0.099 | 0.534 |
+| lightgbm_log1p_huber | 3 | 64 | +0.002 ± 0.076 | 0.516 |
+| lightgbm_two_stage | 0 | 8 | +0.000 ± 0.019 | 0.508 |
+| lightgbm_two_stage | 1 | 16 | +0.002 ± 0.024 | 0.515 |
+| lightgbm_two_stage | 2 | 32 | +0.018 ± 0.067 | 0.520 |
+| **lightgbm_two_stage** | **3** | **64** | **+0.059 ± 0.138** | **0.568** |
+
+Headline: every variant's std swamps its mean — PLAN_modeling.md §11.1 ("small-group
+CV variance") played out exactly as predicted. The best per-scale model is
+`lightgbm_two_stage @ S=64` but the wide std confirms the result is statistically
+within the noise envelope, not a strong signal. Paired-fold comparisons (not in
+the table) and the per-fold-by-BoulderLabel plot in notebook 10 are the right
+diagnostics from here.
+
+**Pytest:** 141 fast + 18 slow = 159 total (was 125 before this session).
+
+### Inputs unchanged
+
+- The 52 features the GBM consumes are the same Stage 4b set used since 2026-05-23.
+- The patch stacks `dataset/context_patches/{ObsId}_S{32,64}.npy` are unchanged.
+- Fold definitions in `dataset/splits/loio_9fold.json` and
+  `dataset/splits/loio_3fold_balanced.json` are unchanged.
 
 ## Open at this date
 
@@ -992,8 +1071,18 @@ diagnostic-only for the modeling stage.
   Extending `_apply_detection_filters` to use a per-image threshold computed
   from each `.LBL`'s `MAP_SCALE` is a small code change deferred until/if the
   ESP_056165_2200 surviving-sub-threshold polygons turn into a modeling problem.
+- **Modeling hyperparameter search** — first sweep used PLAN §2 defaults (400
+  rounds, lr=0.05, num_leaves=63). PLAN §1 calls for a small coarse grid
+  (3–5 configurations per variant) evaluated by mean ± std over LOIO. Deferred
+  until after a first interpretation of notebook 10.
+- **CNN-vs-GBM comparison at matched scales** — once the CNN sweep finishes,
+  notebook 10's last section becomes the deciding diagnostic for whether a Stage
+  4c feature push is motivated (CNN beats GBM ⇒ recoverable signal we missed).
+- **THEMIS validation** — CLAUDE.md §10 future work; compare predicted abundance
+  to the THEMIS rock-abundance map at coarse scale.
 - ~~**`binary_count_threshold` rebalance**~~ — resolved 2026-05-27 (entry above);
-  threshold set to 1 in config.yaml.
+  threshold set to 1 in config.yaml; two-stage modeling uses `fractional_area > 0`
+  directly.
 - ~~**Cache the 4 missing PDS `.LBL` files**~~ — done 2026-05-26 (all 9 polygon-
   bearing images now have `.LBL` in `cache/pds_labels/`; ~32 KB total).
 - ~~**BoulderNet 5×5-px design-floor filter (Stage 4 decision)**~~ — decided

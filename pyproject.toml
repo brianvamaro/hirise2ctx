@@ -21,6 +21,18 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "jupyter>=1.0", "nbconvert>=7.0"]
+# Week 3 modeling stack: LightGBM (Tweedie/log1p+Huber GBM baselines) +
+# PyTorch CPU (small CNN on context patches). scikit-learn is pulled in for
+# GroupKFold (LOIO splits), metric helpers, and the log1p+MSE shadow model.
+# pyarrow is already a transitive dep via pandas parquet support; pinned
+# explicitly here so the modeling extra is self-contained.
+modeling = [
+    "lightgbm>=4.0",
+    "torch>=2.2",
+    "scikit-learn>=1.4",
+    "scipy>=1.11",
+    "pyarrow>=14.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
