@@ -938,6 +938,46 @@ The 643,910-test-tile / 5,151,280-train-row totals for `loio_9fold` and the
   bare `ensure_all_labels` call raised `WinError 10054` on the first attempt;
   this probe wraps it in a 3-try backoff loop).
 
+## 2026-05-27 — `binary_count_threshold` rebalance (closes 2026-05-23 open item)
+
+The 2026-05-23 entry flagged that the placeholder `binary_count_threshold = 5`
+disagreed sharply with the `binary_by_area` rule (only 2 count-only tiles vs
+5,504 area-only) and deferred the call to "modeling time." With Week 3 modeling
+imminent, the call is resolved up front via probe
+(`scripts/probes/_pick_binary_thresholds.py`).
+
+Joint distribution of `fractional_area` and `boulder_count` across all 643,910
+tiles, 9 ObsIds, 4 scales:
+
+| scale | tile_size_px | n tiles | n positive (fa > 0) | n binary_by_area @ 0.005 | n binary_by_count @ **placeholder 5** |
+|---|---:|---:|---:|---:|---:|
+| 0 |  8 | 488,554 | 10,331 (2.12 %) | 5,673 (1.16 %) |   169 (0.035 %) |
+| 1 | 16 | 119,944 |  6,855 (5.72 %) | 1,060 (0.88 %) |   397 (0.33 %) |
+| 2 | 32 |  28,825 |  3,770 (13.1 %) |   172 (0.60 %) |   651 (2.26 %) |
+| 3 | 64 |   6,587 |  1,843 (28.0 %) |    27 (0.41 %) |   409 (6.21 %) |
+
+The placeholder `binary_count_threshold = 5` is incoherent across scales — at
+S=8 it's impossibly high (only 169 tiles ever have ≥5 polygons), at S=64 it's
+trivially exceeded (409 tiles). No single (area_threshold, count_threshold) pair
+balances against the area rule across all scales (peak matched-threshold Jaccard
+0.91 at 2 % target positive rate for S=8, falling to ~0.63 by S=64).
+
+The probe also shows strict-presence rules agree 90–99 % (Jaccard) between
+`fractional_area > 0` and `boulder_count ≥ 1` at every scale, vs 0.20–0.55 for
+matched-threshold definitions at intermediate positive rates.
+
+**Decision: `binary_count_threshold: 5 → 1`** in `config.yaml`. This makes
+`binary_by_count` mean "any boulder by centroid rule" (≡ `boulder_count > 0`),
+which is coherent at every scale. `binary_by_area` left at 0.005 — it remains a
+real "appreciable area" diagnostic, distinct from but no longer fighting against
+`binary_by_count`. Stage 4 + Stage 5 re-run (~3 s + ~22 s); fold composition
+unchanged; only the `binary_by_count` column shifted. 643,910-tile / 5,151,280-row
+totals for `loio_9fold` reproduce exactly.
+
+The Week 3 two-stage hurdle model uses `fractional_area > 0` directly at the
+code level, independent of `binary_count_threshold` — the config column is
+diagnostic-only for the modeling stage.
+
 ## Open at this date
 
 - **Stage 3 thresholds (flag/fail)** — collect more data first before pinning down.
@@ -946,15 +986,14 @@ The 643,910-test-tile / 5,151,280-train-row totals for `loio_9fold` and the
   (the only low-peak case so far).
 - **ESP_057469_2215 multi-tile windowing** — see the 2026-05-22 tile-straddle entry.
   Currently dropped from the Stage 4 sweep. Decide whether to fix at Stage 5 / 6.
-- **`binary_count_threshold` rebalance** — current placeholder 5 is too high vs
-  area threshold 0.005 (only 2 count-only tiles vs 5,504 area-only). Decide at
-  modeling time which side to commit to.
 - **Per-image `min_size_m` extension** — the chosen 2026-05-26 global filter
   (1.4105 m diameter ≡ 1.5625 m² area) enforces the 0.25 m/px floor exactly but
   is lenient for the 0.50 m/px images, where the design floor would be 6.25 m².
   Extending `_apply_detection_filters` to use a per-image threshold computed
   from each `.LBL`'s `MAP_SCALE` is a small code change deferred until/if the
   ESP_056165_2200 surviving-sub-threshold polygons turn into a modeling problem.
+- ~~**`binary_count_threshold` rebalance**~~ — resolved 2026-05-27 (entry above);
+  threshold set to 1 in config.yaml.
 - ~~**Cache the 4 missing PDS `.LBL` files**~~ — done 2026-05-26 (all 9 polygon-
   bearing images now have `.LBL` in `cache/pds_labels/`; ~32 KB total).
 - ~~**BoulderNet 5×5-px design-floor filter (Stage 4 decision)**~~ — decided

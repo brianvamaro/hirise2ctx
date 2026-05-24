@@ -63,7 +63,13 @@ labeling:
   tile_sizes_px: [8, 16, 32, 64]
   label_type: fractional_area
   binary_area_threshold: 0.005
-  binary_count_threshold: 5
+  # 2026-05-27: lowered 5 -> 1 (binary_by_count now means "any boulder by centroid rule").
+  # Placeholder 5 was incoherent across scales (impossibly high at 40m, low at 320m) and
+  # produced the 5,504/2 area-vs-count disagreement flagged in DECISIONS.md 2026-05-23.
+  # scripts/probes/_pick_binary_thresholds.py confirms strict-presence rules agree 90-99%
+  # across all scales (Jaccard, area>0 vs count>=1). Two-stage modeling uses
+  # `fractional_area > 0` directly (no config dep); binary columns are diagnostic only.
+  binary_count_threshold: 1
   categorical_bins: []
   detection_filters:
     min_confidence: null          # `score` column exists (0.10-0.83); leave null. AskUserQuestion 2026-05-26.
