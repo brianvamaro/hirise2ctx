@@ -11,10 +11,11 @@ care about how the results were produced but won't necessarily touch the code.
 | Document | Audience | Scope |
 |---|---|---|
 | [methods.md](methods.md) | Mixed / general scientific reader | Full data-pipeline Methods section in paper-Methods style: inputs → coordinate handling → co-registration → labels → features → cross-validation. Stops at the point where the modeler receives a packaged train/test dataset. ~20 pages of narrative + 9 embedded figures + 5 quantitative tables. |
+| [modeling_results.md](modeling_results.md) | Mixed / general scientific reader | First-pass assessment of the Week 3 LightGBM + CNN baselines: what the headline numbers do and do not say, what signal exists in the model and where it falls short, and a short list of next experiments that would either resolve or close out the "is this approach working?" question. Embeds the five notebook 10 figures. |
 
 Planned future documents (not yet written):
 
-- `modeling.md` — Methods for the Week 3 modeling stage, written in the same style. Will cite back to `methods.md` for the data-pipeline details.
+- `modeling.md` — *Methods* for the Week 3 modeling stage, written in the same paper-Methods style as `methods.md`. Complementary to `modeling_results.md`, which discusses *results*.
 - `data_release.md` — A short, citeable description of the released dataset version (manifest, ObsId list, pipeline commit hash, schema reference) for use when the data is shared externally.
 
 ## When to read what
