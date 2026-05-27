@@ -1,7 +1,7 @@
-"""LightGBM baselines for the zero-inflated rock-abundance target.
+"""LightGBM baselines for the rock-abundance target.
 
-Three variants ship in parallel (PLAN_modeling.md §2, decision locked
-AskUserQuestion 2026-05-27):
+Three regression variants ship in parallel (PLAN_modeling.md §2, decision
+locked AskUserQuestion 2026-05-27):
 
   * LightGBMTweedie       -- single-stage GBM with `objective='tweedie'`.
                              Compound Poisson-Gamma likelihood, the canonical
@@ -15,9 +15,19 @@ AskUserQuestion 2026-05-27):
                              magnitude regressor (log1p+Huber, positives-only).
                              Prediction: P(positive) * E[mag | positive].
 
-All three implement the `Model` Protocol from `src.modeling.base`. `predict` always
-returns predictions on the original `fractional_area` scale; transforms are applied
-internally.
+Plus one binary-classification variant (PLAN_Stage5b.md §4):
+
+  * LightGBMClassification -- single LightGBM booster with `objective='binary'`.
+                              Returns probabilities in [0, 1] from `predict()`.
+                              Auto class-balancing via `scale_pos_weight =
+                              neg/pos` per fit (computed from the y handed in).
+
+All four implement the `Model` Protocol from `src.modeling.base`. The
+regression variants' `predict` returns predictions on the original
+`fractional_area` scale; the classification variant's `predict` returns
+probabilities. `predict_presence_prob` returns the same probability for the
+classifier; `None` for log1p_huber and tweedie; the presence-head probability
+for two_stage.
 """
 from __future__ import annotations
 
@@ -351,6 +361,110 @@ class LightGBMTwoStage:
 
 
 # ============================================================================
+# Binary-classification variant (Stage 5b)
+# ============================================================================
+
+
+@dataclass
+class LightGBMClassification:
+    """Single LightGBM booster with `objective='binary'`.
+
+    Consumes a binary y (0/1) -- the caller is responsible for binarising via
+    `src.modeling.binary_target.BinaryTarget.binarize(y_df)`. Auto class-
+    balancing: `scale_pos_weight = neg / pos` is computed from the training y
+    at fit time. Without this, the rare-positive thresholds (e.g. `fa_gt_1e-2`
+    with ~0.17 % positives at S=64) collapse to predicting "no" everywhere --
+    the exact constant-predictor failure mode the regression sweep exhibited
+    (see docs/modeling_results.md §3.1).
+
+    `predict` returns probabilities in [0, 1]; not 0/1 hard labels (the
+    operating point is chosen downstream from the calibration plot).
+    Early-stopping metric is `binary_logloss`, not AUC -- AUC is
+    non-decomposable and noisier as an early-stop signal on small
+    inner-validation sets (PLAN_Stage5b.md §4).
+    """
+
+    params: LGBMParams = field(default_factory=LGBMParams)
+    name: str = "lightgbm_classification"
+    _booster: lgb.Booster | None = field(default=None, init=False, repr=False)
+    _scale_pos_weight: float | None = field(default=None, init=False, repr=False)
+
+    def fit(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        *,
+        groups: np.ndarray | None = None,
+        eval_set: tuple[np.ndarray, np.ndarray] | None = None,
+    ) -> None:
+        y_bin = y.astype(np.int8, copy=False)
+        if y_bin.ndim != 1:
+            raise ValueError(f"y must be 1-D, got shape {y_bin.shape}")
+        unique = np.unique(y_bin)
+        if not np.array_equal(unique, [0, 1]) and not np.array_equal(unique, [0]) and not np.array_equal(unique, [1]):
+            raise ValueError(f"y must be binary 0/1, got unique values {unique.tolist()}")
+
+        n_pos = int((y_bin == 1).sum())
+        n_neg = int((y_bin == 0).sum())
+        # Auto-balance unless degenerate. With zero positives we leave the weight
+        # unset and let LightGBM train on the all-negative trivial case.
+        if n_pos > 0 and n_neg > 0:
+            self._scale_pos_weight = float(n_neg) / float(n_pos)
+        else:
+            self._scale_pos_weight = None
+
+        kw = self.params.to_lgb_kwargs()
+        kw["objective"] = "binary"
+        kw["metric"] = ["binary_logloss", "auc"]
+        if self._scale_pos_weight is not None:
+            kw["scale_pos_weight"] = self._scale_pos_weight
+
+        train_set = lgb.Dataset(X, label=y_bin, free_raw_data=False)
+        valid_sets = [train_set]
+        valid_names = ["train"]
+        callbacks = []
+        if eval_set is not None:
+            Xv, yv = eval_set
+            yv_bin = yv.astype(np.int8, copy=False)
+            # Only set up early-stopping when the eval set has both classes;
+            # binary_logloss / AUC are ill-defined on a single-class eval set
+            # (the LOIO empty-truth fold can hand us all-zero y).
+            if np.unique(yv_bin).size > 1:
+                valid_sets.append(lgb.Dataset(Xv, label=yv_bin, reference=train_set, free_raw_data=False))
+                valid_names.append("valid")
+                callbacks.append(lgb.early_stopping(self.params.early_stopping_rounds, verbose=False))
+        callbacks.append(lgb.log_evaluation(0))
+        self._booster = lgb.train(
+            kw,
+            train_set,
+            num_boost_round=self.params.n_estimators,
+            valid_sets=valid_sets,
+            valid_names=valid_names,
+            callbacks=callbacks,
+        )
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        """Return P(y=1 | X) in [0, 1]."""
+        assert self._booster is not None, "fit() before predict()"
+        return np.asarray(self._booster.predict(X, num_iteration=self._booster.best_iteration))
+
+    def predict_presence_prob(self, X: np.ndarray) -> np.ndarray | None:
+        """For this variant `predict_presence_prob == predict` -- exposed so the
+        evaluator persists the probability column under its canonical name."""
+        return self.predict(X)
+
+    def save(self, path: str | Path) -> None:
+        assert self._booster is not None
+        Path(path).write_text(self._booster.model_to_string(), encoding="utf-8")
+
+    def load(self, path: str | Path) -> None:
+        self._booster = lgb.Booster(model_str=Path(path).read_text(encoding="utf-8"))
+
+    def model_hash(self) -> str:
+        return _booster_hash(self._booster)
+
+
+# ============================================================================
 # Factory helpers used by the training scripts
 # ============================================================================
 
@@ -359,7 +473,10 @@ VARIANT_CONSTRUCTORS = {
     "lightgbm_tweedie": LightGBMTweedie,
     "lightgbm_log1p_huber": LightGBMLog1pHuber,
     "lightgbm_two_stage": LightGBMTwoStage,
+    "lightgbm_classification": LightGBMClassification,
 }
+
+CLASSIFICATION_VARIANTS: frozenset[str] = frozenset({"lightgbm_classification"})
 
 
 def make_factory(variant: str, params: LGBMParams | None = None):

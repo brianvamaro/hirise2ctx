@@ -23,7 +23,7 @@ import datetime as _dt
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Literal
 
 import numpy as np
 import pandas as pd
@@ -142,6 +142,107 @@ def presence_auc(y_true_positive: np.ndarray, y_pred: np.ndarray) -> float:
     return float(u / (pos.size * neg.size))
 
 
+# ============================================================================
+# Binary-classification metrics (Stage 5b)
+# ============================================================================
+
+
+def brier_score(y_true_binary: np.ndarray, y_pred_prob: np.ndarray) -> float:
+    """Brier score = mean squared error between predicted probability and binary truth.
+
+    Lower is better. The canonical proper scoring rule for probabilistic
+    classification (PLAN_Stage5b.md §5).
+    """
+    if y_true_binary.size == 0:
+        return float("nan")
+    return float(np.mean((y_pred_prob - y_true_binary.astype(np.float64)) ** 2))
+
+
+def expected_calibration_error(
+    y_true_binary: np.ndarray,
+    y_pred_prob: np.ndarray,
+    *,
+    n_bins: int = 10,
+) -> float:
+    """ECE = sum_b (n_b / N) * |mean_pred_b - mean_true_b|.
+
+    A scalar summary of how far the model is from being perfectly calibrated.
+    0 = perfect calibration, larger = more miscalibrated. PLAN_Stage5b.md §11 q2.
+    """
+    if y_true_binary.size == 0:
+        return float("nan")
+    # Equal-width bins over the predicted-probability domain [0, 1].
+    bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
+    bin_idx = np.clip(np.digitize(y_pred_prob, bin_edges[1:-1]), 0, n_bins - 1)
+    total_err = 0.0
+    n = y_true_binary.size
+    for b in range(n_bins):
+        mask = bin_idx == b
+        if not mask.any():
+            continue
+        mean_pred = float(y_pred_prob[mask].mean())
+        mean_true = float(y_true_binary[mask].mean())
+        total_err += (mask.sum() / n) * abs(mean_pred - mean_true)
+    return float(total_err)
+
+
+def calibration_deciles(
+    y_true_binary: np.ndarray,
+    y_pred_prob: np.ndarray,
+    *,
+    n_bins: int = 10,
+) -> list[dict]:
+    """Per-decile calibration table -- one row per equal-width predicted-prob bin.
+
+    Each row: {bin_idx, lo, hi, n, mean_pred, mean_true}. A perfectly calibrated
+    model has mean_pred == mean_true in every bin. Empty bins return n=0 and NaN.
+    """
+    bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
+    bin_idx = np.clip(np.digitize(y_pred_prob, bin_edges[1:-1]), 0, n_bins - 1)
+    rows = []
+    for b in range(n_bins):
+        mask = bin_idx == b
+        n = int(mask.sum())
+        if n > 0:
+            mean_pred = float(y_pred_prob[mask].mean())
+            mean_true = float(y_true_binary[mask].mean())
+        else:
+            mean_pred = float("nan")
+            mean_true = float("nan")
+        rows.append({
+            "bin_idx": b,
+            "lo": float(bin_edges[b]),
+            "hi": float(bin_edges[b + 1]),
+            "n": n,
+            "mean_pred": mean_pred,
+            "mean_true": mean_true,
+        })
+    return rows
+
+
+def lift_at_top_k(y_true_binary: np.ndarray, y_pred_prob: np.ndarray) -> float:
+    """Base-rate-normalised precision at k, where k = number of true positives.
+
+    Take the k tiles with highest predicted probability (k = sum(y_true)).
+    Precision@k = positives_in_top_k / k. Lift = precision@k / base_rate.
+
+    A random classifier has lift == 1; a perfect classifier has lift ==
+    1 / base_rate (= n / n_pos). Returns NaN when there are no positives or
+    no negatives.
+
+    PLAN_Stage5b.md §5.
+    """
+    n = y_true_binary.size
+    n_pos = int(y_true_binary.sum())
+    if n_pos == 0 or n_pos == n:
+        return float("nan")
+    base_rate = n_pos / n
+    # Argsort descending by predicted probability; take the top n_pos indices.
+    top_k_idx = np.argpartition(-y_pred_prob, n_pos - 1)[:n_pos]
+    precision_at_k = float(y_true_binary[top_k_idx].mean())
+    return float(precision_at_k / base_rate)
+
+
 def per_fold_metrics(
     y_true: np.ndarray,
     y_pred: np.ndarray,
@@ -209,6 +310,91 @@ def aggregate_fold_metrics(per_fold: list[dict]) -> dict:
     }
 
 
+def per_fold_metrics_classification(
+    y_true_binary: np.ndarray,
+    y_pred_prob: np.ndarray,
+    *,
+    held_out_obs_ids: list[str],
+    decision_threshold: float = 0.5,
+) -> dict:
+    """Per-fold classification metrics. `y_true_binary` is int8 0/1, `y_pred_prob` in [0, 1].
+
+    A fold whose y_true is constant (e.g. the empty-truth ESP_065711_1545 fold)
+    is tagged `is_specificity_only`: AUC / Brier / lift are undefined on a
+    single-class fold, but the false-positive count at `decision_threshold`
+    is the meaningful diagnostic.
+    """
+    is_empty_truth = (len(held_out_obs_ids) == 1 and held_out_obs_ids[0] == EMPTY_TRUTH_OBS_ID)
+    n_pos = int(y_true_binary.sum())
+    n_neg = int(y_true_binary.size - n_pos)
+    is_spec = bool(is_empty_truth or n_pos == 0 or n_neg == 0)
+
+    out: dict = {
+        "n_tiles": int(y_true_binary.size),
+        "held_out_obs_ids": list(held_out_obs_ids),
+        "is_specificity_only": is_spec,
+        "n_positive": n_pos,
+        "n_negative": n_neg,
+        "base_rate": float(n_pos / y_true_binary.size) if y_true_binary.size else float("nan"),
+        "mean_pred_prob": float(y_pred_prob.mean()) if y_pred_prob.size else float("nan"),
+    }
+
+    if not is_spec:
+        # AUC via Mann-Whitney U (same machinery as presence_auc).
+        pos_scores = y_pred_prob[y_true_binary == 1]
+        neg_scores = y_pred_prob[y_true_binary == 0]
+        u, _ = stats.mannwhitneyu(pos_scores, neg_scores, alternative="greater")
+        out["auc"] = float(u / (pos_scores.size * neg_scores.size))
+        out["brier"] = brier_score(y_true_binary, y_pred_prob)
+        out["ece"] = expected_calibration_error(y_true_binary, y_pred_prob)
+        out["lift_at_top_k"] = lift_at_top_k(y_true_binary, y_pred_prob)
+    else:
+        out["auc"] = float("nan")
+        out["brier"] = brier_score(y_true_binary, y_pred_prob)  # MSE still defined
+        out["ece"] = float("nan")
+        out["lift_at_top_k"] = float("nan")
+        # On the empty-truth fold, the FP rate at the decision threshold is the
+        # diagnostic that maps to "does the classifier hallucinate?".
+        out["false_positive_rate_at_threshold"] = (
+            float((y_pred_prob >= decision_threshold).mean())
+            if y_pred_prob.size else float("nan")
+        )
+
+    out["calibration_deciles"] = calibration_deciles(y_true_binary, y_pred_prob)
+    return out
+
+
+def aggregate_fold_metrics_classification(per_fold: list[dict]) -> dict:
+    """Mean +/- std of classification fold metrics, ignoring specificity-only folds for AUC."""
+    real = [f for f in per_fold if not f["is_specificity_only"]]
+    spec = [f for f in per_fold if f["is_specificity_only"]]
+
+    def mean_std(key: str, source: list[dict]) -> tuple[float, float, int]:
+        vals = [f[key] for f in source if not np.isnan(f[key])]
+        if not vals:
+            return float("nan"), float("nan"), 0
+        return float(np.mean(vals)), float(np.std(vals, ddof=0)), len(vals)
+
+    auc_mean, auc_std, n_auc = mean_std("auc", real)
+    brier_mean, brier_std, _ = mean_std("brier", per_fold)  # Brier defined on all folds (even all-zero truth)
+    ece_mean, ece_std, _ = mean_std("ece", real)
+    lift_mean, lift_std, _ = mean_std("lift_at_top_k", real)
+
+    return {
+        "n_real_folds": len(real),
+        "n_specificity_folds": len(spec),
+        "auc_mean": auc_mean,
+        "auc_std": auc_std,
+        "auc_n": n_auc,
+        "brier_mean": brier_mean,
+        "brier_std": brier_std,
+        "ece_mean": ece_mean,
+        "ece_std": ece_std,
+        "lift_at_top_k_mean": lift_mean,
+        "lift_at_top_k_std": lift_std,
+    }
+
+
 # ============================================================================
 # LOIO runner
 # ============================================================================
@@ -239,6 +425,8 @@ def run_loio(
     model_factory: ModelFactory,
     *,
     target_col: str = "fractional_area",
+    binarize: Callable[[pd.DataFrame], np.ndarray] | None = None,
+    task: Literal["regression", "classification"] = "regression",
     scheme: str = "loio_9fold",
     scale_idx: int | None = None,
     fold_iter: FoldIterator | None = None,
@@ -253,15 +441,29 @@ def run_loio(
 
     `scale_idx=None` uses all scales concatenated; pass an int to train per-scale
     models (PLAN_modeling.md §6 Option A).
+
+    Stage 5b classification mode: pass `task="classification"` plus a `binarize`
+    callable mapping a y dataframe to a 0/1 int8 array (typically
+    `src.modeling.binary_target.BinaryTarget.binarize`). The harness then
+    bypasses `target_col`, feeds the binarised y to `model.fit`, treats
+    `model.predict` output as probabilities in [0, 1], and computes
+    classification metrics (AUC, Brier, ECE, lift_at_top_k) instead of the
+    regression set.
     """
+    if task == "classification" and binarize is None:
+        raise ValueError("task='classification' requires a binarize callable")
     fold_iter = fold_iter if fold_iter is not None else _default_fold_iter(scheme, scale_idx)
 
     pred_rows: list[pd.DataFrame] = []
     per_fold: list[dict] = []
 
     for fold in fold_iter():
-        y_train_full = fold.y_train[target_col].to_numpy(dtype=np.float64, copy=False)
-        y_test = fold.y_test[target_col].to_numpy(dtype=np.float64, copy=False)
+        if binarize is not None:
+            y_train_full = binarize(fold.y_train).astype(np.int8, copy=False)
+            y_test = binarize(fold.y_test).astype(np.int8, copy=False)
+        else:
+            y_train_full = fold.y_train[target_col].to_numpy(dtype=np.float64, copy=False)
+            y_test = fold.y_test[target_col].to_numpy(dtype=np.float64, copy=False)
 
         # PLAN_modeling.md §4: "use one of the 8 training images as the early-stopping
         # monitor, rotate which one across folds." Picking the training image whose code
@@ -294,7 +496,13 @@ def run_loio(
         y_presence = model.predict_presence_prob(fold.X_test)
 
         # Per-fold metric pack
-        m = per_fold_metrics(y_test, y_pred, held_out_obs_ids=fold.held_out_obs_ids)
+        if task == "classification":
+            m = per_fold_metrics_classification(
+                y_test.astype(np.int8, copy=False), y_pred,
+                held_out_obs_ids=fold.held_out_obs_ids,
+            )
+        else:
+            m = per_fold_metrics(y_test, y_pred, held_out_obs_ids=fold.held_out_obs_ids)
         m["fold_idx"] = fold.fold_idx
         m["scale_idx"] = fold.scale_idx if fold.scale_idx is not None else -1
         m["model_name"] = getattr(model, "name", type(model).__name__)
@@ -315,28 +523,50 @@ def run_loio(
         pred_rows.append(block)
 
         if verbose:
-            tag = "spec" if m["is_specificity_only"] else f"rho={m['spearman_rho']:+.4f}"
-            print(
-                f"  fold {m['fold_idx']}: {fold.held_out_obs_ids[0]:>20s}  "
-                f"n_test={m['n_tiles']:>6d}  {tag}  "
-                f"rmse_log1p={m['rmse_log1p']:.4g}  auc={m['presence_auc']:.3f}"
-            )
+            if task == "classification":
+                tag = "spec" if m["is_specificity_only"] else f"auc={m['auc']:+.4f}"
+                print(
+                    f"  fold {m['fold_idx']}: {fold.held_out_obs_ids[0]:>20s}  "
+                    f"n_test={m['n_tiles']:>6d}  n_pos={m['n_positive']:>5d}  {tag}  "
+                    f"brier={m['brier']:.4g}  lift={m['lift_at_top_k']:.3f}"
+                )
+            else:
+                tag = "spec" if m["is_specificity_only"] else f"rho={m['spearman_rho']:+.4f}"
+                print(
+                    f"  fold {m['fold_idx']}: {fold.held_out_obs_ids[0]:>20s}  "
+                    f"n_test={m['n_tiles']:>6d}  {tag}  "
+                    f"rmse_log1p={m['rmse_log1p']:.4g}  auc={m['presence_auc']:.3f}"
+                )
 
     predictions = pd.concat(pred_rows, ignore_index=True) if pred_rows else pd.DataFrame()
-    aggregate = aggregate_fold_metrics(per_fold)
+    aggregate = (
+        aggregate_fold_metrics_classification(per_fold)
+        if task == "classification"
+        else aggregate_fold_metrics(per_fold)
+    )
 
     snap = dict(snapshot or {})
     snap.setdefault("target_col", target_col)
+    snap.setdefault("task", task)
     snap.setdefault("scheme", scheme)
     snap.setdefault("scale_idx", scale_idx)
     snap.setdefault("written_at_iso", _dt.datetime.now(_dt.timezone.utc).isoformat())
 
     if verbose:
-        print(
-            f"  AGG: spearman={aggregate['spearman_rho_mean']:+.4f} +/- "
-            f"{aggregate['spearman_rho_std']:.4f}  (n={aggregate['spearman_n']} real folds, "
-            f"{aggregate['n_specificity_folds']} specificity)"
-        )
+        if task == "classification":
+            print(
+                f"  AGG: auc={aggregate['auc_mean']:+.4f} +/- "
+                f"{aggregate['auc_std']:.4f}  brier={aggregate['brier_mean']:.4g}  "
+                f"lift={aggregate['lift_at_top_k_mean']:.3f}  "
+                f"(n={aggregate['auc_n']} real folds, "
+                f"{aggregate['n_specificity_folds']} specificity)"
+            )
+        else:
+            print(
+                f"  AGG: spearman={aggregate['spearman_rho_mean']:+.4f} +/- "
+                f"{aggregate['spearman_rho_std']:.4f}  (n={aggregate['spearman_n']} real folds, "
+                f"{aggregate['n_specificity_folds']} specificity)"
+            )
 
     return RunResult(predictions=predictions, per_fold_metrics=per_fold, aggregate=aggregate, snapshot=snap)
 
