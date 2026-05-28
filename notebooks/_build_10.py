@@ -673,6 +673,557 @@ lift_table.sort_values(['scale_idx', 'target_id'])
     cell_id="binary-lift-table",
 ))
 
+
+# ============================================================================
+# Stage 5c -- within-image cross-validation diagnostic (PLAN_Stage5c.md)
+# ============================================================================
+
+cells.append(md(
+    """## Within-image cross-validation (Stage 5c diagnostic)
+
+[PLAN_Stage5c.md](../PLAN_Stage5c.md) frames a single-experiment falsification of the
+data-quantity-bound hypothesis: train and test on the **same image** by partitioning each
+image's tiles into 2x2 spatial quadrants, then rotate which quadrant is held out. With 8
+non-empty images (ESP_065711_1545 excluded) x 4 quadrants = **32 folds per (variant,
+scale)** cell.
+
+The diagnostic is binary:
+
+- **Within-image AUC ~= LOIO AUC ~0.55** — the 5 m / pixel CTX texture signal is at its
+  per-image ceiling. More HiRISE images would not unlock additional signal at this CTX
+  resolution.
+- **Within-image AUC >> LOIO AUC (>= 0.7)** — per-image generalisation is the binding
+  constraint. The model has learned per-image structure that does not transfer; more
+  HiRISE images, especially geographically diverse ones, are the unlock.
+
+Variants run: [`lightgbm_two_stage`](../src/modeling/gbm.py) (best LOIO regression
+Spearman at S=64) and [`lightgbm_classification`](../src/modeling/gbm.py) at
+[`bc_ge_1`](../src/modeling/binary_target.py) (best LOIO binary AUC at S=32 / S=64).
+Both with the same Stage 5b LightGBM defaults; only the split scheme changes.
+
+Statistical comparison: paired per-image deltas `within_image_AUC - LOIO_AUC` give
+8 paired observations per (variant, scale). Report the mean delta, a bootstrap 95 % CI,
+and a Wilcoxon signed-rank p-value (the natural significance check for paired
+deltas with no normality assumption).
+""",
+    cell_id="within-image-md",
+))
+
+cells.append(code(
+    """# Load the most-recent within-image sweep.
+within_dirs = sorted((MODELS_ROOT / '_sweep_within_image').glob('*/'))
+assert within_dirs, 'no models/_sweep_within_image/* runs found -- run scripts/sweep_within_image.py'
+WITHIN_DIR = within_dirs[-1]
+print(f'within-image sweep dir: {WITHIN_DIR.name}')
+
+within_summary = pd.read_parquet(WITHIN_DIR / 'summary.parquet')
+within_aggregate = pd.read_parquet(WITHIN_DIR / 'aggregate.parquet')
+within_per_image = pd.read_parquet(WITHIN_DIR / 'per_image.parquet')
+print(f'within-image rows: summary={len(within_summary)}, '
+      f'aggregate={len(within_aggregate)}, per_image={len(within_per_image)}')
+print(f'  variants:      {sorted(within_summary["variant"].unique().tolist())}')
+print(f'  scale_idx:     {sorted(within_summary["scale_idx"].unique().tolist())}')
+print(f'  n_folds:       {within_summary.groupby(["variant", "scale_idx"]).size().iloc[0]}')
+""",
+    cell_id="within-image-load",
+))
+
+cells.append(code(
+    """# Build the matched LOIO baseline.
+#   - lightgbm_two_stage  -> LOIO regression sweep (presence_auc per fold)
+#   - lightgbm_classification @ bc_ge_1 -> LOIO binary sweep (auc per fold)
+# Both flatten to ('variant', 'scale_idx', 'held_out_obs_id', 'auc') for the comparison.
+#
+# We pick the most recent _sweep/* directory that actually contains
+# lightgbm_two_stage rows (the latest single-variant re-runs would be missed by a
+# naive sweep_dirs[-1] selection).
+def _pick_full_loio_sweep():
+    for d in sorted((MODELS_ROOT / '_sweep').glob('*/'), key=lambda p: p.stat().st_mtime, reverse=True):
+        if 'lightgbm_two_stage' in pd.read_parquet(d / 'summary.parquet')['variant'].unique():
+            return d
+    raise FileNotFoundError('No LOIO sweep contains lightgbm_two_stage rows')
+LOIO_FOR_DELTA = _pick_full_loio_sweep()
+print(f'LOIO baseline sweep: {LOIO_FOR_DELTA.name}')
+loio_summary = pd.read_parquet(LOIO_FOR_DELTA / 'summary.parquet')
+
+loio_two_stage = (
+    loio_summary[loio_summary['variant'] == 'lightgbm_two_stage']
+    [['variant', 'scale_idx', 'tile_size_px', 'held_out_obs_id',
+      'presence_auc', 'spearman_rho', 'is_specificity_only']]
+    .rename(columns={'presence_auc': 'auc'})
+)
+loio_classifier = (
+    bin_summary[bin_summary['target_id'] == 'bc_ge_1']
+    [['scale_idx', 'tile_size_px', 'held_out_obs_id', 'auc', 'is_specificity_only']]
+    .assign(variant='lightgbm_classification', spearman_rho=np.nan)
+)
+loio_baseline = pd.concat([loio_two_stage, loio_classifier], ignore_index=True)
+print('LOIO baseline rows:', len(loio_baseline))
+loio_baseline.head()
+""",
+    cell_id="within-image-loio-baseline",
+))
+
+cells.append(md(
+    """### Headline: mean(within_image_AUC - LOIO_AUC) per (variant, scale)
+
+The single number that answers PLAN_Stage5c.md's diagnostic. Each row's delta is the
+mean across the 8 non-empty images of `(within_image_AUC_for_that_image -
+LOIO_AUC_for_that_image)`. Bootstrap CI is non-parametric (10000 resamples of the 8
+paired deltas with replacement); Wilcoxon signed-rank p-value tests `H_0: median
+delta = 0`.
+
+For `lightgbm_classification`, "AUC" is the standard ROC AUC of `bc_ge_1` truth vs.
+predicted probability. For `lightgbm_two_stage`, "AUC" is the **presence_auc** from
+the regression sweep -- the same Mann-Whitney U statistic applied to `y_true > 0` vs.
+the model's continuous output, which is the closest analogue to the classifier's
+ROC AUC.
+""",
+    cell_id="within-image-headline-md",
+))
+
+cells.append(code(
+    """from scipy import stats
+
+def per_image_within_minus_loio(variant, scale_idx, n_bootstrap=10_000, rng_seed=0):
+    rng = np.random.default_rng(rng_seed)
+    # Per-image within-image AUC: average the variant's 4 quadrant folds. For
+    # two_stage we average presence_auc; for classification we average auc.
+    auc_col = 'presence_auc' if variant == 'lightgbm_two_stage' else 'auc'
+    sub = within_summary[
+        (within_summary['variant'] == variant)
+        & (within_summary['scale_idx'] == scale_idx)
+        & (~within_summary['is_specificity_only'].astype(bool))
+    ]
+    w = sub.groupby('held_out_obs_id').agg(
+        within_auc=(auc_col, 'mean'),
+        n_real_folds=('fold_idx', 'count'),
+    ).reset_index()
+    # LOIO baseline: one AUC per image (one fold per image).
+    lo = loio_baseline[
+        (loio_baseline['variant'] == variant)
+        & (loio_baseline['scale_idx'] == scale_idx)
+        & (~loio_baseline['is_specificity_only'].astype(bool))
+    ][['held_out_obs_id', 'auc']].rename(columns={'auc': 'loio_auc'})
+    paired = w.merge(lo, on='held_out_obs_id', how='inner')
+    paired['delta'] = paired['within_auc'] - paired['loio_auc']
+    n = len(paired)
+    if n < 2:
+        return paired, dict(n=n, mean_delta=float('nan'), ci_lo=float('nan'),
+                            ci_hi=float('nan'), wilcoxon_p=float('nan'))
+    delta = paired['delta'].to_numpy()
+    mean_delta = float(delta.mean())
+    boots = rng.choice(delta, size=(n_bootstrap, n), replace=True).mean(axis=1)
+    ci_lo, ci_hi = float(np.percentile(boots, 2.5)), float(np.percentile(boots, 97.5))
+    if (delta == 0).all():
+        wp = float('nan')
+    else:
+        wp = float(stats.wilcoxon(delta, alternative='two-sided').pvalue)
+    return paired, dict(n=n, mean_delta=mean_delta, ci_lo=ci_lo, ci_hi=ci_hi, wilcoxon_p=wp)
+
+variants_in_sweep = sorted(within_summary['variant'].unique().tolist())
+scales_in_sweep = sorted(within_summary['scale_idx'].unique().tolist())
+rows = []
+all_paired = {}
+for v in variants_in_sweep:
+    for s in scales_in_sweep:
+        paired, stat = per_image_within_minus_loio(v, s)
+        all_paired[(v, s)] = paired
+        rows.append({
+            'variant': v, 'scale_idx': s, 'tile_size_px': int(2 ** (3 + s)),
+            **stat,
+        })
+delta_table = pd.DataFrame(rows)
+for c in ('mean_delta', 'ci_lo', 'ci_hi', 'wilcoxon_p'):
+    delta_table[c] = delta_table[c].round(4)
+delta_table.sort_values(['variant', 'scale_idx'])
+""",
+    cell_id="within-image-headline-table",
+))
+
+cells.append(code(
+    """# Bar chart: mean delta with 95% CI per (variant, scale).
+fig, ax = plt.subplots(figsize=(10, 4.2))
+x_base = np.arange(len(scales_in_sweep))
+width = 0.35
+variant_colors = {'lightgbm_two_stage': 'tab:olive', 'lightgbm_classification': 'tab:purple'}
+for i, v in enumerate(variants_in_sweep):
+    sub = delta_table[delta_table['variant'] == v].sort_values('scale_idx')
+    means = sub['mean_delta'].to_numpy()
+    ci_lo = sub['ci_lo'].to_numpy()
+    ci_hi = sub['ci_hi'].to_numpy()
+    err = np.stack([means - ci_lo, ci_hi - means])
+    ax.bar(x_base + (i - 0.5) * width, means, width, yerr=err, capsize=4,
+            color=variant_colors.get(v, 'gray'), alpha=0.85, label=v)
+ax.axhline(0, color='black', linewidth=0.7)
+ax.set_xticks(x_base)
+ax.set_xticklabels([f'S={int(2 ** (3 + s))}' for s in scales_in_sweep])
+ax.set_ylabel('within_image_AUC - LOIO_AUC (paired per image)')
+ax.set_title(f'Within-image vs LOIO: mean delta with bootstrap 95% CI (n=8 images)')
+ax.legend(fontsize=9, loc='best')
+fig.tight_layout()
+fig.savefig(FIG_DIR / '10_within_image_delta_bar.png', dpi=110)
+plt.show()
+""",
+    cell_id="within-image-delta-bar",
+))
+
+cells.append(md(
+    """### Per-image AUC: within-image (mean of 4 quadrants) vs LOIO
+
+Grouped bar chart showing, for each image, the within-image AUC (averaged across its
+4 spatial quadrant folds) alongside the LOIO AUC for that same image. The visual
+question is: do bars *systematically* lift above the LOIO baseline, or do
+within-image folds sit roughly on top of LOIO?
+
+Boulder-poor images (`ESP_056165_2200`, `ESP_075577_2105`) and the unknown image
+(`ESP_039820_1750`) have very few positives per quadrant, so their within-image bars
+carry more sampling noise than the Boulder-rich images.
+""",
+    cell_id="within-image-perimg-md",
+))
+
+cells.append(code(
+    """# Per-image AUC bar chart: paired within-image vs LOIO, one panel per (variant, scale).
+fig, axes = plt.subplots(
+    len(variants_in_sweep), len(scales_in_sweep),
+    figsize=(4.5 * len(scales_in_sweep), 3.6 * len(variants_in_sweep)),
+    sharey=True, squeeze=False,
+)
+for i, v in enumerate(variants_in_sweep):
+    for j, s in enumerate(scales_in_sweep):
+        ax = axes[i][j]
+        paired = all_paired[(v, s)].sort_values('held_out_obs_id')
+        if paired.empty:
+            ax.set_title(f'{v} S={int(2 ** (3 + s))}\\n(no data)', fontsize=8)
+            continue
+        x = np.arange(len(paired))
+        ax.bar(x - 0.2, paired['loio_auc'], 0.4, label='LOIO', color='tab:gray', alpha=0.85)
+        ax.bar(x + 0.2, paired['within_auc'], 0.4, label='within-image',
+               color=variant_colors.get(v, 'tab:purple'), alpha=0.85)
+        ax.axhline(0.5, color='black', linewidth=0.5, linestyle='--', alpha=0.5)
+        ax.set_xticks(x)
+        ax.set_xticklabels([oid[-4:] for oid in paired['held_out_obs_id']], rotation=45, ha='right', fontsize=7)
+        ax.set_ylim(0, 1)
+        ax.set_title(f'{v.replace("lightgbm_", "lgbm ")}  S={int(2 ** (3 + s))}', fontsize=9)
+        if j == 0:
+            ax.set_ylabel('AUC')
+        if i == 0 and j == len(scales_in_sweep) - 1:
+            ax.legend(fontsize=7, loc='lower right')
+fig.tight_layout()
+fig.savefig(FIG_DIR / '10_within_image_per_image_bar.png', dpi=110)
+plt.show()
+""",
+    cell_id="within-image-perimg-bar",
+))
+
+cells.append(md(
+    """### Diagnostic verdict
+
+The structural read of the deltas:
+
+- **If `mean_delta` is small and bracketed by zero (CI spans 0):** within-image and
+  LOIO see the same per-image signal; the 5 m / pixel CTX texture floor is the
+  binding constraint. *Adding more HiRISE images would not unlock additional
+  per-tile signal at this CTX resolution*. Other recommendations (CNN loss fix,
+  THEMIS validation, two-stage calibration) move into priority position.
+- **If `mean_delta` is positive at multiple scales, CI excludes 0, Wilcoxon p < 0.05:**
+  per-image generalisation is the binding constraint. *Geographically diverse HiRISE
+  images are the unlock.* Adding 9 -> 18 images would halve the per-fold standard
+  error and likely move AUC into the 0.6+ range that the existing modelling stack
+  can support.
+
+The verdict — and the recommendation update it implies — is captured in
+[`docs/modeling_results.md`](../docs/modeling_results.md) §7.
+""",
+    cell_id="within-image-verdict-md",
+))
+
+
+# ============================================================================
+# Spatial pred-vs-truth diagnostic: where does the model hit and miss?
+# ============================================================================
+
+cells.append(md(
+    """## Spatial pred-vs-truth diagnostic
+
+Every other figure in this notebook is *scalar*: mean Spearman, mean AUC, per-fold
+distribution, decile calibration, predicted-vs-true scatter on log-log axes. None
+of them answers the spatial question:
+
+> Given an image the model has never seen, where on that image does the
+> model think the boulders are, and how does that compare to where the
+> BoulderNet polygons actually sit?
+
+This section renders one row per held-out image with three CTX-anchored panels in
+matched world (metre) coordinates:
+
+1. **Truth** — per-tile `fractional_area` (Stage 4 ground-truth from BoulderNet
+   polygons rasterised onto the CTX grid).
+2. **Regression prediction** — `lightgbm_two_stage` LOIO `y_pred` at S=64
+   (best-Spearman cell, modeling_results.md §1).
+3. **Classifier probability** — `lightgbm_classification` @ `bc_ge_1` LOIO predicted
+   probability at S=64.
+
+All three panels show the **decimated CTX window** as the greyscale background and
+overlay the **reprojected BoulderNet detection polygons** as lime outlines, so the
+true boulder *positions* (not just per-tile aggregate counts) are visible. Because
+each panel uses LOIO predictions, the model has been trained on the OTHER 8 images
+in the priority10 manifest and has never seen the image rendered here — these are
+honest held-out spatial predictions, not training-set fits.
+
+The point is qualitative: the scalar AUC ≈ 0.55 result already tells us the model is
+weakly above chance. The spatial view tells us *what that weakness looks like* —
+whether the model is producing a near-constant abundance everywhere, capturing the
+broad envelope but missing the high-abundance clusters, or hallucinating boulders in
+empty regions.
+""",
+    cell_id="spatial-pred-vs-truth-md",
+))
+
+cells.append(code(
+    """import rasterio
+import geopandas as gpd
+from matplotlib.colors import LogNorm, Normalize
+
+# Locate the canonical LOIO prediction artifacts for the two model variants whose
+# spatial output we want to inspect. Each (variant, scale) writes to its own
+# config_hash dir; glob across hashes and pick most-recent.
+def _latest_pred_path(variant: str, scale_px: int, suffix: str = '') -> Path:
+    pat = f'*/scale_S{scale_px}{suffix}/predictions.parquet'
+    candidates = sorted((MODELS_ROOT / variant).glob(pat),
+                        key=lambda p: p.stat().st_mtime)
+    if not candidates:
+        raise FileNotFoundError(f'no predictions matching {variant}/{pat}')
+    return candidates[-1]
+
+REG_S64_PATH = _latest_pred_path('lightgbm_two_stage', 64)
+CLS_S64_PATH = _latest_pred_path('lightgbm_classification', 64, suffix='_tbc_ge_1')
+print(f'regression  preds: {REG_S64_PATH.relative_to(REPO_ROOT)}')
+print(f'classifier  preds: {CLS_S64_PATH.relative_to(REPO_ROOT)}')
+
+reg_preds_all = pd.read_parquet(REG_S64_PATH)
+cls_preds_all = pd.read_parquet(CLS_S64_PATH)
+print(f'reg preds rows: {len(reg_preds_all):,}  cls preds rows: {len(cls_preds_all):,}')
+
+# Restrict the iteration to ObsIds that actually have Stage 4 / 4b artifacts on disk.
+# The priority10 manifest carries ESP_057469_2215 which was dropped from the Stage 4
+# sweep upstream (multi-tile straddle; DECISIONS.md 2026-05-22) -- without this filter,
+# the spatial panels would try to load a missing labels parquet and crash.
+_LABELS_DIR = REPO_ROOT / 'dataset' / 'labels'
+_HAVE_LABELS = {p.stem for p in _LABELS_DIR.glob('*.parquet')}
+print(f'images with labels on disk: {len(_HAVE_LABELS)}')
+""",
+    cell_id="spatial-load-preds",
+))
+
+cells.append(code(
+    """def _grid_for_image(df, value_col):
+    \"\"\"Build a 2-D (ti, tj) grid + its world-coordinate extent.
+
+    Caller is responsible for filtering to a single tile_size_px first. Returns
+    (grid, extent) where extent = (x_lo, x_hi, y_lo, y_hi) in CTX-mosaic metres.
+    Tiles outside the HiRISE footprint are absent from `df` and appear as NaN in
+    the grid (matplotlib renders NaN as transparent under most colormaps).
+    \"\"\"
+    sub = df
+    if sub.empty:
+        return None, None
+    ti_min, ti_max = int(sub['ti'].min()), int(sub['ti'].max())
+    tj_min, tj_max = int(sub['tj'].min()), int(sub['tj'].max())
+    grid = np.full((ti_max - ti_min + 1, tj_max - tj_min + 1), np.nan, dtype=np.float64)
+    grid[sub['ti'].to_numpy() - ti_min, sub['tj'].to_numpy() - tj_min] = sub[value_col].to_numpy()
+    x_lo = float(sub['xmin'].min())
+    x_hi = float(sub['xmax'].max())
+    y_lo = float(sub['ymin'].min())
+    y_hi = float(sub['ymax'].max())
+    return grid, (x_lo, x_hi, y_lo, y_hi)
+
+
+def _render_panel(ax, ctx_arr, ctx_extent, value_grid, value_extent, polys,
+                   *, title, norm, cmap, cbar_label, fig):
+    \"\"\"One panel: CTX greyscale background + tile-level heatmap overlay + polygon outlines.\"\"\"
+    # CTX background: clip to 1st/99th percentile to keep the dynamic range readable.
+    p1, p99 = np.percentile(ctx_arr[ctx_arr > 0], [1, 99]) if (ctx_arr > 0).any() else (0, 255)
+    ax.imshow(ctx_arr, extent=ctx_extent, cmap='gray', vmin=p1, vmax=p99,
+              origin='upper', interpolation='nearest', aspect='equal')
+    if value_grid is not None:
+        im = ax.imshow(value_grid, extent=value_extent, cmap=cmap, norm=norm,
+                       alpha=0.62, origin='upper', interpolation='nearest', aspect='equal')
+        cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
+        cbar.set_label(cbar_label, fontsize=8)
+        cbar.ax.tick_params(labelsize=7)
+    if polys is not None and not polys.empty:
+        polys.plot(ax=ax, facecolor='none', edgecolor='lime', linewidth=0.25, alpha=0.6)
+    ax.set_xlim(ctx_extent[0], ctx_extent[1])
+    ax.set_ylim(ctx_extent[2], ctx_extent[3])
+    ax.set_title(title, fontsize=9)
+    ax.set_xticks([])
+    ax.set_yticks([])
+
+
+def render_image_row(obs_id, fig, axes_row, *, tile_size_px=64):
+    \"\"\"Render the (truth, regression pred, classifier prob) row for one ObsId.\"\"\"
+    labels = pd.read_parquet(REPO_ROOT / 'dataset' / 'labels' / f'{obs_id}.parquet')
+    sub = labels[labels['tile_size_px'] == tile_size_px][
+        ['ti', 'tj', 'xmin', 'ymin', 'xmax', 'ymax', 'fractional_area']
+    ].copy()
+
+    with rasterio.open(REPO_ROOT / 'cache' / 'ctx_windows' / f'{obs_id}.tif') as r:
+        ctx_arr = r.read(1)
+        ctx_extent = (r.bounds.left, r.bounds.right, r.bounds.bottom, r.bounds.top)
+
+    polys_path = REPO_ROOT / 'cache' / 'reprojected_detections' / f'{obs_id}.gpkg'
+    polys = gpd.read_file(polys_path) if polys_path.exists() else None
+
+    truth_grid, truth_ext = _grid_for_image(sub, 'fractional_area')
+    has_pos = (sub['fractional_area'] > 0).any()
+    truth_norm = LogNorm(vmin=max(sub.loc[sub['fractional_area'] > 0, 'fractional_area'].min(), 1e-5),
+                         vmax=max(sub['fractional_area'].max(), 1e-4)) if has_pos else Normalize(vmin=0, vmax=1)
+
+    reg = reg_preds_all[(reg_preds_all['obs_id'] == obs_id) & (reg_preds_all['tile_size_px'] == tile_size_px)]
+    reg = reg.merge(sub[['ti', 'tj', 'xmin', 'ymin', 'xmax', 'ymax']], on=['ti', 'tj'], how='inner')
+    reg = reg.assign(reg_val=reg['y_pred'].clip(lower=0))
+    reg_grid, reg_ext = _grid_for_image(reg, 'reg_val')
+    # Use the same color norm as truth so the two panels are visually comparable.
+    reg_norm = truth_norm if has_pos else Normalize(vmin=0,
+                                                     vmax=max(float(reg['reg_val'].max()), 1e-4))
+
+    cls = cls_preds_all[(cls_preds_all['obs_id'] == obs_id) & (cls_preds_all['tile_size_px'] == tile_size_px)]
+    cls = cls.merge(sub[['ti', 'tj', 'xmin', 'ymin', 'xmax', 'ymax']], on=['ti', 'tj'], how='inner')
+    cls_grid, cls_ext = _grid_for_image(cls, 'y_pred')
+    cls_norm = Normalize(vmin=0.0, vmax=1.0)
+
+    boulder_label = obs_to_label.get(obs_id, 'empty')
+    n_polys = 0 if polys is None else len(polys)
+    _render_panel(axes_row[0], ctx_arr, ctx_extent, truth_grid, truth_ext, polys,
+                   title=f'{obs_id}  ({boulder_label})\\nTRUTH fractional_area (S={tile_size_px}, n_polys={n_polys:,})',
+                   norm=truth_norm, cmap='inferno', cbar_label='true fractional_area', fig=fig)
+    _render_panel(axes_row[1], ctx_arr, ctx_extent, reg_grid, reg_ext, polys,
+                   title=f'PRED lightgbm_two_stage\\n(LOIO, S={tile_size_px})',
+                   norm=reg_norm, cmap='inferno', cbar_label='pred fractional_area', fig=fig)
+    _render_panel(axes_row[2], ctx_arr, ctx_extent, cls_grid, cls_ext, polys,
+                   title=f'PRED lightgbm_classification @ bc_ge_1\\n(LOIO probability, S={tile_size_px})',
+                   norm=cls_norm, cmap='viridis', cbar_label='P(boulder)', fig=fig)
+""",
+    cell_id="spatial-helpers",
+))
+
+cells.append(md(
+    """### Boulder-rich images (6)
+
+The six images flagged `Boulder rich` in the priority10 manifest. These are the
+test set with enough positive tiles for the regression heatmap to have visible
+dynamic range. The lime polygons in each panel are the original BoulderNet
+detections (reprojected to the CTX mosaic CRS) — small lime dots / clusters
+mark individual boulder positions.
+
+What to look at:
+
+- **Spatial agreement between TRUTH and PRED.** Does the predicted-abundance
+  pattern follow the truth pattern at the level of broad regions of the image,
+  or is it essentially flat with weak per-tile fluctuation?
+- **Maximum predicted value.** PLAN_modeling.md §11.2 documented the
+  ~10× compression of the GBM's prediction range vs the true range; the
+  inferno colorbar uses the truth's log-scale, so a model that compresses
+  its predictions into the low end of the truth range will look almost dark
+  blue across the entire pred panel.
+- **Classifier probability vs. truth.** The classifier panel is on a fixed
+  [0, 1] viridis scale and is independent of the regression panel's
+  log-norm. Look for whether the high-probability regions (yellow) sit on
+  top of polygon-dense regions.
+""",
+    cell_id="spatial-rich-md",
+))
+
+cells.append(code(
+    """rich_obs = sorted([obs for obs, lbl in obs_to_label.items()
+                            if lbl == 'Boulder rich' and obs in _HAVE_LABELS])
+print(f'Boulder-rich ObsIds ({len(rich_obs)}):', rich_obs)
+
+fig, axes = plt.subplots(len(rich_obs), 3, figsize=(15, 4.2 * len(rich_obs)),
+                          squeeze=False)
+for i, obs in enumerate(rich_obs):
+    render_image_row(obs, fig, axes[i], tile_size_px=64)
+fig.tight_layout()
+fig.savefig(FIG_DIR / '10_spatial_pred_vs_truth_rich.png', dpi=120, bbox_inches='tight')
+plt.show()
+""",
+    cell_id="spatial-rich-fig",
+))
+
+cells.append(md(
+    """### Boulder-poor + unknown + empty-truth images (3)
+
+Three diagnostic images that stress different failure modes:
+
+- **Boulder-poor (`ESP_056165_2200`, `ESP_075577_2105`)** — few positives per
+  image; the regression panel should be near-empty, and the classifier panel
+  should show whether the model still flags large regions as high-probability
+  (a false-positive failure mode that would not be visible in the AUC because
+  the rank ordering can still be roughly correct).
+- **Unknown (`ESP_039820_1750`)** — boulder presence not labelled in the
+  manifest; visually inspect whether the predictions track the polygon
+  density even though the per-image class is uncertain. (BoulderNet was still
+  run on this image, so the truth polygons are real.)
+- **Empty-truth (`ESP_065711_1545`)** — the no-detections image. Both the
+  regression and classifier panels here are pure false-positive maps: any
+  non-zero value is the model hallucinating boulders that BoulderNet did
+  not find. This is the specificity check that the §6.4 calibration table
+  flagged as poor (`scale_pos_weight` inflates predicted probabilities).
+""",
+    cell_id="spatial-diverse-md",
+))
+
+cells.append(code(
+    """diverse_obs = sorted([obs for obs, lbl in obs_to_label.items()
+                              if lbl in ('Boulder poor', 'unknown') and obs in _HAVE_LABELS])
+if 'ESP_065711_1545' in _HAVE_LABELS:
+    diverse_obs += ['ESP_065711_1545']  # always include the empty-truth image
+diverse_obs = list(dict.fromkeys(diverse_obs))  # de-dup, preserve order
+print(f'Diverse ObsIds ({len(diverse_obs)}):', diverse_obs)
+
+fig, axes = plt.subplots(len(diverse_obs), 3, figsize=(15, 4.2 * len(diverse_obs)),
+                          squeeze=False)
+for i, obs in enumerate(diverse_obs):
+    render_image_row(obs, fig, axes[i], tile_size_px=64)
+fig.tight_layout()
+fig.savefig(FIG_DIR / '10_spatial_pred_vs_truth_diverse.png', dpi=120, bbox_inches='tight')
+plt.show()
+""",
+    cell_id="spatial-diverse-fig",
+))
+
+cells.append(md(
+    """### Reading the spatial diagnostic
+
+The expected pattern given the §1 / §6 / §7 ceiling (AUC ≈ 0.55, Spearman in the
+single-digit hundredths):
+
+- **TRUTH** panels show concentrated high-abundance hotspots wherever the
+  BoulderNet polygons cluster (the lime dots are dense), plus broad regions of
+  zero or near-zero fractional area.
+- **REGRESSION PRED** panels predict values an order of magnitude below the
+  truth's maximum (the inferno colormap saturates near-black across most of
+  the image), but the spatial pattern of where the model places its highest
+  predicted abundance does have weak correspondence with the truth hotspots —
+  this is the +0.06 Spearman signal made visible spatially.
+- **CLASSIFIER PROBABILITY** panels operate on a different scale (probability
+  in [0, 1]) and show stronger spatial contrast — bright yellow regions are
+  where the classifier confidently flags boulder presence. The fraction of
+  yellow on Boulder-poor images (especially `ESP_065711_1545`'s empty-truth
+  panel) directly measures false-positive rate; this is the §6.4 calibration
+  problem made visible spatially.
+
+This is the figure to cite when an outside reviewer asks "can your model
+predict where the boulders are?" — the answer is "yes, weakly, at the
+broad-region level, but compresses the dynamic range and produces calibrated
+false positives on plains."
+""",
+    cell_id="spatial-reading-md",
+))
+
+
 cells.append(md(
     """## Summary
 
