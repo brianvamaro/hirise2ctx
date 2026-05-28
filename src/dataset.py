@@ -43,6 +43,18 @@ FEATURES_SUBDIR = "features"  # matches src.features.FEATURES_SUBDIR
 # X (features) or y (labels) side.
 TILE_KEY_COLUMNS = ["obs_id", "scale_idx", "tile_size_px", "ti", "tj"]
 
+# Stage 4 special-case ObsId: the empty-truth image (no detections survive Stage 4 filters).
+# Excluded from within-image CV by default because the within-image experiment needs a
+# non-empty test quadrant to be diagnostic.
+EMPTY_TRUTH_OBS_ID = "ESP_065711_1545"
+
+# Maps tile_size_px -> integer factor relative to the finest scale. Hard-coded here
+# instead of re-derived per call because the within-image partitioner needs the same
+# factor convention at every step (per-scale ti_mid is the finest-scale ti_mid // factor;
+# strictly coherent quadrant assignment requires the finest ti_mid to be a multiple of
+# the coarsest factor). Extend this dict if new scales are added upstream.
+SCALE_TO_FACTOR_FROM_FINEST = {8: 1, 16: 2, 32: 4, 64: 8}
+
 # Label-side columns -- everything we'd want to predict, plus per-tile context useful
 # for analysis. Anything not in this list and not a tile-key column is treated as X.
 LABEL_COLUMNS = [
@@ -105,6 +117,206 @@ def build_image_inventory(
 # ============================================================================
 # Split construction
 # ============================================================================
+
+def _compute_quadrant_definitions(
+    obs_id: str,
+    labels_dir: Path,
+    *,
+    finest_scale_px: int = 8,
+    scale_to_factor: dict[int, int] | None = None,
+) -> dict[str, dict[str, int]]:
+    """Compute per-image, per-scale (ti_mid, tj_mid) cuts for the 2x2 quadrant partition.
+
+    Approach (resolves the inconsistency in PLAN_Stage5c.md §3): the finest-scale median
+    is *snapped to a multiple of the coarsest factor* and then divided down to each coarser
+    scale. This produces a single shared physical cut across all scales -- every S=8 tile
+    lands in the same quadrant as its S=16 / S=32 / S=64 parent, exactly. Equivalent to
+    "compute the median in S=8 units, snap to multiple of 8, divide by (Sk/S8) to get the
+    cut at scale Sk."
+
+    Returns a dict keyed by stringified tile_size_px (matches the metadata JSON layout
+    in PLAN_Stage5c.md §4):
+
+        {"8":  {"ti_mid": 1352, "tj_mid": 5184},
+         "16": {"ti_mid": 676,  "tj_mid": 2592},
+         "32": {"ti_mid": 338,  "tj_mid": 1296},
+         "64": {"ti_mid": 169,  "tj_mid": 648}}
+
+    Only scales actually present in this image's labels parquet appear in the dict.
+    """
+    if scale_to_factor is None:
+        scale_to_factor = SCALE_TO_FACTOR_FROM_FINEST
+    df = pd.read_parquet(Path(labels_dir) / f"{obs_id}.parquet", columns=["tile_size_px", "ti", "tj"])
+    finest = df[df["tile_size_px"] == finest_scale_px]
+    if len(finest) == 0:
+        raise ValueError(
+            f"{obs_id}: no rows at tile_size_px={finest_scale_px}; cannot compute quadrant cuts."
+        )
+    # Use the integer-valued median directly (each tile's ti/tj is already an integer
+    # index into the CTX pixel grid). For an even-sized sample, np.median returns a
+    # midpoint which we then snap.
+    raw_ti_mid = float(np.median(finest["ti"].to_numpy()))
+    raw_tj_mid = float(np.median(finest["tj"].to_numpy()))
+    coarsest_factor = max(scale_to_factor.values())
+    # Floor-snap to a multiple of the coarsest factor so the cut is integer-exact at the
+    # coarsest scale (and therefore exact at every finer scale by division).
+    ti_mid_finest = (int(raw_ti_mid) // coarsest_factor) * coarsest_factor
+    tj_mid_finest = (int(raw_tj_mid) // coarsest_factor) * coarsest_factor
+    present_scales = sorted(set(int(s) for s in df["tile_size_px"].unique()))
+    defs: dict[str, dict[str, int]] = {}
+    for tile_px in present_scales:
+        if tile_px not in scale_to_factor:
+            # Unknown scale (e.g. someone added S=128 upstream without updating the
+            # factor map) -- skip rather than guess.
+            continue
+        factor = scale_to_factor[tile_px]
+        defs[str(tile_px)] = {
+            "ti_mid": int(ti_mid_finest // factor),
+            "tj_mid": int(tj_mid_finest // factor),
+        }
+    return defs
+
+
+def _quadrant_array_for_image(
+    df: pd.DataFrame,
+    quadrant_definitions: dict[str, dict[str, int]],
+    *,
+    buffer_tiles: int = 0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Assign each row in `df` to a quadrant (0..3) and a keep/drop mask.
+
+    Quadrant predicate: quadrant = 2 * (ti >= ti_mid) + (tj >= tj_mid), where ti_mid/tj_mid
+    are looked up per-scale from `quadrant_definitions`. Buffer drops tiles whose
+    |ti - ti_mid| < buffer_tiles OR |tj - tj_mid| < buffer_tiles at their scale; buffer=0
+    therefore drops nothing, buffer=1 drops exactly the cut-line row/column tiles.
+
+    Returns (quadrant_array, keep_mask) -- both shape (len(df),).
+    Rows with `tile_size_px` not in `quadrant_definitions` get quadrant=-1 and keep=False.
+    """
+    q_arr = np.full(len(df), -1, dtype=np.int32)
+    keep = np.zeros(len(df), dtype=bool)
+    tile_px_arr = df["tile_size_px"].to_numpy()
+    ti_arr = df["ti"].to_numpy()
+    tj_arr = df["tj"].to_numpy()
+    for tile_px_str, qd in quadrant_definitions.items():
+        tile_px = int(tile_px_str)
+        sel = tile_px_arr == tile_px
+        if not sel.any():
+            continue
+        ti_mid = int(qd["ti_mid"])
+        tj_mid = int(qd["tj_mid"])
+        ti_sub = ti_arr[sel]
+        tj_sub = tj_arr[sel]
+        q_sub = (2 * (ti_sub >= ti_mid).astype(np.int32)) + (tj_sub >= tj_mid).astype(np.int32)
+        q_arr[sel] = q_sub
+        if buffer_tiles > 0:
+            in_buf = (np.abs(ti_sub - ti_mid) < buffer_tiles) | (np.abs(tj_sub - tj_mid) < buffer_tiles)
+            keep_sub = ~in_buf
+        else:
+            keep_sub = np.ones(int(sel.sum()), dtype=bool)
+        keep[sel] = keep_sub
+    return q_arr, keep
+
+
+def _within_image_fold_summary(
+    obs_id: str,
+    quadrant_idx: int,
+    quadrant_definitions: dict[str, dict[str, int]],
+    inventory: pd.DataFrame,
+    labels_dir: Path,
+    *,
+    buffer_tiles: int,
+) -> tuple[dict, dict[str, int], dict[str, int]]:
+    """Compute (test_summary, n_test_tiles_per_scale, n_train_tiles_per_scale) for one fold.
+
+    test_summary mirrors the LOIO `_fold_summary` shape but represents one quadrant of
+    one image. We retain the per-scale tile counts as a separate dict so analyses can
+    inspect per-scale balance directly.
+    """
+    df = pd.read_parquet(
+        Path(labels_dir) / f"{obs_id}.parquet",
+        columns=["tile_size_px", "ti", "tj", "fractional_area"],
+    )
+    q_arr, keep = _quadrant_array_for_image(df, quadrant_definitions, buffer_tiles=buffer_tiles)
+    test_mask = (q_arr == quadrant_idx) & keep
+    train_mask = (q_arr != quadrant_idx) & (q_arr >= 0) & keep
+
+    finest_px = min(int(s) for s in quadrant_definitions.keys())
+    finest_test_mask = test_mask & (df["tile_size_px"].to_numpy() == finest_px)
+    frac_mean_finest = (
+        float(df.loc[finest_test_mask, "fractional_area"].mean())
+        if int(finest_test_mask.sum()) > 0 else 0.0
+    )
+
+    label = str(inventory.loc[obs_id, "BoulderLabel"]) if obs_id in inventory.index else ""
+    test_summary = {
+        "n_images": 1,
+        "n_tiles_total": int(test_mask.sum()),
+        "n_tiles_finest": int(finest_test_mask.sum()),
+        "boulder_labels": {label: 1} if label else {},
+        "frac_mean_finest_avg": frac_mean_finest,
+    }
+    n_test = {s: int(((q_arr == quadrant_idx) & keep & (df["tile_size_px"].to_numpy() == int(s))).sum())
+              for s in quadrant_definitions.keys()}
+    n_train = {s: int(((q_arr != quadrant_idx) & (q_arr >= 0) & keep & (df["tile_size_px"].to_numpy() == int(s))).sum())
+               for s in quadrant_definitions.keys()}
+    return test_summary, n_test, n_train
+
+
+def _assign_within_image_kfold(
+    inventory: pd.DataFrame,
+    *,
+    labels_dir: Path,
+    n_folds_per_image: int = 4,
+    buffer_tiles: int = 0,
+    excluded_obs_ids: list[str] | None = None,
+) -> tuple[list[dict], list[str]]:
+    """Generate per-(image, quadrant) folds. PLAN_Stage5c.md §3.
+
+    Returns (folds_meta, used_obs_ids):
+      - folds_meta: flat list of fold dicts; each carries test_obs_id, test_quadrant,
+        quadrant_definitions, plus the LOIO-compatible test_obs_ids/train_obs_ids singleton
+        lists so downstream loaders (which key off test_obs_ids) keep working unchanged.
+      - used_obs_ids: the manifest list after excluding `excluded_obs_ids`. Used as the
+        canonical `manifest_obs_ids` in the split-metadata JSON.
+
+    Only `n_folds_per_image == 4` (2x2) is supported. PLAN_Stage5c.md §11 q1 -- 3x3 is
+    a follow-up if reviewers ask for finer-grained per-image variance estimates.
+    """
+    if n_folds_per_image != 4:
+        raise NotImplementedError(
+            f"Only n_folds_per_image=4 (2x2 spatial partition) is supported; got {n_folds_per_image}."
+        )
+    excluded = set(excluded_obs_ids or [])
+    used_obs_ids = [o for o in sorted(inventory.index) if o not in excluded]
+    folds: list[dict] = []
+    fold_idx = 0
+    for obs_id in used_obs_ids:
+        defs = _compute_quadrant_definitions(obs_id, labels_dir)
+        for q in range(n_folds_per_image):
+            test_summary, n_test, n_train = _within_image_fold_summary(
+                obs_id, q, defs, inventory, labels_dir, buffer_tiles=buffer_tiles,
+            )
+            folds.append({
+                "fold_idx": fold_idx,
+                "test_obs_id": obs_id,
+                "test_quadrant": int(q),
+                "quadrant_definitions": defs,
+                "n_test_tiles_per_scale": n_test,
+                "n_train_tiles_per_scale": n_train,
+                # LOIO-compatible shape: a fold's "test_obs_ids" is the singleton list of
+                # the image being tested; "train_obs_ids" is the same singleton (training
+                # data is the OTHER three quadrants of the SAME image). Downstream code
+                # that reads test_obs_ids[0] (e.g. loaders.load_fold -> held_out_obs_ids)
+                # continues to work.
+                "test_obs_ids": [obs_id],
+                "train_obs_ids": [obs_id],
+                "test_summary": test_summary,
+                "train_summary": test_summary,  # whole-image stats; per-quadrant detail in n_*_tiles_per_scale
+            })
+            fold_idx += 1
+    return folds, used_obs_ids
+
 
 def _assign_loio_9fold(inventory: pd.DataFrame, seed: int) -> list[list[str]]:
     """True leave-one-image-out: each ObsId is the test set in exactly one fold.
@@ -177,7 +389,11 @@ def _fold_summary(
 
 def _split_metadata_hash(meta: dict) -> str:
     """Stable hash of the split-defining fields. Used as provenance; excludes timestamp."""
-    keys = ("name", "kind", "n_folds", "stratification", "manifest_obs_ids", "folds")
+    keys = (
+        "name", "kind", "n_folds", "stratification", "manifest_obs_ids", "folds",
+        # within-image specific:
+        "n_folds_per_image", "buffer_tiles", "excluded_obs_ids",
+    )
     canonical = json.dumps(
         {k: meta[k] for k in keys if k in meta},
         sort_keys=True, default=str, separators=(",", ":"),
@@ -193,13 +409,59 @@ def build_split(
     seed: int = 0,
     inventory: pd.DataFrame,
     config_hash: str,
+    # within-image-only kwargs (ignored by LOIO / balanced k-fold paths):
+    labels_dir: Path | None = None,
+    n_folds_per_image: int = 4,
+    buffer_tiles: int = 0,
+    excluded_obs_ids: list[str] | None = None,
 ) -> dict:
     """Return the split-metadata dict; doesn't write anything to disk.
 
     Caller is responsible for writing the JSON via `write_split_metadata`. Splitting
     this in two so tests can build a split in-memory without touching the filesystem.
+
+    Stratification dispatch:
+      - 'none' -> true LOIO, one image per fold (kind='leave-image-out').
+      - 'boulder_label_size_balanced' -> greedy size-balanced k-fold (kind='leave-image-out').
+      - 'within_image' -> 2x2 spatial quadrant per image, n_folds = n_images * n_folds_per_image
+        (kind='within-image'). Requires `labels_dir`. PLAN_Stage5c.md.
     """
     obs_ids = sorted(inventory.index)
+    if stratification == "within_image":
+        if labels_dir is None:
+            raise ValueError(
+                f"Scheme {name!r}: stratification='within_image' requires the labels_dir kwarg."
+            )
+        folds_meta, used_obs_ids = _assign_within_image_kfold(
+            inventory, labels_dir=labels_dir,
+            n_folds_per_image=n_folds_per_image,
+            buffer_tiles=buffer_tiles,
+            excluded_obs_ids=excluded_obs_ids,
+        )
+        expected_n_folds = len(used_obs_ids) * n_folds_per_image
+        if n_folds != expected_n_folds:
+            raise ValueError(
+                f"Scheme {name!r}: stratification='within_image' with {len(used_obs_ids)} "
+                f"non-excluded images and n_folds_per_image={n_folds_per_image} expects "
+                f"n_folds={expected_n_folds}; got {n_folds}."
+            )
+        metadata = {
+            "name": name,
+            "kind": "within-image",
+            "n_folds": len(folds_meta),
+            "stratification": stratification,
+            "seed": int(seed),
+            "n_folds_per_image": int(n_folds_per_image),
+            "buffer_tiles": int(buffer_tiles),
+            "manifest_obs_ids": used_obs_ids,
+            "excluded_obs_ids": sorted(excluded_obs_ids or []),
+            "folds": folds_meta,
+            "config_hash": config_hash,
+        }
+        metadata["split_hash"] = _split_metadata_hash(metadata)
+        metadata["written_at_iso"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        return metadata
+
     if stratification == "none":
         if n_folds != len(obs_ids):
             # n_folds != n_images with no stratification means we'd be doing arbitrary
@@ -214,7 +476,7 @@ def build_split(
     else:
         raise ValueError(
             f"Scheme {name!r}: unknown stratification {stratification!r}. "
-            f"Supported: 'none', 'boulder_label_size_balanced'."
+            f"Supported: 'none', 'boulder_label_size_balanced', 'within_image'."
         )
 
     folds_meta = []
@@ -361,7 +623,19 @@ def package_split(
 
     The in-memory concat is fine at 9 images (~500 MB total joined dataframe). At 50+
     images, switch to the streaming iterator pattern (see PLAN_Stage5.md §11b).
+
+    Dispatches on `metadata['kind']`: 'leave-image-out' uses the standard per-ObsId
+    packaging; 'within-image' partitions each image's tiles into per-quadrant folds
+    (PLAN_Stage5c.md). Both produce the same per-fold parquet layout, so downstream
+    loaders work unchanged.
     """
+    if metadata.get("kind") == "within-image":
+        return _package_within_image_split(
+            metadata,
+            labels_dir=labels_dir, features_dir=features_dir,
+            output_dir=output_dir, scale_filter=scale_filter,
+            emit_all_parquet=emit_all_parquet, config_hash=config_hash,
+        )
     name = metadata["name"]
     out_dir = Path(output_dir) / PACKAGED_SUBDIR / name
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -452,3 +726,116 @@ def load_package_metadata(name: str, output_dir: Path) -> dict:
     return json.loads(
         (Path(output_dir) / PACKAGED_SUBDIR / name / "metadata.json").read_text(encoding="utf-8")
     )
+
+
+# ============================================================================
+# Within-image packaging (Stage 5c -- spatial quadrant CV)
+# ============================================================================
+
+def _package_within_image_split(
+    metadata: dict,
+    *,
+    labels_dir: Path,
+    features_dir: Path | None,
+    output_dir: Path,
+    scale_filter: list[int] | None = None,
+    emit_all_parquet: bool = True,
+    config_hash: str,
+) -> dict:
+    """Per-(image, quadrant) packaging counterpart of `package_split`.
+
+    Train rows for fold k are the OTHER three quadrants of the SAME image as fold k's
+    test quadrant. Groups arrays store the per-row quadrant index (0..3) -- this lets the
+    LOIO inner-validation rotation in `src.modeling.evaluate.run_loio` cycle through
+    the 3 training quadrants for early-stopping without collision with the held-out one
+    (the inner-val code is `unique_train[fold_idx % n_unique]`, which here picks one of
+    the 3 non-test quadrants).
+    """
+    name = metadata["name"]
+    out_dir = Path(output_dir) / PACKAGED_SUBDIR / name
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    per_image: dict[str, pd.DataFrame] = {}
+    for obs in metadata["manifest_obs_ids"]:
+        per_image[obs] = _join_one_image(
+            obs, labels_dir=labels_dir, features_dir=features_dir,
+            scale_filter=scale_filter,
+        )
+
+    obs_to_int = {obs: i for i, obs in enumerate(metadata["manifest_obs_ids"])}
+    buffer_tiles = int(metadata.get("buffer_tiles", 0))
+
+    per_fold_counts: list[dict] = []
+    for fold in metadata["folds"]:
+        k = int(fold["fold_idx"])
+        obs = fold["test_obs_id"]
+        test_quadrant = int(fold["test_quadrant"])
+        defs = fold["quadrant_definitions"]
+        df = per_image[obs]
+        q_arr, keep = _quadrant_array_for_image(df, defs, buffer_tiles=buffer_tiles)
+        test_mask_arr = (q_arr == test_quadrant) & keep
+        train_mask_arr = (q_arr != test_quadrant) & (q_arr >= 0) & keep
+        train_df = df[train_mask_arr].reset_index(drop=True)
+        test_df = df[test_mask_arr].reset_index(drop=True)
+        train_q = q_arr[train_mask_arr].astype(np.int32, copy=False)
+        test_q = q_arr[test_mask_arr].astype(np.int32, copy=False)
+
+        x_cols, y_cols = _split_columns(train_df)
+        x_keep = TILE_KEY_COLUMNS + x_cols
+        y_keep = TILE_KEY_COLUMNS + y_cols
+
+        train_df[x_keep].to_parquet(out_dir / f"X_train_fold{k}.parquet", index=False)
+        train_df[y_keep].to_parquet(out_dir / f"y_train_fold{k}.parquet", index=False)
+        test_df[x_keep].to_parquet(out_dir / f"X_test_fold{k}.parquet", index=False)
+        test_df[y_keep].to_parquet(out_dir / f"y_test_fold{k}.parquet", index=False)
+        np.save(out_dir / f"groups_train_fold{k}.npy", train_q)
+        np.save(out_dir / f"groups_test_fold{k}.npy", test_q)
+
+        per_fold_counts.append({
+            "fold_idx": k,
+            "n_train_tiles": int(len(train_df)),
+            "n_test_tiles": int(len(test_df)),
+            "n_train_x_cols": len(x_cols),
+            "n_y_cols": len(y_cols),
+            "test_obs_ids": [obs],
+            "test_obs_id": obs,
+            "test_quadrant": test_quadrant,
+        })
+
+    all_path: str | None = None
+    if emit_all_parquet:
+        # Every (image, quadrant) tile appears exactly once -- tagged with its test fold_idx
+        # and its quadrant index. Reconstruct per-fold sets by `fold_idx == k` for test or
+        # `test_obs_id == fold.test_obs_id & quadrant != fold.test_quadrant` for train.
+        all_rows = []
+        for fold in metadata["folds"]:
+            k = int(fold["fold_idx"])
+            obs = fold["test_obs_id"]
+            test_quadrant = int(fold["test_quadrant"])
+            df = per_image[obs]
+            q_arr, keep = _quadrant_array_for_image(df, fold["quadrant_definitions"], buffer_tiles=buffer_tiles)
+            sel = (q_arr == test_quadrant) & keep
+            sub = df[sel].copy()
+            sub["fold_idx"] = k
+            sub["test_quadrant"] = test_quadrant
+            all_rows.append(sub)
+        all_df = pd.concat(all_rows, ignore_index=True) if all_rows else pd.DataFrame()
+        all_path = str(out_dir / "all.parquet")
+        all_df.to_parquet(all_path, index=False)
+
+    package_meta = {
+        "name": name,
+        "kind": "within-image",
+        "split_hash": metadata["split_hash"],
+        "config_hash": config_hash,
+        "scale_filter": list(scale_filter) if scale_filter is not None else None,
+        "emit_all_parquet": bool(emit_all_parquet),
+        "obs_to_int": obs_to_int,
+        "n_folds_per_image": int(metadata.get("n_folds_per_image", 4)),
+        "buffer_tiles": buffer_tiles,
+        "per_fold": per_fold_counts,
+        "all_parquet_path": all_path,
+        "written_at_iso": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+    }
+    (out_dir / "metadata.json").write_text(json.dumps(package_meta, indent=2), encoding="utf-8")
+    return package_meta

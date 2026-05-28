@@ -1057,6 +1057,97 @@ diagnostics from here.
 - Fold definitions in `dataset/splits/loio_9fold.json` and
   `dataset/splits/loio_3fold_balanced.json` are unchanged.
 
+## 2026-05-27 — Stage 5c (within-image cross-validation diagnostic) landed
+
+The Stage 5 / Stage 5b sweeps converged on AUC ≈ 0.52–0.55 — two independent target
+framings (regression + binary classification) at the same ceiling. The §6.5 reading was
+"the 9-image LOIO dataset is at its information ceiling for what 5 m / pixel CTX texture
+can discriminate," but that was a one-sided argument: the data could equally be
+consistent with "per-image generalisation is the binding constraint, more diverse
+HiRISE images would unlock signal." Stage 5c is the diagnostic experiment that decides
+between those two hypotheses.
+
+**Design (`PLAN_Stage5c.md`).** Within-image 2×2 spatial-quadrant CV on the same Stage 4b
+features and the same LightGBM defaults as Stage 5b. 8 non-empty priority10 images ×
+4 quadrants = 32 folds per (variant, scale). `ESP_065711_1545` excluded (empty truth →
+all quadrants would be specificity-only). Variants run: `lightgbm_two_stage` (best
+regression cell at S=64) and `lightgbm_classification` at `bc_ge_1` (best binary cell
+at S=32 / S=64). 8 cells × 32 folds = 256 fits total.
+
+**Implementation.**
+
+- **Split scheme.** `src/dataset.py` gains a new `stratification: within_image` value
+  alongside `none` (LOIO) and `boulder_label_size_balanced`. Each (image, quadrant)
+  becomes one fold; per-fold `test_obs_ids` / `train_obs_ids` are both the singleton
+  list of the *same* image (training data is the other three quadrants of that image).
+  `kind: "within-image"` distinguishes the JSON metadata from `"leave-image-out"`.
+- **Multi-scale quadrant cut.** The literal PLAN §3 text ("per-scale median") could
+  not strictly satisfy the multi-scale coherence invariant in
+  `test_within_image_per_scale_quadrant_coherence` (when the finest median isn't a
+  multiple of the coarsest factor, S=8 boundary tiles disagree with their S=64
+  parent). **Resolved via AskUserQuestion 2026-05-27 to "shared cut from finest scale,
+  snapped to a multiple of the coarsest factor."** Floor-snap of `median(ti_S8)` to
+  `floor(median / 8) * 8` then `ti_mid_Sk = ti_mid_S8 // (Sk/8)` is exact at every
+  scale.
+- **Group codes for the inner-validation rotation.** `src.modeling.evaluate.run_loio`
+  picks an inner-val image via `unique_train[fold_idx % n_unique]`. With LOIO that's
+  unique because the training set spans multiple ObsIds. With within-image, the
+  training set is a single ObsId, so using ObsId codes would collide with the
+  held-out group. Resolved by storing **per-row quadrant indices (0..3)** in
+  `groups_train_fold{k}.npy` / `groups_test_fold{k}.npy` instead of ObsId codes —
+  unique_train has 3 distinct quadrant codes (the 4th is the test fold), so the
+  rotation works unchanged. Tested in
+  `test_within_image_groups_have_3_unique_train_codes_per_fold`.
+- **Packaging.** `package_split` now dispatches on `kind`; the within-image branch
+  reads each ObsId's labels parquet once and partitions by per-scale quadrant
+  predicate. Per-fold parquets (`X_train_fold{k}.parquet`, etc.) have the same
+  schema as LOIO so `src.modeling.loaders.load_fold` works unchanged.
+- **No model code changed.** Both `lightgbm_two_stage` and `lightgbm_classification`
+  run untouched against the new scheme. The only modeling-side adaptation is the
+  group code semantic noted above.
+
+**Result.**
+
+`models/_sweep_within_image/20260527T175437Z/`: 8-cell aggregate ran in ~4 minutes.
+
+| variant                   | S  | within-image AUC | LOIO AUC | mean Δ | 95 % CI         | Wilcoxon p |
+|---------------------------|----|------------------|----------|--------|------------------|------------|
+| `lightgbm_two_stage`      |  8 | 0.524            | 0.508    | +0.016 | [−0.018, +0.051] | 0.64       |
+| `lightgbm_two_stage`      | 16 | 0.537            | 0.515    | +0.022 | [−0.018, +0.058] | 0.31       |
+| `lightgbm_two_stage`      | 32 | 0.550            | 0.520    | +0.030 | [−0.018, +0.084] | 0.46       |
+| `lightgbm_two_stage`      | 64 | 0.578            | 0.568    | +0.010 | [−0.090, +0.097] | 0.74       |
+| `lightgbm_classification` |  8 | 0.518            | 0.520    | −0.001 | [−0.052, +0.035] | 0.38       |
+| `lightgbm_classification` | 16 | 0.532            | 0.521    | +0.011 | [−0.056, +0.059] | 0.38       |
+| `lightgbm_classification` | 32 | 0.542            | 0.546    | −0.005 | [−0.092, +0.059] | 0.64       |
+| `lightgbm_classification` | 64 | 0.571            | 0.534    | +0.037 | [−0.022, +0.101] | 0.38       |
+
+**All 8 CIs bracket zero; no Wilcoxon p < 0.05.** Within-image and LOIO give
+statistically identical AUC. The diagnostic answer: **per-tile CTX texture signal floor
+at 5 m / pixel is the binding constraint**, not per-image generalisation. Three
+independent measurements (regression, binary classification, within-image CV) now sit
+on the same ceiling.
+
+**Recommendation update (`docs/modeling_results.md` §5 + §7).**
+
+- "Within-image CV" (experiment 1) — ✅ shipped, signal-floor branch confirmed.
+- "More HiRISE images" (experiment 2) — ⚠ demoted from "structural unlock" to
+  "tightens error bars on the ceiling, does not move it." Worth pursuing for
+  statistical power, no longer expected to raise the per-tile AUC.
+- "Complementary non-texture signal" (was implicit in `CLAUDE.md` §10 future work) —
+  promoted: thermal / spectral channels (THEMIS, CRISM) and coarser-than-tile spatial
+  context are now the most plausible unlock for the per-tile AUC ceiling.
+
+**Tests.** 15 new unit tests + 1 slow integration test in
+`tests/test_within_image_split.py`, including the strict multi-scale coherence
+invariant (`test_quadrant_cuts_are_strictly_coherent_across_scales`) and the
+inner-val-rotation invariant
+(`test_within_image_groups_have_3_unique_train_codes_per_fold`). Total pytest:
+191 → ~207.
+
+**Reproducibility.** `python scripts/run_stage5.py within_image_4fold` rebuilds the
+split + packaged scheme deterministically; `python scripts/sweep_within_image.py`
+re-runs the 256-fit sweep against the same artifacts in ≈4 minutes on CPU.
+
 ## Open at this date
 
 - **Stage 3 thresholds (flag/fail)** — collect more data first before pinning down.

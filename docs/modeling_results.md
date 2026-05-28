@@ -63,13 +63,22 @@ physically correct cues. But the headline numbers are dominated by the
 structural variance of leave-one-image-out cross-validation on only nine
 images, and neither the regression side of the problem (predicting *how
 much* boulder coverage) nor the binary side (predicting *whether* any
-is present) crosses any practical-utility threshold. The path forward
-depends on whether the bottleneck is data quantity (now most likely,
-given that two independent target framings produced statistically
-identical results), feature design (less likely given that the CNN does
-worse than the GBM), or signal fundamentally not being there at
-5 m / pixel (unlikely given the consistent above-chance AUC across both
-sweeps, but not ruled out).
+is present) crosses any practical-utility threshold.
+
+**The Stage 5c within-image diagnostic — added 2026-05-27 and detailed
+in section 7 — narrows the path forward to one option.** Training and
+testing within the same image (2×2 spatial quadrant CV, 8 images × 4
+quadrants = 32 folds) produces AUC values statistically indistinguishable
+from LOIO at every (variant, scale) cell (mean Δ per scale ranges
+−0.005 to +0.037, 95 % CI always brackets zero, Wilcoxon *p* always
+≥ 0.31). **Three independent target framings — regression, binary
+classification, and within-image CV — converge on the same ceiling.**
+The bottleneck is the per-tile CTX texture signal at 5 m / pixel, not
+per-image generalisation; doubling the manifest from 9 to 18 images
+would tighten the error bars on the mean AUC but would not raise it.
+The unlock has to come from richer-than-CTX-texture inputs (thermal /
+spectral channels, coarser-than-tile spatial priors, or a HiRISE-as-CTX
+surrogate at training time), not from more HiRISE images alone.
 
 The rest of this document lays out the evidence behind each of those
 claims.
@@ -436,26 +445,25 @@ hyperparameter tuning on the existing dataset.
 Three experiments would resolve the open questions and reset the verdict
 to one of "the method does / does not have potential":
 
-1. **Within-image hold-out cross-validation.** Train and evaluate on
-   disjoint tile subsets from the *same* image, on each of the six
-   Boulder-rich images independently. This removes the per-image
-   generalisation problem entirely. If the model still fails to predict
-   the upper tail under within-image CV, the texture-to-abundance signal
-   is genuinely below the detection floor of the current CTX features at
-   5 m / pixel — i.e. the data has insufficient resolution for the task
-   regardless of model improvements. If the model succeeds under within-
-   image CV, the bottleneck is per-image generalisation, and the path
-   forward is more diverse training data. This experiment is cheap (no
-   new data needed) and should be the next step.
+1. **Within-image hold-out cross-validation.** ✅ **Shipped 2026-05-27
+   (Stage 5c; see section 7).** 2 × 2 spatial-quadrant CV on the 8
+   non-empty priority10 images (32 folds per variant × scale) showed
+   within-image AUC statistically indistinguishable from LOIO at every
+   cell. The diagnostic answer is the second branch of the original
+   framing: the **per-tile CTX texture signal floor at 5 m / pixel** is
+   the binding constraint, not per-image generalisation. The data has
+   insufficient resolution at the current feature level for the task
+   regardless of model improvements *within the current CTX-texture
+   feature family*.
 
-2. **More HiRISE images.** The 9-image LOIO budget is the binding
-   constraint on between-image variance. Doubling the training set to
-   18 images would halve the per-fold standard error (roughly); reaching
-   40 to 50 images would make the headline mean ρ table interpretable
-   without resorting to pooled sign tests. The HiRISE archive contains
-   thousands of candidate images; the constraint is BoulderNet's
-   throughput and the manifest-curation effort, not raw data
-   availability.
+2. **More HiRISE images.** ⚠ **Demoted by the Stage 5c result.** The
+   9-image LOIO budget is still the binding constraint on between-image
+   *variance*, so doubling the training set to 18 images would still
+   halve the per-fold standard error (roughly). But the Stage 5c
+   diagnostic shows it would **not** raise the per-tile AUC ceiling
+   above the ≈0.55 floor observed here, because that ceiling is set by
+   the per-tile signal, not by per-image transfer. More images sharpens
+   the estimate of the ceiling rather than moving it.
 
 3. **CNN with class-balanced sampling and a Tweedie-equivalent loss.**
    The current CNN result is uninformative about the underlying patch
@@ -472,9 +480,14 @@ to one of "the method does / does not have potential":
    complementary signal (e.g. THEMIS thermal inertia per
    [`CLAUDE.md`](../CLAUDE.md) §10).
 
-The combination of experiments 1 and 3 is the cheapest decisive test
-available with the data already in hand. Experiment 2 is the most likely
-unlock for the long-term result.
+With experiment 1 now resolved (signal floor, not generalisation), the
+remaining cheap test is **experiment 3** — a CNN with a properly
+shaped loss is the only remaining way to falsify "the 52 hand-crafted
+features have already extracted what 5 m / pixel CTX texture can
+discriminate." The likely long-term unlock has shifted from "more
+HiRISE images" to **complementary non-texture signal** — thermal /
+spectral channels (THEMIS, CRISM) and coarser-than-tile spatial
+context.
 
 ---
 
@@ -674,7 +687,129 @@ signal that is there. The implication for next steps:
 
 ---
 
-## 7. What was actually shipped this session
+## 7. Within-image cross-validation (Stage 5c diagnostic)
+
+[`PLAN_Stage5c.md`](../PLAN_Stage5c.md) framed a single-experiment
+falsification of the data-quantity-bound hypothesis: if we train and
+test on the **same image** by partitioning each image's tiles into 2×2
+spatial quadrants, does AUC reach meaningfully higher than the LOIO
+baseline of ≈0.55?
+
+- **Within-image AUC ≫ LOIO AUC** ⟹ per-image generalisation is the
+  binding constraint; geographically diverse HiRISE images are the
+  unlock.
+- **Within-image AUC ≈ LOIO AUC** ⟹ the 5 m / pixel CTX texture signal
+  floor is the binding constraint; more HiRISE images alone do not
+  raise the per-tile signal ceiling.
+
+The 32-fold sweep
+([`models/_sweep_within_image/20260527T175437Z/`](../models/_sweep_within_image/20260527T175437Z/),
+8 non-empty images × 4 quadrants; [`ESP_065711_1545`](../hirise_priority10.csv)
+excluded because the empty-truth quadrants would all be
+specificity-only) ran the two variants we had strongest LOIO evidence
+for —
+[`lightgbm_two_stage`](../src/modeling/gbm.py) regression and
+[`lightgbm_classification`](../src/modeling/gbm.py) at
+[`bc_ge_1`](../src/modeling/binary_target.py) — across the four scales,
+on the same Stage 4b feature pool and the same LightGBM defaults as
+Stage 5 / Stage 5b.
+
+### 7.1 Headline: within-image AUC is statistically indistinguishable from LOIO
+
+Per-image deltas `within_image_AUC − LOIO_AUC` (averaged across each
+image's 4 quadrant folds for the within-image side, paired against the
+single LOIO fold AUC for the same image). Bootstrap 95 % CI is
+non-parametric over 10 000 resamples of the 8 paired deltas. Wilcoxon
+signed-rank tests `H₀: median delta = 0`.
+
+| variant                   | S  | within-image AUC | LOIO AUC | mean Δ | 95 % CI         | Wilcoxon p |
+|---------------------------|----|------------------|----------|--------|------------------|------------|
+| `lightgbm_two_stage`      |  8 | 0.524            | 0.508    | +0.016 | [−0.018, +0.051] | 0.64       |
+| `lightgbm_two_stage`      | 16 | 0.537            | 0.515    | +0.022 | [−0.018, +0.058] | 0.31       |
+| `lightgbm_two_stage`      | 32 | 0.550            | 0.520    | +0.030 | [−0.018, +0.084] | 0.46       |
+| `lightgbm_two_stage`      | 64 | 0.578            | 0.568    | +0.010 | [−0.090, +0.097] | 0.74       |
+| `lightgbm_classification` |  8 | 0.518            | 0.520    | −0.001 | [−0.052, +0.035] | 0.38       |
+| `lightgbm_classification` | 16 | 0.532            | 0.521    | +0.011 | [−0.056, +0.059] | 0.38       |
+| `lightgbm_classification` | 32 | 0.542            | 0.546    | −0.005 | [−0.092, +0.059] | 0.64       |
+| `lightgbm_classification` | 64 | 0.571            | 0.534    | +0.037 | [−0.022, +0.101] | 0.38       |
+
+Across all eight (variant, scale) cells, **the 95 % CI of the mean
+within-image-minus-LOIO delta brackets zero, and no Wilcoxon p-value
+falls below 0.05**. The mean deltas range from −0.005 to +0.037; the
+median across all eight cells is +0.014.
+
+Numerically, the strongest signal is `lightgbm_classification` at S=64
+(mean Δ = +0.037, but its CI still includes zero and p = 0.38). At
+no scale or variant is there evidence that training and testing on the
+same image meaningfully improves the per-tile discrimination signal.
+
+### 7.2 What the diagnostic actually tells us
+
+The same per-image structure that LOIO measures (and finds at roughly
+AUC 0.55) is what within-image CV measures — both quantities sit on
+top of each other for every (variant, scale) cell. The interpretation:
+
+- **The bottleneck is the per-tile CTX texture signal at 5 m / pixel**,
+  not per-image generalisation. The features available at this
+  resolution (intensity stats, GLCM, gradient, shadow fraction, LBP,
+  lacunarity, sub-tile variance, Canny edges — see
+  [`PLAN_Stage4b.md`](../PLAN_Stage4b.md) §3) extract roughly the same
+  ranking signal whether the training set is the *same* image or
+  *other* images. There is no per-image-specific structure the model
+  was failing to exploit that "more like the test image" training data
+  would unlock.
+- **The recommendation update is the inverse of §5 experiment 2.** §5
+  previously framed "more HiRISE images" as the structural-variance
+  unlock that would halve per-fold standard error. That argument
+  remains true for the *variance* of the estimate, but it does *not*
+  raise the per-tile AUC ceiling. Doubling the manifest from 9 to 18
+  images would tighten the error bars on the mean AUC; it would not
+  move the mean.
+- **What would raise the ceiling** (out of scope here, carried forward
+  to future work): (i) features that exploit *coarser-than-tile*
+  spatial structure — region-level texture context, neighbourhood
+  abundance priors, multi-tile boulder-cluster patterns; (ii) thermal
+  / spectral channels not present in the visible CTX mosaic, e.g. the
+  [THEMIS rock abundance](https://doi.org/10.1029/2003JE002154) prior
+  documented in [`CLAUDE.md`](../CLAUDE.md) §10 future work;
+  (iii) higher-resolution CTX-equivalent inputs (e.g. HiRISE
+  decimated to CTX scale and used as a CTX surrogate during training).
+
+### 7.3 Why this is consistent with the §5 / §6.5 verdict
+
+Both Stage 5 (regression) and Stage 5b (binary classification)
+converged on mean AUC ≈ 0.52–0.55 with per-fold standard deviations
+≈ 0.10. The §6.5 reading was that "the 9-image LOIO dataset is at its
+information ceiling for what 5 m / pixel CTX texture can discriminate."
+Stage 5c puts a third independent measurement on that ceiling: when
+the train/test split is changed from cross-image to within-image —
+removing per-image transfer from the problem entirely — the AUC stays
+within sampling noise of the LOIO number. Three independent target
+framings (regression, binary classification, within-image CV) at the
+same ceiling is the strongest evidence we have that the binding
+constraint is signal, not data quantity.
+
+### 7.4 What is shipped from Stage 5c
+
+| Component | Path |
+|---|---|
+| Within-image split scheme | [`src/dataset.py`](../src/dataset.py) — new `within_image` stratification + `kind="within-image"` JSON shape; shared multi-scale cut (finest median snapped to a multiple of the coarsest factor) so every S=8 tile lands in the same quadrant as its S=64 parent |
+| Config entry | [`config.yaml`](../config.yaml) `splits.schemes.within_image_4fold` — `n_folds=32`, `n_folds_per_image=4`, `buffer_tiles=0`, `excluded_obs_ids=["ESP_065711_1545"]` |
+| Sweep driver | [`scripts/sweep_within_image.py`](../scripts/sweep_within_image.py) — 8-cell fan-out (2 variants × 4 scales × 32 folds) at the same LightGBM defaults as `sweep_binary.py` |
+| Tests | [`tests/test_within_image_split.py`](../tests/test_within_image_split.py) — 16 tests including the strict multi-scale coherence invariant and a slow integration test against the real packaged scheme |
+| Sweep artifacts | [`models/_sweep_within_image/20260527T175437Z/`](../models/_sweep_within_image/20260527T175437Z/) `summary.parquet`, `aggregate.parquet`, `per_image.parquet`, `delta_vs_loio.parquet` |
+| QA notebook section | "Within-image cross-validation (Stage 5c diagnostic)" in [`notebooks/10_modeling_qa.ipynb`](../notebooks/10_modeling_qa.ipynb) — headline delta table, mean-Δ bar with bootstrap CI, per-image AUC bars vs LOIO |
+
+The 256-fit sweep runs end-to-end in ≈ 4 minutes on a CPU-only
+machine. Re-running
+`python scripts/sweep_within_image.py` against the unchanged
+[`dataset/packaged/within_image_4fold/`](../dataset/packaged/within_image_4fold/)
+reproduces the numbers in §7.1 to LightGBM's documented determinism
+guarantees.
+
+---
+
+## 8. What was actually shipped this session
 
 For the record, in case the artifacts and the writeup diverge in the
 future, every number in this document derives from one of two sweeps:

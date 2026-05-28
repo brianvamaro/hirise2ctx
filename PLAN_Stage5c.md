@@ -1,8 +1,14 @@
 # PLAN — Stage 5c: within-image k-fold cross-validation
 
-**Status:** **planned, not yet implemented (2026-05-27)**. Will update with
-the shipped commit + DECISIONS.md entry once shipped. Two AskUserQuestion
-answers pinned (§10).
+**Status:** **shipped 2026-05-27**. Sweep at
+`models/_sweep_within_image/20260527T175437Z/`. Diagnostic answer:
+**signal-floor branch** — within-image AUC is statistically
+indistinguishable from LOIO at all 8 (variant, scale) cells (mean Δ
+ranges −0.005 to +0.037, 95 % CI always brackets zero, Wilcoxon
+*p* ≥ 0.31). See `DECISIONS.md` 2026-05-27 Stage 5c entry and
+`docs/modeling_results.md` §7 for the full evidence and the
+recommendation update. Three AskUserQuestion answers pinned (§10 +
+the multi-scale-quadrant resolution).
 
 This plan extends [PLAN_Stage5](PLAN_Stage5.md) — Stage 5 packaged the LOIO
 split that measures *between-image* generalisation. Stage 5c adds a parallel

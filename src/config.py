@@ -52,7 +52,7 @@ REQUIRED_SANITY = {"centroid_max_km"}
 # keys are required.
 REQUIRED_SPLITS_TOP = {"default_scheme", "schemes", "emit_all_parquet"}
 REQUIRED_SPLITS_SCHEME = {"n_folds", "stratification", "seed"}
-SUPPORTED_STRATIFICATION = {"none", "boulder_label_size_balanced"}
+SUPPORTED_STRATIFICATION = {"none", "boulder_label_size_balanced", "within_image"}
 
 # Stage 4b config (PLAN_Stage4b.md §5). Optional at top level for now -- absence means
 # Stage 4b uses built-in defaults from src/features.py. When present, these nested keys

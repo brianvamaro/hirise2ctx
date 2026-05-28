@@ -46,6 +46,15 @@ def _run_one(cfg, scheme_name: str, scheme: dict, inventory, do_package: bool) -
     labels_dir = cfg.output_dir / LABELS_SUBDIR
     features_dir = cfg.output_dir / FEATURES_SUBDIR
     t0 = time.monotonic()
+    # within_image schemes need extra kwargs sourced from the per-scheme config block.
+    extra_kwargs: dict = {}
+    if str(scheme["stratification"]) == "within_image":
+        extra_kwargs = {
+            "labels_dir": labels_dir,
+            "n_folds_per_image": int(scheme.get("n_folds_per_image", 4)),
+            "buffer_tiles": int(scheme.get("buffer_tiles", 0)),
+            "excluded_obs_ids": list(scheme.get("excluded_obs_ids", []) or []),
+        }
     try:
         meta = build_split(
             name=scheme_name,
@@ -54,6 +63,7 @@ def _run_one(cfg, scheme_name: str, scheme: dict, inventory, do_package: bool) -
             seed=int(scheme["seed"]),
             inventory=inventory,
             config_hash=cfg.hash,
+            **extra_kwargs,
         )
         path = write_split_metadata(meta, cfg.output_dir)
     except ValueError as e:

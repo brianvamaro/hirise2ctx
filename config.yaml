@@ -171,6 +171,17 @@ splits:
       n_folds: 3
       stratification: boulder_label_size_balanced  # greedy: place each image into the currently-smallest fold within its label group
       seed: 0
+    # Stage 5c (PLAN_Stage5c.md, 2026-05-27): within-image 2x2 spatial CV.
+    # Diagnostic experiment -- isolates per-image generalisation from the 5 m/px signal
+    # floor. 8 non-empty images x 4 quadrants = 32 folds. ESP_065711_1545 excluded
+    # (empty truth -> no positives in any quadrant).
+    within_image_4fold:
+      n_folds: 32
+      stratification: within_image
+      seed: 0
+      n_folds_per_image: 4
+      buffer_tiles: 0
+      excluded_obs_ids: ["ESP_065711_1545"]
   scale_filter: null          # null = all 4 scales; e.g. [8, 16] to restrict
   emit_all_parquet: true      # consolidated view with fold_idx + split columns
 
