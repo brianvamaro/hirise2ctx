@@ -44,7 +44,15 @@ def code(text: str, cell_id: str) -> dict:
 cells = []
 
 cells.append(md(
-    """# 10 - Week 3 Modeling QA
+    """# 10 - Week 3 Modeling QA  (v1 / priority10 — SUPERSEDED)
+
+> ⚠️ **This notebook covers the v1 (priority10, 9-image) dataset and is superseded by
+> [`11_modeling_qa_v2.ipynb`](11_modeling_qa_v2.ipynb).** The vClaire **v2** dataset
+> (`dataset_v2/`, 38 images, far denser BoulderNet labels) is the go-forward dataset we
+> analyse and report on; notebook 11 is its QA. This notebook is kept frozen for the v1
+> baseline that `docs/modeling_results.md` Part 1–2 documents. Its sweep dirs are
+> **pinned** to the exact v1 runs cited in that doc so the figures never silently flip to
+> a v2 run. The v1↔v2 A/B sanity check lives in `docs/modeling_results.md`.
 
 Visual checks on the baselines produced by `scripts/sweep.py` (LightGBM x 3 variants x
 4 scales) and `scripts/train_cnn.py` (small CNN at S=32 and S=64). Per
@@ -99,11 +107,13 @@ MODELS_ROOT = REPO_ROOT / 'models'
 FIG_DIR = REPO_ROOT / 'reports' / 'figures'
 FIG_DIR.mkdir(parents=True, exist_ok=True)
 
-# Find the most-recent sweep dir
-sweep_dirs = sorted((MODELS_ROOT / '_sweep').glob('*/'))
-assert sweep_dirs, 'no models/_sweep/* runs found -- run scripts/sweep.py first'
-SWEEP_DIR = sweep_dirs[-1]
-print(f'sweep dir: {SWEEP_DIR.name}')
+# PINNED to the v1 (priority10) regression sweep documented in docs/modeling_results.md
+# Part 1. This notebook is frozen v1 (superseded by notebook 11 / dataset_v2), so we pin
+# the exact run rather than auto-selecting the latest -- otherwise a later v2 sweep would
+# silently render here. See src/modeling/sweep_select.py for the v2 notebook's selector.
+SWEEP_DIR = MODELS_ROOT / '_sweep' / '20260524T071830Z'
+assert SWEEP_DIR.exists(), f'pinned v1 regression sweep missing: {SWEEP_DIR}'
+print(f'sweep dir (pinned v1): {SWEEP_DIR.name}')
 
 summary = pd.read_parquet(SWEEP_DIR / 'summary.parquet')
 aggregate = pd.read_parquet(SWEEP_DIR / 'aggregate.parquet')
@@ -465,11 +475,10 @@ diagnostics.
 ))
 
 cells.append(code(
-    """# Locate the most-recent binary sweep
-binary_sweep_dirs = sorted((MODELS_ROOT / '_sweep_binary').glob('*/'))
-assert binary_sweep_dirs, 'no models/_sweep_binary/* runs found -- run scripts/sweep_binary.py first'
-BIN_SWEEP_DIR = binary_sweep_dirs[-1]
-print(f'binary sweep dir: {BIN_SWEEP_DIR.name}')
+    """# PINNED to the v1 binary sweep documented in docs/modeling_results.md Part 2.
+BIN_SWEEP_DIR = MODELS_ROOT / '_sweep_binary' / '20260527T004412Z'
+assert BIN_SWEEP_DIR.exists(), f'pinned v1 binary sweep missing: {BIN_SWEEP_DIR}'
+print(f'binary sweep dir (pinned v1): {BIN_SWEEP_DIR.name}')
 
 bin_summary = pd.read_parquet(BIN_SWEEP_DIR / 'summary.parquet')
 bin_aggregate = pd.read_parquet(BIN_SWEEP_DIR / 'aggregate.parquet')
@@ -710,11 +719,10 @@ deltas with no normality assumption).
 ))
 
 cells.append(code(
-    """# Load the most-recent within-image sweep.
-within_dirs = sorted((MODELS_ROOT / '_sweep_within_image').glob('*/'))
-assert within_dirs, 'no models/_sweep_within_image/* runs found -- run scripts/sweep_within_image.py'
-WITHIN_DIR = within_dirs[-1]
-print(f'within-image sweep dir: {WITHIN_DIR.name}')
+    """# PINNED to the v1 within-image sweep documented in docs/modeling_results.md (Stage 5c).
+WITHIN_DIR = MODELS_ROOT / '_sweep_within_image' / '20260527T175437Z'
+assert WITHIN_DIR.exists(), f'pinned v1 within-image sweep missing: {WITHIN_DIR}'
+print(f'within-image sweep dir (pinned v1): {WITHIN_DIR.name}')
 
 within_summary = pd.read_parquet(WITHIN_DIR / 'summary.parquet')
 within_aggregate = pd.read_parquet(WITHIN_DIR / 'aggregate.parquet')
@@ -734,16 +742,9 @@ cells.append(code(
 #   - lightgbm_classification @ bc_ge_1 -> LOIO binary sweep (auc per fold)
 # Both flatten to ('variant', 'scale_idx', 'held_out_obs_id', 'auc') for the comparison.
 #
-# We pick the most recent _sweep/* directory that actually contains
-# lightgbm_two_stage rows (the latest single-variant re-runs would be missed by a
-# naive sweep_dirs[-1] selection).
-def _pick_full_loio_sweep():
-    for d in sorted((MODELS_ROOT / '_sweep').glob('*/'), key=lambda p: p.stat().st_mtime, reverse=True):
-        if 'lightgbm_two_stage' in pd.read_parquet(d / 'summary.parquet')['variant'].unique():
-            return d
-    raise FileNotFoundError('No LOIO sweep contains lightgbm_two_stage rows')
-LOIO_FOR_DELTA = _pick_full_loio_sweep()
-print(f'LOIO baseline sweep: {LOIO_FOR_DELTA.name}')
+# Pinned to the same v1 regression sweep used above (the LOIO baseline for the deltas).
+LOIO_FOR_DELTA = SWEEP_DIR
+print(f'LOIO baseline sweep (pinned v1): {LOIO_FOR_DELTA.name}')
 loio_summary = pd.read_parquet(LOIO_FOR_DELTA / 'summary.parquet')
 
 loio_two_stage = (

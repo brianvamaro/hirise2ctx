@@ -44,7 +44,7 @@ ALL_GBM_VARIANTS = list(VARIANT_CONSTRUCTORS)
 DEFAULT_SCALES = (0, 1, 2, 3)
 MODELS_ROOT = REPO_ROOT / "models"
 TARGET_COL = "fractional_area"
-SCHEME = "loio_9fold"
+DEFAULT_SCHEME = "loio_9fold"  # v1; v2 (dataset_v2) uses loio_nfold -- pass --scheme.
 
 
 def _config_hash(snapshot: dict) -> str:
@@ -52,7 +52,14 @@ def _config_hash(snapshot: dict) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
-def run_one(variant: str, scale_idx: int, params: LGBMParams) -> tuple[list[dict], dict, Path]:
+def run_one(
+    variant: str,
+    scale_idx: int,
+    params: LGBMParams,
+    *,
+    scheme: str = DEFAULT_SCHEME,
+    dataset_dir: str | None = None,
+) -> tuple[list[dict], dict, Path]:
     """LOIO eval + per-fold artifact persistence for one (variant, scale).
 
     Mirrors `scripts/train_gbm.py` so one `python scripts/sweep.py` invocation
@@ -66,7 +73,8 @@ def run_one(variant: str, scale_idx: int, params: LGBMParams) -> tuple[list[dict
     snapshot = {
         "variant": variant,
         "target_col": TARGET_COL,
-        "scheme": SCHEME,
+        "scheme": scheme,
+        "dataset_dir": dataset_dir or "dataset",
         "scale_idx": scale_idx,
         "tile_size_px": tile_size,
         "model": snapshot_params(variant, params),
@@ -79,8 +87,9 @@ def run_one(variant: str, scale_idx: int, params: LGBMParams) -> tuple[list[dict
     result = run_loio(
         factory,
         target_col=TARGET_COL,
-        scheme=SCHEME,
+        scheme=scheme,
         scale_idx=scale_idx,
+        dataset_dir=dataset_dir,
         snapshot=snapshot,
         verbose=False,
     )
@@ -89,7 +98,7 @@ def run_one(variant: str, scale_idx: int, params: LGBMParams) -> tuple[list[dict
     # Per-fold booster persistence (mirrors train_gbm.py pass 2). Re-fit per fold
     # with the same inner-validation rotation so the saved boosters match the
     # predictions that just landed in predictions.parquet.
-    for fold in iter_loio_folds(SCHEME, scale_idx=scale_idx):
+    for fold in iter_loio_folds(scheme, scale_idx=scale_idx, dataset_dir=dataset_dir):
         train_codes = fold.groups_train
         unique_codes = np.unique(train_codes)
         inner_val_code = int(unique_codes[fold.fold_idx % unique_codes.size])
@@ -123,6 +132,10 @@ def main() -> int:
     ap.add_argument("--early-stopping-rounds", type=int, default=40)
     ap.add_argument("--include-cnn", action="store_true",
                     help="Also run CNN at S32 and S64 (delegates to scripts/train_cnn.py).")
+    ap.add_argument("--dataset-dir", default=None,
+                    help="Packaged dataset root (default: ./dataset = v1). Use dataset_v2 for the vClaire A/B.")
+    ap.add_argument("--scheme", default=DEFAULT_SCHEME,
+                    help=f"LOIO scheme name (default: {DEFAULT_SCHEME} for v1; use loio_nfold for dataset_v2).")
     args = ap.parse_args()
 
     params = LGBMParams(
@@ -134,17 +147,29 @@ def main() -> int:
     timestamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out_dir = REPO_ROOT / "models" / "_sweep" / timestamp
     out_dir.mkdir(parents=True, exist_ok=True)
+    # Dataset/scheme provenance so notebooks can tell a v1 sweep from a v2 (dataset_v2)
+    # sweep -- the _sweep/{ts} dir name alone carries no dataset identity.
+    (out_dir / "sweep_meta.json").write_text(json.dumps({
+        "kind": "regression",
+        "dataset_dir": args.dataset_dir or "dataset",
+        "scheme": args.scheme,
+        "timestamp": timestamp,
+        "script": "sweep.py",
+    }, indent=2), encoding="utf-8")
 
     summary_rows: list[dict] = []
     aggregate_rows: list[dict] = []
     runs = [(v, s) for v in args.variants for s in args.scales]
     print(f"Sweep: {len(runs)} runs across {len(args.variants)} variants x {len(args.scales)} scales")
+    print(f"Dataset: {args.dataset_dir or 'dataset'}  scheme: {args.scheme}")
     print(f"Output: {out_dir}\n")
 
     for i, (variant, scale_idx) in enumerate(runs, 1):
         tile_size = SCALE_TILE_PX[scale_idx]
         print(f"[{i:>2d}/{len(runs)}] {variant:<20s} scale_idx={scale_idx} (S={tile_size:>2d}) ...", flush=True)
-        per_fold, aggregate, artifact_dir = run_one(variant, scale_idx, params)
+        per_fold, aggregate, artifact_dir = run_one(
+            variant, scale_idx, params, scheme=args.scheme, dataset_dir=args.dataset_dir,
+        )
         for f in per_fold:
             row = {
                 "variant": variant,

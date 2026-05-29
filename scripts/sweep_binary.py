@@ -43,7 +43,7 @@ SCALE_TILE_PX = {0: 8, 1: 16, 2: 32, 3: 64}
 ALL_TARGET_IDS = [t.id for t in BINARY_TARGETS]
 DEFAULT_SCALES = (0, 1, 2, 3)
 MODELS_ROOT = REPO_ROOT / "models"
-SCHEME = "loio_9fold"
+DEFAULT_SCHEME = "loio_9fold"  # v1; v2 (dataset_v2) uses loio_nfold -- pass --scheme.
 
 
 def _config_hash(snapshot: dict) -> str:
@@ -51,7 +51,14 @@ def _config_hash(snapshot: dict) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
-def run_one(target_id: str, scale_idx: int, params: LGBMParams) -> tuple[list[dict], dict, Path]:
+def run_one(
+    target_id: str,
+    scale_idx: int,
+    params: LGBMParams,
+    *,
+    scheme: str = DEFAULT_SCHEME,
+    dataset_dir: str | None = None,
+) -> tuple[list[dict], dict, Path]:
     """LOIO eval + per-fold classifier persistence for one (target, scale)."""
     target = get_target(target_id)
     tile_size = SCALE_TILE_PX[scale_idx]
@@ -62,7 +69,8 @@ def run_one(target_id: str, scale_idx: int, params: LGBMParams) -> tuple[list[di
         "target_source_col": target.source_col,
         "target_threshold": target.threshold,
         "target_comparison": target.comparison,
-        "scheme": SCHEME,
+        "scheme": scheme,
+        "dataset_dir": dataset_dir or "dataset",
         "scale_idx": scale_idx,
         "tile_size_px": tile_size,
         "model": snapshot_params("lightgbm_classification", params),
@@ -82,15 +90,16 @@ def run_one(target_id: str, scale_idx: int, params: LGBMParams) -> tuple[list[di
         factory,
         binarize=target.binarize,
         task="classification",
-        scheme=SCHEME,
+        scheme=scheme,
         scale_idx=scale_idx,
+        dataset_dir=dataset_dir,
         snapshot=snapshot,
         verbose=False,
     )
     write_run_artifacts(result, out_dir)
 
     # Persist per-fold classifier artifacts (mirrors train_gbm/sweep.py pass 2).
-    for fold in iter_loio_folds(SCHEME, scale_idx=scale_idx):
+    for fold in iter_loio_folds(scheme, scale_idx=scale_idx, dataset_dir=dataset_dir):
         train_codes = fold.groups_train
         unique_train = np.unique(train_codes)
         inner_val_code = int(unique_train[fold.fold_idx % unique_train.size])
@@ -122,6 +131,10 @@ def main() -> int:
     ap.add_argument("--skip-fa-gt-1e-2-s8", action="store_true",
                     help="Skip fa_gt_1e-2 at S=8 (only ~73 positives in the whole "
                          "dataset; PLAN_Stage5b.md §11 q4 flags as essentially infeasible)")
+    ap.add_argument("--dataset-dir", default=None,
+                    help="Packaged dataset root (default: ./dataset = v1). Use dataset_v2 for the vClaire A/B.")
+    ap.add_argument("--scheme", default=DEFAULT_SCHEME,
+                    help=f"LOIO scheme name (default: {DEFAULT_SCHEME} for v1; use loio_nfold for dataset_v2).")
     args = ap.parse_args()
 
     params = LGBMParams(
@@ -133,6 +146,13 @@ def main() -> int:
     timestamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out_dir = REPO_ROOT / "models" / "_sweep_binary" / timestamp
     out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "sweep_meta.json").write_text(json.dumps({
+        "kind": "binary",
+        "dataset_dir": args.dataset_dir or "dataset",
+        "scheme": args.scheme,
+        "timestamp": timestamp,
+        "script": "sweep_binary.py",
+    }, indent=2), encoding="utf-8")
 
     summary_rows: list[dict] = []
     aggregate_rows: list[dict] = []
@@ -141,12 +161,15 @@ def main() -> int:
         if not (args.skip_fa_gt_1e_2_s8 and t == "fa_gt_1e-2" and s == 0)
     ]
     print(f"Binary sweep: {len(runs)} runs across {len(args.targets)} targets x {len(args.scales)} scales")
+    print(f"Dataset: {args.dataset_dir or 'dataset'}  scheme: {args.scheme}")
     print(f"Output: {out_dir}\n")
 
     for i, (target_id, scale_idx) in enumerate(runs, 1):
         tile_size = SCALE_TILE_PX[scale_idx]
         print(f"[{i:>2d}/{len(runs)}] target={target_id:<11s} scale_idx={scale_idx} (S={tile_size:>2d}) ...", flush=True)
-        per_fold, aggregate, artifact_dir = run_one(target_id, scale_idx, params)
+        per_fold, aggregate, artifact_dir = run_one(
+            target_id, scale_idx, params, scheme=args.scheme, dataset_dir=args.dataset_dir,
+        )
         for f in per_fold:
             row = {
                 "target_id": target_id,

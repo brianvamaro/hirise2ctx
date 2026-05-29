@@ -121,6 +121,28 @@ acceptance #4:
 Adding a new manifest row + its BoulderNet detections folder requires no code changes;
 re-run Stage 1 → 5 in order (each stage's `--all` skips already-cached ObsIds).
 
+## Modeling sweeps
+
+The three sweep drivers fan out the GBM variants / binary targets / within-image
+diagnostic over all four tile scales and write per-fold + aggregate artifacts under
+`models/`. They default to the v1 `dataset/` and the `loio_9fold` scheme; pass
+`--dataset-dir` / `--scheme` to run the A/B on the versioned `dataset_v2/`:
+
+```powershell
+# v1 (priority10):
+& $conda run -n geospatial python scripts/sweep.py
+& $conda run -n geospatial python scripts/sweep_binary.py
+& $conda run -n geospatial python scripts/sweep_within_image.py
+
+# v2 (vClaire): LOIO scheme is loio_nfold; within-image scheme name is unchanged.
+& $conda run -n geospatial python scripts/sweep.py             --dataset-dir dataset_v2 --scheme loio_nfold
+& $conda run -n geospatial python scripts/sweep_binary.py      --dataset-dir dataset_v2 --scheme loio_nfold
+& $conda run -n geospatial python scripts/sweep_within_image.py --dataset-dir dataset_v2
+```
+
+The `scheme` + `dataset_dir` enter each run's `config_hash`, so v1 and v2 artifacts land
+in distinct `models/<variant>/<hash>/` dirs and never clobber each other.
+
 ## Layout
 
 ```
@@ -201,9 +223,12 @@ Adding a new image is two steps and zero code changes:
 2. Drop the BoulderNet detections folder under `detections_root/{ObsId}/` containing
    a `*-mask-nms.shp` (with sidecar `.prj`, `.dbf`, `.shx`).
 
-Then run the pipeline in order:
+Then run the pipeline in order. **Start at Stage 1** — a genuinely new image has no
+`reprojected_detections` cache, and Stage 2 reads it (`load_reprojected`); skipping
+Stage 1 fails there:
 
 ```powershell
+& $conda run -n geospatial python scripts/run_stage1.py {new ObsId}   # reproject + SP1 fix
 & $conda run -n geospatial python scripts/run_stage2.py {new ObsId}
 & $conda run -n geospatial python scripts/run_stage3.py {new ObsId}
 & $conda run -n geospatial python scripts/run_stage4.py {new ObsId}
@@ -213,6 +238,29 @@ Then run the pipeline in order:
 
 Each `--all` driver skips ObsIds whose caches already exist (Stage 2/3/4/4b) and
 re-derives split assignments deterministically (Stage 5).
+
+### A/B on a second detection set (the vClaire v2 dataset)
+
+To build a parallel dataset on a different BoulderNet run without touching the v1
+`dataset/`, point every stage at a second config (`config_v2.yaml`, which sets its own
+`manifest` / `detections_root` / `cache_dir` / `output_dir`). Every stage driver takes
+`--config`:
+
+```powershell
+& $conda run -n geospatial python scripts/run_stage1.py  --all --config config_v2.yaml
+& $conda run -n geospatial python scripts/sweep_stage2.py      --config config_v2.yaml   # run_stage2.py is single-ObsId
+& $conda run -n geospatial python scripts/run_stage3.py  --all --config config_v2.yaml
+& $conda run -n geospatial python scripts/run_stage4.py  --all --config config_v2.yaml
+& $conda run -n geospatial python scripts/run_stage4b.py --all --config config_v2.yaml
+& $conda run -n geospatial python scripts/run_stage5.py  --all --config config_v2.yaml
+```
+
+The imagery caches (`ctx_tiles`, `hirise_jp2`, `hirise_decimated`, `pds_labels`) are
+shared via Windows junctions so they aren't re-downloaded; the detection-derived caches
+(`reprojected_detections`, `ctx_windows`, `coregistration`) stay separate. Then model on
+the versioned dataset by passing `--dataset-dir`/`--scheme` to the sweep drivers (see
+"Running a parameter sweep" below). See [PLAN_NewDetections.md](PLAN_NewDetections.md)
+for the full A/B design.
 
 ## Gotchas to read first
 

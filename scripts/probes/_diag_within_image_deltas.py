@@ -10,6 +10,7 @@ For classification, AUC = auc.
 """
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -23,19 +24,20 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-MODELS_ROOT = REPO_ROOT / "models"
-WITHIN_DIR = sorted((MODELS_ROOT / "_sweep_within_image").glob("*/"), key=lambda p: p.stat().st_mtime)[-1]
-# Pick the most-recent LOIO regression sweep that contains all three variants.
-def _pick_full_loio_sweep() -> Path:
-    candidates = sorted((MODELS_ROOT / "_sweep").glob("*/"), key=lambda p: p.stat().st_mtime, reverse=True)
-    for c in candidates:
-        df = pd.read_parquet(c / "summary.parquet")
-        if "lightgbm_two_stage" in df["variant"].unique():
-            return c
-    raise FileNotFoundError("No LOIO sweep contains lightgbm_two_stage rows")
-LOIO_DIR = _pick_full_loio_sweep()
-BIN_DIR = sorted((MODELS_ROOT / "_sweep_binary").glob("*/"), key=lambda p: p.stat().st_mtime)[-1]
+from src.modeling.sweep_select import pick_sweep
 
+MODELS_ROOT = REPO_ROOT / "models"
+
+ap = argparse.ArgumentParser(description=__doc__)
+ap.add_argument("--dataset-dir", default="dataset",
+                help="Dataset version to select sweeps for (dataset = v1, dataset_v2 = vClaire).")
+args = ap.parse_args()
+
+WITHIN_DIR = pick_sweep("within_image", args.dataset_dir)
+LOIO_DIR = pick_sweep("regression", args.dataset_dir)
+BIN_DIR = pick_sweep("binary", args.dataset_dir)
+
+print(f"dataset: {args.dataset_dir}")
 print(f"within: {WITHIN_DIR.name}")
 print(f"loio:   {LOIO_DIR.name}")
 print(f"bin:    {BIN_DIR.name}")
@@ -76,12 +78,19 @@ for v in variants:
         lo = loio_for(v, s)
         paired = w.merge(lo, on="held_out_obs_id", how="inner")
         paired["delta"] = paired["within_auc"] - paired["loio_auc"]
+        # Drop images whose AUC is undefined on either side (all-positive folds at coarse
+        # scales -- v2 is ~93% positive at S=64, so some images saturate). Pair only where
+        # both sides are defined.
+        paired = paired.dropna(subset=["delta"]).reset_index(drop=True)
         n = len(paired)
         delta = paired["delta"].to_numpy()
-        mean_delta = float(delta.mean())
-        boots = rng.choice(delta, size=(10_000, n), replace=True).mean(axis=1)
-        ci_lo, ci_hi = float(np.percentile(boots, 2.5)), float(np.percentile(boots, 97.5))
-        wp = float(stats.wilcoxon(delta, alternative="two-sided").pvalue) if (delta != 0).any() else float("nan")
+        mean_delta = float(delta.mean()) if n else float("nan")
+        if n >= 2:
+            boots = rng.choice(delta, size=(10_000, n), replace=True).mean(axis=1)
+            ci_lo, ci_hi = float(np.percentile(boots, 2.5)), float(np.percentile(boots, 97.5))
+            wp = float(stats.wilcoxon(delta, alternative="two-sided").pvalue) if (delta != 0).any() else float("nan")
+        else:
+            ci_lo = ci_hi = wp = float("nan")
         rows.append({
             "variant": v, "scale_idx": s, "tile_size_px": int(2 ** (3 + s)),
             "n_paired": n, "mean_delta": mean_delta, "ci_lo": ci_lo, "ci_hi": ci_hi,

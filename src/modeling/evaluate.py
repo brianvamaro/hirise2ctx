@@ -414,9 +414,11 @@ ModelFactory = Callable[[], Model]
 FoldIterator = Callable[[], Iterable[Fold]]
 
 
-def _default_fold_iter(scheme: str, scale_idx: int | None) -> FoldIterator:
+def _default_fold_iter(
+    scheme: str, scale_idx: int | None, dataset_dir: Path | str | None = None
+) -> FoldIterator:
     def _it() -> Iterable[Fold]:
-        return iter_loio_folds(scheme, scale_idx=scale_idx)
+        return iter_loio_folds(scheme, scale_idx=scale_idx, dataset_dir=dataset_dir)
 
     return _it
 
@@ -429,6 +431,7 @@ def run_loio(
     task: Literal["regression", "classification"] = "regression",
     scheme: str = "loio_9fold",
     scale_idx: int | None = None,
+    dataset_dir: Path | str | None = None,
     fold_iter: FoldIterator | None = None,
     snapshot: dict | None = None,
     verbose: bool = True,
@@ -452,7 +455,7 @@ def run_loio(
     """
     if task == "classification" and binarize is None:
         raise ValueError("task='classification' requires a binarize callable")
-    fold_iter = fold_iter if fold_iter is not None else _default_fold_iter(scheme, scale_idx)
+    fold_iter = fold_iter if fold_iter is not None else _default_fold_iter(scheme, scale_idx, dataset_dir)
 
     pred_rows: list[pd.DataFrame] = []
     per_fold: list[dict] = []

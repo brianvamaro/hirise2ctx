@@ -1298,6 +1298,50 @@ Three independent checks, all pass:
 block-median validation, the good-vs-fallback deep-dive, and a before/after boulders-on-CTX
 overlay. Notebook 02 (SP1-bug investigation) left as v1 — not relevant to vClaire.
 
+## 2026-05-29 — vClaire v2 modeling A/B: Stage 5 + LOIO/binary/within-image sweeps; does denser labelling lift the ceiling?
+
+Completed the v2 pipeline through modeling and ran the A/B against v1 (PLAN_NewDetections.md §9).
+Full writeup + tables in `docs/modeling_results.md` §9; this is the decision record.
+
+**What ran.** Stage 5 packaged dataset_v2 (`loio_nfold` = 38 folds; `within_image_4fold` =
+152 folds = 38 images × 4 quadrants). Three sweeps on `--dataset-dir dataset_v2`:
+regression `models/_sweep/20260529T061553Z/`, binary `_sweep_binary/20260529T075754Z/`,
+within-image `_sweep_within_image/20260529T142227Z/`.
+
+**Result (three metrics, two readings — both true).**
+- *Target distribution*: v2 zero-tile fraction collapses vs v1 — S=8 0.979→0.500, S=64
+  0.720→0.070; "boulder-rich" (>1% area) tiles up ~70–200×. The dominant difference.
+- *Regression Spearman*: lifts ~3–10× (v1 ≈0, max +0.059 → v2 +0.10 to +0.17 LOIO), now
+  unambiguously non-zero over 38 folds (two_stage S64 +0.169±0.226, ~4.6σ). v2 is a usable
+  abundance **ranker**.
+- *Presence/binary AUC*: lifts only **modestly** — bc_ge_1 0.52–0.55 (v1) → 0.55–0.62 (v2),
+  growing with scale (S64 0.534→0.616). Still a weak **classifier**.
+- *Within-image diagnostic*: as in v1, every per-image `within−LOIO` delta CI brackets 0,
+  no Wilcoxon p<0.05 → within ≈ LOIO on v2 too.
+
+**Decision / interpretation.** The v1 "≈0.55 signal floor" was **partly a missed-boulder
+artifact**: completing the labels lifts the rank signal a lot and the presence ceiling a
+little. But the within-image diagnostic (image-count-independent) still shows within ≈ LOIO,
+so a **5 m/px texture floor still binds the presence ceiling (~0.6)** — completeness raised
+the floor, didn't remove it. Confound called out: v2 changes label density + image count
+(9→38) + class balance at once; only the within-image result cleanly attributes to label
+completeness. v2 is the **go-forward dataset**; v1 modeling (§§1–8) stands as the frozen
+baseline.
+
+**Coarse-scale saturation (new, minor).** At S=64 v2 is ~93% positive, so whole images go
+single-class and presence/`bc_ge_1` AUC is undefined for them — handled by dropping those
+images (n falls to 25–26 of 38 at S=64). `_diag_within_image_deltas.py` now nan-skips before
+the paired stats.
+
+**Infra shipped for the A/B.** `--dataset-dir`/`--scheme` on the 3 sweep drivers (threaded
+through `run_loio`→`iter_loio_folds`); `sweep_meta.json` per sweep + `src/modeling/sweep_select.py`
+so notebooks/probes pick the right dataset's sweep by `dataset_dir`. `scripts/sweep.py`
+default `--variants` still includes `lightgbm_classification`, which in regression mode
+truncates the continuous target to all-zero (trivial model) — harmless, filtered out of the
+v2 regression view. Notebook 10 **pinned** to the v1 sweep timestamps + a "superseded"
+banner; new `notebooks/11_modeling_qa_v2.ipynb` is the v2 QA. README grow-the-dataset recipe
+fixed to start at Stage 1; ROADMAP gains a vClaire v2 row.
+
 ## Open at this date
 
 - **Stage 3 thresholds (flag/fail)** — collect more data first before pinning down.

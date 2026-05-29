@@ -16,7 +16,8 @@ plans for phases that have started and phases that haven't.
 | Stage 4 — label generation on nested ×2 grid | shipped | (covered in CLAUDE.md §4) | Commit `896cdef`; results in DECISIONS.md 2026-05-23 |
 | Stage 4b — per-tile CTX texture features | shipped | [PLAN_Stage4b.md](PLAN_Stage4b.md) | Commit `014f645`; results in DECISIONS.md 2026-05-23. 9 feature families, 643k feature rows, 3.3 GB context patches. |
 | Stage 5 — leave-image-out splits + packaging | shipped | [PLAN_Stage5.md](PLAN_Stage5.md) | Commit `aa6cd74`; results in DECISIONS.md 2026-05-25. Two schemes (`loio_9fold` + `loio_3fold_balanced`); group-leak assertion in QA notebook. |
-| **Week 3 modeling — GBM baseline + two-stage** | scoped | [PLAN_modeling.md](PLAN_modeling.md) | LightGBM + Tweedie, LOIO CV, Spearman ρ primary metric. Deepest plan; CNN explicitly punted. |
+| **Week 3 modeling — GBM baseline + two-stage** | shipped (v1) | [PLAN_modeling.md](PLAN_modeling.md) | LightGBM + Tweedie, LOIO CV, Spearman ρ primary metric. Results in [docs/modeling_results.md](docs/modeling_results.md). CNN explicitly punted (dead-end, §3.3). |
+| **vClaire v2 dataset — denser 40-image detection set** | in progress | [PLAN_NewDetections.md](PLAN_NewDetections.md) | Parallel dataset on the far-denser vClaire BoulderNet run (`config_v2.yaml` → `cache_v2/`+`dataset_v2/`, both gitignored). Stages 1–5 done on 38 images; modeling A/B (does denser labels lift the v1 AUC≈0.55 ceiling? §9) underway. Decisions in DECISIONS.md 2026-05-28. |
 | THEMIS validation | future work | not yet planned | CLAUDE.md §10. Coarse-scale independent check using THEMIS rock-abundance map. |
 | Compositional analysis | future work | not yet planned | CLAUDE.md §10. Thermal / CRISM spectra in boulder-rich vs boulder-poor areas (instructor's extra goal). |
 

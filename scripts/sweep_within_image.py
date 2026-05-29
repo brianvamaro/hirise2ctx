@@ -63,13 +63,16 @@ def _config_hash(snapshot: dict) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
-def _run_two_stage(scale_idx: int, params: LGBMParams) -> tuple[list[dict], dict, Path]:
+def _run_two_stage(
+    scale_idx: int, params: LGBMParams, *, dataset_dir: str | None = None,
+) -> tuple[list[dict], dict, Path]:
     """Regression: lightgbm_two_stage on `fractional_area`."""
     tile_size = SCALE_TILE_PX[scale_idx]
     snapshot = {
         "variant": "lightgbm_two_stage",
         "task": "regression",
         "scheme": SCHEME,
+        "dataset_dir": dataset_dir or "dataset",
         "scale_idx": scale_idx,
         "tile_size_px": tile_size,
         "model": snapshot_params("lightgbm_two_stage", params),
@@ -88,6 +91,7 @@ def _run_two_stage(scale_idx: int, params: LGBMParams) -> tuple[list[dict], dict
         task="regression",
         scheme=SCHEME,
         scale_idx=scale_idx,
+        dataset_dir=dataset_dir,
         snapshot=snapshot,
         verbose=False,
     )
@@ -95,7 +99,9 @@ def _run_two_stage(scale_idx: int, params: LGBMParams) -> tuple[list[dict], dict
     return result.per_fold_metrics, result.aggregate, out_dir
 
 
-def _run_classification(scale_idx: int, params: LGBMParams) -> tuple[list[dict], dict, Path]:
+def _run_classification(
+    scale_idx: int, params: LGBMParams, *, dataset_dir: str | None = None,
+) -> tuple[list[dict], dict, Path]:
     """Binary: lightgbm_classification at bc_ge_1."""
     target = get_target(BINARY_TARGET_ID)
     tile_size = SCALE_TILE_PX[scale_idx]
@@ -107,6 +113,7 @@ def _run_classification(scale_idx: int, params: LGBMParams) -> tuple[list[dict],
         "target_threshold": target.threshold,
         "target_comparison": target.comparison,
         "scheme": SCHEME,
+        "dataset_dir": dataset_dir or "dataset",
         "scale_idx": scale_idx,
         "tile_size_px": tile_size,
         "model": snapshot_params("lightgbm_classification", params),
@@ -128,6 +135,7 @@ def _run_classification(scale_idx: int, params: LGBMParams) -> tuple[list[dict],
         task="classification",
         scheme=SCHEME,
         scale_idx=scale_idx,
+        dataset_dir=dataset_dir,
         snapshot=snapshot,
         verbose=False,
     )
@@ -180,6 +188,9 @@ def main() -> int:
     ap.add_argument("--n-estimators", type=int, default=400)
     ap.add_argument("--learning-rate", type=float, default=0.05)
     ap.add_argument("--early-stopping-rounds", type=int, default=40)
+    ap.add_argument("--dataset-dir", default=None,
+                    help="Packaged dataset root (default: ./dataset = v1). Use dataset_v2 for the vClaire A/B. "
+                         "Scheme is within_image_4fold in both (the fold count differs, not the name).")
     args = ap.parse_args()
 
     params = LGBMParams(
@@ -191,10 +202,18 @@ def main() -> int:
     timestamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out_dir = REPO_ROOT / "models" / "_sweep_within_image" / timestamp
     out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "sweep_meta.json").write_text(json.dumps({
+        "kind": "within_image",
+        "dataset_dir": args.dataset_dir or "dataset",
+        "scheme": SCHEME,
+        "timestamp": timestamp,
+        "script": "sweep_within_image.py",
+    }, indent=2), encoding="utf-8")
 
     runs = [(v, s) for v in args.variants for s in args.scales]
     print(f"Within-image sweep on scheme={SCHEME}: {len(runs)} runs "
-          f"({len(args.variants)} variants x {len(args.scales)} scales, 32 folds each)")
+          f"({len(args.variants)} variants x {len(args.scales)} scales)")
+    print(f"Dataset: {args.dataset_dir or 'dataset'}")
     print(f"Output: {out_dir}\n", flush=True)
 
     summary_rows: list[dict] = []
@@ -204,10 +223,12 @@ def main() -> int:
         print(f"[{i:>2d}/{len(runs)}] variant={variant:<25s} scale_idx={scale_idx} (S={tile_size:>2d}) ...",
               flush=True)
         if variant == "lightgbm_two_stage":
-            per_fold, aggregate, artifact_dir = _run_two_stage(scale_idx, params)
+            per_fold, aggregate, artifact_dir = _run_two_stage(
+                scale_idx, params, dataset_dir=args.dataset_dir)
             primary = ("spearman_rho_mean", "spearman_rho_std")
         elif variant == "lightgbm_classification":
-            per_fold, aggregate, artifact_dir = _run_classification(scale_idx, params)
+            per_fold, aggregate, artifact_dir = _run_classification(
+                scale_idx, params, dataset_dir=args.dataset_dir)
             primary = ("auc_mean", "auc_std")
         else:
             raise AssertionError(f"unexpected variant {variant!r}")
