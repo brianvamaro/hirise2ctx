@@ -983,3 +983,81 @@ more images tightens error bars but, per §9.4, will not raise the per-tile
 ceiling. The confound caveat above means the LOIO lift (§9.2–9.3) mixes label
 density, image count, and class balance; the within-image result is the part
 that cleanly attributes to label completeness.
+
+### 9.6 Prediction diagnostics: dynamic-range compression
+
+Qualitative diagnostics on the v2 held-out predictions
+([`notebooks/11_modeling_qa_v2.ipynb`](../notebooks/11_modeling_qa_v2.ipynb), "Prediction
+diagnostics") explain *why* the rank signal lifts but the magnitudes stay weak. The
+`lightgbm_two_stage` S=64 regressor **compresses its dynamic range**: per truth bin, mean
+prediction sits in a narrow ~0.007–0.015 band almost regardless of truth — it
+**over-predicts** empty/low tiles (zero-truth → mean pred ≈ 0.0074; the 0–1e-3 bins
+over-predicted ~10–100×) and **under-predicts** the high bin (true ≈ 0.035 → pred ≈ 0.015,
+~40 % of truth). So the model ranks tiles but does not produce calibrated fractional-area;
+**presence/ranking, not calibrated abundance, is the honest product** at this stage. The
+classifier calibration + PR sweep, plus the coarse-scale saturation (≈93 % positive at
+S=64 ⇒ single-class images excluded from AUC), argue for a **scale-dependent
+"boulder-rich" threshold** rather than the fixed `fa_gt_1e-2`. These are the levers the
+follow-on work ([`PLAN_ModelImprovement.md`](../PLAN_ModelImprovement.md)) targets: CNN
+task/loss redesign (Phase B) and the tile-scale study (Phase C).
+
+---
+
+## 10. Model-improvement experiments on the 5-image dev set (2026-05-29)
+
+To iterate quickly without the full 38-image cost, [`PLAN_ModelImprovement.md`](../PLAN_ModelImprovement.md)
+built a 5-image **dev harness** (`config_v2_dev.yaml` → `dataset_v2_dev/`; images span
+9.6k–727k polygons + 2 v1-overlap; built by
+[`scripts/probes/_setup_dev_dataset.py`](../scripts/probes/_setup_dev_dataset.py)). **Caveat:
+dev is for relative screening, not absolute numbers** — 5-fold LOIO is so noisy that even the
+GBM `bc_ge_1` comes out at AUC ≈ 0.46 (vs 0.55–0.62 on full v2), so the **within-image scheme
+(20 folds)** is used as the dev comparison metric (its S8–S64 trend matches full-v2 §9).
+
+### 10.1 CNN: a classifier fixes the collapse but does not beat the GBM
+
+The v1 CNN was below chance; §3.3 blamed loss design. v2's lower zero-inflation + a dedicated
+**`SmallCNNClassifier`** (`SmallCNN` backbone + `BCEWithLogitsLoss(pos_weight=neg/pos)`,
+[`src/modeling/cnn.py`](../src/modeling/cnn.py)) test that. Within-image dev `bc_ge_1` AUC:
+
+| scale | context patch | GBM cls | CNN cls |
+|-------|---------------|--------:|--------:|
+| S=32  | P=32 (160 m)  | **0.541** | 0.474 |
+| S=32  | P=128 (640 m, wide) | **0.541** | 0.503 |
+| S=64  | P=64 (320 m)  | 0.538 | 0.546 |
+
+- The classification reframing **fixes the below-chance collapse** — the CNN classifier holds
+  ~0.50–0.55, whereas the log1p+Huber regression CNN still collapses (dev LOIO Spearman ≈ −0.01
+  to −0.03, i.e. predicts ~constant). So the v1 failure was loss design, confirmed.
+- But the CNN **does not beat the GBM** at any patch size, and a **wider outside-of-tile context
+  (P=128 = 640 m) helps only marginally** (0.474 → 0.503), not past the GBM. At 5 m/px the small
+  CNN extracts no signal the hand-crafted features miss — consistent with the §9.4 texture floor.
+  (Dev error bars are ±0.09–0.20, so this is "no evidence the CNN wins," not a hard inequality.)
+- **Decision (Brian):** keep `SmallCNNClassifier` + its smoke test, do **not** spend the full-v2
+  CNN. **Deferred** for a later pass: two-stage CNN, a larger architecture, more epochs, a
+  multi-scale two-patch input.
+
+### 10.2 Tile scale: coarser keeps helping the ranking, not the presence ceiling
+
+Extending the ladder to **S=128 (640 m)** on dev (within-image, 20 folds; required extending
+`SCALE_TO_FACTOR_FROM_FINEST`, the sweep `SCALE_TILE_PX`, and the GLCM per-scale config to 128):
+
+| scale | tile | two_stage Spearman ρ | bc_ge_1 AUC |
+|-------|------|---------------------:|------------:|
+| S=8   | 40 m  | 0.118 | 0.571 |
+| S=16  | 80 m  | 0.130 | 0.537 |
+| S=32  | 160 m | 0.187 | 0.536 |
+| S=64  | 320 m | 0.263 | 0.557 |
+| **S=128** | **640 m** | **0.406** | **0.573** |
+
+- **Regression rank signal climbs strongly and monotonically with scale** — Spearman 0.26 → 0.41
+  from S64 → S128. Coarser tiles average out per-tile noise and have more dynamic range, so
+  abundance *ranking* is markedly better at 640 m. The S8–S64 dev trend matches full-v2 §9, which
+  makes the S128 extrapolation credible (though dev S128 has only ~1228 tiles, ±0.18).
+- **Presence AUC stays flat (~0.55–0.57)** — coarser tiles do not move the presence ceiling (the
+  texture floor again). So scale buys *ranking*, not *detection*.
+- **Implication:** if the deliverable is an abundance-ranking map, **640 m tiles are the best
+  operating scale** tested (at the cost of spatial resolution). **Decision (Brian, 2026-05-29):
+  held as a dev-only finding** — S=128 is *not* promoted to the full 38-image dataset yet; the
+  full `config_v2.yaml` still uses `[8,16,32,64]`. Revisit a full-v2 S=128 confirmation later
+  (the scale-extension plumbing — `SCALE_TO_FACTOR_FROM_FINEST`, sweep `SCALE_TILE_PX`, GLCM
+  per-scale config — is already in place, so promotion is just a config flip + re-run).

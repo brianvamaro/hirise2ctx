@@ -17,6 +17,10 @@ dataset/*
 # vClaire v2 dataset caches/outputs (regenerable; same policy as v1 cache/dataset)
 cache_v2/
 dataset_v2/
+# v2 5-image dev harness (regenerable via scripts/probes/_setup_dev_dataset.py;
+# cache_v2_dev is a junction to cache_v2, dataset_v2_dev holds copied + S128 outputs)
+cache_v2_dev/
+dataset_v2_dev/
 
 # Build artifacts
 build/

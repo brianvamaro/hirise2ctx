@@ -359,6 +359,226 @@ plt.show()
 ))
 
 # ---------------------------------------------------------------------------
+# Phase A: prediction diagnostics (where it hits / misses / mis-estimates)
+# ---------------------------------------------------------------------------
+cells.append(md(
+    """## Prediction diagnostics: where does the model hit, miss, and mis-estimate?
+
+The scalar tables above say the model ranks abundance (Spearman) but is a weak presence
+classifier (AUC ~0.6). This section makes that concrete on the **held-out LOIO
+predictions**: spatial truth-vs-pred maps, the under/over-estimation pattern, and the
+classifier's calibration + operating threshold. (We deliberately do **not** overlay the
+raw BoulderNet polygons — v2 images carry up to 727k of them and plotting outlines would
+hang; the rasterised per-tile grids carry the same spatial story.)
+""",
+    cell_id="diag-md",
+))
+
+cells.append(code(
+    """import json as _json
+import rasterio
+from matplotlib.colors import LogNorm, Normalize
+
+# Robust artifact selector: models/ is shared across v1/v2/dev, so match each run's
+# snapshot.json (dataset_dir + scheme + tile [+ target]) rather than trusting mtime.
+def artifact_dir(variant, tile, suffix='', target_id=None, scheme=LOIO_SCHEME, want=DATASET_DIR):
+    cands = sorted((MODELS_ROOT / variant).glob(f'*/scale_S{tile}{suffix}'),
+                   key=lambda p: p.stat().st_mtime, reverse=True)
+    for d in cands:
+        sp = d / 'snapshot.json'
+        if not sp.exists():
+            continue
+        s = _json.loads(sp.read_text())
+        if (s.get('dataset_dir') == want and s.get('scheme') == scheme
+                and int(s.get('tile_size_px', -1)) == tile
+                and (target_id is None or s.get('target_id') == target_id)):
+            return d
+    return None
+
+REG_DIR_S64 = artifact_dir('lightgbm_two_stage', 64)
+CLS_DIR_S64 = artifact_dir('lightgbm_classification', 64, suffix='_tbc_ge_1', target_id='bc_ge_1')
+print('reg two_stage S64 :', REG_DIR_S64.relative_to(REPO_ROOT) if REG_DIR_S64 else 'MISSING')
+print('cls bc_ge_1   S64 :', CLS_DIR_S64.relative_to(REPO_ROOT) if CLS_DIR_S64 else 'MISSING')
+reg_pred = pd.read_parquet(REG_DIR_S64 / 'predictions.parquet')
+cls_pred = pd.read_parquet(CLS_DIR_S64 / 'predictions.parquet')
+print('reg pred rows:', len(reg_pred), ' cls pred rows:', len(cls_pred))
+""",
+    cell_id="diag-load",
+))
+
+cells.append(md(
+    """### Spatial: truth vs regression-pred vs classifier-probability (S=64)
+
+Three images spanning the density range (sparsest / mid / densest). CTX greyscale
+background; truth + regression on a shared log colour scale so compression is visible;
+classifier on a fixed [0,1] probability scale.
+""",
+    cell_id="diag-spatial-md",
+))
+
+cells.append(code(
+    """def _grid(df, col):
+    if df.empty:
+        return None, None
+    ti0, ti1 = int(df['ti'].min()), int(df['ti'].max())
+    tj0, tj1 = int(df['tj'].min()), int(df['tj'].max())
+    g = np.full((ti1 - ti0 + 1, tj1 - tj0 + 1), np.nan)
+    g[df['ti'].to_numpy() - ti0, df['tj'].to_numpy() - tj0] = df[col].to_numpy()
+    return g, (float(df['xmin'].min()), float(df['xmax'].max()),
+               float(df['ymin'].min()), float(df['ymax'].max()))
+
+def _panel(ax, ctx, ctx_ext, grid, ext, title, norm, cmap, cbar_label, fig):
+    p1, p99 = (np.percentile(ctx[ctx > 0], [1, 99]) if (ctx > 0).any() else (0, 255))
+    ax.imshow(ctx, extent=ctx_ext, cmap='gray', vmin=p1, vmax=p99, origin='upper', aspect='equal')
+    if grid is not None:
+        im = ax.imshow(grid, extent=ext, cmap=cmap, norm=norm, alpha=0.62, origin='upper', aspect='equal')
+        cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
+        cb.set_label(cbar_label, fontsize=8); cb.ax.tick_params(labelsize=7)
+    ax.set_xlim(ctx_ext[0], ctx_ext[1]); ax.set_ylim(ctx_ext[2], ctx_ext[3])
+    ax.set_title(title, fontsize=9); ax.set_xticks([]); ax.set_yticks([])
+
+SPATIAL_OBS = ['ESP_055978_2270', 'ESP_064510_2260', 'ESP_068483_2280']  # sparse / mid / dense
+TILE = 64
+fig, axes = plt.subplots(len(SPATIAL_OBS), 3, figsize=(15, 4.2 * len(SPATIAL_OBS)), squeeze=False)
+for i, obs in enumerate(SPATIAL_OBS):
+    lab = pd.read_parquet(REPO_ROOT / 'dataset_v2' / 'labels' / f'{obs}.parquet')
+    sub = lab[lab['tile_size_px'] == TILE][['ti', 'tj', 'xmin', 'ymin', 'xmax', 'ymax', 'fractional_area']].copy()
+    with rasterio.open(REPO_ROOT / 'cache_v2' / 'ctx_windows' / f'{obs}.tif') as r:
+        ctx = r.read(1); ctx_ext = (r.bounds.left, r.bounds.right, r.bounds.bottom, r.bounds.top)
+    pos = sub['fractional_area'] > 0
+    tnorm = (LogNorm(vmin=max(sub.loc[pos, 'fractional_area'].min(), 1e-5),
+                     vmax=max(sub['fractional_area'].max(), 1e-4)) if pos.any() else Normalize(0, 1))
+    tg, te = _grid(sub, 'fractional_area')
+    rp = reg_pred[reg_pred['obs_id'] == obs].merge(
+        sub[['ti', 'tj', 'xmin', 'ymin', 'xmax', 'ymax']], on=['ti', 'tj'], how='inner')
+    rp['v'] = rp['y_pred'].clip(lower=0)
+    rg, re_ = _grid(rp, 'v')
+    cp = cls_pred[cls_pred['obs_id'] == obs].merge(
+        sub[['ti', 'tj', 'xmin', 'ymin', 'xmax', 'ymax']], on=['ti', 'tj'], how='inner')
+    cg, ce = _grid(cp, 'y_pred')
+    _panel(axes[i][0], ctx, ctx_ext, tg, te, f'{obs}\\nTRUTH fractional_area (S={TILE})', tnorm, 'inferno', 'true', fig)
+    _panel(axes[i][1], ctx, ctx_ext, rg, re_, 'PRED two_stage (LOIO)', tnorm, 'inferno', 'pred', fig)
+    _panel(axes[i][2], ctx, ctx_ext, cg, ce, 'PRED P(bc_ge_1) (LOIO)', Normalize(0, 1), 'viridis', 'P', fig)
+fig.tight_layout()
+fig.savefig(FIG_DIR / '11_spatial_pred_vs_truth.png', dpi=120, bbox_inches='tight')
+plt.show()
+""",
+    cell_id="diag-spatial-fig",
+))
+
+cells.append(md(
+    """### Over/under-estimation
+
+Left: predicted vs true `fractional_area` (log-log, S=64 two_stage) — points below the
+identity line are under-predictions. Right: per-truth-bin mean predicted vs mean true
+(positive bins) — the systematic compression of the dynamic range made explicit.
+""",
+    cell_id="diag-bias-md",
+))
+
+cells.append(code(
+    """m = _json.loads((REG_DIR_S64 / 'metrics.json').read_text())
+bin_rows = [b for f in m['per_fold'] for b in f.get('per_bin_rmse', []) if b['n_tiles'] > 0]
+bdf = pd.DataFrame(bin_rows)
+pos_bins = ['0_to_1e-4', '1e-4_to_1e-3', '1e-3_to_1e-2', '1e-2_to_max']
+agg = (bdf[bdf['bin'].isin(pos_bins)].groupby('bin')
+       .apply(lambda g: pd.Series({'mean_true': np.average(g['mean_true'], weights=g['n_tiles']),
+                                    'mean_pred': np.average(g['mean_pred'], weights=g['n_tiles'])}))
+       .reindex(pos_bins))
+
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 4.5))
+yt = np.clip(reg_pred['y_true'].to_numpy(), 1e-6, None)
+yp = np.clip(reg_pred['y_pred'].to_numpy(), 1e-6, None)
+idx = np.random.default_rng(0).choice(len(yt), min(8000, len(yt)), replace=False)
+ax1.scatter(yt[idx], yp[idx], s=3, alpha=0.2, color='tab:blue')
+lo, hi = 1e-6, max(yt.max(), yp.max()) * 1.1
+ax1.plot([lo, hi], [lo, hi], 'k--', lw=0.8)
+ax1.set_xscale('log'); ax1.set_yscale('log'); ax1.set_xlim(lo, hi); ax1.set_ylim(lo, hi)
+ax1.set_xlabel('true fractional_area'); ax1.set_ylabel('predicted'); ax1.set_title('two_stage S=64: pred vs true')
+x = np.arange(len(pos_bins))
+ax2.bar(x - 0.2, agg['mean_true'], 0.4, label='mean true', color='tab:gray')
+ax2.bar(x + 0.2, agg['mean_pred'], 0.4, label='mean pred', color='tab:olive')
+ax2.set_yscale('log'); ax2.set_xticks(x); ax2.set_xticklabels(pos_bins, rotation=20, ha='right')
+ax2.set_ylabel('mean fractional_area'); ax2.legend(); ax2.set_title('Per-truth-bin mean: true vs pred')
+fig.tight_layout(); fig.savefig(FIG_DIR / '11_pred_vs_true_and_bias.png', dpi=110); plt.show()
+""",
+    cell_id="diag-bias-fig",
+))
+
+cells.append(md(
+    """### Calibration + operating threshold (bc_ge_1)
+
+Left: reliability curve (mean predicted probability vs observed positive rate per decile)
+— on the diagonal = calibrated. Right: precision-recall from a threshold sweep — shows
+whether the default 0.5 decision threshold is a sensible operating point or whether v2's
+high base rate calls for a different one. (Note the coarse-scale saturation: at S=64 ~93%
+of tiles are positive, so several whole images are single-class and excluded from AUC.)
+""",
+    cell_id="diag-calib-md",
+))
+
+cells.append(code(
+    """def _calib(yt, yp, nb=10):
+    edges = np.linspace(0, 1, nb + 1)
+    idx = np.clip(np.digitize(yp, edges[1:-1]), 0, nb - 1)
+    mp = np.array([yp[idx == b].mean() if (idx == b).any() else np.nan for b in range(nb)])
+    mt = np.array([yt[idx == b].mean() if (idx == b).any() else np.nan for b in range(nb)])
+    return mp, mt
+
+def _pr(yt, yp, ths):
+    npos = yt.sum()
+    P, R = [], []
+    for t in ths:
+        pred = yp >= t
+        tp = float((pred & (yt == 1)).sum()); fp = float((pred & (yt == 0)).sum())
+        P.append(tp / (tp + fp) if (tp + fp) > 0 else np.nan)
+        R.append(tp / npos if npos > 0 else np.nan)
+    return np.array(P), np.array(R)
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 4.8))
+ths = np.linspace(0.05, 0.95, 19)
+for tile, dirp in [(32, artifact_dir('lightgbm_classification', 32, '_tbc_ge_1', 'bc_ge_1')), (64, CLS_DIR_S64)]:
+    if dirp is None:
+        continue
+    p = pd.read_parquet(dirp / 'predictions.parquet')
+    yt = p['y_true'].to_numpy(); yp = p['y_pred'].to_numpy()
+    mp, mt = _calib(yt, yp); axes[0].plot(mp, mt, 'o-', alpha=0.8, label=f'S={tile} (base rate {yt.mean():.2f})')
+    P, R = _pr(yt, yp, ths); axes[1].plot(R, P, 'o-', alpha=0.8, label=f'S={tile}')
+axes[0].plot([0, 1], [0, 1], 'k--', lw=0.7)
+axes[0].set_xlabel('mean predicted P'); axes[0].set_ylabel('observed positive rate')
+axes[0].set_title('bc_ge_1 calibration'); axes[0].legend(fontsize=8)
+axes[1].set_xlabel('recall'); axes[1].set_ylabel('precision')
+axes[1].set_title('bc_ge_1 precision-recall (threshold sweep)'); axes[1].legend(fontsize=8)
+fig.tight_layout(); fig.savefig(FIG_DIR / '11_binary_calibration_pr.png', dpi=110); plt.show()
+""",
+    cell_id="diag-calib-fig",
+))
+
+cells.append(md(
+    """### What the diagnostics show
+
+- **Dynamic-range compression (the main problem).** The per-truth-bin panel shows the
+  two_stage regressor squashes its output into a narrow band (~0.007–0.015) almost
+  regardless of the truth: it **over-predicts** empty/low tiles (zero-truth tiles get a
+  mean ~0.007 prediction; the 0–1e-3 bins are over-predicted ~10–100×) and
+  **under-predicts** the high bin (true ~0.035 → pred ~0.015, ~40% of truth). This is why
+  the rank signal (Spearman) is real while the absolute magnitudes are not trustworthy,
+  and it argues for reporting **presence/ranking**, not calibrated fractional-area, as the
+  product — or for a loss that penalises the high tail harder.
+- **Spatially**, the predicted maps track the broad envelope of the truth hotspots but with
+  far less contrast — consistent with the compression above.
+- **Classifier calibration / threshold.** The reliability curve + PR sweep show whether the
+  default 0.5 threshold is sensible at v2's high base rate; combined with the coarse-scale
+  saturation (whole images single-class at S=64), this motivates a **scale-dependent
+  "boulder-rich" threshold** rather than the fixed `fa_gt_1e-2` used in the sweep.
+
+These flag the levers for the CNN work (Phase B — task/loss design) and the scale study
+(Phase C) in [`PLAN_ModelImprovement.md`](../PLAN_ModelImprovement.md).
+""",
+    cell_id="diag-read-md",
+))
+
+# ---------------------------------------------------------------------------
 # Within-image diagnostic
 # ---------------------------------------------------------------------------
 cells.append(md(

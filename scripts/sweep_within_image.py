@@ -49,7 +49,7 @@ from src.modeling.gbm import (
     snapshot_params,
 )
 
-SCALE_TILE_PX = {0: 8, 1: 16, 2: 32, 3: 64}
+SCALE_TILE_PX = {0: 8, 1: 16, 2: 32, 3: 64, 4: 128}  # 4=S128 (640 m) added for the scale study
 ALL_VARIANTS = ("lightgbm_two_stage", "lightgbm_classification")
 DEFAULT_SCALES = (0, 1, 2, 3)
 MODELS_ROOT = REPO_ROOT / "models"

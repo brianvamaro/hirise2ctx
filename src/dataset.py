@@ -53,7 +53,7 @@ EMPTY_TRUTH_OBS_ID = "ESP_065711_1545"
 # factor convention at every step (per-scale ti_mid is the finest-scale ti_mid // factor;
 # strictly coherent quadrant assignment requires the finest ti_mid to be a multiple of
 # the coarsest factor). Extend this dict if new scales are added upstream.
-SCALE_TO_FACTOR_FROM_FINEST = {8: 1, 16: 2, 32: 4, 64: 8}
+SCALE_TO_FACTOR_FROM_FINEST = {8: 1, 16: 2, 32: 4, 64: 8, 128: 16}
 
 # Label-side columns -- everything we'd want to predict, plus per-tile context useful
 # for analysis. Anything not in this list and not a tile-key column is treated as X.

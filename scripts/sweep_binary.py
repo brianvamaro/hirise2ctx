@@ -39,7 +39,7 @@ from src.modeling.evaluate import run_loio, write_run_artifacts
 from src.modeling.gbm import LGBMParams, LightGBMClassification, snapshot_params
 from src.modeling.loaders import iter_loio_folds
 
-SCALE_TILE_PX = {0: 8, 1: 16, 2: 32, 3: 64}
+SCALE_TILE_PX = {0: 8, 1: 16, 2: 32, 3: 64, 4: 128}  # 4=S128 (640 m) added for the scale study
 ALL_TARGET_IDS = [t.id for t in BINARY_TARGETS]
 DEFAULT_SCALES = (0, 1, 2, 3)
 MODELS_ROOT = REPO_ROOT / "models"
