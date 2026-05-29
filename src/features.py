@@ -85,7 +85,10 @@ DEFAULT_FEATURES_CFG: dict[str, Any] = {
 
 # Stage 4b deliberately recognises the same "drop this ObsId from --all sweeps" set that
 # Stage 4 already uses. Kept in sync with scripts/run_stage4.py EXCLUDED_FROM_SWEEP.
-EXCLUDED_FROM_SWEEP = {"ESP_057469_2215"}
+#   ESP_057469_2215 — v1: tile-straddle, 0.1% HiRISE coverage (DECISIONS.md 2026-05-22).
+#   ESP_046803_2325 — v2 vClaire: featureless CTX, 0/210 co-registration blocks correlate
+#                     (DECISIONS.md 2026-05-28; notebook 05 fallback deep-dive).
+EXCLUDED_FROM_SWEEP = {"ESP_057469_2215", "ESP_046803_2325"}
 
 # How wide a histogram bin we use when finding the modal DN. CTX uint8 is 0..255; one bin
 # per integer is fine, no smoothing needed since real CTX scenes have a well-defined

@@ -1148,6 +1148,156 @@ inner-val-rotation invariant
 split + packaged scheme deterministically; `python scripts/sweep_within_image.py`
 re-runs the 256-fit sweep against the same artifacts in ≈4 minutes on CPU.
 
+## 2026-05-28 — vClaire 40-image detection set: ingest + manifest (Stage 1)
+
+A new, much denser BoulderNet run ("vClaire", inference params `ct-010 ss-256 ov-020
+downscaled`) covering 40 HiRISE images arrived in
+`C:\Users\brian\Documents\PhD\HiRiseToCTXBoulders\hirise_40_vClaire`. Goal: build a
+parallel v2 dataset to test whether denser/more-complete labels lift the AUC ≈ 0.55
+ceiling (PLAN_NewDetections.md §9). Kept fully separate from v1 (`dataset/` untouched).
+
+**A/B versioning (zero-code path).** `config_v2.yaml` mirrors `config.yaml` but points at
+`hirise_40_vclaire.csv` / `hirise_40_vClaire` / `cache_v2` / `dataset_v2`, with
+`features.context_patch.enabled=false` (CNN is a dead-end; saves the largest disk
+chunk). `cache_v2` directory-junctions the detection-INDEPENDENT imagery caches
+(`ctx_tiles`, `hirise_jp2`, `hirise_decimated`, `pds_labels`) back to `cache/` so they
+are shared, not re-downloaded; detection-derived caches (`reprojected_detections`,
+`ctx_windows`, `coregistration`) stay fresh. A `--config` flag was added to
+run_stage1/2/3/4/4b/5 + sweep_stage2; **`scripts/run_stage1.py` is new** (there was no
+headless Stage 1 driver — Stage 1 had only ever been run from notebook 01).
+
+**Manifest build (`scripts/build_vclaire_manifest.py` → `hirise_40_vclaire.csv`).**
+- URLs templated from the PDS RDR convention (`ORB_{orbit//100*100}_{+99}`); all 40
+  `LabelURL`s resolved.
+- **Center coords come from the PDS footprint midpoint** (`pds_labels.image_footprint`
+  MIN/MAX_LAT, E/W_LON), NOT `pds_labels.projection_origin`. **Gotcha:**
+  `projection_origin` returns the map-projection central meridian / standard parallel
+  (rounded, e.g. lon 180, lat 45) — correct for the SP1 `.prj` fix but wildly wrong as a
+  geographic center (first manifest pass put every tile at `E180_*`). Footprint
+  midpoints cross-check against the spreadsheet corners to < 1° and reproduce the v1
+  tiles for the 3 overlap images.
+- `BoulderLabel` from the `Mapping_Images_33_36.xlsx` "Overall…" column → 37 `Boulder
+  rich` + 2 `unknown` (vClaire is curated boulder-rich; confirmed with Brian). 3 images
+  absent from the spreadsheet (`ESP_017355_2260`, `ESP_076499_1160`, and the dropped
+  `ESP_028537_2270`).
+- `CTX_TileName` derived by floor-to-4° (validated to reproduce all 10 existing-manifest
+  tiles before use). vClaire spans ~15 unique Murray Lab tiles incl. a southern
+  `E020_S64` (`ESP_076499_1160`, −63.7°) — a strong geographic-diversity outlier.
+
+**Data-quality findings.**
+- **`ESP_028537_2270` truncated** (`.dbf`/`.shp` far smaller than the `.shx` record
+  count implies; read fails). Unfixable upstream → **excluded** from the manifest →
+  39 rows. `ESP_045878_2235` initially shipped the wrong `-bbox-nms` variant; Brian
+  re-exported the `-mask-nms` version (now included).
+- **BoulderNet emits many null-geometry records** at this density: rows with a DBF
+  entry (score/id) but no polygon. `ESP_017355_2260` is 1.1M rows but only **359,933
+  real polygons** (745k null); `ESP_068483_2280` 1.06M → 727k. The priority10 set had
+  zero. Confirmed present in the SOURCE shapefiles (not introduced by reproject).
+  **Fix:** `src/detections.drop_null_geometries` drops null/empty geoms at Stage 1
+  ingest (no-op on v1; detection tests still green) and records `n_polygons_raw` +
+  `n_dropped_null_geometry` in the Stage-1 sidecar. True per-image boulder counts span
+  9.6k → 727k (≈100–500× v1).
+
+**Filter decision (`detection_filters`).** Reprojected equivalent-circle diameters are
+large (pooled median 3.4 m, p5 ≈ 1.9 m) → **~0% below the `min_size_m=1.4105` floor**, so
+that filter is a no-op (kept, consistent with v1). Scores: 100% ≥ 0.2, 89% ≥ 0.3,
+52% ≥ 0.5 — `min_confidence` kept `null`. The denser set is *more* boulders, not
+*smaller*.
+
+**Stage 1 result:** 39/39 reprojected, 0 failures, 32 SP1-corrected. The 1.1M-row
+reproject runs in ~16 s — no scale problem. `splits.*` `n_folds` in `config_v2.yaml` are
+PLACEHOLDERS to be set to the surviving-image count after Stage 4.
+
+## 2026-05-28 — Stage 3 upgraded to a robust block-median solve
+
+**Why.** The original Stage 3 solved one `(dx, dy)` from a single central FFT sub-window.
+On the vClaire set this failed on `ESP_049242_2115`: the central window returned an
+anti-correlated junk shift (peak −0.06, with the wrong sign on `dx`) even though the image
+is perfectly registerable. The whole-image block validation (added at Brian's request —
+"make sure the co-registration is working across the whole image") showed 24 of its 29
+128 px blocks correlated strongly (peak ≥ 0.5) and agreed with each other to ±10–20 m —
+the single window had simply landed on a bad patch. Brian approved making the solve robust
+("vital to get the co-registration right").
+
+**What.** `src/coregister.py`:
+- `block_shift_field(hi_warped, ctx_arr, mask, block_px, min_coverage, upsample_factor)` —
+  tiles the window, phase-correlates each fully-covered block, returns the per-block local
+  shift field. Also the QA primitive for the whole-image validation.
+- `_robust_shift_from_field(field, block_peak_min, min_confident_blocks)` — median `(dy, dx)`
+  over blocks with local peak ≥ `block_peak_min`; returns None (→ fallback) when fewer than
+  `min_confident_blocks` clear the floor.
+- `stage3_one_image` now computes BOTH: the single-window solve (kept in provenance as
+  `single_window` + as the fallback) and the block-median (primary). Provenance gains
+  `method` (`block_median` | `single_window_fallback`), `single_window{...}`, and
+  `block_field{block_px, block_peak_min, n_blocks, n_confident_blocks, median_block_peak,
+  block_mad_px}`. `shift_m` / `shift_px` / `peak_correlation` are the CHOSEN method's values,
+  so Stage 4 consumption is unchanged.
+- `warp_hirise_to_ctx_grid` exposed as a public wrapper for QA callers.
+- Config: `coregistration.{block_px: 256, block_peak_min: 0.5, min_confident_blocks: 6}` in
+  both config.yaml and config_v2.yaml (v1 caches were single-window; these only bite on a
+  re-run). `run_stage3.py` threads them through and reports the method tally.
+
+**Result (vClaire 39 images).** |shift| median 195 m (80–327 m); **38/39 block_median, 1
+fallback** (`ESP_046803_2325`, genuinely bland). Median confident-block peak 0.71.
+`ESP_049242_2115` rescued: peak −0.06 → 0.72, dx +2.5 → −27.1 m. The v1-overlap image
+`ESP_069669_2220` is essentially unchanged (273 → 269 m), confirming block-median ≈
+single-window where the latter already worked. Every `dy` negative (~200 m north bias =
+the CTX-mosaic baseline), as in v1.
+
+**Tests.** +2 (`test_block_shift_field_recovers_uniform_shift`,
+`test_block_shift_field_skips_undercovered_blocks`); the slow Stage 3 provenance +
+idempotency tests stay green on the block-median path (16/16 in test_coregister.py).
+
+**Docs.** Full method writeup in `docs/methods.md` §5 (rewritten: §5.2 algorithm, §5.3
+whole-image validation, §5.4 vClaire results, §5.6 the fallback image). Whole-image
+validation rendered in `notebooks/05_coregistration_qa.ipynb` (new section, pointed at v2
+via a `CONFIG_NAME` toggle) → `reports/figures/05_wholeimg_*.png`.
+
+**`ESP_046803_2325` dropped (2026-05-28).** The lone single-window fallback. The notebook
+05 deep-dive (CTX window, HiRISE warp, block-peak map, single-window overlay) showed
+**0 / 210 blocks correlate** — the CTX window is uniformly dust-mantled with no texture
+anywhere, not just at the central window. Despite ~367k detected boulders, it is a
+high-target / no-input training example (featureless CTX paired with high abundance) that
+would add label noise without teaching the CTX→abundance mapping. Brian's call: **drop**.
+Added to `EXCLUDED_FROM_SWEEP` in `scripts/run_stage4.py` + `src/features.py` (so
+Stage 4/4b/5 skip it → 38 of 39 images proceed); kept in the manifest + Stage 1–3 caches
+so the rationale stays inspectable. `config_v2.yaml` `splits.*` `n_folds` must reflect 38
+(not 39) once the surviving count is confirmed after Stage 4.
+
+**Open:** a future refinement could *always* use block-median and drop the single-window
+entirely, and/or set an automatic accept/flag threshold from the block-field coherence;
+deferred until more cohorts confirm the 0.5 / 6-block parameters generalise.
+
+## 2026-05-28 — Stage 4 reprojects detections to the window CRS + boulder-localization verified
+
+**`gdf.to_crs(window_crs)` in `labeling.stage4_one_image`.** The boulder polygons were in
+the pipeline `target_crs` (Mars_2000 sphere) while the CTX window — and the (ti, tj) tile
+grid anchored to it — is the Murray Lab Mars_2015 oblate CRS. Stage 4 now reprojects the
+polygons into `window_crs` right after load (before the co-reg shift + rasterization) so the
+labels are placed in the exact frame the tiles live in (correct-by-construction). **Verified
+this is a 0.000 m change at our coordinates** (`scripts/probes/_diag_tocrs_displacement.py`):
+PROJ's equirectangular uses the shared semi-major radius (3,396,190 m) for both, so the
+sphere/oblate definitions are numerically identical here — the prior "sub-pixel approximation"
+was actually exact. So the existing labels were already correct; the change makes the
+consistency explicit and future-proofs a CTX source whose CRS genuinely differs. Stage 4
+`--all` was re-run for clean provenance (bit-identical labels, 38 images).
+
+**Boulder-localization verification (answering "are the boulders correctly located?").**
+Three independent checks, all pass:
+1. *Full-res HiRISE overlay* (`scripts/probes/_diag_boulder_localization_fullres.py`,
+   now also a cell in notebook 01): at 0.25 m/px, the BoulderNet polygons sit exactly on
+   individual boulders (bright cap + shadow). Definitive fine-placement proof.
+2. *Centroid gate, all 38 images*: mean polygon centroid is 0.2–5.0 km from the manifest
+   centre (median 1.1), none near the 15 km gate → no CRS/local-radius gross errors.
+3. *Co-registration* (block-median whole-image validation, above): ~6 m residual on good
+   images. The sphere/oblate gap (0 m) can't move a boulder out of its 40–320 m tile.
+
+**Notebooks pointed at v2.** 01 (detections QA — + a full-res localization section), 03
+(HiRISE overlay), 04 (CTX retrieval QA) now default to `CONFIG_NAME = "config_v2.yaml"`
+(toggle back to `config.yaml` for v1). 05 (coregistration) gained the whole-image
+block-median validation, the good-vs-fallback deep-dive, and a before/after boulders-on-CTX
+overlay. Notebook 02 (SP1-bug investigation) left as v1 — not relevant to vClaire.
+
 ## Open at this date
 
 - **Stage 3 thresholds (flag/fail)** — collect more data first before pinning down.

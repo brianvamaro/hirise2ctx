@@ -39,13 +39,17 @@ def _solve_one(cfg, obs_id: str, row) -> dict | None:
         return None
     t0 = time.monotonic()
     try:
+        cc = cfg["coregistration"]
         prov = stage3_one_image(
             obs_id,
             cache_dir=cache_dir,
             manifest_row=row,
-            fft_window_px=int(cfg["coregistration"]["fft_window_px"]),
+            fft_window_px=int(cc["fft_window_px"]),
             upsample_factor=20,
             config_hash=cfg.hash,
+            block_px=int(cc.get("block_px", 256)),
+            block_peak_min=float(cc.get("block_peak_min", 0.5)),
+            min_confident_blocks=int(cc.get("min_confident_blocks", 6)),
         )
     except RuntimeError as e:
         # Common case: HiRISE coverage is too small for any power-of-2 FFT window
@@ -56,11 +60,14 @@ def _solve_one(cfg, obs_id: str, row) -> dict | None:
         return None
     dt = time.monotonic() - t0
     sm = prov["shift_m"]
+    bf = prov.get("block_field", {})
+    method = prov.get("method", "single_window")
+    tag = (f"block_median[{bf.get('n_confident_blocks', '?')}/{bf.get('n_blocks', '?')} blk]"
+           if method == "block_median" else "single_window_fallback")
     print(
         f"  {obs_id}: |shift|={sm['magnitude']:7.1f} m   "
         f"(dx={sm['dx']:+7.1f}, dy={sm['dy']:+7.1f})   "
-        f"peak={prov['peak_correlation']:.3f}   "
-        f"fft={prov['fft_window']['size_px']}px   "
+        f"peak={prov['peak_correlation']:.3f}   {tag}   "
         f"[{dt:.1f}s]",
         flush=True,
     )
@@ -72,9 +79,10 @@ def main() -> int:
     g = parser.add_mutually_exclusive_group(required=True)
     g.add_argument("obs_id", nargs="?", default=None, help="HiRISE Observation ID")
     g.add_argument("--all", action="store_true", help="Solve for every manifest row")
+    parser.add_argument("--config", default="config.yaml", help="Path to the pipeline config YAML")
     args = parser.parse_args()
 
-    cfg = load_config("config.yaml")
+    cfg = load_config(args.config)
     df = M.load_manifest(cfg.manifest_path)
 
     if args.all:
@@ -100,6 +108,12 @@ def main() -> int:
                 f"  peak: min={peaks[0]:.3f}  median={peaks[len(peaks) // 2]:.3f}  max={peaks[-1]:.3f}",
                 flush=True,
             )
+            n_bm = sum(1 for _, p in solved if p.get("method") == "block_median")
+            n_fb = len(solved) - n_bm
+            print(f"  method: block_median={n_bm}  single_window_fallback={n_fb}", flush=True)
+            if n_fb:
+                fb = [o for o, p in solved if p.get("method") != "block_median"]
+                print(f"    fallback (genuinely bland, too few confident blocks): {fb}", flush=True)
         return 0
 
     obs = args.obs_id

@@ -534,82 +534,119 @@ We solve this by computing a per-image sub-pixel rigid translation `(dx, dy)`
 between the decimated HiRISE imagery and the cached CTX window, and applying this
 translation to the boulder polygons before tile-grid rasterization (§6.7).
 
-### 5.2 Algorithm
+### 5.2 Algorithm: robust block-median phase correlation
 
-For each image we (a) reproject the cached decimated HiRISE onto the CTX window's
-grid, (b) identify the largest power-of-two-side-length square sub-window that
-fits entirely inside both rasters' valid regions, (c) compute the phase
-cross-correlation between the two rasters within that sub-window at sub-pixel
-upsampling factor 20 (giving ~0.25 m granularity at 5 m / pixel), and (d) record
-the solved translation in metres along with the peak normalised cross-correlation
-coefficient as a quality metric. The algorithm is implemented via
-`skimage.registration.phase_cross_correlation`; the sub-pixel upsampling step is
-the standard implementation by Guizar-Sicairos, Thurman & Fienup (2008).
+Co-registration is solved in two passes, both built on
+`skimage.registration.phase_cross_correlation` at sub-pixel upsampling factor 20
+(~0.25 m granularity at 5 m / pixel; the standard implementation of
+Guizar-Sicairos, Thurman & Fienup 2008). For each image we first reproject the
+cached decimated HiRISE onto the CTX window's grid, then:
 
-We do **not** solve a full affine warp. Doing so would risk distorting
-HiRISE-derived ground-truth positions in ways the model would then have to learn
-around, and the rigid-translation model fits the expected error mode (CTX mosaic
-registration is uniform within a tile, not spatially varying at the scale of a
-single HiRISE footprint).
+1. **Single-window solve (provenance + fallback).** Identify the largest
+   power-of-two square sub-window that fits entirely inside both rasters' valid
+   regions, Hann-window it, and phase-correlate it against the co-located CTX
+   patch. This is the original method.
+2. **Block-median solve (primary).** Tile the *entire* covered window into
+   fixed-size blocks (256 px ≈ 1.28 km for the solve), phase-correlate each
+   fully-covered block independently, and take the **median** `(dx, dy)` over all
+   blocks whose local peak cross-correlation is ≥ 0.5. The per-image shift is this
+   robust median; the recorded `peak_correlation` is the median confident-block
+   peak.
 
-### 5.3 Results
+The block-median is adopted because a single central window can land on a
+featureless or artifact-ridden patch and return a junk translation even when the
+rest of the image registers cleanly — observed directly on `ESP_049242_2115`,
+whose single-window solve returned an essentially anti-correlated result
+(peak −0.06) with the wrong sign on `dx`, while 24 of its 29 blocks correlated
+strongly and agreed with one another. Taking the median over many independent
+blocks is insensitive to such outlier windows. When fewer than six blocks clear
+the peak floor (a genuinely bland, low-texture scene), the solve falls back to the
+single-window result and is flagged.
 
-Across the nine retained manifest images, the solved shift magnitudes range from
-118 m to 273 m with a median of 179 m — well within the ~200 m order-of-magnitude
-target documented in the build specification. Peak cross-correlation coefficients
-range from 0.28 (a single boulder-poor outlier discussed below) to 0.88, with a
-median of 0.69.
+We still do **not** solve a full affine warp. The rigid-translation model fits the
+expected error mode (CTX-mosaic registration is uniform at the scale of a single
+HiRISE footprint), and the whole-image validation below confirms a single
+translation is adequate everywhere it can be measured. A full warp would risk
+distorting HiRISE-derived ground-truth positions the model would then have to
+learn around. Each image's full provenance — chosen method, the preserved
+single-window result, and the block-field statistics — is written to
+`cache/coregistration/{ObsId}.json`.
 
-| ObsId | `BoulderLabel` | \|shift\| | dx (m) | dy (m) | peak correlation |
-|---|---|---:|---:|---:|---:|
-| ESP_054857_2270 | Boulder rich | 118 m | −1.2 | −118.0 | 0.63 |
-| ESP_047976_2020 | Boulder rich | 126 m | −8.2 | −125.2 | 0.71 |
-| ESP_075577_2105 | Boulder poor | 160 m | +30.0 | −157.5 | 0.69 |
-| ESP_056165_2200 | Boulder poor | 165 m | −63.0 | −152.0 | **0.28** |
-| ESP_039820_1750 | unknown | 179 m | +102.0 | −147.0 | 0.68 |
-| ESP_065711_1545 | unknown | 223 m | +39.0 | −220.0 | 0.70 |
-| ESP_055714_2270 | Boulder rich | 241 m | +29.2 | −239.0 | 0.60 |
-| ESP_071093_2210 | Boulder rich | 247 m | −15.5 | −246.5 | 0.77 |
-| ESP_069669_2220 | Boulder rich | 273 m | +122.5 | −243.5 | 0.88 |
+### 5.3 Whole-image validation
 
-![Stage 3 — shift magnitude vs peak
-correlation](../reports/figures/05_shift_vs_peak.png)
+Because the chosen shift is a single rigid translation, we verify it actually
+holds across the *whole* image rather than just at the solve location. The
+function `coregister.block_shift_field` re-tiles each window at 128 px (≈640 m),
+phase-correlates every fully-covered block, and produces a **spatial field** of
+local shifts to compare against the global solve. This separates three regimes:
 
-**Figure 3.** Phase-correlation peak coefficient (vertical) vs solved shift
-magnitude (horizontal), one point per image, labelled with the ObsId tail.
-ESP_056165_2200 sits visibly below the rest at peak 0.28; it is the only image in
-the manifest that visibly tracks the boulder-poor manifest label (only 26 boulders
-detected) and its CTX texture is correspondingly bland. The other eight images
-cluster around peak ≈ 0.65-0.88.
+- **Coherent and on-target** — local block shifts cluster tightly on the global
+  shift (median residual of the confident blocks typically < ~15 m, i.e. a few
+  CTX pixels). The rigid translation is correct across the entire image.
+- **A smooth spatial gradient** — would indicate residual rotation or scale a
+  translation cannot absorb, motivating the documented full-warp fallback. This
+  is **not** observed in the present data.
+- **Scattered and low-peak everywhere** — genuinely too little correlatable
+  structure; the single-window fallback applies.
 
-### 5.4 Systematic asymmetry
+This validation is rendered per image (local-shift quiver, a local-vs-global
+scatter, and a residual histogram) and summarised across all images in
+`notebooks/05_coregistration_qa.ipynb`.
 
-Every solved `dy` is negative, ranging from −118 to −247 m; `dx` straddles zero
-(−63 to +123 m). The HiRISE imagery sits systematically ~150-250 m **north** of
-the matching CTX features. This is consistent with the documented Murray Lab CTX
-mosaic ~200 m registration baseline rather than a CRS bug in the pipeline, and we
-do not apply a global correction (the per-image shifts already absorb it).
+### 5.4 Results (vClaire 40-image dataset)
 
-The empirical test for whether the IAU 2000 sphere vs Murray Lab oblate CRS
-discrepancy (§3.1) manifests as a Stage 3 bias would be a clear `|shift|` vs
-`image_lat` correlation. The data instead shows shift magnitudes largely flat
-across the 30°N-47°N latitude band of the manifest with no clean linear trend,
-consistent with the discrepancy being sub-pixel as predicted.
+Across the 39 retained vClaire images, solved shift magnitudes range from 80 m to
+327 m with a **median of 195 m** — squarely on the ~200 m order-of-magnitude
+target. **38 of 39 images solve by block-median**; a single bland image
+(`ESP_046803_2325`) falls back to the single window. Median `peak_correlation`
+(confident-block) is 0.71.
 
-### 5.5 The low-peak outlier
+The block-median materially improves the low-confidence images relative to the
+single-window method:
 
-ESP_056165_2200 has a phase-correlation peak of 0.28 — well below the other
-images. This image has only 26 BoulderNet polygons across its full footprint
-(versus 497-6,462 for the others) and a visibly smooth, dust-covered CTX texture
-with no high-frequency signal for the FFT to lock onto. The solved shift may
-therefore be less reliable than for the other images.
+| ObsId | note | \|shift\| | dx (m) | dy (m) | method | peak |
+|---|---|---:|---:|---:|---|---:|
+| ESP_069669_2220 | v1-overlap (block-median ≈ v1 single-window) | 269 m | +122.0 | −240.1 | block_median | 0.84 |
+| ESP_068402_2240 | typical strong solve | 206 m | +66.7 | −194.4 | block_median | 0.72 |
+| ESP_049242_2115 | **rescued** (single-window peak −0.06, dx sign wrong) | 106 m | −27.1 | −102.5 | block_median | 0.72 |
+| ESP_076499_1160 | southern outlier (−63.7°), single-window peak 0.38 | 327 m | +260.0 | −198.7 | block_median | 0.59 |
+| ESP_046803_2325 | **fallback** — genuinely bland, too few confident blocks | 186 m | −61.5 | −176.0 | single_window | 0.32 |
 
-We currently apply this image's shift unconditionally and flag it for review in
-the modeling stage. An alternative would be to fall back to the nominal grid
-anchor (zero shift) for low-peak outliers; this becomes a useful policy once a
-sufficient sample of low-peak cases exists to set the threshold empirically.
-Today, with one data point, we record the peak value in the Stage 3 sidecar and
-defer the policy decision.
+![Whole-image co-registration consistency across the 39 vClaire
+images](../reports/figures/05_wholeimg_summary.png)
+
+**Figure 3.** Per-image whole-image consistency: global `peak_correlation`
+(horizontal) vs the fraction of 256 px blocks whose local peak ≥ 0.5 (vertical).
+Block-median images (green) cluster at high values on both axes — the global shift
+agrees with a dense, high-confidence block field. The lone fallback image (red,
+`ESP_046803_2325`) sits low on both. Per-image quiver/scatter/residual panels are
+saved as `05_wholeimg_coreg_{ObsId}.png`.
+
+### 5.5 Systematic asymmetry
+
+Every solved `dy` is negative (HiRISE sits systematically ~80–290 m **north** of
+the matching CTX features); `dx` straddles zero. This is consistent with the
+documented Murray Lab CTX-mosaic ~200 m registration baseline rather than a CRS
+bug — the per-image shifts already absorb it, so no global correction is applied.
+Shift magnitudes show no clean trend with image latitude across the 25°N–47°N (and
+one −64° southern) band, consistent with the IAU-2000-sphere vs Murray-Lab-oblate
+CRS discrepancy (§3.1) being sub-pixel as predicted.
+
+### 5.6 The fallback image — dropped
+
+`ESP_046803_2325` is the one image that falls back to the single-window solve: **0 of
+210** 128 px blocks clear the peak floor, indicating genuinely low-texture terrain
+where phase correlation cannot lock on anywhere in the footprint (its CTX window is
+uniformly dust-mantled). The single-window shift (186 m, peak 0.32) is fitting noise.
+
+The deeper issue is not the shift but the input: the CTX window carries essentially no
+texture signal, yet the image has ~367k detected boulders. As a training example this is
+high-target / no-input — featureless CTX paired with high abundance — which would inject
+label noise into the CTX-texture→abundance mapping without teaching it. **It is therefore
+dropped from the v2 modeling dataset** (added to `EXCLUDED_FROM_SWEEP`, so Stage 4/4b/5
+skip it; 38 of 39 images proceed). It remains in the manifest and the Stage 1–3 caches so
+the rationale is preserved and inspectable (notebook 05 renders its four-panel deep-dive
+beside two good solves for contrast).
 
 ---
 

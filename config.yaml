@@ -57,6 +57,13 @@ coregistration:
   method: phase_correlation_translation
   search_radius_m: 400
   fft_window_px: 256
+  # Robust block-median solve (DECISIONS.md 2026-05-28): median of per-block phase
+  # correlations with local peak >= block_peak_min; single-window fallback when fewer
+  # than min_confident_blocks clear the floor. v1 caches were solved single-window;
+  # these only take effect on a re-run.
+  block_px: 256
+  block_peak_min: 0.5
+  min_confident_blocks: 6
 
 labeling:
   grid_anchor: ctx_pixel_origin

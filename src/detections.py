@@ -109,6 +109,24 @@ def reproject_to_target(gdf: gpd.GeoDataFrame, target_crs: str | CRS) -> gpd.Geo
     return gdf.to_crs(target)
 
 
+def drop_null_geometries(gdf: gpd.GeoDataFrame) -> tuple[gpd.GeoDataFrame, int]:
+    """Drop rows with null or empty geometry. Returns (cleaned_gdf, n_dropped).
+
+    BoulderNet `*-mask-nms` shapefiles can carry many records that have a DBF row (score,
+    id, ...) but no polygon geometry -- e.g. the dense vClaire exports, where up to ~67%
+    of rows are null-geometry (verified 2026-05-28). They cannot be rasterized or
+    centroid-counted, so Stage 4 would error/miscount. We drop them at ingest so the
+    cached GPKG and its `n_polygons` reflect only real boulder outlines. No-op on the
+    priority10 set (0 nulls)."""
+    if len(gdf) == 0:
+        return gdf, 0
+    valid = ~(gdf.geometry.isna() | gdf.geometry.is_empty)
+    n_dropped = int((~valid).sum())
+    if n_dropped == 0:
+        return gdf, 0
+    return gdf.loc[valid].reset_index(drop=True), n_dropped
+
+
 def cache_reprojected(
     gdf: gpd.GeoDataFrame,
     obs_id: str,
@@ -119,6 +137,8 @@ def cache_reprojected(
     config_hash: str,
     source_path: str | Path,
     correction: dict | None = None,
+    n_polygons_raw: int | None = None,
+    n_dropped_null: int = 0,
 ) -> Path:
     """Write reprojected GeoDataFrame to `cache_dir/reprojected_detections/{obs_id}.gpkg`
     plus a sidecar `{obs_id}.json` provenance record. Returns the GPKG path.
@@ -135,6 +155,8 @@ def cache_reprojected(
             {
                 "obs_id": obs_id,
                 "n_polygons": int(len(gdf)),
+                "n_polygons_raw": int(n_polygons_raw) if n_polygons_raw is not None else int(len(gdf)),
+                "n_dropped_null_geometry": int(n_dropped_null),
                 "source_path": str(source_path),
                 "source_mtime_iso": _dt.datetime.fromtimestamp(
                     Path(source_path).stat().st_mtime, tz=_dt.timezone.utc
@@ -176,6 +198,8 @@ def stage1_one_image(
         obs_id, detections_root, manifest_row=manifest_row, cache_dir=cache_dir,
     )
     source_wkt = gdf.crs.to_wkt()
+    n_raw = len(gdf)
+    gdf, n_dropped = drop_null_geometries(gdf)
     gdf_t = reproject_to_target(gdf, target_crs)
     target_wkt = gdf_t.crs.to_wkt()
     gpkg = cache_reprojected(
@@ -187,5 +211,7 @@ def stage1_one_image(
         config_hash=config_hash,
         source_path=shp,
         correction=correction,
+        n_polygons_raw=n_raw,
+        n_dropped_null=n_dropped,
     )
     return gdf_t, gpkg, correction

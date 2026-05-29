@@ -1,0 +1,141 @@
+# vClaire 40-image dataset config (PLAN_NewDetections.md §4.1).
+# Parallel to config.yaml (v1 / priority10). Only the path keys + a few v2-specific
+# choices differ; the labeling + feature blocks are held IDENTICAL to v1 so the A/B
+# comparison varies labels, not feature methodology.
+
+manifest: hirise_40_vclaire.csv      # built by scripts/build_vclaire_manifest.py (39 rows; truncated ESP_028537_2270 excluded)
+detections_root: "C:/Users/brian/Documents/PhD/HiRiseToCTXBoulders/hirise_40_vClaire"
+cache_dir: "./cache_v2"              # detection-derived caches; imagery caches shared via junctions (see plan §4.1)
+output_dir: "./dataset_v2"
+
+# Provenance: detection content is NOT in config_hash, so name the set explicitly.
+detection_set: "vclaire_40img_ct010_ss256_downscaled_2026-05-28"
+
+# --- everything below is copied verbatim from config.yaml (v1) ---
+
+target_crs: |
+  PROJCRS["Mars_2000_Equidistant_Cylindrical",
+    BASEGEOGCRS["GCS_Mars_2000",
+      DATUM["D_Mars_2000",
+        ELLIPSOID["Mars_2000_IAU_IAG",3396190.0,0.0,LENGTHUNIT["metre",1]]],
+      PRIMEM["Reference_Meridian",0,ANGLEUNIT["Degree",0.0174532925199433]]],
+    CONVERSION["Equidistant Cylindrical (Spherical)",
+      METHOD["Equidistant Cylindrical (Spherical)",ID["EPSG",1029]],
+      PARAMETER["Latitude of 1st standard parallel",0,ANGLEUNIT["Degree",0.0174532925199433]],
+      PARAMETER["Longitude of natural origin",0,ANGLEUNIT["Degree",0.0174532925199433]],
+      PARAMETER["False easting",0,LENGTHUNIT["metre",1]],
+      PARAMETER["False northing",0,LENGTHUNIT["metre",1]]],
+    CS[Cartesian,2],
+      AXIS["easting",east,ORDER[1],LENGTHUNIT["metre",1]],
+      AXIS["northing",north,ORDER[2],LENGTHUNIT["metre",1]]]
+
+ctx_mosaic:
+  catalog_url: "https://murray-lab.caltech.edu/CTX/V01/tiles/"
+  url_template: "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_{tile_name}.zip"
+  probe_tile: W040_N20
+
+ctx_read: vsicurl_window
+hirise_decimation_mpp: 5
+
+ctx_retrieve:
+  mode: download_then_window
+  buffer_m: 1000
+  nominal_hirise_width_m: 6000
+  nominal_hirise_length_m: 16000
+
+coregistration:
+  enabled: false
+  method: phase_correlation_translation
+  search_radius_m: 400
+  fft_window_px: 256
+  # Robust block-median solve (DECISIONS.md 2026-05-28): tile the window into block_px
+  # blocks, phase-correlate each, and take the median of blocks with local peak >=
+  # block_peak_min. Falls back to the single central FFT window when fewer than
+  # min_confident_blocks clear the floor (genuinely bland scenes).
+  block_px: 256
+  block_peak_min: 0.5
+  min_confident_blocks: 6
+
+labeling:
+  grid_anchor: ctx_pixel_origin
+  tile_sizes_px: [8, 16, 32, 64]
+  label_type: fractional_area
+  binary_area_threshold: 0.005
+  binary_count_threshold: 1
+  categorical_bins: []
+  detection_filters:
+    # vClaire is ~1M detections/image at mean score 0.51 on downscaled imagery.
+    # min_size_m kept at the v1 0.25-m/px design floor as a STARTING point; revisit
+    # after the Stage-1 bring-up shows the reprojected size distribution (PLAN §7.1).
+    min_confidence: null
+    min_size_m: 1.4105
+  context_patch_px: null
+  features: [intensity_stats, glcm, gradient, shadow_fraction]
+
+features:
+  enabled:
+    - intensity_stats
+    - glcm
+    - gradient
+    - shadow_fraction
+    - lbp
+    - lacunarity
+    - subtile_variance
+    - canny_edges
+  glcm:
+    levels_per_scale: {8: 8, 16: 16, 32: 16, 64: 32}
+    distances_per_scale: {8: [1], 16: [1, 2, 3], 32: [1, 2, 3], 64: [1, 2, 3]}
+    angles: [0.0, 0.7853981633974483, 1.5707963267948966, 2.356194490192345]
+    angle_average: true
+    properties: [contrast, dissimilarity, homogeneity, energy, correlation, ASM]
+  gradient:
+    sigma: 1.0
+  shadow_fraction:
+    method: dn_mode_offset
+    shadow_offset_dn: 20
+    strict_offset_dn: 35
+    bright_offset_dn: 30
+  lbp:
+    method: uniform
+    P: 8
+    R: 1
+  lacunarity:
+    box_sizes_px: [2, 4]
+    min_tile_size_px: 32
+  subtile_variance:
+    min_tile_size_px: 16
+  canny_edges:
+    sigma: 1.0
+    low_threshold: null
+    high_threshold: null
+    n_orientation_bins: 8
+    min_tile_size_px: 16
+  context_patch:
+    # OFF for v2: the CNN is a documented dead-end (modeling_results.md §3.3) and the
+    # patch stacks are the largest disk consumer (~15 GB at this scale). Flip to true +
+    # re-run Stage 4b only if a CNN experiment is revived.
+    enabled: false
+    sizes_px: [32, 64]
+
+# Splits: n_folds for the LOIO + within_image schemes depends on how many of the 39
+# images survive Stage 4 (an image with a tile-straddle or empty truth is dropped).
+# FINALIZE these counts after Stage 4 completes, before running Stage 5.
+splits:
+  default_scheme: loio_nfold
+  schemes:
+    loio_nfold:
+      n_folds: 39            # PLACEHOLDER -- set to the surviving image count after Stage 4
+      stratification: none
+      seed: 0
+    within_image_4fold:
+      n_folds: 156           # PLACEHOLDER -- (surviving images) x 4
+      stratification: within_image
+      seed: 0
+      n_folds_per_image: 4
+      buffer_tiles: 0
+      excluded_obs_ids: []   # no empty-truth image expected in the boulder-rich vClaire set
+  scale_filter: null
+  emit_all_parquet: true
+
+sanity:
+  centroid_max_km: 15.0

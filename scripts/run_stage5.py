@@ -104,9 +104,10 @@ def main() -> int:
     g.add_argument("--all", action="store_true", help="Run every named scheme")
     parser.add_argument("--no-package", action="store_true",
                         help="Only build split metadata; skip per-fold parquet materialisation")
+    parser.add_argument("--config", default="config.yaml", help="Path to the pipeline config YAML")
     args = parser.parse_args()
 
-    cfg = load_config("config.yaml")
+    cfg = load_config(args.config)
     if "splits" not in cfg.raw:
         print("config.yaml has no `splits:` block; nothing to do.", flush=True)
         return 2

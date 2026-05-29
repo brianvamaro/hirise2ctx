@@ -41,7 +41,11 @@ def _progress(prefix: str):
 
 
 def main() -> int:
-    cfg = load_config("config.yaml")
+    import argparse
+    ap = argparse.ArgumentParser(description="Stage 2 CTX-retrieval sweep over the manifest")
+    ap.add_argument("--config", default="config.yaml", help="Path to the pipeline config YAML")
+    args = ap.parse_args()
+    cfg = load_config(args.config)
     df = M.load_manifest(cfg.manifest_path)
     cfg_retrieve = cfg["ctx_retrieve"]
 

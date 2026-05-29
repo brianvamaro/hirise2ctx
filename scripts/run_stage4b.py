@@ -74,9 +74,10 @@ def main() -> int:
     g = parser.add_mutually_exclusive_group(required=True)
     g.add_argument("obs_id", nargs="?", default=None, help="HiRISE Observation ID")
     g.add_argument("--all", action="store_true", help="Compute features for all Stage-4-ready ObsIds")
+    parser.add_argument("--config", default="config.yaml", help="Path to the pipeline config YAML")
     args = parser.parse_args()
 
-    cfg = load_config("config.yaml")
+    cfg = load_config(args.config)
     df = M.load_manifest(cfg.manifest_path)
 
     if args.all:

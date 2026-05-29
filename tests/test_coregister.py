@@ -14,6 +14,7 @@ from scipy.ndimage import shift as nd_shift
 
 from src.coregister import (
     COREGISTRATION_SUBDIR,
+    block_shift_field,
     find_tracking_features,
     phase_correlate_translation,
     select_fft_window,
@@ -90,6 +91,44 @@ def test_phase_correlation_recovers_known_shift(true_dy: float, true_dx: float):
 def test_phase_correlation_rejects_mismatched_shapes():
     with pytest.raises(ValueError, match="shape mismatch"):
         phase_correlate_translation(np.zeros((64, 64)), np.zeros((64, 32)))
+
+
+# -------------------------------------------------------------------------
+# Whole-image block shift field (Stage 3 QA — coregister.block_shift_field)
+# -------------------------------------------------------------------------
+
+def test_block_shift_field_recovers_uniform_shift():
+    """A globally-shifted texture should yield a coherent per-block field that recovers
+    the known shift at every fully-covered block with high peak."""
+    size = 512
+    true_dy, true_dx = 3.0, -2.0
+    ctx = _synthetic_texture(size, seed=7)
+    # `hi` is ctx shifted by (true_dy, true_dx); block_shift_field solves the shift that
+    # brings hi back onto ctx -> expect (-true_dy, -true_dx) in every block.
+    hi = nd_shift(ctx, shift=(true_dy, true_dx), order=3, mode="reflect")
+    mask = np.ones((size, size), dtype=np.uint8)
+    field = block_shift_field(hi, ctx, mask, block_px=128, min_coverage=0.98)
+    assert len(field) == 16, f"4x4 non-overlapping 128px blocks expected, got {len(field)}"
+    dys = np.array([b["dy_px"] for b in field])
+    dxs = np.array([b["dx_px"] for b in field])
+    peaks = np.array([b["peak"] for b in field])
+    assert np.median(dys) == pytest.approx(-true_dy, abs=0.3)
+    assert np.median(dxs) == pytest.approx(-true_dx, abs=0.3)
+    # Coherent field: tight spread + high confidence everywhere.
+    assert dys.std() < 0.5 and dxs.std() < 0.5
+    assert (peaks > 0.7).mean() > 0.9
+
+
+def test_block_shift_field_skips_undercovered_blocks():
+    """Blocks below `min_coverage` (mask or CTX-nodata) are not evaluated."""
+    size = 256
+    ctx = _synthetic_texture(size, seed=3)
+    hi = nd_shift(ctx, shift=(1.0, 1.0), order=3, mode="reflect")
+    mask = np.ones((size, size), dtype=np.uint8)
+    mask[:128, :] = 0  # top half uncovered -> top row of 128px blocks must be dropped
+    field = block_shift_field(hi, ctx, mask, block_px=128, min_coverage=0.98)
+    assert len(field) == 2, f"only the bottom row of 2 blocks is fully covered, got {len(field)}"
+    assert all(b["row_off"] == 128 for b in field)
 
 
 # -------------------------------------------------------------------------

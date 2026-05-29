@@ -2,9 +2,11 @@
 
 Usage:
     conda run -n geospatial python scripts/run_stage2.py ESP_069669_2220
+    conda run -n geospatial python scripts/run_stage2.py ESP_017355_2260 --config config_v2.yaml
 """
 from __future__ import annotations
 
+import argparse
 import sys
 import time
 from pathlib import Path
@@ -40,12 +42,13 @@ def _make_progress(prefix: str):
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        print("usage: python scripts/run_stage2.py <ObsId>")
-        return 2
-    obs_id = sys.argv[1]
+    parser = argparse.ArgumentParser(description="Stage 2 CTX-retrieval driver (one ObsId)")
+    parser.add_argument("obs_id", help="HiRISE Observation ID")
+    parser.add_argument("--config", default="config.yaml", help="Path to the pipeline config YAML")
+    args = parser.parse_args()
+    obs_id = args.obs_id
 
-    cfg = load_config("config.yaml")
+    cfg = load_config(args.config)
     df = M.load_manifest(cfg.manifest_path)
     if obs_id not in df["ObsId"].values:
         print(f"ObsId {obs_id!r} not in manifest")

@@ -12,19 +12,24 @@ Pipeline for one ObsId:
    **bilinear** resampling. Result: two co-located 5 m/px arrays in the same CRS and on
    the same pixel grid. (Contrast: Stage 2's coverage mask uses `nearest` to keep the
    binary boundary crisp; here we want intensity, so bilinear.)
-3. Pick a power-of-2 sub-window from the central region of HiRISE coverage. Largest
-   power-of-2 ≤ `fft_window_px` that fits inside the coverage mask, centered on the
-   coverage centroid.
-4. Apply a separable Hann window (reduces spectral leakage at the FFT edges) and run
-   `skimage.registration.phase_cross_correlation` with sub-pixel upsampling. The
-   reported shift is in (row, col) pixels — convert to metres via the CTX transform.
-5. Apply the solved shift to the HiRISE sub-window via scipy.ndimage.shift, and compute
-   the Pearson correlation against the CTX sub-window inside the still-valid interior.
-   Store as `peak_correlation` — a confidence proxy that's easier to threshold than the
-   raw phase-correlation peak height.
-6. Write `cache/coregistration/{obs_id}.json` with the shift, peak correlation, FFT
-   window placement, and provenance. **No flag/fail thresholds applied at this stage** —
-   per the 2026-05-21 decision, collect data on all 10 images first, then decide.
+3. **Single-window solve** (kept for provenance + fallback): pick a power-of-2 sub-window
+   from the central region of HiRISE coverage, Hann-window it, and phase-correlate against
+   the co-located CTX sub-window with sub-pixel upsampling.
+4. **Robust block-median solve** (primary; DECISIONS.md 2026-05-28): tile the *whole*
+   window into `block_px` blocks, phase-correlate each fully-covered block, and take the
+   median `(dy, dx)` over blocks whose local Pearson peak ≥ `block_peak_min`. This is
+   robust to a single central window landing on a featureless/artifact patch and returning
+   junk (the ESP_049242_2115 failure mode) even though the rest of the image registers
+   cleanly. When fewer than `min_confident_blocks` clear the floor (a genuinely bland
+   scene), fall back to the single-window shift. The chosen `(dy, dx)` is converted to
+   metres via the CTX transform.
+5. `peak_correlation` is the median confident-block peak (block-median path) or the
+   single-window post-shift Pearson correlation (fallback) — a confidence proxy easier to
+   threshold than the raw phase-correlation peak height.
+6. Write `cache/coregistration/{obs_id}.json` with the chosen shift, its `method`, the
+   preserved single-window result, the block-field statistics, peak correlation, FFT
+   window placement, and provenance. **No hard flag/fail thresholds applied** — the
+   notebook 05 whole-image validation is where accept/flag thresholds are eyeballed.
 
 The shift's sign convention: `dx_m`, `dy_m` are the corrections to *add* to a HiRISE
 pixel's projected coordinate so it lines up with CTX. Equivalently, if you re-warp the
@@ -233,6 +238,46 @@ def phase_correlate_translation(
     return dy, dx, peak
 
 
+def _robust_shift_from_field(
+    field: list[dict],
+    *,
+    block_peak_min: float,
+    min_confident_blocks: int,
+) -> tuple[float, float, dict] | None:
+    """Robust per-image shift = median of the confident blocks' local shifts.
+
+    A single central FFT window can land on a featureless / artifact-ridden patch and
+    return a junk translation even when the rest of the image registers cleanly (the
+    ESP_049242_2115 failure mode; DECISIONS.md 2026-05-28). Taking the median over all
+    blocks whose local `peak >= block_peak_min` is robust to those outliers.
+
+    Returns `(dy_px, dx_px, stats)` or None when fewer than `min_confident_blocks` blocks
+    clear the peak floor (the genuinely-bland case → caller falls back to single-window).
+    """
+    if not field:
+        return None
+    peaks = np.array([b["peak"] for b in field], dtype=np.float64)
+    conf = peaks >= block_peak_min
+    n_conf = int(conf.sum())
+    if n_conf < min_confident_blocks:
+        return None
+    dys = np.array([b["dy_px"] for b in field], dtype=np.float64)[conf]
+    dxs = np.array([b["dx_px"] for b in field], dtype=np.float64)[conf]
+    dy = float(np.median(dys))
+    dx = float(np.median(dxs))
+    stats = {
+        "n_blocks": int(len(field)),
+        "n_confident_blocks": n_conf,
+        "median_block_peak": float(np.median(peaks[conf])),
+        # Median absolute deviation: a robust spread of the confident-block shifts (px).
+        "block_mad_px": {
+            "dy": float(np.median(np.abs(dys - dy))),
+            "dx": float(np.median(np.abs(dxs - dx))),
+        },
+    }
+    return dy, dx, stats
+
+
 def stage3_one_image(
     obs_id: str,
     *,
@@ -241,6 +286,9 @@ def stage3_one_image(
     fft_window_px: int,
     upsample_factor: int,
     config_hash: str,
+    block_px: int = 256,
+    block_peak_min: float = 0.5,
+    min_confident_blocks: int = 6,
 ) -> dict:
     """Solve a per-image (dx, dy) translation to register HiRISE onto CTX.
 
@@ -294,13 +342,39 @@ def stage3_one_image(
     hi_sub = hi_warped[row_off : row_off + size_px, col_off : col_off + size_px]
     ctx_sub = ctx_arr[row_off : row_off + size_px, col_off : col_off + size_px]
 
-    # 3. Solve sub-pixel translation. By convention `phase_cross_correlation(ref, mov)`
-    # returns the shift to apply to `mov` so it matches `ref`. We treat CTX as the
-    # reference (fixed) and HiRISE as moving — so the returned shift is the correction
-    # to apply to the HiRISE image to bring it onto CTX.
-    dy_px, dx_px, peak = phase_correlate_translation(
+    # 3a. Single-window solve (kept for provenance + as the fallback). Convention:
+    # `phase_cross_correlation(ref, mov)` returns the shift to apply to `mov` to match
+    # `ref`; CTX is the fixed reference, HiRISE is moving, so the result is the correction
+    # to apply to HiRISE to bring it onto CTX.
+    sw_dy, sw_dx, sw_peak = phase_correlate_translation(
         ctx_sub, hi_sub, upsample_factor=int(upsample_factor),
     )
+
+    # 3b. Robust whole-image solve: median of the per-block shift field (DECISIONS.md
+    # 2026-05-28). A single central window can land on a bad patch and return junk even
+    # when the rest of the image registers cleanly; the block-median is robust to that.
+    # Falls back to the single-window solve when too few blocks correlate (genuinely bland).
+    field = block_shift_field(
+        hi_warped, ctx_arr, combined,
+        block_px=int(block_px), min_coverage=0.98, upsample_factor=int(upsample_factor),
+    )
+    robust = _robust_shift_from_field(
+        field, block_peak_min=float(block_peak_min), min_confident_blocks=int(min_confident_blocks),
+    )
+    if robust is not None:
+        dy_px, dx_px, block_stats = robust
+        peak = block_stats["median_block_peak"]
+        method = "block_median"
+    else:
+        dy_px, dx_px, peak = sw_dy, sw_dx, sw_peak
+        method = "single_window_fallback"
+        n_conf = int(sum(1 for b in field if b["peak"] >= float(block_peak_min)))
+        block_stats = {
+            "n_blocks": int(len(field)),
+            "n_confident_blocks": n_conf,
+            "median_block_peak": None,
+            "block_mad_px": None,
+        }
 
     # 4. Convert pixel shift to metres on the CTX grid.
     px_x = abs(ctx_transform.a)
@@ -314,6 +388,7 @@ def stage3_one_image(
         "ctx_window_tif": str(ctx_window_tif),
         "ctx_transform": list(ctx_transform)[:6],
         "ctx_crs_wkt": ctx_crs.to_wkt() if ctx_crs else None,
+        "method": method,
         "fft_window": {
             "size_px": int(size_px),
             "row_off": int(row_off),
@@ -323,6 +398,15 @@ def stage3_one_image(
         "shift_px": {"dy": dy_px, "dx": dx_px},
         "shift_m": {"dy": dy_m, "dx": dx_m, "magnitude": shift_m},
         "peak_correlation": peak,
+        # The single-window result is preserved so the block-median can always be compared
+        # against (and reverted to) the original central-FFT solve.
+        "single_window": {
+            "dy_px": sw_dy, "dx_px": sw_dx, "peak": sw_peak,
+            "dy_m": sw_dy * px_y, "dx_m": sw_dx * px_x,
+            "magnitude_m": float(math.hypot(sw_dx * px_x, sw_dy * px_y)),
+        },
+        "block_field": {"block_px": int(block_px), "block_peak_min": float(block_peak_min),
+                        "min_confident_blocks": int(min_confident_blocks), **block_stats},
         "upsample_factor": int(upsample_factor),
         "config_hash": config_hash,
         "solved_at_iso": _dt.datetime.now(_dt.timezone.utc).isoformat(),
@@ -332,6 +416,77 @@ def stage3_one_image(
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / f"{obs_id}.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
     return provenance
+
+
+def warp_hirise_to_ctx_grid(
+    obs_id: str,
+    *,
+    jp2_url: str,
+    cache_dir: str | Path,
+    ctx_window_tif: str | Path,
+) -> tuple[np.ndarray, Any, Any]:
+    """Public wrapper over `_warp_hirise_to_ctx_grid` for QA / validation callers.
+
+    Returns `(hirise_warped_on_ctx_grid, ctx_transform, ctx_crs)`.
+    """
+    return _warp_hirise_to_ctx_grid(
+        obs_id, jp2_url=jp2_url, cache_dir=Path(cache_dir), ctx_window_tif=Path(ctx_window_tif),
+    )
+
+
+def block_shift_field(
+    hi_warped: np.ndarray,
+    ctx_arr: np.ndarray,
+    coverage_mask: np.ndarray,
+    *,
+    block_px: int = 128,
+    step_px: int | None = None,
+    min_coverage: float = 0.98,
+    upsample_factor: int = 20,
+) -> list[dict]:
+    """Per-block phase-correlation shift field across the WHOLE CTX window.
+
+    Stage 3 solves a single rigid `(dy, dx)` from one central FFT sub-window. This
+    function tests whether that single translation actually holds everywhere: it tiles the
+    window into `block_px` blocks (stride `step_px`, default = `block_px` for
+    non-overlapping), and for each block whose HiRISE-and-CTX coverage is ≥ `min_coverage`
+    runs `phase_correlate_translation(ctx_block, hi_block)`.
+
+    A spatially-coherent field whose local shifts cluster tightly around the global Stage-3
+    shift confirms a rigid translation is adequate. A fanned-out field (systematic spatial
+    gradient → residual rotation/scale) or one dominated by low `peak` blocks indicates the
+    single shift does not describe the whole image — or that the global solve itself failed
+    (e.g. a bland-plains scene with no correlatable structure).
+
+    Returns one dict per evaluated block:
+        {row_off, col_off, row_center, col_center, dy_px, dx_px, peak, coverage}
+    (empty list if no block meets `min_coverage`).
+    """
+    if hi_warped.shape != ctx_arr.shape:
+        raise ValueError(f"shape mismatch: hi_warped {hi_warped.shape} vs ctx {ctx_arr.shape}")
+    step = int(step_px) if step_px is not None else int(block_px)
+    h, w = ctx_arr.shape
+    # A pixel is usable only where BOTH HiRISE coverage and CTX have real data.
+    combined = ((coverage_mask > 0) & (ctx_arr > 0)).astype(np.float32)
+    ctx_f = ctx_arr.astype(np.float32)
+    hi_f = hi_warped.astype(np.float32)
+
+    out: list[dict] = []
+    for r0 in range(0, h - block_px + 1, step):
+        for c0 in range(0, w - block_px + 1, step):
+            cov = float(combined[r0 : r0 + block_px, c0 : c0 + block_px].mean())
+            if cov < min_coverage:
+                continue
+            ctx_b = ctx_f[r0 : r0 + block_px, c0 : c0 + block_px]
+            hi_b = hi_f[r0 : r0 + block_px, c0 : c0 + block_px]
+            dy, dx, peak = phase_correlate_translation(ctx_b, hi_b, upsample_factor=upsample_factor)
+            out.append({
+                "row_off": int(r0), "col_off": int(c0),
+                "row_center": int(r0 + block_px // 2), "col_center": int(c0 + block_px // 2),
+                "dy_px": float(dy), "dx_px": float(dx),
+                "peak": float(peak), "coverage": cov,
+            })
+    return out
 
 
 def load_shift(obs_id: str, cache_dir: str | Path) -> dict | None:

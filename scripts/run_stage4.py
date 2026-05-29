@@ -28,7 +28,14 @@ from src.config import load_config
 from src.ctx_retrieve import CTX_WINDOWS_SUBDIR
 from src.labeling import LABELS_SUBDIR, stage4_one_image
 
-EXCLUDED_FROM_SWEEP = {"ESP_057469_2215"}
+# Images excluded from Stage 4/4b/5 (kept in sync with src.features.EXCLUDED_FROM_SWEEP):
+#   ESP_057469_2215 — v1 priority10: polygon bbox straddles a Murray Lab tile boundary,
+#                     window covers only 0.1% of the HiRISE swath (DECISIONS.md 2026-05-22).
+#   ESP_046803_2325 — v2 vClaire: CTX window featureless across the whole footprint
+#                     (0/210 co-registration blocks correlate); co-registration shift is
+#                     untrustworthy and the CTX input carries ~no texture signal regardless
+#                     of alignment. Dropped 2026-05-28 (see notebook 05 fallback deep-dive).
+EXCLUDED_FROM_SWEEP = {"ESP_057469_2215", "ESP_046803_2325"}
 
 
 def _stage2_ready(cache_dir: Path, obs_id: str) -> bool:
@@ -85,9 +92,10 @@ def main() -> int:
         "--no-coreg-shift", action="store_true",
         help="Leave grid on nominal geolocation (don't apply Stage 3 shift)",
     )
+    parser.add_argument("--config", default="config.yaml", help="Path to the pipeline config YAML")
     args = parser.parse_args()
 
-    cfg = load_config("config.yaml")
+    cfg = load_config(args.config)
     df = M.load_manifest(cfg.manifest_path)
     apply_coreg = not args.no_coreg_shift
 

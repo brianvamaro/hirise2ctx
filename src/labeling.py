@@ -455,7 +455,18 @@ def stage4_one_image(
     import rasterio
 
     # ---- inputs ----
+    window_h, window_w, window_transform, window_crs = _load_ctx_window(ctx_window_tif)
+
     gdf = det.load_reprojected(obs_id, cache_dir)
+    # Reproject detections into the CTX window's CRS — the Murray Lab oblate frame the tile
+    # grid is anchored to — so rasterization and the metre co-reg shift are exact and
+    # correct-by-construction. NB the sphere (Mars_2000) and oblate (Mars_2015) equirectangular
+    # definitions are numerically identical at our coordinates (PROJ's eqc uses the shared
+    # semi-major radius → verified 0.000 m displacement, DECISIONS.md 2026-05-28), so this
+    # changes no numbers today; it makes the consistency explicit + future-proofs a CTX
+    # source whose CRS genuinely differs.
+    if len(gdf) and window_crs is not None:
+        gdf = gdf.to_crs(window_crs)
     gdf_pre_filter_n = len(gdf)
     gdf = _apply_detection_filters(gdf, labeling_cfg.get("detection_filters"))
     n_after_filter = len(gdf)
@@ -463,7 +474,6 @@ def stage4_one_image(
     shift = coregister.load_shift(obs_id, cache_dir) if apply_coreg_shift else None
     gdf = _apply_coreg_shift(gdf, shift)
 
-    window_h, window_w, window_transform, window_crs = _load_ctx_window(ctx_window_tif)
     with rasterio.open(mask_tif) as src:
         mask = src.read(1)
 

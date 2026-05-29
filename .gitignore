@@ -14,6 +14,9 @@ venv/
 cache/
 dataset/*
 !dataset/DATA_DICTIONARY.md
+# vClaire v2 dataset caches/outputs (regenerable; same policy as v1 cache/dataset)
+cache_v2/
+dataset_v2/
 
 # Build artifacts
 build/
