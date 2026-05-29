@@ -124,16 +124,16 @@ splits:
   default_scheme: loio_nfold
   schemes:
     loio_nfold:
-      n_folds: 39            # PLACEHOLDER -- set to the surviving image count after Stage 4
+      n_folds: 38            # 38 surviving images (39 manifest rows minus dropped ESP_046803_2325)
       stratification: none
       seed: 0
     within_image_4fold:
-      n_folds: 156           # PLACEHOLDER -- (surviving images) x 4
+      n_folds: 152           # 38 images x 4 quadrants
       stratification: within_image
       seed: 0
       n_folds_per_image: 4
       buffer_tiles: 0
-      excluded_obs_ids: []   # no empty-truth image expected in the boulder-rich vClaire set
+      excluded_obs_ids: []   # no empty-truth image in the boulder-rich vClaire set
   scale_filter: null
   emit_all_parquet: true
 
