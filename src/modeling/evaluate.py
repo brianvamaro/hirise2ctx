@@ -243,13 +243,89 @@ def lift_at_top_k(y_true_binary: np.ndarray, y_pred_prob: np.ndarray) -> float:
     return float(precision_at_k / base_rate)
 
 
+# ============================================================================
+# H1 additions (Phase A2, 2026-05-29):  PR-AUC, normalised lift,
+# precision@k_frac / recall@k_frac for k in {1%, 5%, 10%}.
+#
+# Rationale (docs/modeling_results.md §11.4): cross-image mean AUC was hiding
+# strong per-image signal at the operational threshold.  These metrics surface
+# the top-of-the-ranking quality (lift, P@1%) that AUC averages away.
+# ============================================================================
+
+
+def pr_auc(y_true_binary: np.ndarray, y_pred_prob: np.ndarray) -> float:
+    """Precision-recall AUC (sklearn `average_precision_score`).
+
+    More informative than ROC-AUC when positives are common (>20% base rate);
+    in that regime ROC-AUC can look reasonable while precision@high-recall is
+    poor.  Returns NaN on single-class folds.
+    """
+    n_pos = int(y_true_binary.sum())
+    n_neg = int(y_true_binary.size - n_pos)
+    if n_pos == 0 or n_neg == 0:
+        return float("nan")
+    from sklearn.metrics import average_precision_score
+    return float(average_precision_score(y_true_binary, y_pred_prob))
+
+
+def normalised_lift_at_top_k(y_true_binary: np.ndarray, y_pred_prob: np.ndarray) -> float:
+    """Lift @ top-K normalised by max-possible-lift = `lift x base_rate`.
+
+    Lift saturates at `1 / base_rate`, so high-base-rate images can never reach
+    raw lift above ~1.3 even with a perfect classifier.  Normalised lift is in
+    [base_rate, 1]: 1.0 means "every top-K prediction is a true positive"
+    (perfect ranking); `base_rate` means "no better than random".  Comparable
+    across images with different base rates.
+    """
+    raw = lift_at_top_k(y_true_binary, y_pred_prob)
+    if np.isnan(raw):
+        return float("nan")
+    n_pos = int(y_true_binary.sum())
+    base_rate = n_pos / y_true_binary.size
+    return float(raw * base_rate)
+
+
+def precision_recall_at_k_frac(
+    y_true_binary: np.ndarray, y_pred_prob: np.ndarray, k_frac: float,
+) -> tuple[float, float]:
+    """Precision and recall at the top `k_frac` fraction of test tiles.
+
+    "Take the top X% of tiles by predicted probability -- what fraction are
+    positive (precision) and what fraction of all positives are captured
+    (recall)?"  X% ∈ {1%, 5%, 10%} are common operational choices.
+
+    Returns (NaN, NaN) when n_pos == 0 (no recall denominator).
+    """
+    n = y_true_binary.size
+    n_pos = int(y_true_binary.sum())
+    if n_pos == 0:
+        return float("nan"), float("nan")
+    k = max(1, int(round(k_frac * n)))
+    if k >= n:
+        # Top-k captures the entire test set; precision == base_rate, recall == 1.
+        return float(n_pos / n), 1.0
+    top_idx = np.argpartition(-y_pred_prob, k - 1)[:k]
+    tp = int(y_true_binary[top_idx].sum())
+    precision = tp / k
+    recall = tp / n_pos
+    return float(precision), float(recall)
+
+
 def per_fold_metrics(
     y_true: np.ndarray,
     y_pred: np.ndarray,
     *,
     held_out_obs_ids: list[str],
+    meaningful_threshold: float = 1e-2,
 ) -> dict:
-    """All per-fold metrics in one dict, with the specificity-only flag set when due."""
+    """All per-fold metrics in one dict, with the specificity-only flag set when due.
+
+    `meaningful_threshold` (default 1e-2 = fa_gt_1e-2 boulder-rich) is the value
+    above which the regression target is considered an operationally meaningful
+    positive.  Used to derive a binary view of (y_true, y_pred) for the H1
+    metrics (pr_auc, normalised_lift, precision/recall@k) -- see
+    docs/modeling_results.md §11.4.
+    """
     is_empty_truth = (len(held_out_obs_ids) == 1 and held_out_obs_ids[0] == EMPTY_TRUTH_OBS_ID)
 
     out: dict = {
@@ -276,6 +352,33 @@ def per_fold_metrics(
     # Per-abundance-bin RMSE: always emitted (the zero bin alone is meaningful even on
     # the empty-truth fold).
     out["per_bin_rmse"] = per_bin_rmse(y_true, y_pred).to_dict(orient="records")
+
+    # H1 additions (Phase A2): derive a binary at the operational threshold and
+    # compute top-of-ranking metrics that AUC averages away.  Skipped on
+    # specificity-only folds (no positives at meaningful_threshold by definition).
+    y_meaningful = (y_true > meaningful_threshold).astype(np.int8)
+    n_meaningful_pos = int(y_meaningful.sum())
+    n_meaningful_neg = int(y_meaningful.size - n_meaningful_pos)
+    out["meaningful_threshold"] = float(meaningful_threshold)
+    out["n_meaningful_positive"] = n_meaningful_pos
+    out["meaningful_base_rate"] = float(n_meaningful_pos / y_meaningful.size) if y_meaningful.size else float("nan")
+    if n_meaningful_pos > 0 and n_meaningful_neg > 0:
+        out["meaningful_auc"] = presence_auc(y_meaningful.astype(bool), y_pred)
+        out["pr_auc"] = pr_auc(y_meaningful, y_pred)
+        out["lift_at_top_k_meaningful"] = lift_at_top_k(y_meaningful, y_pred)
+        out["normalised_lift_meaningful"] = normalised_lift_at_top_k(y_meaningful, y_pred)
+        for k_frac, name in ((0.01, "1pct"), (0.05, "5pct"), (0.10, "10pct")):
+            p, r = precision_recall_at_k_frac(y_meaningful, y_pred, k_frac)
+            out[f"precision_at_top_{name}"] = p
+            out[f"recall_at_top_{name}"] = r
+    else:
+        out["meaningful_auc"] = float("nan")
+        out["pr_auc"] = float("nan")
+        out["lift_at_top_k_meaningful"] = float("nan")
+        out["normalised_lift_meaningful"] = float("nan")
+        for name in ("1pct", "5pct", "10pct"):
+            out[f"precision_at_top_{name}"] = float("nan")
+            out[f"recall_at_top_{name}"] = float("nan")
     return out
 
 
@@ -295,7 +398,8 @@ def aggregate_fold_metrics(per_fold: list[dict]) -> dict:
     rmse_raw_mean, rmse_raw_std, _ = mean_std("rmse_raw", per_fold)  # raw RMSE meaningful on all folds
     auc_mean, auc_std, _ = mean_std("presence_auc", real)
 
-    return {
+    # H1 (Phase A2) additions: aggregate the new top-of-ranking metrics.
+    out = {
         "n_real_folds": len(real),
         "n_specificity_folds": len(spec),
         "spearman_rho_mean": spearman_mean,
@@ -308,6 +412,19 @@ def aggregate_fold_metrics(per_fold: list[dict]) -> dict:
         "presence_auc_mean": auc_mean,
         "presence_auc_std": auc_std,
     }
+    for key in (
+        "meaningful_auc", "pr_auc",
+        "lift_at_top_k_meaningful", "normalised_lift_meaningful",
+        "precision_at_top_1pct", "recall_at_top_1pct",
+        "precision_at_top_5pct", "recall_at_top_5pct",
+        "precision_at_top_10pct", "recall_at_top_10pct",
+    ):
+        # All these are only defined for real folds; agg against `real`.
+        if real and key in real[0]:
+            m, s, _ = mean_std(key, real)
+            out[f"{key}_mean"] = m
+            out[f"{key}_std"] = s
+    return out
 
 
 def per_fold_metrics_classification(
@@ -348,11 +465,23 @@ def per_fold_metrics_classification(
         out["brier"] = brier_score(y_true_binary, y_pred_prob)
         out["ece"] = expected_calibration_error(y_true_binary, y_pred_prob)
         out["lift_at_top_k"] = lift_at_top_k(y_true_binary, y_pred_prob)
+        # H1 additions (Phase A2)
+        out["pr_auc"] = pr_auc(y_true_binary, y_pred_prob)
+        out["normalised_lift"] = normalised_lift_at_top_k(y_true_binary, y_pred_prob)
+        for k_frac, name in ((0.01, "1pct"), (0.05, "5pct"), (0.10, "10pct")):
+            p, r = precision_recall_at_k_frac(y_true_binary, y_pred_prob, k_frac)
+            out[f"precision_at_top_{name}"] = p
+            out[f"recall_at_top_{name}"] = r
     else:
         out["auc"] = float("nan")
         out["brier"] = brier_score(y_true_binary, y_pred_prob)  # MSE still defined
         out["ece"] = float("nan")
         out["lift_at_top_k"] = float("nan")
+        out["pr_auc"] = float("nan")
+        out["normalised_lift"] = float("nan")
+        for name in ("1pct", "5pct", "10pct"):
+            out[f"precision_at_top_{name}"] = float("nan")
+            out[f"recall_at_top_{name}"] = float("nan")
         # On the empty-truth fold, the FP rate at the decision threshold is the
         # diagnostic that maps to "does the classifier hallucinate?".
         out["false_positive_rate_at_threshold"] = (

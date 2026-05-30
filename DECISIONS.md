@@ -1376,3 +1376,114 @@ fixed to start at Stage 1; ROADMAP gains a vClaire v2 row.
   2026-05-26 (entry above). Re-evaluate at modeling time if needed.
 - ~~**Stage 4b texture features**~~ — landed 2026-05-23 (see entry above). 9 feature
   families, 643,910 rows, 3.5 GB on disk including context patches.
+
+## 2026-05-29 — dynamic-range compression diagnosed; 4 two-stage variants added
+
+Phase A of [`PLAN_ModelImprovement.md`](PLAN_ModelImprovement.md) flagged that the v2
+`lightgbm_two_stage` S=64 regressor squashes its predictions into a ~0.007–0.015 band
+regardless of truth (over-predicting empty tiles, under-predicting the boulder-rich tail at
+~0.42× truth). This session diagnosed the mechanism and tested fixes; full writeup in
+[`notebooks/12_compression_diagnostic.ipynb`](notebooks/12_compression_diagnostic.ipynb).
+
+- **Mechanism — two compression sources, not one** (from
+  [`scripts/probes/_diag_compression_mechanism.py`](scripts/probes/_diag_compression_mechanism.py)):
+  - **Presence head over-confident on zeros**: even on true-zero tiles, mean `p_pos = 0.85`
+    (median 0.90). `is_unbalance=True` shifts the boundary to balance classes, but inflates
+    `p_pos` on negatives — sets the over-prediction floor.
+  - **Magnitude head shrunk to log-positive median**: `mag = pred/p_pos` spans only
+    0.009–0.016 while truth spans 5 orders of magnitude. `log1p+Huber-on-positives` fits the
+    geometric median; the heavy tail is shrunk away.
+- **Post-hoc isotonic recalibration does NOT fix it.** LOIO-correct iso recalibration
+  (fit on every-other-fold OOF, applied to held-out fold) leaves the high-bin ratio at 0.48
+  (vs raw 0.42), and *drops* mean Spearman 0.169 → 0.157 and AUC 0.579 → 0.572 — the raw
+  predictions don't span enough range to be re-stretched, and out-of-range clipping at fold
+  boundaries breaks ranking. Compression must be fixed in training.
+- **Four new two-stage variants added** to [`src/modeling/gbm.py`](src/modeling/gbm.py),
+  each a minimal-diff cousin of `LightGBMTwoStage` via a shared `_TwoStageBase`:
+  - `lightgbm_two_stage_balanced` — `is_unbalance=False` (presence-head fix only)
+  - `lightgbm_two_stage_weighted` — magnitude head with `sample_weight = y_pos`
+  - `lightgbm_two_stage_gamma` — magnitude head with `objective='gamma'`
+  - `lightgbm_two_stage_combined` — all three together
+- **Dev sweep results (`models/_sweep_compression_fixes/20260529T211211Z`,
+  `within_image_4fold` 20 folds, S=32/64):**
+
+  | variant at S=64        | Spearman ρ | presence AUC | high-bin ratio | zero pred |
+  |------------------------|-----------:|-------------:|---------------:|----------:|
+  | `lightgbm_two_stage` (baseline) | +0.263 | 0.538 | 0.83 | 0.0024 |
+  | **`lightgbm_two_stage_balanced`** | **+0.280** | **0.556** | 0.83 | 0.0026 |
+  | `lightgbm_two_stage_weighted` | +0.160 | 0.473 | **1.01** | 0.0048 |
+  | `lightgbm_two_stage_gamma` | +0.255 | 0.513 | 0.82 | 0.0023 |
+  | `lightgbm_two_stage_combined` | +0.160 | 0.440 | 0.99 | 0.0055 |
+
+  - **`balanced` wins on ranking + detection without paying for it** (+0.017 ρ, +0.018 AUC
+    at S=64; tail and floor barely move). Free lift.
+  - **`weighted` / `combined` recover the tail almost perfectly** (high-bin ratio 0.83 →
+    1.01) but trade away Spearman (0.263 → 0.16) and AUC (0.538 → 0.44) and *double* the
+    zero-bin over-prediction. They are the right operating point if the deliverable is
+    calibrated abundance estimates, the wrong one if it's ranking for follow-up.
+  - **`gamma` alone is neutral** — slight compression improvement, slight AUC loss; not
+    a clear win.
+- **`balanced` is the new default candidate** for full-v2 promotion. The promotion (re-run
+  the 38-fold LOIO) is Brian-gated as usual.
+- **Tests:** 220 pytest pass (was 212; +8 from the 4 new variants auto-picking up the
+  parametrized `test_fit_predict_basic` and `test_save_load_roundtrip`).
+
+## 2026-05-29 evening — Phase A2 reframe (H1 metrics + H2 target reformulation; H3 deferred)
+
+After the §11.3 interventions above produced only marginal gains (+0.017 Spearman, +0.018
+AUC), Brian pushed back: "the compression is still there; metric changes are really small."
+This session reframed the modeling problem around three new findings:
+
+- **The existing v2 binary sweep already had a stronger story at the operational threshold.**
+  Reading
+  [`models/_sweep_binary/20260529T075754Z`](models/_sweep_binary/20260529T075754Z) at
+  `fa_gt_1e-2` ("boulder-rich"): mean lift@top-K = **1.43 at S=64** (vs 1.02 for `bc_ge_1`);
+  per-image AUC is bimodal — median 0.61, max **0.91** (lift 5.4×), and one image at AUC
+  0.76 with **lift 9.1×** on a 1.3% base rate. Cross-image mean AUC was washing this out.
+- **Five-hypothesis framework** for "compression persists, signal is real" (full discussion
+  in [`notebooks/12_compression_diagnostic.ipynb`](notebooks/12_compression_diagnostic.ipynb)
+  §7 and [`docs/modeling_results.md`](docs/modeling_results.md) §11.5):
+  - H1 metric (mean AUC under-represents) — **implementing**
+  - H2 target (`fractional_area` is pixel-aliasing-noisy below ~0.005; `boulder_count`
+    is alias-robust) — **implementing**
+  - H3 per-image heterogeneity (bimodal AUC; `shadow_fraction` is illumination-dependent) —
+    **documented as deferred future work** (needs Stage 4c adding 4 per-image columns from
+    cached `.LBL` files)
+  - H4 multiplicative hurdle — plausible, test H2 first
+  - H5 5 m/px CTX texture floor — eventually binds; unlock is outside CTX
+- **Decision (Brian, 2026-05-29 evening): implement H1 + H2, document H3.** Plan:
+  - **H1**: enrich [`src/modeling/evaluate.py`](src/modeling/evaluate.py) with PR-AUC,
+    normalized lift (= lift × base_rate), precision@k, recall@k at k ∈ {1%, 5%, 10%},
+    per-image distribution stats. Computed on both regression (with implicit binary
+    derived from the target) and classification runs.
+  - **H2**: dev sweep `lightgbm_two_stage_balanced` × {`fractional_area`,
+    `log_fractional_area`, `log_boulder_count`} × {S=32, S=64} on the within-image scheme.
+    Same composite metric as §11.3 + the H1 additions.
+- **H1+H2 dev sweep result (`models/_sweep_target_reformulation/20260529T221912Z`, 6 fits,
+  within_image_4fold 20 folds, variant=lightgbm_two_stage_balanced):**
+
+  | target at S=64       | Spearman ρ | ROC-AUC (presence) | ROC-AUC (meaningful) | **PR-AUC** | normalised lift | precision@top-5% |
+  |----------------------|-----------:|-------------------:|---------------------:|-----------:|----------------:|------------------:|
+  | `fractional_area`    | +0.280     | 0.556              | 0.713                | 0.526      | 0.488           | 0.549             |
+  | **`boulder_count`**  | **+0.283** | 0.564              | 0.697                | **0.640**  | **0.619**       | **0.660**         |
+  | `log_boulder_count`  | +0.279     | 0.545              | 0.690                | 0.638      | 0.628           | 0.663             |
+
+  - **Switching from `fractional_area` to `boulder_count` lifts PR-AUC by +0.114 (+22%),
+    normalised lift by +0.131 (+27%), precision@top-5% by +0.111 (+20%)** while leaving
+    Spearman ρ and ROC-AUC essentially unchanged.
+  - The H1 framework's prediction confirmed end-to-end: ROC-AUC and Spearman couldn't see
+    the gain (rank-invariant / threshold-averaged), but PR-AUC and lift do.
+  - `log_boulder_count` ≈ `boulder_count` (the internal log1p+Huber handles the transform).
+  - **Mechanism**: `boulder_count` is alias-robust at the low end — a 4 m² boulder in a
+    320×320 m tile contributes either 0 or 1, regardless of CTX grid alignment. The
+    fractional_area equivalent gets pixel-smeared into a small noisy positive whose
+    magnitude depends on grid alignment. Cleaner negatives → sharper hurdle.
+- **Recommendation for full-v2 promotion** (Brian-gated): re-run the 38-fold LOIO with
+  `target_col=boulder_count` and `lightgbm_two_stage_balanced`. If the +0.114 PR-AUC dev
+  signal carries over, this is the new headline product (alongside the §11.3 `balanced`
+  presence-head fix).
+- **Documentation reframed**: [`docs/modeling_results.md`](docs/modeling_results.md) §11
+  fully covers H1-H5 + the §11.3 / §11.4 / §11.6 results; the headline metric for the
+  deliverable should be PR-AUC + lift@top-K, not ROC-AUC.
+- **220 pytest pass** (unchanged). Notebook 12 ([`notebooks/12_compression_diagnostic.ipynb`](notebooks/12_compression_diagnostic.ipynb))
+  is the canonical writeup, ~960 KB rendered.

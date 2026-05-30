@@ -469,10 +469,217 @@ class LightGBMClassification:
 # ============================================================================
 
 
+# ============================================================================
+# Compression-fix variants (2026-05-29, follow-up to PLAN_ModelImprovement.md)
+#
+# Phase A diagnostic (scripts/probes/_diag_compression_mechanism.py +
+# notebooks/12_compression_diagnostic.ipynb) found two compression sources in
+# the v2 lightgbm_two_stage S=64 regressor:
+#   1) presence head over-confident on zeros: mean p_pos = 0.85 even on
+#      true-zero tiles (because is_unbalance=True shifts the boundary), setting
+#      the over-prediction FLOOR (zero-truth -> pred ~0.0074).
+#   2) magnitude head shrunk to log-positive median: log1p+Huber-on-positives
+#      fits the geometric median, so mag spans only 0.009-0.016 while truth
+#      spans 5 orders of magnitude, setting the under-prediction CEILING
+#      (high-bin truth ~0.035 -> pred ~0.015 = 0.42x truth).
+# Three interventions, each a minimal-diff cousin of LightGBMTwoStage:
+#   - LightGBMTwoStageBalanced  -- attacks (1): drop is_unbalance, let the
+#     classifier output calibrated logits.
+#   - LightGBMTwoStageWeighted  -- attacks (2): magnitude head with
+#     sample_weight = y_pos (or log1p(y_pos)) so the booster spends gradient
+#     on the tail instead of fitting the log-median.
+#   - LightGBMTwoStageGamma     -- attacks (2): replace log1p+Huber with
+#     LightGBM's Gamma objective on positives (mean-based, log-link).
+#   - LightGBMTwoStageCombined  -- all three fixes together.
+# Defaults are chosen so each variant differs in exactly the named knob.
+# ============================================================================
+
+
+@dataclass
+class _TwoStageBase(LightGBMTwoStage):
+    """Shared two-stage scaffold; subclasses override fit() knobs only.
+
+    The save/load/predict/predict_presence_prob/model_hash interfaces are
+    identical to `LightGBMTwoStage`; sweep.py's "is two-stage" path keys on the
+    booster save shape, so a name-prefix check (`startswith("lightgbm_two_stage")`)
+    routes all four new variants correctly.
+    """
+
+    # Knobs (subclasses set defaults via field overrides):
+    presence_is_unbalance: bool = True          # baseline behaviour
+    magnitude_weight_mode: str = "none"          # 'none' | 'raw_y' | 'log1p_y'
+    magnitude_loss: str = "log1p_huber"          # 'log1p_huber' | 'gamma' | 'quantile_p90'
+
+    def fit(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        *,
+        groups: np.ndarray | None = None,
+        eval_set: tuple[np.ndarray, np.ndarray] | None = None,
+    ) -> None:
+        # ---- Presence head ----
+        y_bin = (y > POSITIVE_RULE_EPS).astype(np.int8)
+        kw_cls = self.params.to_lgb_kwargs()
+        kw_cls["objective"] = "binary"
+        if self.presence_is_unbalance:
+            kw_cls["is_unbalance"] = True
+        train_cls = lgb.Dataset(X, label=y_bin, free_raw_data=False)
+        valid_sets = [train_cls]
+        valid_names = ["train"]
+        callbacks = [lgb.log_evaluation(0)]
+        if eval_set is not None:
+            Xv, yv = eval_set
+            yv_bin = (yv > POSITIVE_RULE_EPS).astype(np.int8)
+            if np.unique(yv_bin).size > 1:
+                valid_sets.append(lgb.Dataset(Xv, label=yv_bin, reference=train_cls, free_raw_data=False))
+                valid_names.append("valid")
+                callbacks.insert(0, lgb.early_stopping(self.params.early_stopping_rounds, verbose=False))
+        self._presence = lgb.train(
+            kw_cls, train_cls, num_boost_round=self.params.n_estimators,
+            valid_sets=valid_sets, valid_names=valid_names, callbacks=callbacks,
+        )
+
+        # ---- Magnitude head ----
+        pos_mask = y_bin.astype(bool)
+        X_pos = X[pos_mask]
+        y_pos = y[pos_mask]
+        if y_pos.size < 10:
+            self._magnitude = None
+            return
+
+        # Sample weight per the configured mode.
+        if self.magnitude_weight_mode == "raw_y":
+            w = y_pos.astype(np.float64)
+        elif self.magnitude_weight_mode == "log1p_y":
+            w = np.log1p(y_pos.astype(np.float64))
+        elif self.magnitude_weight_mode == "none":
+            w = None
+        else:
+            raise ValueError(f"unknown magnitude_weight_mode: {self.magnitude_weight_mode!r}")
+        # Always normalise weights so they don't change the effective regulariser
+        # strength relative to the baseline. (LightGBM uses raw weights to scale
+        # the gradient; normalising to mean 1 keeps n_estimators / learning_rate
+        # comparable across variants.)
+        if w is not None and w.size > 0:
+            mean_w = float(w.mean())
+            if mean_w > 0:
+                w = w / mean_w
+
+        # Loss family decides the label transform.
+        kw_mag = self.params.to_lgb_kwargs()
+        if self.magnitude_loss == "log1p_huber":
+            y_target = np.log1p(y_pos)
+            kw_mag["objective"] = "huber"
+            kw_mag["alpha"] = self.params.huber_alpha
+            back_transform = lambda p: np.clip(np.expm1(p), 0.0, None)
+        elif self.magnitude_loss == "gamma":
+            # Gamma requires y > 0 strictly; the positives filter already
+            # enforces y > POSITIVE_RULE_EPS == 0, but clip the floor for safety.
+            y_target = np.clip(y_pos, 1e-12, None)
+            kw_mag["objective"] = "gamma"
+            # Gamma uses log link internally; predict() returns the linear-scale mean.
+            back_transform = lambda p: np.clip(p, 0.0, None)
+        elif self.magnitude_loss == "quantile_p90":
+            y_target = y_pos
+            kw_mag["objective"] = "quantile"
+            kw_mag["alpha"] = 0.9
+            back_transform = lambda p: np.clip(p, 0.0, None)
+        else:
+            raise ValueError(f"unknown magnitude_loss: {self.magnitude_loss!r}")
+
+        train_mag = lgb.Dataset(X_pos, label=y_target, weight=w, free_raw_data=False)
+        valid_sets_m = [train_mag]
+        valid_names_m = ["train"]
+        callbacks_m = [lgb.log_evaluation(0)]
+        if eval_set is not None:
+            Xv, yv = eval_set
+            yv_pos_mask = yv > POSITIVE_RULE_EPS
+            if yv_pos_mask.sum() >= 10:
+                yv_pos = yv[yv_pos_mask]
+                if self.magnitude_loss == "log1p_huber":
+                    yv_target = np.log1p(yv_pos)
+                elif self.magnitude_loss == "gamma":
+                    yv_target = np.clip(yv_pos, 1e-12, None)
+                else:  # quantile_p90
+                    yv_target = yv_pos
+                if self.magnitude_weight_mode == "raw_y":
+                    wv = yv_pos.astype(np.float64)
+                elif self.magnitude_weight_mode == "log1p_y":
+                    wv = np.log1p(yv_pos.astype(np.float64))
+                else:
+                    wv = None
+                if wv is not None and wv.size > 0:
+                    mwv = float(wv.mean())
+                    if mwv > 0:
+                        wv = wv / mwv
+                valid_sets_m.append(lgb.Dataset(
+                    Xv[yv_pos_mask], label=yv_target, weight=wv,
+                    reference=train_mag, free_raw_data=False,
+                ))
+                valid_names_m.append("valid")
+                callbacks_m.insert(0, lgb.early_stopping(self.params.early_stopping_rounds, verbose=False))
+        self._magnitude = lgb.train(
+            kw_mag, train_mag, num_boost_round=self.params.n_estimators,
+            valid_sets=valid_sets_m, valid_names=valid_names_m, callbacks=callbacks_m,
+        )
+        # Stash the back-transform on self so predict() can use it.
+        self._mag_back_transform = back_transform
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        assert self._presence is not None, "fit() before predict()"
+        p_pos = np.asarray(self._presence.predict(X, num_iteration=self._presence.best_iteration))
+        if self._magnitude is not None:
+            raw = np.asarray(self._magnitude.predict(X, num_iteration=self._magnitude.best_iteration))
+            back = getattr(self, "_mag_back_transform", None)
+            if back is None:
+                # Loaded via load(); reconstruct from magnitude_loss.
+                if self.magnitude_loss == "log1p_huber":
+                    mag = np.clip(np.expm1(raw), 0.0, None)
+                else:  # gamma / quantile_p90
+                    mag = np.clip(raw, 0.0, None)
+            else:
+                mag = back(raw)
+        else:
+            mag = np.zeros_like(p_pos)
+        return p_pos * mag
+
+
+@dataclass
+class LightGBMTwoStageBalanced(_TwoStageBase):
+    name: str = "lightgbm_two_stage_balanced"
+    presence_is_unbalance: bool = False     # the single change
+
+
+@dataclass
+class LightGBMTwoStageWeighted(_TwoStageBase):
+    name: str = "lightgbm_two_stage_weighted"
+    magnitude_weight_mode: str = "raw_y"    # the single change
+
+
+@dataclass
+class LightGBMTwoStageGamma(_TwoStageBase):
+    name: str = "lightgbm_two_stage_gamma"
+    magnitude_loss: str = "gamma"           # the single change
+
+
+@dataclass
+class LightGBMTwoStageCombined(_TwoStageBase):
+    """All three fixes together — the headline candidate."""
+    name: str = "lightgbm_two_stage_combined"
+    presence_is_unbalance: bool = False
+    magnitude_weight_mode: str = "raw_y"
+    magnitude_loss: str = "gamma"
+
+
 VARIANT_CONSTRUCTORS = {
     "lightgbm_tweedie": LightGBMTweedie,
     "lightgbm_log1p_huber": LightGBMLog1pHuber,
     "lightgbm_two_stage": LightGBMTwoStage,
+    "lightgbm_two_stage_balanced": LightGBMTwoStageBalanced,
+    "lightgbm_two_stage_weighted": LightGBMTwoStageWeighted,
+    "lightgbm_two_stage_gamma": LightGBMTwoStageGamma,
+    "lightgbm_two_stage_combined": LightGBMTwoStageCombined,
     "lightgbm_classification": LightGBMClassification,
 }
 

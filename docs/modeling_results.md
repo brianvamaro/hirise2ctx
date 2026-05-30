@@ -1061,3 +1061,131 @@ Extending the ladder to **S=128 (640 m)** on dev (within-image, 20 folds; requir
   full `config_v2.yaml` still uses `[8,16,32,64]`. Revisit a full-v2 S=128 confirmation later
   (the scale-extension plumbing — `SCALE_TO_FACTOR_FROM_FINEST`, sweep `SCALE_TILE_PX`, GLCM
   per-scale config — is already in place, so promotion is just a config flip + re-run).
+
+---
+
+## 11. Phase A2 — compression diagnosis, post-hoc fixes don't work, reframe
+
+The Phase-A finding (§9.6) was that the v2 `lightgbm_two_stage` S=64 regressor compresses
+its predictions into a 0.007–0.015 band regardless of truth. This section documents the
+follow-up exploration that diagnosed why, tested four interventions, and reframed the
+modeling problem after the §5-style fixes produced only marginal gains. Full notebook:
+[`notebooks/12_compression_diagnostic.ipynb`](../notebooks/12_compression_diagnostic.ipynb).
+
+### 11.1 Two compression sources, not one
+
+Decomposing `pred = p_pos × mag` from the cached predictions
+([`scripts/probes/_diag_compression_mechanism.py`](../scripts/probes/_diag_compression_mechanism.py)):
+
+| truth bin | mean_true | p_pos (presence head) | mag = pred / p_pos | final pred | ratio pred / true |
+|---|---:|---:|---:|---:|---:|
+| zero            | 0          | 0.85 (mean) / 0.90 (median) | 0.0087 | 0.0074 | — (over by ∞) |
+| 0_to_1e-4       | 7×10⁻⁵     | 0.87 | 0.0090 | 0.0079 | 112× over |
+| 1e-4_to_1e-3    | 4×10⁻⁴     | 0.87 | 0.0093 | 0.0082 | 19× over |
+| 1e-3_to_1e-2    | 4×10⁻³     | 0.89 | 0.0117 | 0.0106 | 2.5× over |
+| 1e-2_to_max     | 3.5×10⁻²   | 0.92 | 0.0157 | 0.0146 | **0.42× under** |
+
+1. **Presence head over-confident on zeros**: even on true-zero tiles, mean `p_pos = 0.85`.
+   `is_unbalance=True` shifts the LightGBM classifier's decision boundary to balance the
+   class prior, which inflates `p_pos` on negatives — sets the **over-prediction floor**.
+2. **Magnitude head shrunk to log-positive median**: `log1p + Huber` on positives-only fits
+   the geometric median of positives (~0.01). `mag` spans only 0.009–0.016 across 5 orders of
+   magnitude of truth — sets the **under-prediction ceiling**.
+
+### 11.2 Post-hoc isotonic recalibration does NOT fix it
+
+LOIO-correct isotonic recalibration (fit on every-other-fold OOF, applied to held-out fold)
+*drops* mean Spearman 0.169 → 0.157 and AUC 0.579 → 0.572, with the high-bin ratio only
+0.42 → 0.48. Two reasons:
+
+1. Out-of-range clipping at fold boundaries breaks ranking — the iso map clips test-fold
+   predictions outside the OOF training range, and clipping is no longer strictly monotone.
+2. **The raw predictions don't span enough range to be re-stretched.** Iso can only rearrange
+   values it sees; it cannot invent the range the raw model didn't produce.
+
+So the compression has to be fixed in **training**, not in post-processing.
+
+### 11.3 Four training-side interventions, one free win
+
+Four new variants in [`src/modeling/gbm.py`](../src/modeling/gbm.py) via a shared
+`_TwoStageBase`:
+
+- **`lightgbm_two_stage_balanced`** — presence head with `is_unbalance=False`
+- **`lightgbm_two_stage_weighted`** — magnitude head with `sample_weight = y_pos`
+- **`lightgbm_two_stage_gamma`** — magnitude head with `objective='gamma'`
+- **`lightgbm_two_stage_combined`** — all three
+
+Dev sweep ([`models/_sweep_compression_fixes/20260529T211211Z`](../models/_sweep_compression_fixes/20260529T211211Z),
+within-image 20 folds, S=64):
+
+| variant         | Spearman ρ  | presence AUC | high-bin ratio | zero pred |
+|-----------------|-------------:|-------------:|---------------:|----------:|
+| baseline        | +0.263       | 0.538        | 0.83           | 0.0024    |
+| **balanced**    | **+0.280**   | **0.556**    | 0.83           | 0.0026    |
+| weighted        | +0.160       | 0.473        | **1.01**       | 0.0048    |
+| gamma           | +0.255       | 0.513        | 0.82           | 0.0023    |
+| combined        | +0.160       | 0.440        | 0.99           | 0.0055    |
+
+- **`balanced` is the only free win** — +0.017 ρ, +0.018 AUC; tail/floor unchanged. The
+  presence-head over-confidence was a class-balance artefact, not a feature-information
+  limit.
+- **`weighted` / `combined` recover the tail almost perfectly (ratio 0.83 → 1.01)** but trade
+  Spearman + AUC for it AND double the zero-bin over-prediction. They are the right
+  operating point for "calibrated abundance estimates" and the wrong one for "ranking for
+  follow-up."
+- **`gamma` alone is neutral.**
+
+### 11.4 The reframing: the existing binary sweep was already telling a stronger story
+
+After the §11.3 interventions barely moved the headline numbers (+0.017 ρ, +0.018 AUC), Brian
+flagged that the compression was still there and pushed back: maybe the metric and threshold
+are wrong, not just the loss. Re-reading the existing v2 binary sweep
+([`models/_sweep_binary/20260529T075754Z`](../models/_sweep_binary/20260529T075754Z)) at the
+operationally meaningful boulder-rich threshold (`fa_gt_1e-2` = `fractional_area > 0.01`):
+
+| target          | S=8    | S=16   | S=32   | **S=64**   |
+|-----------------|-------:|-------:|-------:|-----------:|
+| **`bc_ge_1` lift@top-K**       | 1.09 | 1.04 | 1.03 | 1.02 |
+| **`fa_gt_1e-2` lift@top-K**    | 1.20 | 1.23 | 1.25 | **1.43** |
+
+**Per-image at `fa_gt_1e-2` S=64**: median AUC 0.61, σ 0.12, max **0.91** (ESP_042964_2160,
+lift **5.4×**); ESP_055978_2270 hits AUC 0.76 with lift **9.1×** on a 1.3% base rate. The
+cross-image mean AUC of 0.62 buries a strongly bimodal per-image distribution: ~7 images
+where the model works (AUC > 0.70), ~4 where it anti-signals (AUC < 0.50), the rest near
+chance.
+
+**Read this back to the §6 / §9.4 verdict**: "the binary reframing doesn't help" was correct
+at `bc_ge_1` (the wrong threshold) and at cross-image mean AUC (the wrong metric). At the
+right threshold + right metric, the v2 dataset already supports a **usable boulder-rich
+classifier on a meaningful subset of held-out images**.
+
+### 11.5 Five hypotheses framework
+
+After §11.3 + §11.4, what's the actual binding constraint? Five hypotheses, full discussion
+in [notebook 12 §7](../notebooks/12_compression_diagnostic.ipynb):
+
+1. **H1 (metric)**: cross-image mean AUC under-represents per-image performance. *Real
+   contributor; addressed by reporting top-K lift, PR-AUC, per-image distributions.*
+2. **H2 (target)**: `fractional_area` is pixel-aliasing-noise-dominated below ~0.005.
+   `boulder_count` is alias-robust. *Most likely high-leverage hypothesis; implemented this
+   session.*
+3. **H3 (per-image heterogeneity)**: per-image AUC is bimodal because `shadow_fraction`
+   means different things at different illumination geometries / surface units. *Documented
+   as a Stage-4c future addition (4 per-image columns from `.LBL`); deferred.*
+4. **H4 (multiplicative hurdle)**: `two_stage`'s `P × E[mag]` assumes independence the data
+   doesn't support. *Plausible; test H2 first.*
+5. **H5 (5 m/px texture floor)**: §9.4's within ≈ LOIO finding is real and binds at the
+   limit. *Eventually binds; unlock is outside CTX (THEMIS, HiRISE-decimated, spatial
+   priors).*
+
+### 11.6 What's implemented this session
+
+- **H1**: richer metrics in [`src/modeling/evaluate.py`](../src/modeling/evaluate.py) — PR-AUC,
+  normalized lift, precision@k, recall@k, per-image distribution stats.
+- **H2**: new dev sweep [`scripts/probes/_sweep_target_reformulation.py`](../scripts/probes/_sweep_target_reformulation.py)
+  cross-tests `lightgbm_two_stage_balanced` × {`fractional_area`, `log_fractional_area`,
+  `log_boulder_count`} × {S=32, S=64} on the within-image scheme.
+- **H3**: documented in §11.5 + notebook 12 §8 with a concrete pre-mortem (the 4-column
+  per-image feature add); not implemented.
+
+Results of the H1+H2 sweep are reported in [notebook 12 §9](../notebooks/12_compression_diagnostic.ipynb).

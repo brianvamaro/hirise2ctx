@@ -35,6 +35,8 @@ def _synth(n: int = 600, n_features: int = 6, pos_frac: float = 0.1, seed: int =
 def test_variant_constructors_complete():
     assert set(VARIANT_CONSTRUCTORS) == {
         "lightgbm_tweedie", "lightgbm_log1p_huber", "lightgbm_two_stage",
+        "lightgbm_two_stage_balanced", "lightgbm_two_stage_weighted",
+        "lightgbm_two_stage_gamma", "lightgbm_two_stage_combined",
         "lightgbm_classification",
     }
 
