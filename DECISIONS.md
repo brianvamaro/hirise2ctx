@@ -1134,8 +1134,10 @@ on the same ceiling.
   "tightens error bars on the ceiling, does not move it." Worth pursuing for
   statistical power, no longer expected to raise the per-tile AUC.
 - "Complementary non-texture signal" (was implicit in `CLAUDE.md` §10 future work) —
-  promoted: thermal / spectral channels (THEMIS, CRISM) and coarser-than-tile spatial
-  context are now the most plausible unlock for the per-tile AUC ceiling.
+  promoted: thermal channels (THEMIS rock abundance) and coarser-than-tile spatial
+  context are now the most plausible unlock for the per-tile AUC ceiling. *Spectral channel
+  plan updated 2026-05-30: compositional study uses HiRISE 3 bands ([Delamere et al. 2010](https://doi.org/10.1016/j.icarus.2009.03.012)),
+  not CRISM.*
 
 **Tests.** 15 new unit tests + 1 slow integration test in
 `tests/test_within_image_split.py`, including the strict multi-scale coherence
@@ -1487,3 +1489,135 @@ This session reframed the modeling problem around three new findings:
   deliverable should be PR-AUC + lift@top-K, not ROC-AUC.
 - **220 pytest pass** (unchanged). Notebook 12 ([`notebooks/12_compression_diagnostic.ipynb`](notebooks/12_compression_diagnostic.ipynb))
   is the canonical writeup, ~960 KB rendered.
+
+## 2026-05-29 late — per-image heterogeneity (H3) exploration
+
+Brian's question: which v2 images worked, which didn't, and is there a per-image predictor
+that explains the bimodal AUC distribution? Notebook 13
+([`notebooks/13_per_image_heterogeneity.ipynb`](notebooks/13_per_image_heterogeneity.ipynb))
+joined per-fold metrics from the full-v2 sweeps with manifest + cached PDS `.LBL` data
+(IncidenceAngle, EmissionAngle, PhaseAngle, SubSolarAzimuth, all 38/38 images).
+
+- **HiRISE-LBL illumination angles have NO significant correlation with model performance**
+  (n = 37, all `p > 0.10`):
+
+  | feature → metric              | bin_rich_auc | bin_rich_lift | bin_rich_ece | reg_spearman |
+  |-------------------------------|--------------:|--------------:|--------------:|--------------:|
+  | IncidenceAngle                | −0.14 (p=0.42) | 0.00 (p=0.99) | −0.27 (p=0.10) | −0.20 (p=0.23) |
+  | EmissionAngle                 | +0.27 (p=0.10) | −0.09 (p=0.60) | +0.16 (p=0.33) | +0.27 (p=0.10) |
+  | PhaseAngle                    | +0.08 (p=0.65) | +0.07 (p=0.68) | −0.24 (p=0.15) | −0.06 (p=0.71) |
+  | SubSolarAzimuth               | +0.03 (p=0.85) | −0.25 (p=0.14) | +0.06 (p=0.72) | −0.06 (p=0.73) |
+  | CenterLat                     | +0.21         | +0.24         | +0.06         | +0.28         |
+  | NPolygons                     | +0.27         | −0.06         | +0.04         | +0.24         |
+  | **bin_rich_base_rate**        | **+0.36 (p=0.027)** | +0.08 | +0.06 | +0.29 |
+  | **reg_mean_true_fa**          | **+0.33 (p=0.044)** | −0.05 | +0.07 | +0.32 |
+
+  Verdict: H3-as-label-quality (HiRISE illumination → label noise) is **NOT a strong
+  per-image predictor**. The only significant correlates are `base_rate` and
+  `reg_mean_true_fa` (both p ≈ 0.03–0.04), saying "images with more boulder-rich content
+  fit better" — partly trivial, partly informative.
+- **CTX-source illumination is the untested H3 hypothesis** — Brian's flag, 2026-05-29. The
+  model uses **CTX** texture features (`shadow_fraction`), and the Murray Lab mosaic is
+  composed of many CTX source images each with its own illumination geometry. Reading the
+  SeamMap from the cached Murray Lab tile zips, we found **a mean of 24 CTX sources per
+  HiRISE footprint** (range 4–46) — so each footprint is a *blend* of many CTX
+  illuminations, not a single one. Getting CTX-source-illumination requires downloading the
+  PDS CUMINDEX (~200 MB), joining on the SeamMap source IDs, and aggregating to per-tile (not
+  per-footprint!) angles. Docketed as **[PROMOTION_QUEUE.md P5b](PROMOTION_QUEUE.md)**;
+  significant work, but the only avenue left for testing H3-feature-quality.
+- **Anti-signal failure mode confirmed at ESP_054000_2255**: 812 tiles, 18.3% boulder-rich
+  base rate (NOT a rare-positive case), but:
+  - Top-1% predicted (8 tiles): **0 boulder-rich** (vs 18.3% expected from random)
+  - Top-10% predicted (81 tiles): **4.9% boulder-rich** (~26% of random)
+  - Model is genuinely *anti*-correlated; the texture features here point the wrong way.
+  - Per-image investigation is the most informative next step on these cases.
+- **Failure-mode taxonomy** (3 distinct classes):
+  1. **Anti-signal** (AUC < 0.45): wrong-way correlation; texture features mislead.
+     Examples: ESP_054000_2255 (AUC 0.40), ESP_055253_2245 (AUC 0.42).
+  2. **Rare-positive miss** (base_rate < 0.02, lift = 0): the boulder-rich tiles are so rare
+     that even moderate AUC (~0.60) doesn't put a single positive in the top-K. Discrete
+     metric artefact at small K; smoothed by `precision@top-5%`.
+  3. **Presence/magnitude split**: high presence AUC but low Spearman. Model can detect
+     "any boulder" but can't rank magnitudes. Example: ESP_049242_2115 (presence_AUC 0.97,
+     Spearman −0.05) — the dataset-level compression failure mode (notebook 12 §2) in
+     per-image form.
+- **Promotion queue created** at [`PROMOTION_QUEUE.md`](PROMOTION_QUEUE.md) — 6 dev-validated
+  items awaiting full-v2 confirmation: P1 `balanced`, P2 `boulder_count`, P3 metric reframe,
+  P4 retire `bc_ge_1`, P5 `lightgbm_classification` calibration fix, P5a CTX-source
+  illumination Stage-4c (the only H3-feature-quality test that's inference-compatible).
+- **Inference-time scope rule (Brian, 2026-05-29)**: the deliverable runs on stand-alone
+  CTX in regions where HiRISE coverage is absent. **HiRISE-derived per-image features
+  (IncidenceAngle/EmissionAngle/PhaseAngle/SubSolarAzimuth) cannot be added to the model**
+  — there is no HiRISE image at inference time, so the input would be missing. They remain
+  useful for our own per-image diagnostic analysis (notebook 13), but the originally-proposed
+  "HiRISE LBL Stage-4c" promotion is **out of scope**. The CTX-source illumination
+  Stage-4c addition (P5a) IS in scope, since CTX-source angles can be looked up from the
+  Murray Lab SeamMap + PDS CUMINDEX at inference time wherever CTX is available. Documented
+  in [`PROMOTION_QUEUE.md`](PROMOTION_QUEUE.md) under "Inference-time scope" + "Out of
+  scope" sections.
+
+## 2026-05-30 — boulder_area dev sweep + THEMIS conversion path + research-directions synthesis
+
+Brian flagged: switching to `boulder_count` as the regression target sacrifices direct
+comparability with THEMIS rock-abundance maps (which are area fractions).  Follow-up dev
+sweep + plan-documentation session.
+
+- **Dev sweep on boulder_area** ([`models/_sweep_target_reformulation/20260530T154730Z`](models/_sweep_target_reformulation/20260530T154730Z),
+  within_image_4fold 20 folds): at S=64, `boulder_area` and `log_boulder_area` perform
+  **essentially identically to `fractional_area`** on PR-AUC (0.531 / 0.525 vs 0.526) and
+  normalised lift (0.479 / 0.482 vs 0.488).  The +22 % PR-AUC win from `boulder_count`
+  (PR-AUC 0.640) is **specific to count**, not to log-scale and not to area.
+  - Likely mechanism: CTX texture features respond to **count** of distinct detection events
+    (multiple shadows from multiple boulders) more than to **total area** of those events.
+    Boulder size variability within a tile adds noise to area-based targets that count is
+    invariant to.
+- **THEMIS comparability is preserved** via a simple post-hoc conversion at inference time:
+  `predicted_themis_area ≈ predicted_count × mean_boulder_area_per_boulder / tile_area`,
+  multiplied by a population-scaling factor to bridge the ~100× rock-size gap (THEMIS
+  sees > 15 cm rocks, BoulderNet sees > 1 m boulders).  This population step is
+  required for any approach — direct `fractional_area` vs THEMIS comparison would need it
+  too.
+- **Open inference-time question** (Brian, 2026-05-30): at full-mosaic inference on
+  CTX-only regions we have no labels, so no per-image `mean_boulder_area_per_boulder`.
+  Options recorded in [PROMOTION_QUEUE.md P2 "Open inference-time question"](PROMOTION_QUEUE.md):
+  global mean (simple), per-region pre-computed (involved), or accept that we only need
+  rank correlation with THEMIS (Brian's lean — Spearman is rank-invariant under per-image
+  scaling).  Track as a P2-blocker only if THEMIS validation requires calibrated abundance
+  values.
+- **Decision**: **Path A** (`boulder_count` primary target + post-hoc area conversion for
+  THEMIS) is the recommended path; multi-target `boulder_count + boulder_area` heads are
+  NOT needed based on dev evidence.  Document the conversion approach in the eventual
+  THEMIS validation writeup.
+- **Research-directions synthesis** (2026-05-30 conversation):
+  - Six modeling problems catalogued in [PROMOTION_QUEUE.md](PROMOTION_QUEUE.md) under
+    "Problem catalog & priority". **Status legend**: ✓ dev-validated, ◐ partial,
+    ? untested hypothesis, ✗ unresolved.
+    1. ✓ Target distribution noise → **P2** (boulder_count, dev +22 % PR-AUC)
+    2. ◐ Compression → **P1** (balanced) **fixes presence-head source only**; the
+       magnitude-head log1p+Huber-shrinks-to-median source remains. High-bin ratio
+       0.42 → 0.83, not 1.0. Honest verdict: ship as ranker, not as calibrated
+       abundance regressor.
+    3. ? Per-image anti-signal → **Stage 6b** *tests* the CTX-illumination hypothesis;
+       other candidate mechanisms (terrain composition, mosaic seams, image-specific data
+       issues, label errors) are not distinguishable from H3 yet. If 6b fails: move to
+       Stage 6c (image-level pre-classifier).
+    4. ? No surrounding spatial context → **Stage 6a** (Brian, 2026-05-30); indirect
+       evidence is the S=128 scale Spearman 0.26 → 0.41 finding. Extrapolation, not
+       a direct test. Could disappoint if the S=128 gain was actually about coarse
+       label-noise averaging rather than spatial integration per se.
+    5. ✓ Metric framing → **P3 + P4** (methodological reframe; metrics already exist
+       in code, docket items are documentation reframes)
+    6. ✗ 5 m/px CTX texture floor → unresolved; eventual unlock is outside CTX
+  - **Docket structure (Brian, 2026-05-30)**: PROMOTION_QUEUE.md split into **Part A —
+    Pipeline tweaks (P1–P5)** for existing-pipeline variant / target / metric / doc
+    changes, and **Part B — Stage 6: model improvement / feature augmentation** for new
+    feature columns and model components.  Part B items are: **Stage 6a** spatial-context
+    neighbour features (was P5b), **Stage 6b** CTX-source illumination features (was
+    P5a), **Stage 6c** image-level pre-classifier (placeholder, not docketed in detail
+    until 6a/6b results land).  Earlier "Stage-4c" labelling was wrong — those items
+    aren't extensions of Stage 4.
+  - **Priority order (PROMOTION_QUEUE.md)**: ✓ marked items are bank-the-wins; ? marked
+    are bets that could fail. (1) ✓ P1+P2 full-v2 promotion, (2) ✓ P3+P4 doc reframe,
+    (3) ? Stage 6a spatial context, (4) ? Stage 6b CTX-source illumination, (5) ✓ P5
+    binary calibration, (6) ? Stage 6c image-level pre-classifier, (7) ✗ THEMIS /
+    HiRISE-surrogate.

@@ -11,27 +11,43 @@ won't touch the code (collaborators, reviewers, committee members) see
 
 ## Status
 
-**End of CLAUDE.md Week 1-2 data pipeline scope: Stages 0–5 of 5 done.**
+**Stages 0–5 of the build pipeline are done. Modeling iteration (Stage 6 — model
+improvement) is the current focus.** See
+[PROMOTION_QUEUE.md](PROMOTION_QUEUE.md) for the live docket and
+[docs/modeling_results.md](docs/modeling_results.md) §9–11 for the modeling writeup.
+
+**Pipeline (build stages):**
 
 | Stage | What | Status |
 |---|---|---|
 | 0 | Load manifest + config | ✓ |
-| 1 | Per-image detection ingest + reproject to common CTX CRS (auto-corrects upstream HiRISE PDS `Standard_Parallel_1=0` bug, polygon side) | ✓ all 10 manifest rows |
-| 2 | Download Murray Lab CTX tile + window around HiRISE footprint + HiRISE coverage mask (auto-corrects same SP1 bug on JP2 side) | ✓ full sweep |
-| 3 | Co-registration (sub-pixel phase-correlation translation) | ✓ 9/10 solved in 118–273 m (CLAUDE.md target ~200 m) |
-| 4 | Label generation on nested ×2 grid (8/16/32/64 CTX px) | ✓ 488,554 finest tiles across 9 ObsIds |
-| 4b | Per-tile CTX texture features (9 families) + bundled context patches | ✓ 643,910 feature rows + 3.3 GB context patches (S=32 and S=64) |
-| 5 | Leave-image-out splits + dataset packaging | ✓ 2 schemes (`loio_9fold` + `loio_3fold_balanced`) materialised + group-leak assertion in QA |
+| 1 | Per-image detection ingest + reproject to common CTX CRS (auto-corrects upstream HiRISE PDS `Standard_Parallel_1=0` bug, polygon side) | ✓ both manifests (v1 priority10: 10 rows; v2 vClaire: 39 rows) |
+| 2 | Download Murray Lab CTX tile + window around HiRISE footprint + HiRISE coverage mask (auto-corrects same SP1 bug on JP2 side) | ✓ full sweep on both manifests |
+| 3 | Co-registration (sub-pixel phase-correlation translation; v2 uses robust block-median) | ✓ |
+| 4 | Label generation on nested ×2 grid (8/16/32/64 CTX px) | ✓ |
+| 4b | Per-tile CTX texture features (9 families) + bundled context patches | ✓ |
+| 5 | Leave-image-out splits + dataset packaging | ✓ schemes `loio_9fold` (v1), `loio_nfold` (v2 38-fold), `within_image_4fold` |
+| 5b | Binary-classification reframing | ✓ (shipped 2026-05-27) |
+| 5c | Within-image diagnostic CV | ✓ (shipped 2026-05-27; "within ≈ LOIO" finding) |
 
-**125 pytest pass** (fast unit + slow integration). ~10 GB of CTX tiles + ~3 GB of
-HiRISE JP2s + ~3.3 GB of context patches + ~1.3 GB of packaged splits cached locally
-for the full priority10 manifest. ESP_057469_2215 is excluded from Stage 4 / 4b / 5
-sweeps because its polygon bbox straddles a Murray Lab tile boundary (see
-[DECISIONS.md](DECISIONS.md) 2026-05-22 entry).
+**Modeling (current focus, Stage 6):**
 
-**Next: Week 3 modeling per [PLAN_modeling.md](PLAN_modeling.md).** LightGBM tabular
-baseline on `dataset/packaged/loio_9fold/` + optional CNN baseline on the bundled
-context patches.
+| Item | Status | See |
+|---|---|---|
+| v2 LOIO modeling A/B (denser labels vs v1 ceiling) | ✓ shipped 2026-05-29 | [modeling_results.md §9](docs/modeling_results.md) |
+| Compression diagnosis + 4 hurdle variants + boulder_count target | ✓ shipped 2026-05-29 (commit a003d33) | [notebook 12](notebooks/12_compression_diagnostic.ipynb), [modeling_results.md §11](docs/modeling_results.md) |
+| Per-image heterogeneity exploration (H3) | ✓ shipped 2026-05-29 night, uncommitted | [notebook 13](notebooks/13_per_image_heterogeneity.ipynb) |
+| Promotion queue + Stage 6 docket (Part A pipeline tweaks; Part B Stage 6 feature engineering) | live docket | [PROMOTION_QUEUE.md](PROMOTION_QUEUE.md) |
+
+**220 pytest pass** (was 125 at end-of-pipeline; +95 from modeling-side tests).
+ESP_057469_2215 is excluded from Stage 4 / 4b / 5 sweeps because its polygon bbox
+straddles a Murray Lab tile boundary (see [DECISIONS.md](DECISIONS.md) 2026-05-22
+entry).
+
+**Next: dev-validated changes in [PROMOTION_QUEUE.md](PROMOTION_QUEUE.md) Part A (P1
+`balanced` presence-head fix, P2 `boulder_count` target — +22 % PR-AUC dev win)
+awaiting full-v2 confirmation, plus Stage 6 untested-hypothesis items (spatial-context
+neighbour features, CTX-source illumination angles).**
 
 ## Setup
 
@@ -98,6 +114,17 @@ $conda = "C:\Users\brian\anaconda3\Scripts\conda.exe"
     notebooks/08_features_explained.ipynb         # Stage 4b: per-family math/physics/why + stratified patch viewer
 & $conda run -n geospatial jupyter nbconvert --to notebook --execute --inplace `
     notebooks/09_splits_qa.ipynb                  # Stage 5: fold composition + train-vs-test target dist + group-leak check
+
+# ---- Modeling notebooks (10 = v1, 11 = v2, 12 = compression diagnosis,
+#                          13 = per-image heterogeneity) ----
+& $conda run -n geospatial jupyter nbconvert --to notebook --execute --inplace `
+    notebooks/10_modeling_qa.ipynb                # v1 priority10 modeling QA (frozen baseline)
+& $conda run -n geospatial jupyter nbconvert --to notebook --execute --inplace `
+    notebooks/11_modeling_qa_v2.ipynb             # v2 vClaire modeling QA
+& $conda run -n geospatial jupyter nbconvert --to notebook --execute --inplace `
+    notebooks/12_compression_diagnostic.ipynb     # compression diagnosis + 4 hurdle variants + boulder_count target
+& $conda run -n geospatial jupyter nbconvert --to notebook --execute --inplace `
+    notebooks/13_per_image_heterogeneity.ipynb    # H3 deep dive + top-K confusion overlay
 ```
 
 **Don't run two `nbconvert --execute` against the same notebook concurrently** — caused

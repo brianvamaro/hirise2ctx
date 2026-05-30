@@ -432,9 +432,9 @@ Three things make that pushback right:
    "average" is a fiction over a population where some images fit the model well and others
    actively anti-fit.
 3. **AUC averages performance across every probability threshold.** For our operational task
-   (rank a small number of tiles to follow up with HiRISE or compare with THEMIS/CRISM), only
-   the **very top** of the ranking matters. Top-K lift answers that question directly; AUC
-   does not.
+   (rank a small number of tiles to follow up with HiRISE, compare with THEMIS, or run the
+   HiRISE 3-band compositional study), only the **very top** of the ranking matters. Top-K
+   lift answers that question directly; AUC does not.
 
 ### 6.1 What "top-K lift" measures (qualitatively)
 
@@ -827,7 +827,8 @@ cleaner target and most of the compression goes away.
 
 If the deliverable is "predict abundance across CTX", the boulder_count regressor is a
 direct upgrade: same ranking, much better operational discrimination of the boulder-rich
-tiles for downstream use (HiRISE follow-up, THEMIS/CRISM cross-comparison).
+tiles for downstream use (HiRISE follow-up, THEMIS cross-comparison, and the HiRISE 3-band
+compositional study — the latter switched from CRISM 2026-05-30).
 **The headline number for the deliverable should be PR-AUC + lift@top-K, not ROC-AUC** —
 that's a documentation update for [`docs/modeling_results.md`](../docs/modeling_results.md)
 §9 and §11 to make on the next pass.

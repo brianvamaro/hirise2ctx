@@ -51,25 +51,41 @@ from src.modeling.loaders import Fold, iter_loio_folds
 SCALE_TILE_PX = {0: 8, 1: 16, 2: 32, 3: 64, 4: 128}
 SCHEME = "within_image_4fold"
 VARIANT = "lightgbm_two_stage_balanced"
-DEFAULT_TARGETS = ("fractional_area", "boulder_count", "log_boulder_count")
+DEFAULT_TARGETS = ("fractional_area", "boulder_count", "log_boulder_count",
+                   "boulder_area", "log_boulder_area")
 DEFAULT_SCALES = (2, 3)
 MODELS_ROOT = REPO_ROOT / "models"
 
+# CTX pixel size (m).  Tile area = (CTX_M * tile_size_px) ** 2.
+CTX_M = 5.0
+
 # When the target is not the canonical fractional_area, the "operational
-# meaningful threshold" needs to be re-mapped.  These map roughly to "boulder-rich tile"
-# (the v1 fa_gt_1e-2 definition translated into the new units).
-MEANINGFUL_THRESHOLDS = {
-    "fractional_area": 1e-2,        # >1% area
-    "boulder_count": 50.0,          # ~50 boulders/tile (matches fa~1e-2 at typical density)
-    "log_boulder_count": np.log1p(50.0),  # log1p(50) ~ 3.93
-}
+# meaningful threshold" needs to be re-mapped to the v1 fa_gt_1e-2 ("boulder-rich")
+# operational definition.  For area-based targets the threshold is scale-dependent
+# (tile_area scales as S^2): fa=0.01 ⇒ boulder_area_m2 = 0.01 * (CTX_M * S)^2.
+def _meaningful_threshold(target_col: str, scale_idx: int) -> float:
+    tile_size_px = SCALE_TILE_PX[scale_idx]
+    tile_area = (CTX_M * tile_size_px) ** 2
+    if target_col == "fractional_area":
+        return 1e-2
+    if target_col == "boulder_count":
+        return 50.0
+    if target_col == "log_boulder_count":
+        return float(np.log1p(50.0))
+    if target_col == "boulder_area":
+        return 0.01 * tile_area               # fa=0.01 equivalent in m^2
+    if target_col == "log_boulder_area":
+        return float(np.log1p(0.01 * tile_area))
+    raise ValueError(f"unknown target_col {target_col!r}")
 
 
 def _add_log_target(fold: Fold) -> None:
-    """Mutate fold.y_train / fold.y_test in-place to add log_boulder_count column."""
+    """Mutate fold.y_train / fold.y_test in-place to add derived columns."""
     for df in (fold.y_train, fold.y_test):
         if "log_boulder_count" not in df.columns:
             df["log_boulder_count"] = np.log1p(df["boulder_count"].to_numpy(dtype=np.float64))
+        if "log_boulder_area" not in df.columns:
+            df["log_boulder_area"] = np.log1p(df["boulder_area"].to_numpy(dtype=np.float64))
 
 
 def _wrapped_fold_iter(scheme: str, scale_idx: int, dataset_dir: str):
@@ -99,7 +115,7 @@ def run_one(
         "scale_idx": scale_idx,
         "tile_size_px": tile_size,
         "model": snapshot_params(VARIANT, params),
-        "meaningful_threshold": MEANINGFUL_THRESHOLDS[target_col],
+        "meaningful_threshold": _meaningful_threshold(target_col, scale_idx),
     }
     cfg_hash = _config_hash(snapshot)
     snapshot["config_hash"] = cfg_hash
@@ -116,7 +132,7 @@ def run_one(
     # monkeypatch in the calling module's namespace.
     import src.modeling.evaluate as _ev
     orig_per_fold_metrics = _ev.per_fold_metrics
-    mt = MEANINGFUL_THRESHOLDS[target_col]
+    mt = _meaningful_threshold(target_col, scale_idx)
 
     def _patched(y_true, y_pred, *, held_out_obs_ids, meaningful_threshold=mt):
         return orig_per_fold_metrics(y_true, y_pred, held_out_obs_ids=held_out_obs_ids,
@@ -203,7 +219,9 @@ def main() -> int:
     args = ap.parse_args()
 
     for t in args.targets:
-        if t not in MEANINGFUL_THRESHOLDS:
+        try:
+            _meaningful_threshold(t, args.scales[0])
+        except ValueError:
             raise SystemExit(f"unknown target_col: {t!r}")
 
     params = LGBMParams(

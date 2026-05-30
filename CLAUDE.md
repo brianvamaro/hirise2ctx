@@ -292,11 +292,23 @@ dominated by near-zero tiles).
 **Validation against THEMIS.** Fetch the THEMIS rock-abundance / bedrock map (~100 m/px) and
 compare predicted abundance where footprints overlap, as an independent coarse-scale check.
 
-**Compositional analysis (instructor's extra goal).** After a rock-abundance / binary boulder-rich
-vs boulder-poor map exists, test whether thermal or CRISM spectra differ significantly between
-boulder-rich areas and their surroundings — a proxy for whether boulders are locally sourced vs
-transported. Caveat: dust-laden surfaces may suppress compositional signal. (A simpler fallback is
-color differences within detected boulders in HiRISE itself.)
+**Compositional analysis (instructor's extra goal — updated 2026-05-30).** After a
+rock-abundance / binary boulder-rich vs boulder-poor map exists, determine whether boulders
+are locally sourced or transported by testing whether the **spectral signatures of
+boulder-rich areas differ from their surroundings**, using **the three HiRISE bands**
+(BLUE-GREEN, RED, NEAR-IR; [Delamere et al. 2010, *Icarus*](https://doi.org/10.1016/j.icarus.2009.03.012)).
+*Originally planned to use CRISM; switched to HiRISE bands 2026-05-30.*
+
+**Limitation:** the signal may be affected by dust. Two cases to disentangle:
+1. Dust uniformly obscures any compositional signal → spectra look similar regardless of
+   underlying composition.
+2. The detected spectral difference itself comes from *differential dust presence* between
+   boulder areas and surroundings — in which case it would indicate the **relative age of
+   the boulder deposit** (older deposits accumulate more dust), not a compositional
+   distinction.
+
+So a finding of "boulders differ from surroundings" requires care to attribute to
+composition vs dust loading.
 
 ---
 

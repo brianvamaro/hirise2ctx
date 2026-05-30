@@ -1,6 +1,14 @@
 # PLAN — Improving the HiRISE→CTX rock-abundance model (v2)
 
-**Status:** planned 2026-05-29 (approved). Follows the vClaire v2 modeling A/B
+**Status (as of 2026-05-30): SHIPPED & HISTORICAL.** This document captures Phases A,
+B, C as planned 2026-05-29.  All three were executed; see results below + in
+[`docs/modeling_results.md`](docs/modeling_results.md) §10-11.  **Forward-looking
+modeling work has migrated to [`PROMOTION_QUEUE.md`](PROMOTION_QUEUE.md)** (the
+"Problem catalog & priority" framework + the Stage 6 docket).  Read this file only
+for historical context on how Phase A/B/C were designed; for what to do next, read
+PROMOTION_QUEUE.md.
+
+Follows the vClaire v2 modeling A/B
 (commit `c8d68cd`, [`docs/modeling_results.md`](docs/modeling_results.md) §9).
 Mirrored in the session plan file; this is the in-repo, ROADMAP-indexed copy.
 

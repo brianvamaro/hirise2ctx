@@ -485,9 +485,11 @@ remaining cheap test is **experiment 3** — a CNN with a properly
 shaped loss is the only remaining way to falsify "the 52 hand-crafted
 features have already extracted what 5 m / pixel CTX texture can
 discriminate." The likely long-term unlock has shifted from "more
-HiRISE images" to **complementary non-texture signal** — thermal /
-spectral channels (THEMIS, CRISM) and coarser-than-tile spatial
-context.
+HiRISE images" to **complementary non-texture signal** — thermal
+channels (THEMIS rock-abundance map), HiRISE 3-band spectra
+([Delamere et al. 2010](https://doi.org/10.1016/j.icarus.2009.03.012))
+for the compositional study (originally CRISM; switched 2026-05-30),
+and coarser-than-tile spatial context.
 
 ---
 
@@ -1166,26 +1168,78 @@ in [notebook 12 §7](../notebooks/12_compression_diagnostic.ipynb):
 
 1. **H1 (metric)**: cross-image mean AUC under-represents per-image performance. *Real
    contributor; addressed by reporting top-K lift, PR-AUC, per-image distributions.*
-2. **H2 (target)**: `fractional_area` is pixel-aliasing-noise-dominated below ~0.005.
+2. **H2 (target)**: `fractional_area` is pixel-aliasing-noise-dominated below ~0.005;
    `boulder_count` is alias-robust. *Most likely high-leverage hypothesis; implemented this
    session.*
 3. **H3 (per-image heterogeneity)**: per-image AUC is bimodal because `shadow_fraction`
-   means different things at different illumination geometries / surface units. *Documented
-   as a Stage-4c future addition (4 per-image columns from `.LBL`); deferred.*
+   means different things at different illumination geometries / surface units. **Documented
+   as Stage 6b — CTX-source illumination per-tile features (the proper H3-feature-quality
+   test). HiRISE LBL angles ruled out as a model feature 2026-05-29 (CTX-only inference
+   constraint).** See [`PROMOTION_QUEUE.md`](../PROMOTION_QUEUE.md).
 4. **H4 (multiplicative hurdle)**: `two_stage`'s `P × E[mag]` assumes independence the data
    doesn't support. *Plausible; test H2 first.*
 5. **H5 (5 m/px texture floor)**: §9.4's within ≈ LOIO finding is real and binds at the
-   limit. *Eventually binds; unlock is outside CTX (THEMIS, HiRISE-decimated, spatial
-   priors).*
+   limit. *Eventually binds; unlock is outside CTX (THEMIS rock abundance, HiRISE-decimated,
+   spatial priors).*
 
 ### 11.6 What's implemented this session
 
 - **H1**: richer metrics in [`src/modeling/evaluate.py`](../src/modeling/evaluate.py) — PR-AUC,
   normalized lift, precision@k, recall@k, per-image distribution stats.
-- **H2**: new dev sweep [`scripts/probes/_sweep_target_reformulation.py`](../scripts/probes/_sweep_target_reformulation.py)
+- **H2**: dev sweep [`scripts/probes/_sweep_target_reformulation.py`](../scripts/probes/_sweep_target_reformulation.py)
   cross-tests `lightgbm_two_stage_balanced` × {`fractional_area`, `log_fractional_area`,
-  `log_boulder_count`} × {S=32, S=64} on the within-image scheme.
-- **H3**: documented in §11.5 + notebook 12 §8 with a concrete pre-mortem (the 4-column
-  per-image feature add); not implemented.
+  `log_boulder_count`, `boulder_area`, `log_boulder_area`} × {S=32, S=64} on the within-image
+  scheme.  **Follow-up 2026-05-30**: `boulder_area` and `log_boulder_area` get **no operational
+  gain** vs `fractional_area` (PR-AUC 0.526 vs 0.531 vs 0.525); the +22 % PR-AUC win from
+  `boulder_count` is *specific to count of distinct detection events*, not log-scale or area.
+  Likely mechanism: CTX texture features respond to *count* of texture events more than to
+  *total area*.  Implication for THEMIS: post-hoc area conversion via
+  `predicted_count × mean_boulder_area_per_boulder / tile_area` plus the population-scaling
+  required for THEMIS vs BoulderNet rock-size populations.
+- **H3**: documented as Stage 6b in [`PROMOTION_QUEUE.md`](../PROMOTION_QUEUE.md) (CTX-source
+  illumination per-tile features via Murray Lab SeamMap + PDS CUMINDEX); the HiRISE LBL angles
+  side is ruled out as a model feature (CTX-only inference) but kept for diagnostic analysis
+  in [notebook 13](../notebooks/13_per_image_heterogeneity.ipynb) §4.
 
 Results of the H1+H2 sweep are reported in [notebook 12 §9](../notebooks/12_compression_diagnostic.ipynb).
+
+### 11.7 Per-image heterogeneity (notebook 13) — H3 deep dive, 2026-05-29 night
+
+[`notebook 13`](../notebooks/13_per_image_heterogeneity.ipynb) catalogues which v2 images
+work and which don't.  Headline findings:
+
+- **HiRISE LBL angles do not predict per-image performance** (n = 37, all `p > 0.10`).
+  The label-quality H3 reading is weak.  See [notebook 13](../notebooks/13_per_image_heterogeneity.ipynb)
+  §4.
+- **Three distinct failure modes** observed: (1) **anti-signal** (~10 % of images, AUC < 0.45,
+  ESP_054000_2255: top-1 % predicted = 0 % boulder-rich at 18.3 % base rate); (2)
+  **rare-positive miss** (base rate < 0.02, lift = 0); (3) **presence/magnitude split** (high
+  presence AUC, low Spearman — the dataset-level compression failure in per-image form).
+- **Per-image distribution is bimodal**: median AUC 0.61 / max 0.91 / min 0.40, σ 0.12.  The
+  cross-image mean buries strong individual-image performance.
+- **Each HiRISE footprint is covered by a mean of 24 CTX source images** (range 4–46) per
+  the Murray Lab SeamMap.  So "CTX-source illumination" is naturally a **per-tile** feature,
+  not per-image (Stage 6b implementation note).
+- The Murray Lab CTX mosaic paper ([Dickson 2024, *Earth & Space Science*](https://doi.org/10.1029/2024EA003555))
+  documents that **seam artefacts manifest as disparate brightness/contrast and surface
+  texture on opposite sides of seamlines**, and seasonal variation in illumination compounds
+  this.  This is direct evidence supporting H3-feature-quality plausibility — though it also
+  flags **mosaic seam features** (Stage 6e, new on 2026-05-30 docket) as a parallel candidate.
+
+### 11.8 Forward-looking docket
+
+For new candidates and untested hypotheses, see
+[`PROMOTION_QUEUE.md`](../PROMOTION_QUEUE.md):
+
+- **Part A (Pipeline tweaks, P1–P5)**: dev-validated changes awaiting full-v2 promotion
+  (`balanced`, `boulder_count`, metric reframe, binary threshold, classifier calibration).
+- **Part B (Stage 6 — model improvement / feature augmentation)**:
+  - **Stage 6a** spatial-context neighbour features
+  - **Stage 6b** CTX-source illumination angles
+  - **Stage 6c** image-level pre-classifier (placeholder)
+  - **Stage 6d** multi-scale features (new 2026-05-30)
+  - **Stage 6e** mosaic-seam features (new 2026-05-30; backed by Dickson 2024)
+  - **Stage 6f** Zero-Inflated Tweedie boosted trees (new 2026-05-30; [Chen et al. 2024](https://arxiv.org/abs/2406.16206))
+
+Each Stage 6 item is **untested** — the priority order is "bank the ✓ wins (P1+P2+P3+P4),
+then place bets on ?s (6a, 6b, 6d, 6e, 6f), then fallback if needed (6c)".
