@@ -141,6 +141,20 @@ way somewhere on those images.
   `std_ctx_incidence`, `dominant_source_fraction`) instead of as per-tile model
   inputs. The "use as gate, not as feature" framing matches the per-image
   bimodality observed. See Stage 6c entry below for updated plan.
+- **Stage 6c outcome** (2026-05-31 late): ◐ DEV-PARTIAL — **strict FAIL across all
+  combos**, **soft PASS** with the v1 ridge gate giving +0.056 pooled-global
+  PR-AUC under Strategy B (down-weighting). Two passes ran: v1 (3 features × 3
+  models) and v2 (6 features × 5 models × 4 bad-image cutoffs). No (gate, cutoff,
+  K) reached PR-AUC ≥ 0.65 with ≥ 70 % tiles kept. Gate ROC-AUC peaks at 0.606
+  (the simple `mean_n_sources > median` rule); LightGBM and L1 logreg
+  underperform L2 logreg, consistent with n=38 limiting non-linear/sparse
+  models. Per-fold PR-AUC is rank-invariant within a held-out image, so
+  Strategies B/C only move pooled-global metrics, not the per-fold mean. **Net
+  result for Problem 3**: mechanism identified and quantified; closing the
+  residual gap likely needs more LOIO images or HiRISE-side priors. See
+  [`docs/modeling_results.md` §14](docs/modeling_results.md), probes
+  [`scripts/probes/_stage6c_gate.md`](scripts/probes/_stage6c_gate.md) and
+  [`scripts/probes/_stage6c_gate_v2.md`](scripts/probes/_stage6c_gate_v2.md).
 
 ### Problem 4 — No surrounding spatial context (Brian's 2026-05-30 flag)
 Every tile is treated as independent. Per-tile features summarise only what's inside the
@@ -725,7 +739,22 @@ allows.
 
 ---
 
-## Stage 6c — Image-level anti-signal gate (priority bumped 2026-05-31 after Stage 6b finding)
+## Stage 6c — Image-level anti-signal gate (◐ DEV-PARTIAL after 2026-05-31)
+
+**Status update 2026-05-31 late**: ran v1 (3 features × 3 models) and v2 (6 features ×
+5 models × 4 bad-image cutoffs); 0 / 20 combos clear the strict acceptance bar
+(retained PR-AUC ≥ 0.65 AND tile_kept_frac ≥ 70 % AND lift ≥ +0.10
+simultaneously). Best soft result: **v1 ridge gate Strategy B (down-weighting in
+pooled-global)** = +0.056 PR-AUC vs 0.609 baseline (37,315 tiles, no exclusion).
+Per-fold PR-AUC is rank-invariant within a held-out image, so Strategies B and C
+move only the pooled-global metric — not the per-fold mean targeted by the
+strict criterion. Gate ROC-AUC tops out at 0.606 (simple
+`mean_n_sources > median` rule). Pushing harder did not help. See
+[`docs/modeling_results.md` §14](docs/modeling_results.md). Stage 6c stays
+`◐ DEV-PARTIAL` on the docket as a documented procedure; the breakthrough framing
+is falsified.
+
+*Original plan retained below for reference.*
 
 *Promoted from "placeholder" to "next bet" after the Stage 6b H3 result empirically
 validated the mechanism. The Stage 6b sweep already shows the predictor features work

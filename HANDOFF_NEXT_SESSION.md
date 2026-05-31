@@ -1,6 +1,6 @@
 # Handoff prompt — next session
 
-**Last updated 2026-05-31 after Stage 6b full-v2 LOIO sweep + H3 mechanism check.**
+**Last updated 2026-05-31 (late) after Stage 6c full evaluation (v1 + v2 push).**
 
 Working dir: `c:\Users\brian\Documents\PhD\HiRiseToCTXBoulders\hirise2ctx`.
 Conda: `C:\Users\brian\anaconda3\Scripts\conda.exe run -n geospatial python …` (never the
@@ -8,100 +8,58 @@ env's `python.exe` directly — see memory note [[conda_location]]).
 
 ## Read in this order before starting
 
-1. **Memory** `project_state_2026-05-31.md` (CURRENT) — today's outcome + Stage 6c
-   plan in one place.
-2. **[`docs/modeling_results.md`](docs/modeling_results.md) §13** — full Stage 6b
-   writeup (table, H3 falsification, per-image bimodality, decision).
-3. **[`PROMOTION_QUEUE.md`](PROMOTION_QUEUE.md)** — Problem 3 status (H3 falsified +
-   Stage 6e validated); Stage 6c entry (now the prioritised next bet with concrete
-   features + acceptance criteria); Stage 6b moved to ◐ DEV-PARTIAL with full result.
-4. **[`scripts/probes/_diag_stage6b_h3_check.md`](scripts/probes/_diag_stage6b_h3_check.md)**
-   — H3 correlation table + per-image deltas (the table of significant correlations
-   is the substantive finding).
+1. **Memory** `project_state_2026-05-31-late.md` (CURRENT) — Stage 6c outcome
+   + the two remaining docket paths.
+2. **[`docs/modeling_results.md`](docs/modeling_results.md) §14** — Stage 6c
+   writeup (strict-FAIL evidence, soft-PASS deliverable, structural ceiling
+   argument).
+3. **[`PROMOTION_QUEUE.md`](PROMOTION_QUEUE.md)** — Problem 3 status now closed
+   as "mechanism identified, residual gap needs more LOIO images or HiRISE
+   priors"; Stage 6c entry marked ◐ DEV-PARTIAL.
+4. **[`scripts/probes/_stage6c_gate.md`](scripts/probes/_stage6c_gate.md)** +
+   **[`_stage6c_gate_v2.md`](scripts/probes/_stage6c_gate_v2.md)** — full
+   per-gate / per-strategy tables.
 
 ## Where we are
 
-**Stage 6b is implemented end-to-end and dev-validated as ◐ DEV-PARTIAL.** Strict
-criteria FAIL on full-v2 LOIO (PR-AUC Δ +0.017, need +0.03; Spearman Δ +0.008,
-need +0.05). BUT the **mechanism check on n=38 settled both H3 and Stage 6e**:
+**Stage 6c is settled as ◐ DEV-PARTIAL.** Two passes ran end-to-end:
 
-- **H3 (CTX-source illumination angle) is FALSIFIED**: `mean_ctx_incidence` ↔
-  per-image AUC ρ = −0.213 (p > 0.05). Not a driver.
-- **Stage 6e mechanism (CTX-source heterogeneity / mosaic stitching) is
-  VALIDATED**: `mean_n_sources` ↔ Spearman ρ = **−0.405 (p = 0.012)**;
-  `std_ctx_incidence` ↔ PR-AUC = **−0.370 (p = 0.022)**;
-  `dominant_source_frac_mean` ↔ Spearman ρ = **+0.394 (p = 0.014)**.
+- **v1** (3 features × 3 models): rule_n_sources_gt_median is the best gate
+  (ROC-AUC 0.606); ridge_then_logistic gives the best pooled-global Strategy B
+  delivering **+0.056 PR-AUC** (no tiles dropped).
+- **v2** (6 features × 5 models × 4 bad-image cutoffs = 20 combos): LightGBM
+  and L1 logreg underperform L2 logreg, consistent with n=38 limiting
+  non-linear/sparse models. **0 / 20 combos clear the strict bar**.
 
-**Per-image bimodality is the actionable insight**: the two canonical anti-signal
-images (ESP_054000_2255, ESP_064510_2260) BOTH improve substantially (ΔPR-AUC
-+0.055 and +0.207 respectively); but other images regress (ESP_055690_2200
-ΔSpearman −0.780). Net flat on average. Using the features as per-tile inputs leaks
-the signal both helpfully and harmfully.
+Strict acceptance (retained PR-AUC ≥ 0.65 AND tile_kept_frac ≥ 70 % AND lift
+≥ +0.10) **cannot be satisfied** — the bad-image set carries disproportionately
+many tiles, and per-fold PR-AUC is rank-invariant within a held-out image (a
+mid-implementation realisation that wasn't in the spec) so Strategies B and C
+only move the *pooled-global* metric, not the per-fold mean targeted by the
+strict criterion.
 
-**The data points to Stage 6c (per-image anti-signal gate)** as the next bet —
-use the validated features as inputs to an *image-level* classifier, not as per-tile
-model inputs. Predictor table is already in `dataset_v2/features_ctx_illum/`; the
-per-image baseline AUC training labels are in
-`models/_sweep_stage6b/20260531T020308Z/summary.parquet`.
+**Problem 3 (per-image anti-signal) status**: mechanism quantified, residual
+gap not closeable from CTX provenance alone at this dataset scale. Stage 6e
+(distance-to-seam, the one remaining unimplemented per-tile feature) is low
+priority — the Stage 6b bimodality pattern likely persists for any per-tile
+SeamMap use.
 
 ## Goal of this session (Brian to decide at start)
 
-**Recommended path: Stage 6c — anti-signal image gate.** Concrete plan +
-acceptance in [PROMOTION_QUEUE.md "Stage 6c"](PROMOTION_QUEUE.md). Three
-sub-options to discuss:
+Two paths remain on offer (Stage 6c is closed; Stage 6a/6b moved to Banked-but-
+DEV-PARTIAL):
 
-- **A. Stage 6c — anti-signal gate (Recommended)**: ~1 day. Implement and dev-test a
-  per-image gate using the now-validated features. Strict criterion: gated PR-AUC on
-  retained "good" images >= 0.65 mean (vs 0.54 full-set baseline) AND retained-tile
-  fraction >= 70 % AND gated normalised lift >= +0.10 over un-gated baseline on
-  retained set. Brian-gated for the full-v2 dev sweep.
+- **A. Bank wins — P1+P2 full-v2 promotion + P3+P4 doc reframe (Recommended).**
+  ~2-3 hr total. Bank the validated +22 % PR-AUC dev gain at full v2; promote
+  PR-AUC + lift@top-K as headline metrics. Brian-gated full-v2 sweeps.
+- **B. Pivot to Stage 7 — compositional HiRISE 3-band feasibility test.**
+  1-2 days. [`PLAN_Compositional.md`](PLAN_Compositional.md) §7.0. De-risks a
+  separate research thread that's not bound by the 5 m/px CTX texture floor.
 
-- **B. Bank wins — P1+P2 full-v2 promotion + P3+P4 doc reframe**: ~2-3 hr total.
-  Bank the validated +22 % PR-AUC dev gain at full v2; promote PR-AUC + lift@top-K
-  as headline metrics. Defers Stage 6c. Useful if you want the deliverable
-  numbers anchored before the next research bet.
+## Path A detail — P1+P2 full-v2 + P3+P4 reframe
 
-- **C. Pivot to Stage 7 — compositional HiRISE 3-band feasibility test**: 1-2 days.
-  [`PLAN_Compositional.md`](PLAN_Compositional.md) §7.0. De-risks a separate
-  research thread that's not bound by the 5 m/px CTX texture floor.
-
-## Before doing anything
-
-**Working tree status (start-of-session):** clean. Last commit will be (when
-this session commits):
-
-- HEAD (this session): Stage 6b implementation + sweep + H3 finding + doc updates
-
-**AskUserQuestion before doing**: full-v2 sweeps (Brian-gated; expensive), `git
-commit`, destructive operations on cached artifacts, downloading new external data.
-
-## Path A detail — Stage 6c (anti-signal gate)
-
-Full spec in [`PROMOTION_QUEUE.md`](PROMOTION_QUEUE.md) "Stage 6c — anti-signal
-image gate". Implementation outline:
-
-1. Build a per-image predictor table from
-   `dataset_v2/features_ctx_illum/*.parquet`: for each ObsId, aggregate at S=64 →
-   `mean_n_sources`, `std_ctx_incidence`, `mean_dominant_source_fraction`. Total:
-   38 rows × 3+ features.
-2. Per-image baseline AUC labels: read
-   `models/_sweep_stage6b/20260531T020308Z/summary.parquet`, filter to
-   `scheme=loio_nfold`, `scale_idx=3`, take per-fold (= per-held-out-image) `pr_auc`,
-   `spearman_rho`, `presence_auc`. Three labels to test.
-3. Train + cross-validate a small classifier/regressor (logreg or LightGBM):
-   leave-one-image-out, predict each label. Report cross-validated ROC-AUC + threshold
-   sweep.
-4. Build the gate strategies (see PROMOTION_QUEUE.md "Gate strategies" A/B/C):
-   headline exclusion, prediction down-weighting, per-image normalisation. Test on
-   the existing LOIO sweep summary.
-5. Acceptance check + writeup. AskUserQuestion before any expensive sweep.
-
-Cost: ~1 day. The features and labels already exist on disk; the gate model is small
-(38 rows, 3 features). The expensive part is interpreting + documenting the result.
-
-## Path B detail — P1+P2 full-v2 + P3+P4 reframe
-
-Per the original handoff:
+Unchanged from prior handoff. P1 (presence-head fix) + P2 (boulder_count
+target) are validated +22 % PR-AUC on dev; need full-v2 LOIO sweep to bank.
 
 ```powershell
 $conda = "C:\Users\brian\anaconda3\Scripts\conda.exe"
@@ -117,42 +75,62 @@ $conda = "C:\Users\brian\anaconda3\Scripts\conda.exe"
     --dataset-dir dataset_v2
 ```
 
-P3 / P4 are doc-only — update [`docs/modeling_results.md`](docs/modeling_results.md)
-§9 headline metrics + change default binary in
-[`src/modeling/binary_target.py`](src/modeling/binary_target.py) from `bc_ge_1` to
-`fa_gt_1e-2`. **AskUserQuestion before each expensive sweep.**
+P3 / P4 are doc-only — update
+[`docs/modeling_results.md`](docs/modeling_results.md) §9 headline metrics +
+change default binary in
+[`src/modeling/binary_target.py`](src/modeling/binary_target.py) from `bc_ge_1`
+to `fa_gt_1e-2`. **AskUserQuestion before each expensive sweep.**
 
-## Path C detail — Stage 7.0 feasibility
+## Path B detail — Stage 7.0 feasibility
 
-[`PLAN_Compositional.md`](PLAN_Compositional.md) §7.0 unchanged from previous
-handoff. 1-2 day feasibility test on 2-3 images using actual BoulderNet labels
-(not model predictions) to test whether HiRISE 3-band spectra of boulder-rich
-areas differ from surroundings ([Delamere 2010](https://doi.org/10.1016/j.icarus.2009.03.012)).
+[`PLAN_Compositional.md`](PLAN_Compositional.md) §7.0 unchanged. 1-2 day
+feasibility test on 2-3 images using actual BoulderNet labels (not model
+predictions) to test whether HiRISE 3-band spectra of boulder-rich areas differ
+from surroundings ([Delamere 2010](https://doi.org/10.1016/j.icarus.2009.03.012)).
+
+## Stage 6c artefacts (reference, no re-run needed)
+
+- Probe v1: [`scripts/probes/_stage6c_gate.py`](scripts/probes/_stage6c_gate.py)
+  + [`_stage6c_gate.md`](scripts/probes/_stage6c_gate.md) (tracked)
+- Probe v2: [`scripts/probes/_stage6c_gate_v2.py`](scripts/probes/_stage6c_gate_v2.py)
+  + [`_stage6c_gate_v2.md`](scripts/probes/_stage6c_gate_v2.md) (tracked)
+- Predictor table: `cache/stage6c/predictor_table.parquet` (gitignored)
+- LOIO CV out-of-fold gate predictions: `cache/stage6c/gate_cv.parquet`
+- v2 summary: `cache/stage6c/v2_gate_summary.parquet`
+
+Both probes complete in ~30 s on the cached inputs. Re-run with:
+
+```powershell
+$conda = "C:\Users\brian\anaconda3\Scripts\conda.exe"
+& $conda run -n geospatial python scripts/probes/_stage6c_gate.py
+& $conda run -n geospatial python scripts/probes/_stage6c_gate_v2.py
+```
 
 ## Critical gotchas (carry forward)
 
-- **Inference-time scope**: model features must be derivable from CTX alone. HiRISE
-  LBL angles are diagnostic-only. See PROMOTION_QUEUE.md "Inference-time scope". The
-  Stage 6b CTX-source features ARE inference-compatible (SeamMap is public).
-- **`conda run python -c` rejects multiline strings** — write probes to files under
-  `scripts/probes/_*.py`. Hit again 2026-05-31 with the SeamMap-inspect probe.
+- **Inference-time scope**: model features must be derivable from CTX alone.
+  HiRISE LBL angles are diagnostic-only. See PROMOTION_QUEUE.md "Inference-time
+  scope". The Stage 6b CTX-source features ARE inference-compatible (SeamMap is
+  public).
+- **`conda run python -c` rejects multiline strings** — write probes to files
+  under `scripts/probes/_*.py`.
 - **CUMINDEX is downloaded but unused**: `cache/pds_ctx_cumindex.{lbl,tab}`
-  (91 MB total). The Murray Lab SeamMap embeds illumination angles directly; CUMINDEX
-  fall-back was unnecessary. Kept on disk in case Stage 6e / Stage 6c needs it.
-- **`models/*` and `dataset_v2*/*` are gitignored** — sweep artifacts and augmented
-  feature parquets don't persist across machines. The readable tables in
-  `scripts/probes/_diag_*.md` and the writeups in `docs/modeling_results.md` are the
-  persistent record.
-- **230 pytest pass baseline** (was 220 + 10 new for Stage 6b). Run `pytest tests/ -q`
-  before any promotion.
-- **AskUserQuestion before**: full-v2 sweeps (Brian-gated; expensive), `git commit`,
-  destructive operations on cached artifacts.
-- **Stage 6b augmented features + repackaged dirs already exist** on disk:
-  `dataset_v2/features_ctx_illum/` (38 parquets, ~3.6 M tiles), `dataset_v2_dev/`
-  equivalents, plus packaged versions for both LOIO and within_image schemes. No
-  re-augmentation needed for Stage 6c — it reads the same parquets.
+  (91 MB total). The Murray Lab SeamMap embeds illumination angles directly.
+  Kept on disk in case Stage 6e seam-distance is ever taken.
+- **`models/*` and `dataset_v2*/*` are gitignored** — sweep artefacts and
+  augmented feature parquets don't persist across machines. Persistent record
+  lives in `scripts/probes/_diag_*.md`, `scripts/probes/_stage6c_*.md`, and
+  `docs/modeling_results.md`.
+- **230 pytest pass baseline.** Run `pytest tests/ -q` before any promotion.
+- **Stage 6c-specific realisation**: per-fold PR-AUC is rank-invariant within a
+  held-out image, so Strategies B (down-weighting) and C (normalisation) only
+  move pooled-global metrics, not the per-fold mean targeted by Strategy A's
+  strict acceptance. If future per-image gate work is considered, the
+  acceptance bar should be set on pooled-global, not per-fold mean.
+- **AskUserQuestion before**: full-v2 sweeps (Brian-gated; expensive), `git
+  commit`, destructive operations on cached artefacts.
 
-## What we know vs what we suspect (honest status after Stage 6b)
+## What we know vs what we suspect (after Stage 6c)
 
 Per [`PROMOTION_QUEUE.md`](PROMOTION_QUEUE.md) Problem catalog:
 
@@ -160,16 +138,16 @@ Per [`PROMOTION_QUEUE.md`](PROMOTION_QUEUE.md) Problem catalog:
   dev +22 % PR-AUC. Awaiting full-v2 promotion.
 - ◐ **Problem 2 (compression)**: P1 fixes presence-head only; magnitude-head
   shrinkage remains. Ship as ranker, not calibrated regressor.
-- ◐ **Problem 3 (per-image anti-signal)**: **mechanism narrowed by Stage 6b.** H3
-  (illumination) FALSIFIED. Stage 6e mechanism (CTX heterogeneity) VALIDATED.
-  Stage 6c is the data-pointed-to fix.
+- ◐ **Problem 3 (per-image anti-signal)**: mechanism identified (Stage 6b H3
+  check) and quantified (Stage 6c). Residual gap not closeable from CTX
+  provenance at n=38 — needs more LOIO images or HiRISE-side priors.
 - ◐ **Problem 4 (no surrounding spatial context)**: Stage 6a DEV-PARTIAL —
   5 × 5 @ S=32 PASSES strict criteria. Full-v2 promotion deferred.
 - ✓ **Problem 5 (metric framing)**: P3+P4 doc reframes (queued).
 - ✗ **Problem 6 (5 m/px CTX texture floor)**: unresolved. Stage 6a + Stage 6b
-  both produced small lifts in operational metrics, supporting the texture-floor
-  reading; the per-tile signal is *near a ceiling* that Stage 6c (gating, not
-  feature addition) is a different angle on.
+  + Stage 6c each produced small lifts — collectively supporting the
+  texture-floor reading. Per-tile signal is *near a ceiling* that further
+  feature engineering on CTX alone is unlikely to break.
 
 ## How this session should report progress
 
@@ -177,8 +155,8 @@ Same as previous handoff:
 1. **`PROMOTION_QUEUE.md`**: move passed items to "Promoted"; failed items to
    "Tried, didn't work".
 2. **`DECISIONS.md`**: one entry per promoted item with full-v2 numbers.
-3. **`docs/modeling_results.md`**: §14 for Stage 6c result (or §9 update if P3/P4
-   land).
+3. **`docs/modeling_results.md`**: §9 update if P3/P4 land; §15 if a new probe
+   ships.
 4. **Memory**: `project_state_2026-XX-XX.md` with day's outcomes; mark previous
    superseded.
 5. **`HANDOFF_NEXT_SESSION.md`**: rewrite priority order based on what landed.

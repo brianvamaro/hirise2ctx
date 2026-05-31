@@ -1443,4 +1443,118 @@ the other-image regressions. Full Stage 6c plan in
 
 Stage 6b stays as `◐ DEV-PARTIAL` on the docket. The 7 augmented feature parquets in
 `dataset_v2/features_ctx_illum/` are kept on disk — they double as Stage 6c training
-inputs.
+inputs (see §14).
+
+---
+
+## 14. Stage 6c — Anti-signal image gate (2026-05-31 late)
+
+### 14.1 Hypothesis and setup
+
+Stage 6b validated three CTX-source-heterogeneity features as p < 0.05 predictors
+of per-image baseline reliability (§13.4). Using them as per-tile model inputs
+created bimodal lift (anti-signal images win, other images regress; net flat).
+Stage 6c moves the same features one level up: train an **image-level** classifier
+on the 38-image dataset whose per-image baseline LOIO PR-AUC is known, then apply
+at inference as a gate.
+
+Per-image predictor table (38 rows, S=64) is built by aggregating the Stage 6b
+parquets in `dataset_v2/features_ctx_illum/` and joining to per-fold metrics in
+`models/_sweep_stage6b/20260531T020308Z/summary.parquet` (baseline scheme).
+
+Two implementation passes:
+
+- **v1** (3 features): `mean_n_sources`, `std_ctx_incidence`,
+  `mean_dominant_source_fraction`. Models: L2 logreg, Ridge-then-logistic,
+  `mean_n_sources > median` rule. Probe:
+  [`scripts/probes/_stage6c_gate.py`](../scripts/probes/_stage6c_gate.py).
+- **v2** (6 features, "push harder"): adds `max_n_sources`,
+  `max_ctx_incidence_std`, `fraction_stitched_tiles`. Models: L2 + L1 logreg,
+  Ridge-then-logistic, LightGBM (max_depth=2, n_estimators=50), mean ensemble.
+  Bad-image cutoff swept over {0.45, 0.50, 0.55, 0.60}. Probe:
+  [`scripts/probes/_stage6c_gate_v2.py`](../scripts/probes/_stage6c_gate_v2.py).
+
+Acceptance criterion (strict, from
+[PROMOTION_QUEUE.md](../PROMOTION_QUEUE.md) "Stage 6c"):
+retained-image mean PR-AUC ≥ 0.65 AND retained-tile fraction ≥ 70 % AND
+retained-set normalised lift ≥ +0.10 over full-baseline (0.528).
+
+### 14.2 Strict acceptance: FAIL across all combinations
+
+| pass | gates × cutoffs tried | combinations passing all three strict criteria |
+|---|---:|---:|
+| v1 (3 features) | 3 × 1 | 0 |
+| v2 (6 features) | 5 × 4 | 0 |
+
+Best per-fold operating point under the 70 %-tile-retention constraint:
+
+| pass | gate | bad cutoff | K dropped | PR-AUC mean | tile_kept_frac | Δ lift | strict? |
+|---|---|---:|---:|---:|---:|---:|---|
+| v1 | rule_n_sources_gt_median | 0.55 | (50/50 split) | 0.667 | **0.643** | +0.120 | ✗ tile_frac |
+| v1 | ridge_then_logistic | 0.55 | 12 | 0.606 | 0.750 | +0.062 | ✗ PR-AUC + lift |
+| v2 | logreg_l1_C0.5 | 0.55 | 7 | 0.599 | 0.827 | +0.056 | ✗ PR-AUC + lift |
+| v2 | logreg_l2_C1 | 0.60 | 9 | 0.584 | 0.799 | +0.041 | ✗ PR-AUC + lift |
+
+The structural ceiling: bad images carry disproportionate tile counts, so dropping
+enough of them to lift mean PR-AUC to 0.65 costs more than 30 % of tiles every time.
+
+### 14.3 LOIO cross-validation: ROC-AUC ≈ 0.5–0.6, no model exceeds 0.61
+
+| gate model | features | ROC-AUC (binary, cutoff 0.55) |
+|---|---:|---:|
+| logreg L2 (v1) | 3 | 0.503 |
+| Ridge → logistic (v1) | 3 | 0.533 |
+| **rule: `mean_n_sources > median`** (v1) | 1 | **0.606** |
+| logreg L2 (v2) | 6 | 0.554 |
+| logreg L1 (v2) | 6 | 0.517 |
+| Ridge → logistic (v2) | 6 | 0.528 |
+| LightGBM d=2 (v2) | 6 | 0.485 |
+| ensemble mean (v2) | 6 | 0.497 |
+
+LightGBM and L1 logreg under-perform L2 logreg despite richer features —
+consistent with n=38 image-level training being too small for non-linear / sparse
+models. The single-feature median rule was the strongest, confirming the
+signal is a weak monotone effect not a complex interaction.
+
+### 14.4 Pooled-global Strategy B (down-weighting): clean +0.04–0.06 PR-AUC
+
+Per-fold PR-AUC is **rank-invariant** within a held-out image: multiplying
+predictions by a per-image constant `(1 − p_bad)` leaves the per-fold PR-AUC
+unchanged. Strategies B (down-weighting) and C (per-image normalisation)
+therefore only affect a **global pooled ranking** across all 38 folds' tiles
+(37,315 tiles, base rate 0.480) — that is the metric reported here.
+
+| gate | pooled PR-AUC baseline | + Strategy B | Δ |
+|---|---:|---:|---:|
+| v1 logreg | 0.609 | 0.645 | +0.037 |
+| **v1 ridge** | 0.609 | **0.665** | **+0.056** |
+| v1 simple rule | 0.609 | 0.644 | +0.035 |
+| v2 logreg_l2 | 0.609 | 0.650 | +0.041 |
+
+The **v1 ridge gate** wins. The +0.056 pooled-global lift is the deliverable: a
+documented procedure that uses Stage 6b features as a per-image confidence
+weight at inference time, with no data dropped.
+
+### 14.5 Decision: ◐ DEV-PARTIAL, mark Stage 6c falsified for the strict bar
+
+**Strict acceptance: FAIL.** The 38-image dataset, the +/-0.6 ROC-AUC ceiling of
+the gate predictor, and the tile-budget interaction together rule out the
+breakthrough framing of Stage 6c. Pushing harder on features, regularisation,
+ensembles, or the bad-image cutoff did not change the result.
+
+**Soft acceptance: PASS.** The Stage 6b H3-check finding holds at the operational
+level (univariate p < 0.05 on PR-AUC; CV ROC-AUC 0.60 on the simple rule;
++0.056 pooled-global PR-AUC under Strategy B). Stage 6c is a documented
+procedure with an empirically validated mechanism — not a breakthrough.
+
+**Implication for Problem 3 (per-image anti-signal):** the mechanism is
+identified and quantified, but cannot be fully corrected from CTX provenance
+alone at this dataset scale. Closing the residual gap likely needs either
+(a) more LOIO images, or (b) a different feature class (e.g. distance-to-seam
+from Stage 6e, or HiRISE-side priors).
+
+The Stage 6c probe artefacts (predictor table + LOIO CV predictions +
+markdown reports) are persisted at
+[`cache/stage6c/`](../cache/stage6c/) (parquet, gitignored) and
+[`scripts/probes/_stage6c_gate.md`](../scripts/probes/_stage6c_gate.md) +
+[`scripts/probes/_stage6c_gate_v2.md`](../scripts/probes/_stage6c_gate_v2.md) (tracked).
