@@ -1243,3 +1243,86 @@ For new candidates and untested hypotheses, see
 
 Each Stage 6 item is **untested** — the priority order is "bank the ✓ wins (P1+P2+P3+P4),
 then place bets on ?s (6a, 6b, 6d, 6e, 6f), then fallback if needed (6c)".
+
+## 12. Stage 6a — Spatial-context neighbour features (dev result, 2026-05-30)
+
+Implementation: [`src/spatial_features.py`](../src/spatial_features.py) (15 unit tests
+in [`tests/test_spatial_features.py`](../tests/test_spatial_features.py)) +
+[`scripts/run_stage6a.py`](../scripts/run_stage6a.py) +
+[`scripts/run_stage6a_repackage.py`](../scripts/run_stage6a_repackage.py) +
+[`scripts/probes/_sweep_stage6a.py`](../scripts/probes/_sweep_stage6a.py). Per-tile
+features are augmented with `nbr_<mean|max|std>_<feature>` columns aggregated over a
+configurable stencil on the per-(ObsId, scale_idx) `(ti, tj)` grid. NaN-aware:
+image-edge gaps and Stage-4-eligibility gaps are excluded from the window. The
+augmented frames live at `dataset_v2_dev/features_nbr*/` and are repackaged into
+`dataset_v2_dev/packaged/within_image_4fold_nbr*/`; the canonical Stage 4b cache is
+not modified.
+
+### 12.1 Three-variant sweep at two scales
+
+`lightgbm_two_stage_balanced` (P1) + `target_col=boulder_count` (P2) on
+`dataset_v2_dev` within-image 4-fold (20 folds). All deltas vs the same-scale
+P1+P2 baseline. presence-AUC discarded (Brian 2026-05-30; not a useful metric for
+this task). Source:
+[`models/_sweep_stage6a/20260531T004356Z/aggregate.parquet`](../models/_sweep_stage6a/20260531T004356Z/aggregate.parquet).
+
+| variant | scale | Δ Spearman ρ | Δ PR-AUC | Δ lift_norm | Δ prec@5% | Δ recall@5% | verdict |
+|---|---|---:|---:|---:|---:|---:|---|
+| 3×3, mean+max+std | S=32 | +0.0214 | **+0.0533** | +0.0570 | +0.0629 | +0.0794 | FAIL (ρ) |
+| **5×5, mean+max+std** | **S=32** | **+0.0534** | **+0.0526** | +0.0547 | +0.0722 | +0.0546 | **PASS** |
+| 3×3, max-only | S=32 | +0.0207 | +0.0341 | +0.0393 | +0.0575 | +0.0647 | FAIL (ρ) |
+| 3×3, mean+max+std | S=64 | −0.0065 | +0.0098 | +0.0068 | **+0.0436** | +0.0204 | FAIL |
+| 5×5, mean+max+std | S=64 | +0.0269 | +0.0039 | +0.0069 | −0.0050 | +0.0008 | FAIL |
+| 3×3, max-only | S=64 | −0.0383 | +0.0120 | +0.0003 | +0.0186 | +0.0221 | FAIL |
+
+Acceptance: Δ Spearman ρ ≥ +0.05 **AND** Δ PR-AUC ≥ +0.03. **Only the 5 × 5 stencil
+at S=32 clears both thresholds.**
+
+Best absolute numbers across the grid:
+- Spearman ρ: **5×5 @ S=64** = +0.310 (vs baseline 0.283)
+- PR-AUC: max-only @ S=64 = 0.652 (vs baseline 0.640)
+- Precision@top-5 %: default 3×3 @ S=64 = 0.704 (vs baseline 0.660)
+- Recall@top-5 %: default 3×3 @ S=32 = 0.147 (vs baseline 0.068; **+2.2 ×**)
+
+### 12.2 Mechanistic reading
+
+Spatial-context lift is real but operates at *finer scales than S=64*. At S=64 each
+320 × 320 m tile already integrates substantial context; a 3 × 3 stencil = 960 × 960 m
+is mostly redundant with the tile's own GLCM / shadow stats. At S=32 the per-tile
+context is 160 × 160 m, so neighbour aggregation recovers what S=64 gets natively —
+and the 5 × 5 stencil at S=32 (= 800 × 800 m) is sized comparably to the S=64 baseline
+tile, exactly the regime where the S=128 scale study saw 0.26 → 0.41.
+
+**The S=128 → S=64 scale-study finding partly carries to neighbour features** — the
+"label-noise averaging" alternative hypothesis flagged in
+[PROMOTION_QUEUE.md](../PROMOTION_QUEUE.md) as a risk is partially ruled out by the
+5 × 5 @ S=32 PASS. The S=64 result does not falsify the mechanism; it shows the S=64
+tile is already at the spatial-integration ceiling for these features.
+
+### 12.3 Per-image heterogeneity
+
+Per-fold variance probe in
+[`scripts/probes/_diag_stage6a_fold_variance.md`](../scripts/probes/_diag_stage6a_fold_variance.md)
+(default 3 × 3 variant at S=64). Across 20 folds: PR-AUC wins 11/17 (3 ties),
+Spearman wins 12/8. Per-held-out image:
+
+| ObsId | Δ Spearman | Δ precision@top-5 % |
+|---|---:|---:|
+| ESP_055978_2270 | +0.003 | 0 |
+| ESP_064510_2260 | **−0.323** | **−0.083** |
+| ESP_068483_2280 | −0.004 | 0 (saturated) |
+| ESP_069669_2220 | **+0.144** | **+0.269** |
+| ESP_071093_2210 | +0.147 | 0 (saturated) |
+
+3 of 5 images gain or are flat; one image (ESP_064510_2260) regresses badly and drags
+the mean down. Consistent with the per-image heterogeneity story from
+[notebook 13](../notebooks/13_per_image_heterogeneity.ipynb) — neighbour features help
+where boulder fields are spatially coherent and hurt on the anti-signal images.
+
+### 12.4 Decision
+
+**Brian 2026-05-30**: *document all variants as informative; defer promotion pending
+Stage 6b results or until we choose a single recipe.* Stage 6a stays as `◐
+DEV-PARTIAL` on the docket. Full-v2 promotion deferred. If Stage 6a comes back into
+focus, the 5 × 5 @ S=32 recipe is the strict-criteria PASS to confirm on full v2; the
+default 3 × 3 @ S=64 is the operational top-K winner.

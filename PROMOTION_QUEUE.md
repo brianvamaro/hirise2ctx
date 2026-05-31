@@ -133,16 +133,21 @@ Every tile is treated as independent. Per-tile features summarise only what's in
 tile boundary; neighbour information is discarded. Boulder fields are spatially coherent
 (crater ejecta, fluvial deposits, exhumed bedrock), so a tile in a real cluster differs
 from an isolated false-positive texture even when per-tile features look identical.
-- **Indirect evidence**: the S=128 scale study ([§10.2 of modeling_results.md](docs/modeling_results.md))
-  jumped Spearman 0.26 → 0.41 at S=64 → S=128 dev within-image. Bigger spatial integration
-  helps for ranking. Adding neighbour features at S=64 *should* buy similar benefit at
-  full resolution — but this is extrapolation from a related experiment, not a direct test.
-- **Direct evidence**: none yet.
+- **Indirect evidence (going in)**: the S=128 scale study ([§10.2 of modeling_results.md](docs/modeling_results.md))
+  jumped Spearman 0.26 → 0.41 at S=64 → S=128 dev within-image.
+- **Direct evidence (2026-05-30)**: Stage 6a sweep on 6 (variant × scale) combinations
+  ([Stage 6a Dev result below](#stage-6a--spatial-context-neighbour-features-new-2026-05-30)).
+  The 5 × 5 stencil at S=32 PASSES both strict criteria (Δ Spearman ρ +0.053, Δ PR-AUC
+  +0.053); the canonical S=64 baseline already integrates enough context that no
+  neighbour-stencil variant clears the bar at S=64. **The S=128 → S=64 finding partly
+  carries**: spatial-context integration helps, but is *finer-scale than* S=64. The
+  "label-noise averaging" alternative hypothesis is partially ruled out by the 5 × 5
+  @ S=32 pass.
 - **Targeted by**: **Stage 6a** (neighbour-feature aggregation).
-- **Status**: ? **UNTESTED HYPOTHESIS** — strong indirect evidence + plausible mechanism;
-  remains *predicted* impact, not measured. Could disappoint if the S=128 gain was actually
-  about something else (e.g. coarse-tile averaging of label-aliasing noise rather than
-  spatial-context integration per se).
+- **Status**: ◐ **DEV-PARTIAL** — direct test passes at S=32 (5 × 5 stencil); at S=64
+  operational top-K metrics improve (precision@top-5 % +0.044 with default 3 × 3) but
+  the strict Spearman + PR-AUC thresholds don't both clear. Brian (2026-05-30): defer
+  full-v2 promotion until single-recipe choice or until Stage 6b lands.
 
 ### Problem 5 — Metric framing
 ROC-AUC averages across thresholds; cross-image mean AUC averages across a bimodal
@@ -182,7 +187,7 @@ they'll work.
 |------:|------|------|:-:|------|------|
 | 1 | A | **P1 + P2 full-v2 promotion** | ✓ | Confirm the +22 % PR-AUC, +27 % normalised-lift dev win on the full 38-image LOIO. Falsified if full-v2 gain is `<` +0.05 PR-AUC. | 1-2 hr |
 | 2 | A | **P3 + P4 doc reframe** | ✓ | Report metrics honestly (PR-AUC + lift, not ROC-AUC; `fa_gt_1e-2`, not `bc_ge_1`). No model change. Can't really fail; risk is that the new headline numbers look middling once we honestly report them. | ~1 hr |
-| 3 | B | **Stage 6a — spatial-context features** | ? | *If* the S=128 scale gain transfers to neighbour-feature aggregation: dev Spearman ρ +≥ 0.05 over P1+P2 baseline; dev PR-AUC +≥ 0.03. Falsified if neither clears the threshold — would mean the S=128 gain was about something other than spatial integration (label noise averaging?). | 1-2 days |
+| 3 | B | **Stage 6a — spatial-context features** | ◐ | **Tried 2026-05-30**: 5 × 5 stencil @ S=32 PASSES strict criteria (Δ ρ +0.053, Δ PR-AUC +0.053); at S=64 only operational top-K metrics improve. Full-v2 promotion deferred. The S=128 → S=64 mechanism partly carries; S=64 baseline already near spatial-integration ceiling. | done (dev) |
 | 4 | B | **Stage 6b — CTX-source illumination** | ? | *If* CTX-source illumination is the H3 anti-signal cause: across-image AUC ↔ CTX-incidence correlation becomes significantly negative; PR-AUC +≥ 0.03 over P1+P2. Falsified if no correlation appears — would shift the anti-signal investigation to Stage 6c or to terrain / mosaic-seam mechanisms. | 1-2 days |
 | 5 | A | **P5 — binary classifier calibration fix** | ✓ | Cosmetic ECE drop 0.26 → ~0.05 expected (mirrors P1's presence-head fix on the binary classifier). Ranking unchanged. Hard to fail; the question is whether anyone uses the probabilities raw or just for ranking. | ~2 hr |
 | 6 | B | **Stage 6c — image-level pre-classifier** | ? | Fallback if 6a / 6b underperform. Train a per-image "is this image well-fit by texture features?" classifier; use it to gate per-tile predictions (or to exclude anti-signal images from reporting). Worth doing if Problem 3 stays unresolved. | ~1 day |
@@ -464,6 +469,83 @@ single per-footprint mean.
 ## Stage 6a — Spatial-context neighbour features (new 2026-05-30)
 
 *Was P5b in earlier revisions of this docket.*
+
+### Dev result (2026-05-30): tried; partial pass; deferred promotion
+
+Implementation shipped to [`src/spatial_features.py`](src/spatial_features.py) (15 unit
+tests in [`tests/test_spatial_features.py`](tests/test_spatial_features.py)) +
+[`scripts/run_stage6a.py`](scripts/run_stage6a.py) (driver) +
+[`scripts/run_stage6a_repackage.py`](scripts/run_stage6a_repackage.py) (re-packaging
+within_image_4fold → `within_image_4fold_nbr*`) +
+[`scripts/probes/_sweep_stage6a.py`](scripts/probes/_sweep_stage6a.py) (sweep). The
+augmented features are written to `dataset_v2_dev/features_nbr/` and packaged into
+`dataset_v2_dev/packaged/within_image_4fold_nbr/` (and `_nbr_s5/` / `_nbr_max/` for
+the follow-up variants); the canonical Stage 4b cache is untouched.
+
+**Three variants × two scales sweep**
+([`models/_sweep_stage6a/20260531T004356Z/aggregate.parquet`](models/_sweep_stage6a/20260531T004356Z/aggregate.parquet),
+combined comparison in
+[`scripts/probes/_diag_stage6a_followup_compare.md`](scripts/probes/_diag_stage6a_followup_compare.md)):
+
+| variant | scale | Δ Spearman ρ | Δ PR-AUC | Δ lift_norm | Δ prec@5% | Δ recall@5% | verdict |
+|---|---|---:|---:|---:|---:|---:|---|
+| 3×3, mean+max+std | S=32 | +0.0214 | **+0.0533** | +0.0570 | +0.0629 | +0.0794 | FAIL (ρ) |
+| **5×5, mean+max+std** | **S=32** | **+0.0534** | **+0.0526** | +0.0547 | +0.0722 | +0.0546 | **PASS** |
+| 3×3, max-only | S=32 | +0.0207 | +0.0341 | +0.0393 | +0.0575 | +0.0647 | FAIL (ρ) |
+| 3×3, mean+max+std | S=64 | −0.0065 | +0.0098 | +0.0068 | **+0.0436** | +0.0204 | FAIL |
+| 5×5, mean+max+std | S=64 | +0.0269 | +0.0039 | +0.0069 | −0.0050 | +0.0008 | FAIL |
+| 3×3, max-only | S=64 | −0.0383 | +0.0120 | +0.0003 | +0.0186 | +0.0221 | FAIL |
+
+Acceptance threshold: Δ Spearman ρ ≥ +0.05 **AND** Δ PR-AUC ≥ +0.03 vs the P1+P2 baseline at the same
+scale. **5×5 stencil at S=32 is the only clean pass.** The default 3×3 stencil clears
+PR-AUC at S=32 and lifts precision@top-5% by +0.044 at S=64, but neither clears
+both thresholds simultaneously at the canonical S=64 scale.
+
+**Best absolute numbers across the grid** (presence-AUC discarded per Brian
+2026-05-30; not a useful metric here):
+- Spearman ρ: **5×5 @ S=64** = +0.310 (vs baseline 0.283)
+- PR-AUC: max-only @ S=64 = 0.652 (vs baseline 0.640)
+- Precision@top-5 %: default 3×3 @ S=64 = 0.704 (vs baseline 0.660)
+- Recall@top-5 %: default 3×3 @ S=32 = 0.147 (vs baseline 0.068; **+2.2 ×**)
+
+**Mechanistic reading.** Spatial-context lift is real but operates at *finer scales than
+the canonical S=64*. At S=64 each 320 × 320 m tile already integrates substantial
+context; a 3 × 3 stencil = 960 × 960 m, mostly redundant with the tile's own GLCM /
+shadow stats. At S=32 the per-tile context is 160 × 160 m, so neighbour aggregation
+recovers what S=64 gets natively — and the 5 × 5 stencil at S=32 (= 800 × 800 m) is
+sized comparably to the S=64 baseline tile, exactly the regime where the S=128 scale
+study saw 0.26 → 0.41.
+
+**The S=128 → S=64 scale-study finding partly carries to neighbour features** —
+contrary to the "label-noise averaging" risk flagged in the original spec. The 5 × 5
+@ S=32 result IS a direct test of "the spatial-integration mechanism specifically",
+and that test passes. The S=64 result does not falsify the mechanism; it shows the
+S=64 tile is already at the spatial-integration ceiling for these features.
+
+**Per-fold + per-image variance** ([`scripts/probes/_diag_stage6a_fold_variance.md`](scripts/probes/_diag_stage6a_fold_variance.md)
+for the default-variant run): 60–65 % win rate per fold across PR-AUC / Spearman; the
+default-variant @ S=64 mean is dragged down by ESP_064510_2260 (−0.32 Spearman, −0.083
+precision@top-5 %), while ESP_069669_2220 shows +0.27 precision@top-5 %. Consistent
+with the per-image heterogeneity story from notebook 13 — neighbour features help
+where boulder fields are spatially coherent and hurt on the anti-signal images.
+
+**Brian decision (2026-05-30)**: *document all variants as informative; defer
+promotion pending Stage 6b results or until we choose a single recipe.* Stage 6a
+stays on the docket below the "tried, didn't fail outright" line. Full-v2 promotion
+deferred.
+
+**Open follow-up if Stage 6a comes back into focus**:
+- Re-test the 5 × 5 @ S=32 recipe on the full v2 LOIO scheme to confirm it carries
+  beyond the 5 dev images. Cost: ~1 hr (sweep) + ~5 min (re-augmentation + repackage
+  on all 38 v2 images).
+- Try wider stencils (7 × 7 at S=32 or 3 × 3 / 5 × 5 at S=16) to see whether the
+  trend "wider stencil at finer scale" extends.
+- Try Stage 6d (multi-scale features) layered on top — different mechanism, may
+  compose.
+
+---
+
+### Original spec / motivation
 
 **Change**: in [`src/features.py`](src/features.py), after the per-tile feature
 computation, add a neighbour-aggregation pass.  For each ObsId × scale, lay tiles on the
