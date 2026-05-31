@@ -107,26 +107,40 @@ zeros. **Two distinct compression sources** ([§2 of notebook 12](notebooks/12_c
   - A loss redesign (multi-output quantile, multi-task with calibration term) would
     attack it directly but is a bigger change; deferred.
 
-### Problem 3 — Per-image anti-signal (H3)
+### Problem 3 — Per-image anti-signal (H3 falsified; Stage 6e mechanism validated 2026-05-31)
 On ~10 % of v2 images the model is wrong-way-correlated; texture features point the wrong
 way somewhere on those images.
 - **Evidence**: [§6 of notebook 13](notebooks/13_per_image_heterogeneity.ipynb) on
   ESP_054000_2255 (top-1 % predicted = 0 % truly boulder-rich, base rate 18.3 %).
   HiRISE LBL angles do NOT correlate with performance (out of scope as model features
   anyway).
-- **Targeted by**: **Stage 6b** (CTX-source illumination per-tile features) — hypothesis test.
-- **Status**: ? **UNTESTED HYPOTHESIS** — *we do not know* what causes the anti-signal.
-  H3 names CTX-source illumination as one candidate mechanism (oblique CTX angles make
-  ripples / crater rims / regolith cast abundant shadows that `shadow_fraction` then
-  mis-reads as boulders). Plausible but **not established**. Stage 6b tests this specific
-  hypothesis. Other candidate mechanisms that Stage 6b would NOT address:
-  - Terrain / surface composition differences (e.g. basalt vs sedimentary lookalike textures)
-  - Mosaic-seam artefacts at boundaries between CTX source images with different gains
-  - Image-specific data issues (calibration, compression artefacts)
-  - BoulderNet label errors specific to certain images
-- **If Stage 6b fails**: we still have the anti-signal problem and a narrower hypothesis
-  set.  Next candidate would be Stage 6c (image-level pre-classifier, priority 6 below) —
-  model-side triage rather than a feature-side fix.
+- **Targeted by**: **Stage 6b** (CTX-source illumination per-tile features) — H3
+  hypothesis test, run on full v2 LOIO 2026-05-31. **H3 FALSIFIED + Stage 6e
+  mechanism EMPIRICALLY VALIDATED** by the H3-check probe
+  ([`scripts/probes/_diag_stage6b_h3_check.md`](scripts/probes/_diag_stage6b_h3_check.md)):
+  - `mean_ctx_incidence` ↔ per-image AUC: ρ = −0.213 (p > 0.05). **H3 as written
+    (oblique CTX angle → bad shadow_fraction → anti-signal) is NOT supported.**
+  - `mean_n_sources` ↔ Spearman ρ: **ρ = −0.405 (p = 0.012)**.
+  - `std_ctx_incidence` ↔ PR-AUC: **ρ = −0.370 (p = 0.022)**.
+  - `dominant_source_frac_mean` ↔ Spearman ρ: **ρ = +0.394 (p = 0.014)**.
+  → **The driver is CTX-source heterogeneity / mosaic stitching, not source
+    illumination geometry.** When many CTX sources contribute to a HiRISE
+    footprint (or their incidence angles vary widely), the model performs worse
+    on that image. This is the Stage 6e (mosaic-seam) mechanism, validated.
+- **Status**: ◐ **DEV-PARTIAL** for the feature-side fix (Stage 6b); ✓
+  **HYPOTHESIS VALIDATED** for the underlying mechanism (Stage 6e family). On
+  the full-v2 LOIO sweep, Stage 6b lifts PR-AUC +0.017 (< +0.03 strict), normalised
+  lift +0.022, precision@top-5 % +0.022 — all moving the right way but below the
+  threshold. **The effect is dramatically selective**: the two canonical
+  anti-signal images BOTH improve substantially — ESP_064510_2260 ΔPR-AUC
+  +0.207 / Δprec@5 % +0.556, and ESP_054000_2255 ΔSpearman +0.204 — while other
+  images regress (ESP_055690_2200 ΔSpearman −0.780 is the largest). Net flat on
+  average; large per-image bimodality.
+- **Next candidate** (Brian 2026-05-31): Stage 6c (image-level anti-signal gate)
+  using the now-empirically-validated features (`mean_n_sources`,
+  `std_ctx_incidence`, `dominant_source_fraction`) instead of as per-tile model
+  inputs. The "use as gate, not as feature" framing matches the per-image
+  bimodality observed. See Stage 6c entry below for updated plan.
 
 ### Problem 4 — No surrounding spatial context (Brian's 2026-05-30 flag)
 Every tile is treated as independent. Per-tile features summarise only what's inside the
@@ -188,9 +202,9 @@ they'll work.
 | 1 | A | **P1 + P2 full-v2 promotion** | ✓ | Confirm the +22 % PR-AUC, +27 % normalised-lift dev win on the full 38-image LOIO. Falsified if full-v2 gain is `<` +0.05 PR-AUC. | 1-2 hr |
 | 2 | A | **P3 + P4 doc reframe** | ✓ | Report metrics honestly (PR-AUC + lift, not ROC-AUC; `fa_gt_1e-2`, not `bc_ge_1`). No model change. Can't really fail; risk is that the new headline numbers look middling once we honestly report them. | ~1 hr |
 | 3 | B | **Stage 6a — spatial-context features** | ◐ | **Tried 2026-05-30**: 5 × 5 stencil @ S=32 PASSES strict criteria (Δ ρ +0.053, Δ PR-AUC +0.053); at S=64 only operational top-K metrics improve. Full-v2 promotion deferred. The S=128 → S=64 mechanism partly carries; S=64 baseline already near spatial-integration ceiling. | done (dev) |
-| 4 | B | **Stage 6b — CTX-source illumination** | ? | *If* CTX-source illumination is the H3 anti-signal cause: across-image AUC ↔ CTX-incidence correlation becomes significantly negative; PR-AUC +≥ 0.03 over P1+P2. Falsified if no correlation appears — would shift the anti-signal investigation to Stage 6c or to terrain / mosaic-seam mechanisms. | 1-2 days |
+| 4 | B | **Stage 6b — CTX-source illumination** | ◐ | **Tried 2026-05-31**: H3 (illumination angle) falsified (`mean_ctx_incidence` ↔ AUC ρ = −0.21, p > 0.05). **Stage 6e mechanism (CTX-source heterogeneity) empirically validated** (`mean_n_sources` ↔ Spearman ρ = −0.41, p = 0.012; `std_ctx_incidence` ↔ PR-AUC ρ = −0.37, p = 0.022). Full-v2 LOIO sweep: PR-AUC delta +0.017 (< +0.03 strict). **Selective**: canonical anti-signal images BOTH big winners (ESP_064510_2260 ΔPR-AUC +0.207, ESP_054000_2255 ΔSpearman +0.204) but other images regress. Net flat. | done |
 | 5 | A | **P5 — binary classifier calibration fix** | ✓ | Cosmetic ECE drop 0.26 → ~0.05 expected (mirrors P1's presence-head fix on the binary classifier). Ranking unchanged. Hard to fail; the question is whether anyone uses the probabilities raw or just for ranking. | ~2 hr |
-| 6 | B | **Stage 6c — image-level pre-classifier** | ? | Fallback if 6a / 6b underperform. Train a per-image "is this image well-fit by texture features?" classifier; use it to gate per-tile predictions (or to exclude anti-signal images from reporting). Worth doing if Problem 3 stays unresolved. | ~1 day |
+| 6 | B | **Stage 6c — anti-signal image gate** | ? | **Now the data-pointed-to next bet (2026-05-31)**: Stage 6b showed CTX-source heterogeneity features are predictive of per-image failure but per-tile use creates a regression/winner bimodality. Use them as an *image-level* gate instead: train a small classifier on per-image baseline AUC vs (`mean_n_sources`, `std_ctx_incidence`, `dominant_source_fraction`), apply at inference to either down-weight predictions or flag-and-exclude flagged images. Strict criterion: held-out per-image AUC for "good" images cleared >= 0.65 mean (vs 0.61 baseline) AND retained tile fraction >= 70 %. | ~1 day |
 | 7 | — | THEMIS / HiRISE-surrogate | ✗ | The eventual H5 unlock once CTX texture itself binds. Out of scope for the modeling pass. | weeks |
 
 **Read this honestly**: items 1, 2, 5 are bank-the-wins (predictable, validated, mostly
@@ -418,6 +432,88 @@ When promoted (dev-confirmed AND full-v2-confirmed), an item moves from this par
 
 *Was P5a in earlier revisions of this docket.*
 
+### Dev result (2026-05-31): tried; strict criteria FAIL; H3 falsified; Stage 6e mechanism validated
+
+**Implementation**: shipped to [`src/ctx_source_illumination.py`](src/ctx_source_illumination.py)
+(10 unit tests in [`tests/test_ctx_source_illumination.py`](tests/test_ctx_source_illumination.py)) +
+[`scripts/run_stage6b.py`](scripts/run_stage6b.py) (driver) +
+[`scripts/run_stage6b_repackage.py`](scripts/run_stage6b_repackage.py) +
+[`scripts/probes/_sweep_stage6b.py`](scripts/probes/_sweep_stage6b.py) (sweep) +
+[`scripts/probes/_diag_stage6b_h3_check.py`](scripts/probes/_diag_stage6b_h3_check.py) (H3 probe).
+
+**Important architectural note**: notebook 13 §3.2 said the Murray Lab SeamMap "doesn't carry illumination
+angles" so we'd need the PDS CUMINDEX. We downloaded CUMINDEX (87 MB, mrox_5520 2026-04-30) and then
+verified that **the SeamMap.shp embeds the angles directly** (`INCIDENCE`, `EMISSION`, `PHASE`,
+`SB_SLR_AZ` columns). CUMINDEX is unused; SeamMap-only is sufficient. CUMINDEX kept at
+`cache/pds_ctx_cumindex.{lbl,tab}` for any future use (e.g. Stage 6e seam-distance work).
+
+**Full-v2 LOIO sweep**
+([`models/_sweep_stage6b/20260531T020308Z/`](models/_sweep_stage6b/20260531T020308Z/);
+result MD at [`result_S64.md`](models/_sweep_stage6b/20260531T020308Z/result_S64.md)):
+
+| metric | P1+P2 baseline | P1+P2 + Stage 6b | Δ |
+|---|---:|---:|---:|
+| Spearman ρ | +0.1431 | +0.1507 | +0.0076 |
+| presence AUC (ROC) | 0.6149 | 0.5823 | **−0.0326** |
+| PR-AUC | 0.5431 | 0.5601 | +0.0170 |
+| normalised lift @ top-K | 0.5284 | 0.5509 | +0.0225 |
+| precision @ top-5 % | 0.5679 | 0.5903 | +0.0224 |
+| recall @ top-5 % | 0.0624 | 0.0677 | +0.0052 |
+
+Acceptance: Spearman Δ ≥ +0.05 AND PR-AUC Δ ≥ +0.03 over P1+P2 baseline. **FAIL strict**:
+Spearman moves +0.008 (need +0.05); PR-AUC moves +0.017 (need +0.03). Operational top-K
+metrics (precision @ top-5 %, normalised lift) lift +0.022 each — half-way to threshold.
+Presence AUC regresses −0.033.
+
+**H3 mechanism check**
+([`scripts/probes/_diag_stage6b_h3_check.md`](scripts/probes/_diag_stage6b_h3_check.md)):
+Spearman ρ of per-image feature vs per-image baseline metric, n = 38:
+
+| feature | spearman_rho | pr_auc | normalised_lift | prec@top-5 % | presence_auc |
+|---|---:|---:|---:|---:|---:|
+| mean_ctx_incidence | −0.213 | +0.050 | +0.025 | +0.042 | −0.103 |
+| **mean_n_sources** | **−0.405** ** | **−0.326** ** | **−0.342** ** | **−0.357** ** | −0.279 |
+| **std_ctx_incidence** | **−0.342** ** | **−0.370** ** | **−0.400** ** | **−0.361** ** | **−0.340** |
+| **dominant_source_frac_mean** | **+0.394** ** | **+0.361** ** | **+0.376** ** | **+0.393** ** | +0.321 |
+
+(** = p < 0.05.)
+
+**H3 (illumination angle) is FALSIFIED**: `mean_ctx_incidence` shows no significant
+correlation with any per-image metric. The H3 prediction (oblique CTX angle causes
+shadow_fraction to mis-read ripple shadows as boulders, dragging AUC) is not supported.
+
+**Stage 6e mechanism (CTX-source heterogeneity / mosaic stitching) is EMPIRICALLY VALIDATED**:
+`mean_n_sources` and `std_ctx_incidence` correlate negatively (p < 0.05) with every
+operational metric; `dominant_source_frac_mean` correlates positively. When a HiRISE
+footprint is stitched from many CTX sources with varying geometry, the model performs
+worse on that image — independent of any single source's illumination angle.
+
+**Per-image deltas** show a striking pattern: Stage 6b is **selective**. The two canonical
+anti-signal images BOTH improve substantially:
+
+- ESP_064510_2260 (dev anti-signal): ΔPR-AUC **+0.207**, Δprec@top-5 % **+0.556**
+- ESP_054000_2255 (notebook 13 §6 anti-signal): ΔSpearman **+0.204**, ΔPR-AUC +0.055
+- ESP_071699_2260: ΔPR-AUC +0.292, Δprec@top-5 % +0.647
+- ESP_076499_1160: ΔSpearman +0.497
+
+But several other images regress (ESP_055690_2200 ΔSpearman **−0.780**;
+ESP_017355_2260 ΔSpearman −0.218; ESP_059421_2170 ΔSpearman −0.156). Net flat on
+average; large bimodal per-image distribution.
+
+**Operational interpretation**: the features are *predictive of per-image reliability* but
+their use as per-tile inputs leaks the signal in both helpful and harmful ways depending
+on the image. The natural next step is to use them as an **image-level gate** (Stage 6c),
+not as per-tile inputs. This is the data-pointed-to next bet.
+
+**Brian decision (2026-05-31)**: document Stage 6b as DEV-PARTIAL; move H3 mechanism to
+the "falsified" column; promote Stage 6c (anti-signal gate) to the next priority with the
+now-validated features as the gate inputs. Full-v2 Stage 6b promotion deferred (net flat
+PR-AUC; selective per-image lift not enough alone).
+
+---
+
+### Original spec / motivation (kept for reference; mechanism narrative now superseded)
+
 **Change**: for each HiRISE footprint, identify the dominant CTX source image(s) from the
 Murray Lab `SeamMap.shp`, look up each source's `INCIDENCE_ANGLE`, `EMISSION_ANGLE`,
 `PHASE_ANGLE` from the PDS CUMINDEX, and aggregate (e.g. area-weighted mean) to a single
@@ -629,19 +725,81 @@ allows.
 
 ---
 
-## Stage 6c — Image-level pre-classifier / anti-signal gating (placeholder)
+## Stage 6c — Image-level anti-signal gate (priority bumped 2026-05-31 after Stage 6b finding)
 
-*Status: not yet docketed in detail. This is the fallback if Stage 6a / 6b underperform.*
+*Promoted from "placeholder" to "next bet" after the Stage 6b H3 result empirically
+validated the mechanism. The Stage 6b sweep already shows the predictor features work
+(p < 0.05 across multiple metrics); the gate framing is needed to avoid the per-image
+bimodality Stage 6b creates when those features are used as per-tile inputs.*
 
-**Idea**: train a per-image classifier ("is this image well-fit by texture features?")
-using image-level summary statistics + cross-validated performance on a held-out portion
-of training data.  At inference time, use the pre-classifier to either (a) **gate
-per-tile predictions** (down-weight or abstain on images flagged as anti-signal), or
-(b) **exclude flagged images from reporting** (analytical-only triage; doesn't change the
-model output but changes how we communicate performance).
+**Change**: train an image-level classifier (or regressor) that predicts per-image
+baseline-model reliability from a small CTX-provenance feature vector. Apply at
+inference time as a gate — either down-weight per-tile predictions on flagged images, or
+flag-and-exclude flagged images from headline reporting. Stage 6c does NOT add new
+per-tile model inputs; it operates one layer above the regression model.
 
-**When to docket in detail**: after Stage 6a / 6b dev results land.  If anti-signal
-persists after those, write this up properly with a concrete implementation plan.
+**Predictor features** (already computed, ready to use):
+
+- `mean_n_sources` — per-image mean of `ctx_n_sources` at S=64 from the Stage 6b parquet
+- `std_ctx_incidence` — per-image mean of `ctx_incidence_std`
+- `mean_dominant_source_fraction` — per-image mean of `ctx_dominant_source_fraction`
+- Optionally: total per-image SeamMap polygon count (raw, before tile aggregation),
+  number of unique CTX sources contributing to the footprint, NPolygons from the
+  manifest (boulder-detection density as a covariate).
+
+**Training data** (from existing full-v2 LOIO sweep): 38 rows, each with per-image
+baseline AUC (from `models/_sweep_stage6b/20260531T020308Z/summary.parquet`, baseline
+scheme) and the per-image features above. Validated correlations (n = 38):
+
+  | feature | per-image Spearman ρ | p |
+  |---|---:|---:|
+  | mean_n_sources | −0.405 | 0.012 |
+  | std_ctx_incidence | −0.342 | 0.036 |
+  | dominant_source_frac_mean | +0.394 | 0.014 |
+
+**Models to try**:
+
+1. **Logistic regression on the 3-feature vector** predicting `baseline_pr_auc >= 0.55`
+   (separating "useful" images from anti-signal). Cross-validated leave-one-image-out;
+   report ROC-AUC + threshold sweep.
+2. **Continuous regression**: predict baseline-AUC directly; use as a per-image
+   confidence weight.
+3. **Threshold-based hard exclusion**: simple rule like `flag if mean_n_sources > 5 AND
+   std_ctx_incidence > 5` (TBD by data). Easiest to explain in the writeup.
+
+**Gate strategies**:
+
+A. **Headline exclusion**: drop flagged images from the headline
+   PR-AUC/Spearman/precision @ top-K aggregates. Report flagged-image count + per-image
+   metric distribution separately. **Cosmetic**, doesn't change model output.
+B. **Inference-time prediction down-weighting**: multiply per-tile predictions on
+   flagged images by `1 - p_bad`. Affects model output but is post-hoc.
+C. **Per-image normalisation**: z-score per-tile predictions within each image before
+   global ranking. Side effect of (B) when `p_bad` is high.
+
+**Acceptance criterion** (full v2, LOIO):
+
+- **Strict (the breakthrough)**: held-out per-image PR-AUC on "good" images (post-gate)
+  >= 0.65 mean (vs full-set mean 0.54) AND retained-tile fraction >= 70 % (i.e. we don't
+  drop more than 30 % of tiles to chase the gain) AND gated-set normalised lift @ top-K
+  >= +0.10 over the un-gated baseline on the retained set.
+- **Soft (the writeup)**: a defensible documented procedure for separating
+  texture-reliable from anti-signal images, with the gate predictor itself well
+  cross-validated even if the modelling gain is modest.
+
+**Implementation cost**: ~1 day. The features already exist on disk
+(`dataset_v2/features_ctx_illum/`); the gate model is small (38 rows, 3 features).
+Implementation = LightGBM / logreg on the small predictor table + per-image post-hoc
+filtering of the LOIO summary.
+
+**Inference-time compatibility**: ✓ The predictor features come from the SeamMap, available
+wherever CTX is available. The gate runs once per image at inference time; per-tile
+predictions are unchanged.
+
+**Relationship to Stage 6b**: Stage 6b validated the predictor features. Stage 6c reuses
+them as a gate rather than as per-tile inputs. The per-image bimodality observed in Stage
+6b (selective anti-signal lift offset by other-image regressions) suggests the gate
+framing fits the underlying signal better than the per-tile-input framing.
 
 ---
 
@@ -677,16 +835,37 @@ inference time, the same nested-tile aggregation works trivially.
 
 ---
 
-## Stage 6e — Mosaic-seam features (new 2026-05-30)
+## Stage 6e — Mosaic-seam features (new 2026-05-30; partially absorbed into Stage 6b 2026-05-31)
+
+**Status update 2026-05-31**: Stage 6b already implemented two of the three docketed
+Stage 6e features as a side effect of the CTX-source-illumination per-tile aggregation:
+`ctx_n_sources` ≡ Stage 6e's `n_seams_intersecting_tile`, and
+`ctx_dominant_source_fraction` ≡ Stage 6e's `dominant_source_fraction`. The Stage 6b H3
+mechanism check (n = 38) found these to be the **dominant per-image signal** explaining
+model performance (mean_n_sources Spearman ρ vs per-image Spearman = −0.405, p = 0.012;
+dominant_source_fraction Spearman ρ = +0.394, p = 0.014) — **the Stage 6e hypothesis is
+empirically validated**, but the per-tile-input framing produces a bimodal per-image
+result (anti-signal images win, others regress). Stage 6c (anti-signal gate) is the
+prioritised next bet to convert that signal into a clean win.
+
+**Remaining Stage 6e-as-features lever**: only `distance_to_nearest_seam_m` is not yet
+implemented. If Stage 6c (gate) underperforms, adding distance-to-seam as a per-tile
+input could be the next try — the existing Stage 6b pipeline + SeamMap loader gets there
+in <0.5 day. But the Stage 6b bimodal pattern likely persists for any per-tile use of
+SeamMap-derived features.
+
+**Original docket below kept for reference.**
 
 **Change**: for each tile, add features that describe the tile's proximity to (and
 position relative to) CTX-source-image boundaries in the Murray Lab mosaic.  Specifically:
 
 - `distance_to_nearest_seam_m` — distance from tile centre to the nearest polygon boundary
   in the `SeamMap.shp` for the covering Murray Lab tile.
-- `n_seams_intersecting_tile` — count of seam-polygon boundaries crossing the tile.
+- `n_seams_intersecting_tile` — count of seam-polygon boundaries crossing the tile. **Already
+  shipped as `ctx_n_sources` in Stage 6b.**
 - `dominant_source_fraction` — fraction of tile area covered by the single dominant CTX
-  source image (low value = tile straddles multiple CTX sources).
+  source image (low value = tile straddles multiple CTX sources). **Already shipped as
+  `ctx_dominant_source_fraction` in Stage 6b.**
 
 **Why this matters**: [Dickson 2024 (the Murray Lab CTX mosaic paper)](https://doi.org/10.1029/2024EA003555)
 explicitly documents that seam artefacts manifest as **disparate brightness/contrast and
