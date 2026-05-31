@@ -1,6 +1,7 @@
 # Handoff prompt — next session
 
-**Last updated 2026-05-30 after the large-scale project review.**
+**Last updated 2026-05-30 (late session) after Stage 6a dev sweep and Brian's
+"gains are small" assessment.**
 
 Working dir: `c:\Users\brian\Documents\PhD\HiRiseToCTXBoulders\hirise2ctx`.
 Conda: `C:\Users\brian\anaconda3\Scripts\conda.exe run -n geospatial python …` (never the
@@ -8,223 +9,211 @@ env's `python.exe` directly — see memory note [[conda_location]]).
 
 ## Read in this order before starting
 
-1. **[`PROMOTION_QUEUE.md`](PROMOTION_QUEUE.md)** — the live docket. The "Problem catalog
-   & priority" section at the top frames everything; the Part A / Part B split tells you
-   what kind of work each item is.
-2. **[`notebooks/12_compression_diagnostic.ipynb`](notebooks/12_compression_diagnostic.ipynb)**
-   — compression diagnosis (§2), `balanced` and `boulder_count` dev wins (§5, §9), and the
-   H1–H5 framework (§7).
-3. **[`notebooks/13_per_image_heterogeneity.ipynb`](notebooks/13_per_image_heterogeneity.ipynb)**
-   — per-image bimodal AUC, three failure modes (§2.1), top-K confusion overlay (§5.2),
-   anti-signal deep dive on ESP_054000_2255 (§6).
-4. **[`docs/modeling_results.md`](docs/modeling_results.md) §11** — the Phase A2 writeup
-   that mirrors notebooks 12+13.
-5. **Memory** `project_state_2026-05-30.md` (CURRENT) for the previous-session synthesis.
+1. **Memory** `project_state_2026-05-30-late.md` (CURRENT) — Stage 6a outcome.
+2. **[`PROMOTION_QUEUE.md`](PROMOTION_QUEUE.md)** — Problem catalog, status legend, and
+   the "Stage 6a — Dev result (2026-05-30)" section + Problem 4 status updated to
+   `◐ DEV-PARTIAL`.
+3. **[`docs/modeling_results.md`](docs/modeling_results.md) §12** — full Stage 6a writeup
+   (table, mechanism, per-image heterogeneity).
+4. **[`scripts/probes/_diag_stage6a_followup_compare.md`](scripts/probes/_diag_stage6a_followup_compare.md)**
+   — 6-variant comparison table (the actual numbers).
 
-## Goal of this session
+## Where we are
 
-Execute the **priority order** from `PROMOTION_QUEUE.md`'s "Recommendation order" table.
-In order:
+**Stage 6a (spatial-context neighbour features) is DEV-PARTIAL but the gains are small.**
+Brian's 2026-05-30 review: "the difference is pretty small for this improvement".
+Concretely:
 
-1. **P1 + P2 to full v2 (✓ dev-validated, bank-the-wins, ~1–2 hr)**
-2. **P3 + P4 documentation reframe (✓ documentation-only, ~1 hr)**
-3. **Stage 6a — spatial-context neighbour features (? untested, 1–2 days)**
-4. **Stage 6b — CTX-source illumination angles (? H3 test, 1–2 days)**
-5. **P5 binary classifier calibration fix (✓ predictable ECE drop, ~2 hr)**
+- **5×5 stencil @ S=32**: only variant that clears the strict criteria (Δ ρ +0.053,
+  Δ PR-AUC +0.053) — but at finer scale, so absolute numbers (ρ +0.276, PR-AUC 0.546)
+  don't beat the S=64 baseline (ρ +0.283, PR-AUC 0.640).
+- **At S=64** (canonical scale): only operational top-K metrics move (default 3×3 →
+  precision@top-5 % +0.044, PR-AUC +0.010, Spearman flat).
+- **All-grid best**: best Spearman = 5×5 @ S=64 (+0.310, Δ +0.027). Best PR-AUC =
+  max-only @ S=64 (0.652, Δ +0.012).
 
-✓ = dev-validated / predictable. ? = untested hypothesis; the failure itself is
-informative. (See the table for what falsifies each ?.)
+Compared with the P1+P2 wins (P2 alone was +0.114 PR-AUC = +22 % on dev), Stage 6a's
+gains are an order of magnitude smaller. **This is consistent with Problem 6's
+texture-floor reading**: with the same per-tile CTX texture features, neighbour
+aggregation gives diminishing returns at S=64 because the tile already integrates
+~320 × 320 m of context.
+
+**Implications for forward planning** (open question — discuss at session start):
+
+- Stage 6b (CTX-source illumination, priority #4 in the order) tests a *different*
+  failure-mode mechanism (per-image anti-signal). It might still buy a real lift on
+  the 3–10 % of anti-signal images even if the average dev lift is small. But the
+  same texture-floor argument suggests the per-tile signal ceiling is real — Stage 6b
+  helps where current features *mislead*, not where they're informative.
+- Stages 6d (multi-scale), 6e (mosaic-seam), and 6f (ZI-Tweedie loss redesign) all
+  carry similar "could be small" risk based on this evidence.
+- Item 7 in the recommendation order (THEMIS / HiRISE-decimated as a surrogate) is the
+  *off-CTX* unlock — different signal, not subject to the 5 m/px texture floor.
+
+## Goal of this session (Brian to decide at start)
+
+Before doing implementation work, **AskUserQuestion to confirm direction**. Three
+plausible paths, with the trade-offs:
+
+**Path A — Continue Stage 6 docket (Stage 6b next).**
+- Pros: incremental, the implementation pattern from 6a carries over (parallel
+  features dir + repackage + sweep); 6b also tests a sharp H3 hypothesis (anti-signal).
+- Cons: 1–2 day cost; if 6a's small-gain pattern repeats, the next 1–2 weeks of
+  Stage 6 (6b, 6d, 6e) all return single-digit-percentile lifts.
+
+**Path B — Bank the validated wins (P1+P2 full-v2) + simple Stage 6 items only.**
+- Pros: P1+P2 full-v2 promotion is ~1–2 hr and bank-the-wins (+22 % PR-AUC dev gain).
+  P3+P4 doc reframe is another ~1 hr. Get the deliverable's headline numbers anchored.
+  Defer Stage 6b/6d/6e until evidence justifies the cost.
+- Cons: doesn't push the model further. The promoted model is still the
+  texture-floor-limited ranker (Problem 2 only partly fixed by P1).
+
+**Path C — Pivot to Stage 7 (compositional, HiRISE 3 bands).**
+- Pros: Stage 7.0 feasibility test is 1–2 days on 2–3 images and *de-risks an entirely
+  separate research thread* — the instructor's extra goal that the texture-floor
+  doesn't bind. Plan is drafted at [`PLAN_Compositional.md`](PLAN_Compositional.md).
+- Cons: leaves the modeling result at "dev-validated P1+P2, not promoted to full-v2".
+  Committee may want headline modeling numbers before composition.
+
+Recommend Path B as the default — it's cheap, banks real wins, and lets next-session
+decide between 6b vs Stage 7 with the deliverable secured.
 
 ## Before doing anything
 
-**Brian-gated**: stage and commit the 2026-05-30 review work first. The working tree has
-unstaged changes across:
+**Working tree status (start-of-session):** clean. Last commits:
+- `6b428e3` Stage 6a: spatial-context neighbour features (dev-partial)
+- `6e3b9f1` Per-image heterogeneity (notebook 13) + Stage 6 docket + 2026-05-30 review
 
-- `DECISIONS.md`, `PROMOTION_QUEUE.md` (the new framework + Stage 6 items + 2026-05-30 entry)
-- `README.md`, `ROADMAP.md` (status updates to reflect modeling shipped + Stage 6)
-- `PLAN_ModelImprovement.md` (marked historical at top)
-- `CLAUDE.md` §10 (CRISM → HiRISE 3-band update per [Delamere 2010](https://doi.org/10.1016/j.icarus.2009.03.012))
-- `docs/modeling_results.md` §5 + §11.5/11.6/11.7/11.8 (Stage 6 naming + boulder_area
-  follow-up + per-image findings + 6d/6e/6f docket additions)
-- `notebooks/12_compression_diagnostic.ipynb` + `_build_12.py` (CRISM update)
-- `notebooks/13_per_image_heterogeneity.ipynb` + `_build_13.py` (already executed; CRISM
-  update is text-only)
-- `reports/figures/13_*.png` (4 figures from notebook 13)
-- `scripts/probes/_diag_per_image_breakdown.py` + `_diag_topk_confusion_map.py` +
-  `_diag_nb13_correlations.py` + `_diag_extract_nb13_results.py` + the corresponding `.md`
-  result files
-- `scripts/probes/_sweep_target_reformulation.py` (extended for `boulder_area` /
-  `log_boulder_area`)
+No staging required.
 
-Show Brian the file list and a drafted commit message, then ask before `git commit`.
+## Path A detail — Stage 6b CTX-source illumination
 
-## Priority 1 detail — P1 + P2 full-v2 promotion
+Full spec in [`PROMOTION_QUEUE.md`](PROMOTION_QUEUE.md) "Stage 6b — CTX-source
+illumination angles". Implementation pattern from Stage 6a applies directly:
 
-The cheap, validated, biggest win. Confirmed dev gains:
-- **P1** (`lightgbm_two_stage_balanced`): +0.017 Spearman ρ, +0.018 presence AUC at S=64
-  (dev within_image_4fold 20 folds).
-- **P2** (`target_col=boulder_count`): **+0.114 PR-AUC (+22 %), +0.131 normalised lift
-  (+27 %), +0.111 precision@top-5 % (+20 %)** at S=64 with Spearman / ROC-AUC unchanged.
+1. **Download the PDS CTX CUMINDEX** (~200 MB) — Brian-gated; confirm before downloading.
+   Lives at `https://pds-imaging.jpl.nasa.gov/data/mro/mars_reconnaissance_orbiter/ctx/CUMINDEX/`.
+   Cache to `cache/pds_ctx_cumindex.tab`.
+2. **Per-tile spatial join with the Murray Lab SeamMap** (already extracted during
+   notebook 13 §3.2; see
+   [`scripts/probes/_diag_per_image_breakdown.py`](scripts/probes/_diag_per_image_breakdown.py)).
+   Mean 24 CTX sources per HiRISE footprint (range 4–46), so the right granularity is
+   per-tile, not per-image.
+3. **Build `src/ctx_source_illumination.py`** mirroring `src/spatial_features.py`'s
+   pattern — a function that augments a Stage 4b feature parquet with 3 columns
+   (`ctx_incidence_angle_mean`, `ctx_emission_angle_mean`, `ctx_phase_angle_mean`,
+   area-weighted across CTX sources intersecting each tile).
+4. **Scripts**: `scripts/run_stage6b.py` + `scripts/run_stage6b_repackage.py` mirroring
+   the Stage 6a counterparts.
+5. **Sweep**: mirror `scripts/probes/_sweep_stage6a.py`. Run baseline + Stage 6b at
+   S=64 on dataset_v2_dev; report deltas; include the H3 mechanism check (across-image
+   per-image AUC ↔ tile-mean CTX_IncidenceAngle correlation, ρ < −0.30 with p < 0.05).
 
-**Run** (in this order):
+**Acceptance (dev)**: PR-AUC +≥ 0.03 over P1+P2 baseline AND significant negative
+AUC↔incidence correlation. If only one clears, document as informative and decide.
+
+## Path B detail — P1+P2 full-v2 promotion + P3+P4 doc reframe
+
+Per the original handoff (now superseded for Stage 6 work but still valid for these
+items):
 
 ```powershell
-# P1 — already supported by sweep.py
+$conda = "C:\Users\brian\anaconda3\Scripts\conda.exe"
+
+# P1 (presence-head fix)
 & $conda run -n geospatial python scripts/sweep.py `
     --variants lightgbm_two_stage_balanced `
     --dataset-dir dataset_v2 --scheme loio_nfold
 
-# P2 — currently only via the probe (needs --target-col flag added to scripts/sweep.py;
-# eventually that flag should land but until it does, the probe is the right driver)
+# P2 (boulder_count target) — via the probe until --target-col lands on sweep.py
 & $conda run -n geospatial python scripts/probes/_sweep_target_reformulation.py `
     --targets boulder_count --scales 3 `
     --dataset-dir dataset_v2
 ```
 
-**Acceptance criteria** (from PROMOTION_QUEUE.md P1 / P2):
-- P1: full-v2 Spearman ρ at S=64 ≥ 0.18 (baseline 0.169) AND presence AUC at S=64 ≥ 0.58
-  (baseline 0.579). Either condition met → promote.
-- P2: full-v2 PR-AUC at S=64 with `boulder_count` > full-v2 PR-AUC with `fractional_area`
-  by ≥ +0.05. Spearman ρ should not regress.
+**Acceptance**: per [PROMOTION_QUEUE.md](PROMOTION_QUEUE.md) P1 / P2 sections —
+S=64 ρ ≥ 0.18 AND presence AUC ≥ 0.58 (P1) / PR-AUC delta ≥ +0.05 (P2).
 
-**Then**: AskUserQuestion before adding entries to a "Promoted" section in
-PROMOTION_QUEUE.md (Brian's call on whether to promote, then move the items out of the
-docket).
+**P3 / P4 are doc-only**: update [`docs/modeling_results.md`](docs/modeling_results.md)
+§9 to put PR-AUC + lift@top-K as headline metrics with ROC-AUC demoted; change the
+default primary binary target in
+[`src/modeling/binary_target.py`](src/modeling/binary_target.py) from `bc_ge_1` to
+`fa_gt_1e-2`.
 
-## Priority 2 detail — P3 + P4 doc reframe
+**Cost**: P1+P2 sweeps ~1–2 hr; P3+P4 ~1 hr. AskUserQuestion before each
+expensive sweep.
 
-**P3**: update [`docs/modeling_results.md`](docs/modeling_results.md) §9 to put **PR-AUC +
-lift@top-K** as the headline metrics on the v2 numbers, with ROC-AUC demoted to a
-secondary diagnostic. Should be done AFTER P2 lands so the headline numbers are anchored
-to the new target.
+## Path C detail — Stage 7.0 feasibility test
 
-**P4**: in [`src/modeling/binary_target.py`](src/modeling/binary_target.py), change the
-default primary binary target from `bc_ge_1` to `fa_gt_1e-2` (boulder-rich). Update
-`scripts/sweep_binary.py`'s default-target arg if needed. No re-train required — the
-existing `models/_sweep_binary/20260529T075754Z/` already has `fa_gt_1e-2` numbers; this
-is a doc + default change.
+[`PLAN_Compositional.md`](PLAN_Compositional.md) drafted 2026-05-30. The 7.0
+**feasibility test** gates the full 5–7 day pipeline:
 
-## Priority 3 detail — Stage 6a spatial-context features
+- 1–2 days
+- 2–3 images
+- Uses *actual BoulderNet labels* (not model predictions) to isolate the methodology
+  from model error
+- Tests whether HiRISE 3-band spectra (BLUE-GREEN / RED / NEAR-IR per
+  [Delamere et al. 2010](https://doi.org/10.1016/j.icarus.2009.03.012)) of
+  boulder-rich areas differ from surroundings
+- Central methodological challenge: dust mantle confound. Use `dust_index = RED/BG`
+  as discriminator.
+- HiRISE colour covers only ~20 % of each image's swath (central CCDs only) —
+  bounds the spatial scope.
 
-Full spec in [PROMOTION_QUEUE.md](PROMOTION_QUEUE.md) "Stage 6a — Spatial-context
-neighbour features". Implementation summary:
+## Critical gotchas (carry forward from earlier handoff)
 
-1. Add a neighbour-aggregation pass in [`src/features.py`](src/features.py): for each
-   ObsId × scale, lay tiles on the (ti, tj) grid and compute `nbr_mean / nbr_max /
-   nbr_std` of each existing numeric feature over the 3 × 3 neighbourhood (8 neighbours
-   + self). Use `scipy.ndimage.uniform_filter` / `maximum_filter` / custom std. NaN-pad
-   at image edges.
-2. Optional multi-scale variant: for tiles at S=64, also include features from the 4
-   enclosing S=128 parent tiles (= Stage 6d).
-3. Regenerate Stage-4b feature parquet (cheap — per-tile features already computed; just
-   add the aggregations).
-4. Run a dev sweep with `lightgbm_two_stage_balanced` + `target_col=boulder_count` (=
-   P1+P2 baseline) + the new feature columns. Use `dataset_v2_dev` within-image scheme
-   for the dev pass.
-5. Acceptance (dev): Spearman ρ +≥ 0.05 over P1+P2 baseline, AND PR-AUC +≥ 0.03. If both
-   clear, promote to full v2.
-
-**Width sanity**: ~30 base features × 3 stats ≈ 90 new columns; well within LightGBM
-range.
-
-## Priority 4 detail — Stage 6b CTX-source illumination angles
-
-Full spec in [PROMOTION_QUEUE.md](PROMOTION_QUEUE.md) "Stage 6b — CTX-source illumination
-angles". This is the **proper H3 test** that's also inference-time-compatible. Higher
-cost than Stage 6a, but the hypothesis is sharp:
-
-1. Download the PDS CTX CUMINDEX (~200 MB) — this is the cumulative index of all CTX
-   observations with `INCIDENCE_ANGLE` / `EMISSION_ANGLE` / `PHASE_ANGLE` per source.
-2. For each tile, spatial-join with the Murray Lab `SeamMap.shp` to identify dominant CTX
-   source(s). [`notebook 13 §3.2`](notebooks/13_per_image_heterogeneity.ipynb) confirms
-   each HiRISE footprint averages 24 CTX sources (range 4–46), so this is **per-tile**
-   not per-image.
-3. Aggregate per-source angles → per-tile angles (area-weighted mean over sources
-   intersecting the tile).
-4. Add as columns in the Stage-4b feature parquet.
-5. Acceptance (dev + full-v2): full-v2 per-image AUC ↔ tile-mean CTX_IncidenceAngle
-   correlation is significantly negative (ρ < −0.30, p < 0.05) AND PR-AUC +≥ 0.03 over
-   P1+P2.
-6. **Fallback if 6b fails**: move to Stage 6c (image-level pre-classifier) or to Stage
-   6e (mosaic-seam features) — both are alternative anti-signal mechanisms.
-
-## Critical gotchas
-
-- **Inference-time scope (Brian, 2026-05-29)**: the deliverable runs on CTX-only regions
-  where HiRISE is absent. Any model input feature must be derivable from CTX alone. Per
-  PROMOTION_QUEUE.md "Inference-time scope" section. HiRISE LBL angles are
-  **explicitly NOT model features** (kept for diagnostic analysis only).
+- **Inference-time scope**: model features must be derivable from CTX alone. HiRISE
+  LBL angles are diagnostic-only. See PROMOTION_QUEUE.md "Inference-time scope".
 - **`conda run python -c` rejects multiline strings** — write probes to files under
-  `scripts/probes/_*.py`. See [[conda_location]] memory.
-- **`cp1252` stdout encoding fails on unicode** in some `conda run` paths — write probe
-  output to `.md` files, don't rely on stdout. See `scripts/probes/_diag_extract_nb13_results.py`
-  for the pattern.
-- **Never run two `nbconvert --execute` concurrently** — caused ~14-min hangs in earlier
-  sessions when overlapping kernels contended for caches.
+  `scripts/probes/_*.py`. Hit this 2026-05-30 with the fold-variance probe.
+- **`cp1252` stdout encoding fails on Unicode** in some `conda run` paths — write
+  probe outputs to `.md` files (pattern in
+  [`scripts/probes/_diag_stage6a_followup_compare.py`](scripts/probes/_diag_stage6a_followup_compare.py)).
+- **`models/*` and `dataset_v2*/*` are gitignored** — sweep artifacts and augmented
+  feature parquets don't persist across machines. The readable tables in
+  `scripts/probes/_diag_*.md` and the writeups in `docs/modeling_results.md` are
+  the persistent record.
+- **220 pytest pass baseline + 15 new tests** for Stage 6a in
+  [`tests/test_spatial_features.py`](tests/test_spatial_features.py). Run
+  `pytest tests/ -q` before any promotion.
 - **AskUserQuestion before**: full-v2 sweeps (Brian-gated; expensive), `git commit`,
-  destructive operations on cached artifacts.
-- **220 pytest pass baseline** — run `pytest tests/ -q` before promoting changes;
-  parametrized tests in `tests/test_modeling_gbm.py` auto-pick up new variants.
-- **Stage 6 distinction**: model-improvement work goes under **Part B** of
-  PROMOTION_QUEUE.md (Stage 6a/6b/6c/6d/6e/6f), not under existing-stage P-numbers.
-  Variant flag changes / target-col choices / doc edits go under **Part A** (P1–P5).
-- **`git`-gated allowlist**: `.claude/settings.local.json` allows only `geospatial` conda
-  python/jupyter. Brian reviews + commits.
+  destructive operations on cached artifacts, downloading new external data
+  (CUMINDEX, etc).
+- **Stage 6a augmented features and packaged dirs already exist** on disk at
+  `dataset_v2_dev/features_nbr{,_s5,_max}/` and
+  `dataset_v2_dev/packaged/within_image_4fold_nbr{,_s5,_max}/`. No re-augmentation
+  needed if a follow-up calls for re-running the Stage 6a dev sweep.
 
 ## What we know vs what we suspect (honest status)
 
-Per PROMOTION_QUEUE.md's "Problem catalog & priority":
+Per PROMOTION_QUEUE.md's Problem catalog + Stage 6a result:
 
-- ✓ **Problem 1 (target distribution noise)**: solved by P2 (`boulder_count`); dev win
-  reproducibly +22 % PR-AUC. Mechanism understood (count-vs-area; CTX texture features
-  respond to count of detection events).
-- ◐ **Problem 2 (compression)**: P1 fixes the presence-head over-confidence source ONLY.
-  The magnitude-head log-positive-median shrinkage remains. High-bin ratio after P1 is
-  0.83 not 1.0. Honest verdict: ship as a ranker, not a calibrated abundance regressor.
-  Stage 6f (Zero-Inflated Tweedie) is the long-shot magnitude-head loss redesign — only if
-  compression is the binding constraint after P1/P2.
-- ? **Problem 3 (per-image anti-signal)**: HiRISE LBL angles do NOT predict performance
-  (notebook 13 §4). CTX-source illumination (Stage 6b) is the next test — but we don't
-  know it's the cause. Other candidate mechanisms: terrain composition (Stage 6c), mosaic
-  seams (Stage 6e), image-specific data issues.
-- ? **Problem 4 (no surrounding spatial context)**: only indirect evidence (the S=128
-  scale Spearman 0.26 → 0.41 finding). Stage 6a is the direct test; could disappoint if
-  the S=128 gain was about coarse label-noise averaging rather than spatial integration
-  per se.
-- ✓ **Problem 5 (metric framing)**: solved by P3+P4 doc reframes; the metrics already
-  exist in code (`src/modeling/evaluate.py`).
-- ✗ **Problem 6 (5 m/px CTX texture floor)**: unresolved; the eventual unlock is outside
-  CTX (THEMIS rock abundance, HiRISE-decimated as a surrogate).
-
-## Future work (not for this session)
-
-- **THEMIS validation**: see [CLAUDE.md §10](CLAUDE.md). THEMIS rocks > 15 cm vs
-  BoulderNet > 1 m means population-scaling calibration is needed regardless of target
-  choice ([Nowicki & Christensen 2007](https://doi.org/10.1029/2006JE002798)). Open
-  question for `boulder_count`: how to pick `mean_boulder_area_per_boulder` at inference
-  on CTX-only regions — see [PROMOTION_QUEUE.md P2 "Open inference-time question"](PROMOTION_QUEUE.md).
-- **Stage 7 — Compositional study (HiRISE 3 bands, [Delamere 2010](https://doi.org/10.1016/j.icarus.2009.03.012))**:
-  **plan drafted 2026-05-30** in [`PLAN_Compositional.md`](PLAN_Compositional.md).
-  **Gate on Stage 7.0 feasibility test** (1–2 days, 2–3 images, actual BoulderNet
-  labels not predictions; per §3.1 of the plan) before committing to the full 5-substage
-  pipeline (~5–7 days). The 7.0 gate de-risks the methodology end-to-end. Central
-  methodological challenge: dust confound (`dust_index = RED/BG` as discriminator). Note:
-  HiRISE colour covers only ~20 % of each image's swath (central CCDs only). Originally
-  CRISM; switched 2026-05-30. *Future-work, after Stage 6 promotions land.*
-- The **brainstormed-not-docketed** alternatives in PROMOTION_QUEUE.md Part B
-  (LambdaRank, per-image standardisation, monotonic constraints, post-hoc spatial
-  smoothing) — try only if 6a–6f all underperform.
+- ✓ **Problem 1 (target distribution noise)**: solved by P2 (`boulder_count`), dev +22 %
+  PR-AUC. Reproducibly the biggest lever found.
+- ◐ **Problem 2 (compression)**: P1 fixes presence-head source only; magnitude-head
+  shrinkage remains. Ship as ranker, not calibrated regressor.
+- ? **Problem 3 (per-image anti-signal)**: Stage 6b would test CTX-source illumination
+  hypothesis. ESP_054000_2255 (notebook 13 §6) is the canonical anti-signal case.
+  Stage 6a partly confirms: it helps spatially-coherent images, hurts the
+  anti-signal image (ESP_064510_2260 in dev).
+- ◐ **Problem 4 (no surrounding spatial context)**: Stage 6a DEV-PARTIAL — confirmed
+  the mechanism exists but with small lift; S=64 baseline already near the
+  spatial-integration ceiling.
+- ✓ **Problem 5 (metric framing)**: P3+P4 doc reframes (queued).
+- ✗ **Problem 6 (5 m/px CTX texture floor)**: unresolved. Stage 6a's small gains
+  *strengthen* this reading — same texture features, no matter how aggregated,
+  approach a per-tile ceiling. Outside-CTX unlocks (THEMIS, HiRISE-decimated) remain
+  the only unbinding lever.
 
 ## How this session should report progress
 
-End-of-session, update:
-1. **`PROMOTION_QUEUE.md`**: any item that passes full-v2 acceptance moves to the
-   "Promoted" section. Items that fail move to "Tried, didn't work" with the reason.
-2. **`DECISIONS.md`**: one new entry per promoted item with the full-v2 numbers.
-3. **`docs/modeling_results.md`**: if a promoted item changes the headline numbers,
-   update §9 (the v2 LOIO modeling A/B table).
-4. **Memory**: new `project_state_2026-05-XX.md` with the day's outcomes; mark previous
-   memory as superseded.
-5. **`HANDOFF_NEXT_SESSION.md`** (this file): rewrite the priority order if Stage 6a/6b
-   land or if the priority shifts.
-6. **AskUserQuestion before git commit** of any of the above.
+Same as previous handoff:
+1. **`PROMOTION_QUEUE.md`**: move passed items to "Promoted", failed items to
+   "Tried, didn't work".
+2. **`DECISIONS.md`**: one entry per promoted item with full-v2 numbers.
+3. **`docs/modeling_results.md`**: update §9 headline if P3/P4 land, or add §13 for
+   Stage 6b result.
+4. **Memory**: `project_state_2026-05-XX.md` with day's outcomes; mark previous
+   superseded.
+5. **`HANDOFF_NEXT_SESSION.md`**: rewrite priority order based on what landed.
+6. **AskUserQuestion before `git commit`** of any of the above.
