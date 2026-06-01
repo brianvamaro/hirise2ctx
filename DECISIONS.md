@@ -1818,3 +1818,99 @@ probe ran the same pattern in ~minutes per image. Acceptable.
 
 **Documented in**: `PLAN_Compositional.md` §3 table (7b row struck through),
 top-of-file revisions list (item 7), §7 cost table (7b row marked SKIPPED).
+
+## 2026-06-01 — Stage 7c per-tile colour features (cohort run done)
+
+**Stage 7c done.** `dataset_v2/features_colour.parquet` written: **9 860 rows
+across 36 of 37 colour-eligible images**, computed by
+`scripts/run_stage7c_features.py` over 145 min (~2.4 hr) wall-clock on the
+local box. Stage 7d/7e can now run against this parquet without re-touching the
+JP2 cache.
+
+### Method (matches the architectural decision recorded above)
+
+For every S=64 tile in every colour-covered image:
+
+1. Reproject the tile's (xmin, ymin, xmax, ymax) from the CTX target CRS into
+   the HiRISE source CRS via `src.colour.ctx_bounds_to_source_bbox(...)` (the
+   "stay in source CRS" pattern that replaced Stage 7b).
+2. Windowed-read the 3-band COLOR.JP2 around that bbox
+   (`src.colour.windowed_colour_read`).
+3. Compute the per-band mean of valid (non-pad-zero) pixels via
+   `src.colour.region_means`, requiring `n_pixels >= 64` (the
+   `MIN_TILE_PIXELS` floor; ~16 m² at 0.5 m/px or ~4 m² at 0.25 m/px — really
+   just "tile barely overlaps swath").
+4. Convert mean DN → I/F per-image via `I/F = DN * scaling_factor + offset`
+   from the COLOR.LBL (`scaling_factor` varies ~5× across the cohort, so this
+   step is mandatory for Stage 7d cross-image pooling — initial implementation
+   missed it and was caught during the trio sanity-run).
+5. Apply per-image Lambertian correction: divide the I/F means by
+   `cos(incidence_deg)`. cos(i) range across the cohort is 0.30 to 0.76.
+6. Emit columns: `obs_id, scale_idx, ti, tj, n_color_pixels, IR_iof, RED_iof,
+   BG_iof, IR_over_RED, IR_over_BG, dust_index_RED_over_BG, cos_incidence`.
+   `dust_index_RED_over_BG = RED_iof / BG_iof` per PLAN §5.1 — the proxy used
+   to discriminate composition signals from dust-loading signals.
+
+### Cohort numbers (from `scripts/probes/_summarise_stage7c.py`)
+
+- **Coverage**: 36 / 37 colour-eligible images produced rows. The one excluded
+  is `ESP_046803_2325` — present in the v2 manifest with a Stage 1 sidecar
+  + COLOR.JP2 + COLOR.LBL, but no `dataset_v2/labels/ESP_046803_2325.parquet`
+  (Stage 4 was never run for this ObsId for some reason; predates this
+  session). Flagged as a follow-up; not a blocker for Stage 7d.
+- **Per-image tile counts**: min 95, median 251, max 771 (kept).
+- **Per-image retention** (kept / total S=64 tiles in the labels parquet):
+  24-31 % across all 36 images. Consistent across high-density (`ESP_017355_2260`
+  771 / 2927 = 26 %) and low-density (`ESP_048688_2085` 95 / 316 = 30 %) images —
+  retention is dictated by the colour swath width (~2-6 km vs the 6 km full
+  HiRISE footprint), not by tile content.
+- **Cohort I/F medians**: IR=0.169, RED=0.165, BG=0.077. All inside the
+  expected 0.05-0.30 range for Mars dusty-equatorial regolith.
+- **Cohort dust_index (RED/BG) range**: p5=1.64, p50=1.95, p95=2.35.
+- **Per-image dust_index medians**: range 1.53 - 2.45 — real cross-image
+  variation, ~50 % spread, consistent with regional dust differences.
+- **cos(i) range**: 0.30 (ESP_066634_2210, incidence 72°) to 0.76 (the high-sun
+  bracket). The wide range means Lambertian correction is doing meaningful work
+  for cross-image pooling (Stage 7d) — without it the high-incidence images
+  would systematically look 2.5× darker than the low-incidence ones.
+
+### Runtime characteristics + the slow-outlier note
+
+Wall clock per image varied from **11 s** (ESP_051943_2270, 632 tiles) to
+**61 min** (ESP_049242_2115, 572 tiles) — the latter is a 100× slowdown vs
+its peers despite similar tile count + map_scale. A second outlier
+(ESP_053989_2260, 25 min) showed the same pattern. Both are 0.5 m/px JP2s with
+no obvious metadata difference from the fast peers. Likely cause: codec-level
+tile-cache misses on the specific JP2 layout of those products. Workaround if
+re-runs become a bottleneck: download into a local GeoTIFF first (one-off
+~3 min decode), then process from there. Acceptable as-is for the one-shot
+Stage 7c run.
+
+### Outputs (gitignored, regenerable)
+
+- `dataset_v2/features_colour.parquet` — 9 860 rows; joinable on
+  `(obs_id, scale_idx, ti, tj)` to `dataset_v2/labels/{ObsId}.parquet`.
+- `dataset_v2/features_colour_trio.parquet` — superseded sanity-run artefact
+  (trio only, 542 rows). Safe to delete; left in place pending Stage 7d use.
+
+### Code changes (tracked)
+
+- `src/colour.py`: added `ctx_bounds_to_source_bbox` + `windowed_colour_read`
+  helpers (the Stage 7c primitives that absorbed the would-be 7b reprojection).
+- `scripts/run_stage7c_features.py`: new — argparse-driven runner with `--only`,
+  `--scale-idx`, `--out`, `--min-tile-pixels` flags.
+- `scripts/probes/_verify_stage7c_trio.py`: cross-checks the trio output's
+  within-image direction-of-effect against the Stage 7.0 verdict table.
+- `scripts/probes/_summarise_stage7c.py`: cohort summary helper (numbers above).
+- `tests/test_colour.py`: 8 unit tests covering `region_means`,
+  `lambertian_correct`, `ctx_bounds_to_source_bbox`, `windowed_colour_read`,
+  and the IR/RED/BG band-index constants. All passing.
+- `.gitignore`: `scripts/probes/*.log` added (for the run log).
+- **Pytest suite**: 233 fast tests pass; +8 new from `test_colour.py`.
+
+### Stage 7d / 7e prerequisites now satisfied
+
+`dataset_v2/features_colour.parquet` is the single input both stages need.
+Stage 7d (pooled cross-image boulder-rich vs boulder-poor test) can now run
+without further data engineering. Stage 7e (formal dust analysis) refines the
+`dust_index` proxy + adds shadow masking but uses the same parquet as its base.

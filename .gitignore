@@ -44,6 +44,7 @@ models/
 
 # Background-sweep logs
 logs/
+scripts/probes/*.log
 
 # Claude Code session-local state (settings.json + settings.local.json are committed
 # manually; the lock file is per-session and must not be tracked).

@@ -193,6 +193,52 @@ def region_means(
     }
 
 
+def ctx_bounds_to_source_bbox(
+    bounds_ctx, transformer
+) -> tuple[float, float, float, float]:
+    """Map a (xmin, ymin, xmax, ymax) tile bounds from the CTX target CRS to the
+    HiRISE source CRS, returning the axis-aligned bbox of the four transformed corners.
+
+    The CTX→source-CRS reprojection is non-affine, so the four corners do not in general
+    map to an axis-aligned rectangle. Taking the bbox of the four mapped corners
+    over-approximates the true tile footprint by a few pixels at most at the
+    metre-per-pixel scales we work at — acceptable since the only effect is that a tile
+    on the swath edge may include 1–2 extra colour pixels from outside its true CTX
+    footprint. Standard tile-bounds reprojection pattern.
+    """
+    xmin, ymin, xmax, ymax = bounds_ctx
+    xs = [xmin, xmin, xmax, xmax]
+    ys = [ymin, ymax, ymin, ymax]
+    sx, sy = transformer.transform(xs, ys)
+    return (min(sx), min(sy), max(sx), max(sy))
+
+
+def windowed_colour_read(
+    ds, bounds_ctx, *, transformer, jp2_bounds=None
+):
+    """High-level Stage 7c primitive: take a CTX-CRS tile bounds + an open COLOR.JP2
+    dataset + a pre-built CTX→source-CRS transformer, return the windowed 3-band
+    `(arr, transform)` if the tile intersects the swath, or `(None, None)` if it
+    doesn't.
+
+    `jp2_bounds` is an optional pre-fetched `ds.bounds` tuple (one fewer attribute
+    access per tile when iterating many tiles for one image). Caller is responsible
+    for opening / keeping open the rasterio dataset across many tile reads.
+
+    Wraps `ctx_bounds_to_source_bbox` + a cheap CTX-bbox / JP2-bounds intersection
+    short-circuit + `read_color_window`. Pulls together the per-tile pattern from
+    the Stage 7.0 Test B probe so Stage 7c doesn't need to reimplement it.
+    """
+    src_bbox = ctx_bounds_to_source_bbox(bounds_ctx, transformer)
+    if jp2_bounds is None:
+        jp2_bounds = ds.bounds
+    # Cheap intersection short-circuit before the JP2 windowed read.
+    if (src_bbox[2] < jp2_bounds[0] or src_bbox[0] > jp2_bounds[2]
+            or src_bbox[3] < jp2_bounds[1] or src_bbox[1] > jp2_bounds[3]):
+        return None, None
+    return read_color_window(ds, src_bbox)
+
+
 def polygon_masks(
     polygon_geom,
     buffer_inner_m: float,
