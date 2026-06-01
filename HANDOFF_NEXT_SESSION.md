@@ -37,6 +37,15 @@ of per-image incidence/emission/scaling/swath fields ready for any Stage 7b-7e
 work. The two images without colour are `ESP_055690_2200` and `ESP_055978_2270`
 (latter was the original 7.0 trio member, already substituted).
 
+**Stage 7b was eliminated, not done.** On 2026-05-31 night Brian made the
+architectural call to *stay in source CRS* — no per-image colour raster reprojection
+cache. Stage 7c absorbs what 7b would have done by reprojecting each *tile bounds*
+CTX→source-CRS at read time (the Stage 7.0 Test B pattern). The effective ladder
+is now `7.0 ✅ → 7a ✅ → ~~7b~~ skipped → 7c → 7d → 7e`. Captured in
+[`PLAN_Compositional.md`](PLAN_Compositional.md) §3 table (7b struck through) +
+top-of-file revisions item 7, and a full
+[`DECISIONS.md`](DECISIONS.md) 2026-05-31 night entry "Stage 7b skipped (folded into 7c)".
+
 **Path A (banking wins from Stage 6) is still on the docket**, untouched this
 session.
 

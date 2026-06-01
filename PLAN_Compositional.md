@@ -33,6 +33,11 @@ collected here for quick reference):
 6. **§8 q1 partial answer** — 2 of 3 candidates checked have COLOR.JP2 (66 %).
    Suggests ~60–80 % coverage across the v2 cohort, but only the trio is verified.
    Full audit deferred to Stage 7a.
+7. **Stage 7b skipped (2026-05-31 night)** — folded into 7c via the "stay in source CRS"
+   architectural call. No per-image colour raster cache is built; Stage 7c reprojects
+   each tile bounds CTX → source-CRS at read time (proven by the Stage 7.0 Test B
+   pattern). See §3 table for the updated stage list and the §3 paragraph that
+   captures the decision.
 
 ## 1. Goal (one paragraph)
 
@@ -124,14 +129,14 @@ improvements of Stage 6).
 
 | Sub-stage | What | Notes |
 |---|---|---|
-| **7.0** | **Feasibility test on 2–3 images using actual BoulderNet labels, NOT predictions** | **Gate for Stages 7a–7e.** De-risks the methodology end-to-end before building the full pipeline. Details in §3.1 below. |
-| **7a** | Discover + cache HiRISE colour JP2s for each manifest ObsId | New Stage 1-like fetch. ~200–500 MB per ObsId for the IRB + RGB pair. |
-| **7b** | Per-image radiometric correction + reprojection of colour bands onto the CTX grid | Mirrors Stage 1/2 reprojection logic but on colour bands; needs Lambertian / photometric correction for incidence angle (`I/F = cos(i) * a_0` first-order). |
-| **7c** | Per-tile colour features: mean BG, mean RED, mean IR, plus band ratios IR/RED, IR/BG, BG/RED, and a dust index (§5.1) | Joinable on `(scale_idx, ti, tj)` to the existing feature parquet. |
+| **7.0** | **Feasibility test on 2–3 images using actual BoulderNet labels, NOT predictions** | **Gate for Stages 7a–7e.** De-risks the methodology end-to-end before building the full pipeline. Details in §3.1 below. **Status 2026-05-31: PASS (a).** |
+| **7a** | Discover + cache HiRISE colour JP2s for each manifest ObsId | New Stage 1-like fetch. **Status 2026-05-31 night: DONE — 37/39 v2 ObsIds (94.9 %) have a PDS COLOR.JP2; 9.1 GB cached under `cache_v2/hirise_color/`, plus `coverage.parquet` and `lbl_metadata.parquet`.** |
+| ~~**7b**~~ | ~~Per-image radiometric correction + reprojection of colour bands onto the CTX grid~~ | **SKIPPED 2026-05-31 — folded into 7c.** Architectural decision: *stay in source CRS*. Rather than pre-reprojecting every COLOR.JP2 onto the CTX grid (a ~10 GB derived cache), Stage 7c reprojects each *tile bounds* CTX → source-CRS at read time and does a windowed COLOR.JP2 read (the Stage 7.0 Test B pattern, proven on the trio). This eliminates the 7b cache, avoids a reprojection-induced resampling step on the colour bands, and trades it for ~1 windowed JP2 read per tile (cheap). Lambertian correction moves from "Stage 7b raster pass" to "Stage 7c per-tile arithmetic" (still applied at I/F-extraction time for any cross-image pooled features; cancels in within-image diffs and band ratios per §5.3). |
+| **7c** | Per-tile colour features: mean BG, mean RED, mean IR, plus band ratios IR/RED, IR/BG, BG/RED, and a dust index (§5.1) | Joinable on `(obs_id, scale_idx, ti, tj)` to the existing feature parquet. **Now also owns the source-CRS reprojection + Lambertian correction inherited from 7b.** |
 | **7d** | Statistical comparison: boulder-rich vs boulder-poor tile spectra, per image and pooled | The hypothesis test (§4). |
 | **7e** | Dust-confound analysis: does the colour difference look more like dust or like composition? | (§5). |
 
-Stages 7a / 7b are the data-engineering chunks; 7c / 7d / 7e are the analysis chunks.
+Stage 7a is the data-engineering chunk; ~~7b~~ (skipped) and 7c / 7d / 7e are the analysis chunks.
 **Stage 7.0 is a separate prerequisite that uses a hand-cut subset of the data** and is the
 gating decision for whether to invest in the full pipeline.
 
@@ -376,9 +381,9 @@ manifest BoulderLabel or with geographic context (latitude, terrain type)?
 | Sub-stage | Effort | Dependencies |
 |---|---|---|
 | **7.0 — Feasibility test (2–3 images on truth labels)** | **1–2 days** | **PDS colour JP2 fetch for 2–3 ObsIds only; Lambertian correction; per-polygon AND per-tile tests on the central swath. Gates 7a–7e.** |
-| 7a — colour JP2 fetch (full v2 cohort) | 1 day | PDS URL discovery per ObsId; ~10 GB cache |
-| 7b — reprojection + photometric correction | 1–2 days | Stage 1/2 logic; Lambertian I/F correction |
-| 7c — per-tile colour features | 0.5 day | Stage 4b machinery |
+| 7a — colour JP2 fetch (full v2 cohort) | 1 day → **DONE 2026-05-31 in ~1 hr** | PDS URL discovery per ObsId; 9.1 GB cache |
+| ~~7b — reprojection + photometric correction~~ | **SKIPPED 2026-05-31** (folded into 7c) | "Stay in source CRS" — no per-image colour raster cache; tile-bounds reproj on read instead |
+| 7c — per-tile colour features (now also owns source-CRS reproj + Lambertian) | 0.5–1 day | Stage 4b machinery + Stage 7.0 Test B read pattern |
 | 7d — statistical comparison | 1 day | scipy, statsmodels |
 | 7e — dust-confound analysis | 1 day | Partial correlation + per-image discrimination |
 | Writeup + figures | 1–2 days | Notebook 14 + a docs/compositional.md paper-Methods style writeup |

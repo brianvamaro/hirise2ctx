@@ -1776,3 +1776,45 @@ From `cache_v2/hirise_color/lbl_metadata.parquet` (37 rows):
   - `cache_v2/hirise_color/lbl_metadata.parquet` (per-image colour metadata for
     fast loading by Stage 7c-7e -- avoids re-parsing 37 LBLs).
 
+
+## 2026-05-31 night — Stage 7b skipped (folded into 7c)
+
+**Decision**: do not build a per-image colour reprojection cache. Stage 7b in
+[`PLAN_Compositional.md`](PLAN_Compositional.md) §3 originally specified "Per-image
+radiometric correction + reprojection of colour bands onto the CTX grid". This
+stage is now **SKIPPED** and its responsibilities are absorbed into Stage 7c.
+
+**Why**:
+
+1. **The Stage 7.0 Test B probe already proved the "stay in source CRS" pattern works**:
+   reproject each *tile bounds* CTX → source-CRS at read time, then do a windowed
+   COLOR.JP2 read in the colour's own (SP1-corrected) CRS. No raster-level reprojection
+   ever runs on the colour bands.
+2. **No double resampling on the colour data**: a 7b pre-reproject + 7c per-tile mean
+   would resample the colour bands twice. The source-CRS path resamples zero times —
+   tile means are computed on native COLOR.JP2 pixels.
+3. **No ~10 GB derived cache** ("colour-on-CTX-grid" raster cache would have been
+   comparable to the raw 9.1 GB COLOR.JP2 cache). Disk + reproducibility win.
+4. **Lambertian correction moves from a raster pass to per-tile arithmetic**, applied
+   inside Stage 7c when extracting I/F. Per §5.3 (and the Stage 7.0 finding), the
+   correction cancels in within-image diffs and band ratios, so it's only structurally
+   needed for cross-image pooled features in Stage 7d — making "raster-level"
+   correction unnecessary in the first place.
+
+**What this changes**:
+
+- No new `cache_v2/colour_reprojected/*` directory.
+- `src.colour.windowed_colour_read(obs_id, tile_bounds_ctx, ...)` becomes the Stage
+  7c primitive (built atop the Stage 7.0 Test B code in
+  `scripts/probes/_stage7_feasibility.py`).
+- Stage 7c output (`dataset_v2/features_colour.parquet`) carries Lambertian-corrected
+  per-tile band means + ratios + `dust_index`, joinable on
+  `(obs_id, scale_idx, ti, tj)` to the existing feature parquet.
+
+**Tradeoff**: every Stage 7c run pays the cost of re-doing windowed COLOR.JP2 reads.
+For 13-band tiles × ~37 images × ~thousands of tiles per image, this is many
+windowed reads — but each is a small block on a local JP2. Empirically the Stage 7.0
+probe ran the same pattern in ~minutes per image. Acceptable.
+
+**Documented in**: `PLAN_Compositional.md` §3 table (7b row struck through),
+top-of-file revisions list (item 7), §7 cost table (7b row marked SKIPPED).
