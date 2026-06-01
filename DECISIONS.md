@@ -1621,3 +1621,158 @@ sweep + plan-documentation session.
     (3) ? Stage 6a spatial context, (4) ? Stage 6b CTX-source illumination, (5) ✓ P5
     binary calibration, (6) ? Stage 6c image-level pre-classifier, (7) ✗ THEMIS /
     HiRISE-surrogate.
+
+## 2026-05-31 — Stage 7.0 compositional feasibility gate: PASS (a)
+
+- **Trio**: `ESP_042964_2160` (high-density positive, model AUC 0.91), `ESP_054000_2255`
+  (anti-signal #1, AUC 0.40), `ESP_055253_2245` (anti-signal #2, AUC 0.42, **substituted
+  for `ESP_055978_2270` which has no PDS COLOR.JP2** — verified directly).
+- **PDS layout** — verified 2026-05-31: PDS publishes a SINGLE
+  `{ObsId}_COLOR.JP2` per observation, not separate IRB+RGB JP2s as
+  `PLAN_Compositional.md` originally assumed. It is a 3-band band-sequential JP2 in
+  band order **[IR (~900 nm), RED (~700 nm), BG (~500 nm)]**, `uint16`, in **I/F**
+  units after `physical = DN * SCALING_FACTOR + OFFSET` (both fields in
+  `COLOR.LBL`). Resolution typically 0.25 m/px but can be 0.5 m/px (verified for
+  `ESP_054000_2255`). URL convention:
+  `https://hirise.lpl.arizona.edu/PDS/RDR/ESP/ORB_{orbit_range}/{ObsId}/{ObsId}_COLOR.JP2`.
+- **Coverage** — colour swath is empirically ~2.4 km wide on the trio (not 1.0-1.3 km
+  as previously estimated). 2 of 3 candidates had COLOR.JP2, suggesting ~60-80 %
+  v2-cohort coverage. Full audit deferred to Stage 7a.
+- **HiRISE PDS SP1 bug also poisons COLOR.JP2** — same producer artifact as RED.JP2.
+  The CRS embedded in COLOR.JP2 reports `Standard_Parallel_1=0` even though pixel
+  coords are under the corrected SP1=`pds_center_lat`. The fix in `src/colour.py`:
+  override the JP2's CRS with `corrected_source_crs(obs_id)` from the Stage 1 sidecar
+  (`cache_v2/reprojected_detections/{ObsId}.json`). Without this override polygon
+  swath-overlap is 0 %; with it, 47-65 %.
+- **Lambertian correction cancels in within-image diffs and band ratios** —
+  `I/F_corrected = I/F_obs / cos(i)` is a per-image multiplicative scalar, so it
+  vanishes from (interior − ring) and from `IR/BG`, `IR/RED`, `RED/BG` ratios. The
+  Test A and Stage 7e ratio-based discriminators are Lambertian-invariant. Cross-image
+  pooling (Stage 7d §4.2) still requires the correction. Added to
+  `PLAN_Compositional.md` §5.3.
+
+### Per-image results (probe: `scripts/probes/_stage7_feasibility.py`, n=800/img sampled)
+
+| ObsId | Test A IR/BG d, p | Test A IR/RED d, p | Test A dust_index d, p | Test B dust_index d, p | partial r(IR/BG, rich \| dust) |
+|---|---|---|---|---|---|
+| ESP_042964_2160 | +0.94, 2.5e-34 | +1.28, 3.4e-38 | +0.77, 1.2e-27 | n_rich=5 (too few) | +0.07, p=0.40 (dust-explained) |
+| ESP_054000_2255 | +0.05, 0.82 | −0.19, 9e-4 | +0.09, 0.65 | +0.31, 0.012 | −0.09, p=0.16 |
+| **ESP_055253_2245** | **−0.34, 1.8e-12** | **−0.71, 1.7e-30** | **−0.22, 3.4e-7** | n_rich=8 (too few) | **+0.16, p=0.037 (survives dust)** |
+
+### Verdict against `PLAN_Compositional.md` §3.1 pass conditions
+
+- **(a) Pass criterion met** (`p < 0.05` AND `|d| > 0.3` anywhere): YES, all 3 images
+  show some signal — ESP_042964_2160 dramatically (d > 0.7 in ratios), ESP_055253_2245
+  in band ratios (d −0.34 to −0.71), ESP_054000_2255 in absolute bands only.
+- **Dust-confound discriminator**: ESP_042964_2160's IR/BG signal is fully
+  dust-attributable (marginal r=0.156 → partial r=0.070, p=0.40). ESP_055253_2245's
+  IR/BG signal **survives dust control** (marginal r=0.252 → partial r=0.159,
+  p=0.037) — a real composition signal in the *anti-signal* image where the model
+  fails. ESP_054000_2255's per-polygon ratio signal is null to begin with.
+
+**Final verdict: PASS (a) — composition signal detected (dust-controlled).**
+
+Scientifically interesting:
+- The two boulder populations have *opposite-direction* compositional shifts (042964
+  redder than surroundings, 055253 bluer). Suggests different source / transport
+  histories.
+- The spectral test surfaces a real boulder-vs-surroundings signal in
+  ESP_055253_2245, an image where the rock-abundance model fails (AUC 0.42). The
+  compositional analysis is complementary, not redundant, to CTX-texture inference.
+- ESP_054000_2255 (also anti-signal) shows no compositional signal at the
+  per-polygon scale — boulders there are spectrally indistinguishable from
+  surroundings except for shadow darkening. Supports H_local for that image.
+
+### Implementation artefacts
+
+- `src/colour.py` — LBL parse, SP1-corrected CRS loader, Lambertian, region-mean
+  helper, polygon-ring-mask helper.
+- `scripts/probes/_fetch_color.py` — fetches `{ObsId}_COLOR.JP2` + `.LBL` for the trio
+  (~842 MB total, single-connection HTTP).
+- `scripts/probes/_stage7_feasibility.py` — Test A (paired) + Test B (unpaired) +
+  per-image incremental parquet saves.
+- `notebooks/14_compositional_feasibility.ipynb` — renders + verdict; partial
+  correlation done in-notebook.
+- `cache_v2/stage7/{test_a,test_b}_per_polygon|tile{,_<ObsId>}.parquet` and
+  `*_summary.parquet`, plus `dust_summary.parquet` for the discriminator.
+
+### Recommendation
+
+Stage 7.0 pass → proceed to Stage 7a (colour-JP2 fetch + audit across the v2 cohort)
+when banking-the-wins (Path A) is complete or in parallel. Per the §3.1 conditional
+pass framing, the deliverable can be framed as *both* compositional difference
+(ESP_055253_2245) and dust-age difference (ESP_042964_2160) — since the two
+mechanisms appear in different images, both narratives have evidence.
+
+### Caveats / known-limitations of the feasibility probe
+
+- Each image was sampled to 800 polygons for speed; 259-362 survived the
+  `MIN_POLYGON_PIXELS=8 / MIN_RING_PIXELS=16` filter. Full population would
+  ~12-30× the sample, giving stronger statistics but no expected qualitative change.
+- Test B's per-image partition had too few boulder-rich tiles (n=5, 46, 8) for stable
+  Mann-Whitney on two of three images. Pooled-cross-image Test B is a Stage 7d
+  follow-up.
+- Within-polygon spectra include some boulder shadow. The absolute-band negative
+  diffs in all three images are largely shadow effects; band ratios are the
+  composition-diagnostic signals.
+- Lambertian-only correction. No Hapke / Minnaert; deferred per `PLAN §5.3` until
+  per-image effects are shown to dominate.
+
+## 2026-05-31 night — Stage 7a colour-coverage audit + bulk fetch
+
+- **Coverage audit** (`scripts/run_stage7a_audit.py`, HEAD-probed all 39 v2 ObsIds):
+  **37 / 39 ObsIds have a PDS `COLOR.JP2`** (94.9 %). The two without are
+  `ESP_055690_2200` and `ESP_055978_2270` (the latter was already replaced in the
+  Stage 7.0 trio). The 94.9 % rate is substantially higher than
+  `PLAN_Compositional.md §8 q1` estimated (~60-80 %).
+- **Total fetch volume** for the available 37 products: **9 106 MB ≈ 9.1 GB**.
+  Per-image JP2 sizes 86 MB - 705 MB (median ~190 MB). Matching `.LBL`s are
+  8 KB each (37 × 8 KB ≈ 300 KB negligible).
+- **Coverage cache layout** (`cache_v2/hirise_color/`):
+  - `coverage.parquet` -- per-ObsId audit result (URL, HTTP status, byte sizes,
+    `has_color` boolean, audit timestamp).
+  - `{ObsId}_COLOR.JP2` -- raw JP2 for every available image (the 37).
+  - `{ObsId}_COLOR.LBL` -- PDS3 metadata sidecar.
+  - `lbl_metadata.parquet` -- unified table of parsed LBL fields per ObsId
+    (incidence, emission, phase, solar longitude, scaling/offset for I/F, map
+    scale m/px, swath dimensions). Built by `scripts/run_stage7a_fetch.py` after
+    all `.LBL`s are present. Use this for any cross-image normalisation /
+    photometric correction without re-parsing 37 LBLs.
+- **Transient fetch error handling**: first fetch attempt hit a `WinError 10054`
+  (PDS LPL connection reset) mid-stream after 197 MB. `scripts/run_stage7a_fetch.py`
+  now retries each failed file up to 4 times with 1/5/15/45 s exponential backoff
+  before giving up on it. The `.partial` tempfile is auto-cleaned between attempts.
+- **PLAN §8 q1 answer**: ~95 % colour coverage. The two without colour are
+  `ESP_055690_2200` and `ESP_055978_2270` -- both will be flagged as "colour-test
+  not applicable" in any cross-image Stage 7d output rather than dropped from the
+  rock-abundance side.
+
+### Cohort-wide colour metadata distribution (after fetch + LBL parse)
+
+From `cache_v2/hirise_color/lbl_metadata.parquet` (37 rows):
+
+- **Incidence angle range**: **40.2° to 72.4°** (cos i 0.30 to 0.76). The
+  high-incidence subset (>60°) will have substantial within-polygon shadow
+  fractions; per-image shadow masking via the Stage 4b `shadow_fraction` machinery
+  becomes more important than the Stage 7.0 trio results suggested. (The trio's
+  incidences were 40.7° / 45.6° / 60.3° -- bracketing but not spanning the cohort.)
+- **Colour swath width range**: **2018 m to 6351 m**. The PLAN §2.1 originally
+  estimated a ~1.0-1.3 km central swath; the trio refined that to ~2.4 km; the
+  cohort spans nearly 3× either estimate. Several images cover essentially the
+  full HiRISE width (~6 km) in colour, which means *every* boulder polygon in
+  those images is colour-eligible -- a much better operational situation than the
+  PLAN feared.
+- **Colour map scale distribution**: 24 images at **0.5 m/px**, 13 at **0.25 m/px**.
+  This is the OPPOSITE of what the trio sample suggested (2 at 0.25, 1 at 0.5).
+  Note for Stage 7c: `min_polygon_pixels` and `ring_pixels` thresholds will need
+  per-image scaling -- an 8-px polygon at 0.5 m/px is a 2 m² boulder; at 0.25 m/px
+  it's 0.5 m². Either rescale thresholds in metres (preferred) or scale
+  per-image-aware in pixels.
+- **Files cached** (gitignored, total 8.9 GB):
+  - `cache_v2/hirise_color/{ObsId}_COLOR.JP2` × 37 (range 86 MB - 705 MB,
+    median ~190 MB).
+  - `cache_v2/hirise_color/{ObsId}_COLOR.LBL` × 37 (~8 KB each).
+  - `cache_v2/hirise_color/coverage.parquet` (audit result, 1 row per v2 ObsId).
+  - `cache_v2/hirise_color/lbl_metadata.parquet` (per-image colour metadata for
+    fast loading by Stage 7c-7e -- avoids re-parsing 37 LBLs).
+

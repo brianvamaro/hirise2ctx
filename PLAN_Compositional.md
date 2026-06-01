@@ -1,8 +1,38 @@
 # PLAN — Compositional study of boulders (HiRISE 3 bands)
 
-**Status:** drafted 2026-05-30. **Future work** — not yet started, not yet scheduled.
+**Status:** drafted 2026-05-30. **Stage 7.0 (feasibility gate) — PASS (a) on 2026-05-31.**
+Composition signal detected in 1/3 images survives dust control (ESP_055253_2245:
+partial r=0.16, p=0.037). Full results in
+[DECISIONS.md](DECISIONS.md) 2026-05-31 entry; probe artefacts in `cache_v2/stage7/`;
+renderer + verdict in [`notebooks/14_compositional_feasibility.ipynb`](notebooks/14_compositional_feasibility.ipynb).
+**Recommendation: proceed to Stage 7a-7e** with the dual-narrative framing (composition
++ dust-age) suggested by the trio results.
 Follows [CLAUDE.md §10](CLAUDE.md) "instructor's extra goal" (updated 2026-05-30 to use
 HiRISE 3 bands instead of CRISM).
+
+**Revisions made during 2026-05-31 implementation** (incorporated into the sections below;
+collected here for quick reference):
+
+1. **PDS layout** — corrected §2.1: PDS publishes a *single* `{ObsId}_COLOR.JP2` per
+   observation containing 3 bands (IR / RED / BG, in I/F units), not separate IRB and
+   RGB JP2s. Verified 2026-05-31 by direct PDS dir-listing of all 3 trio candidates.
+2. **Swath width** — empirical width on the trio is ~2.4 km (not 1.0–1.3 km as
+   originally written). Still ~20–40 % of the full HiRISE footprint.
+3. **Trio substitution** — `ESP_055978_2270` has no `COLOR.JP2` in PDS (only the
+   panchromatic RED). Substituted with `ESP_055253_2245` (the *other* anti-signal
+   image, AUC 0.42), giving a stronger contrast structure: 1 favourite + 2 anti-signal
+   images.
+4. **SP1-bug fix applies to COLOR.JP2** — the same upstream HiRISE PDS bug that
+   poisons RED.JP2 CRS metadata (memory: [`hirise_pds_sp1_bug`]) also affects
+   COLOR.JP2. Fix: override `COLOR.JP2` CRS at read time with the Stage 1
+   corrected source CRS from `cache_v2/reprojected_detections/{ObsId}.json`.
+5. **Lambertian correction cancels in paired diffs and band ratios** — added to §5.3.
+   Per-image `cos(i)` is a multiplicative scalar, so `(interior_I/F − ring_I/F)` and
+   `IR/BG`, `IR/RED`, `RED/BG` ratios are invariant under Lambertian correction.
+   Correction is still required for cross-image pooling (§4.2).
+6. **§8 q1 partial answer** — 2 of 3 candidates checked have COLOR.JP2 (66 %).
+   Suggests ~60–80 % coverage across the v2 cohort, but only the trio is verified.
+   Full audit deferred to Stage 7a.
 
 ## 1. Goal (one paragraph)
 
@@ -30,7 +60,7 @@ supports H_transported, **conditional on ruling out dust as the explanation** (�
 
 ## 2. Inputs
 
-### 2.1 HiRISE colour products (NEW — not currently cached)
+### 2.1 HiRISE colour products (cached during Stage 7.0)
 
 Per [HiRISE color documentation](https://www.uahirise.org/pdf/color-products.pdf):
 
@@ -38,17 +68,32 @@ Per [HiRISE color documentation](https://www.uahirise.org/pdf/color-products.pdf
 - **Color CCDs**: 14 total (RED0–RED9 + IR10, IR11, BG12, BG13). Only the central 6 CCDs
   (RED4, RED5, IR10, IR11, BG12, BG13) overlap to produce true colour. The IR + BG bands
   are *missing* from the lateral RED swath.
-- **Coverage**: colour images have a central swath of ~1.0–1.3 km wide; full HiRISE
-  observation is ~6 km wide. So **colour is on the central ~20 % of each HiRISE image only**.
-- **Product types**: PDS publishes RGB (natural) and IRB (false-colour) JP2s separately
-  from the panchromatic RED used in Stages 1–4b. URLs differ from `JP2_URL` in the
-  manifest — need to discover them per ObsId.
+- **Coverage**: colour swath is empirically ~2.4 km wide (verified on the trio,
+  2026-05-31); full HiRISE observation is ~6 km wide. So **colour is on the central
+  ~40 % of each HiRISE image**.
+- **PDS product layout (verified 2026-05-31, supersedes the earlier RGB+IRB
+  guess)**: PDS publishes a SINGLE `{ObsId}_COLOR.JP2` per observation, a 3-band
+  band-sequential JP2 with bands in order [IR, RED, BG] (Band 1 = NIR ~900 nm,
+  Band 2 = RED ~700 nm, Band 3 = BG ~500 nm). Data type is `uint16` in **I/F**
+  (intensity/flux ratio) units after applying the LBL's `SCALING_FACTOR` and
+  `OFFSET` (`physical = DN * scaling + offset`). Resolution is typically 0.25 m/px
+  but can be 0.5 m/px (`ESP_054000_2255` is 0.5). The COLOR.JP2 has its own
+  `.LBL` companion: `{ObsId}_COLOR.LBL`. URL convention is
+  `https://hirise.lpl.arizona.edu/PDS/RDR/ESP/ORB_{orbit_range}/{ObsId}/{ObsId}_COLOR.JP2`
+  parallel to the existing `RED.JP2` URLs.
+- **Not every observation has a COLOR.JP2** — verified absent for
+  `ESP_055978_2270` (one of the original trio candidates). Suggests ~60–80 %
+  coverage across the v2 cohort; full audit deferred to Stage 7a.
+- **SP1-bug also affects COLOR.JP2** — the upstream HiRISE PDS metadata bug that
+  poisons RED.JP2 CRS reports `Standard_Parallel_1=0` even though pixel coords are
+  computed under SP1=`pds_center_lat`. The same bug afflicts COLOR.JP2 in
+  affected images. The Stage 1 corrected source CRS in
+  `cache_v2/reprojected_detections/{ObsId}.json` overrides both files identically.
 
 **Operational implication**: we cannot do a per-tile colour comparison for ALL tiles in
-our v2 dataset. We can only compare colour-covered tiles. The 24-CTX-sources-per-footprint
-finding from notebook 13 §3.2 means a HiRISE footprint's "central swath" maps to roughly
-20 % of the footprint area, which after coverage masking gives ~10–15 % of v2 tiles eligible
-for compositional analysis.
+our v2 dataset. We can only compare colour-covered tiles. With the empirical ~40 %
+central-swath width, after the per-image source-spread accounting from notebook 13 §3.2
+we expect ~20–30 % of v2 tiles eligible for compositional analysis.
 
 ### 2.2 Predicted rock-abundance map
 
@@ -133,12 +178,15 @@ Criteria, in priority order:
 4. **Different latitudes or terrains** if 3+ images are tested — gives a cross-image
    sanity check.
 
-Suggested initial trio (verify colour coverage first):
-- `ESP_042964_2160` — high density, model favourite (AUC 0.91)
-- `ESP_055978_2270` — rare-positive but dense detections per tile
-- `ESP_054000_2255` — the *anti-signal* image (AUC 0.40). If the feasibility test works
-  on this image (where the model fails!), that's strong evidence the spectral test
-  surfaces something the rock-abundance model can't.
+**Final trio (after 2026-05-31 PDS verification)**:
+- `ESP_042964_2160` — high density, model favourite (AUC 0.91). COLOR.JP2 verified.
+- `ESP_054000_2255` — anti-signal #1 (AUC 0.40, ρ −0.25, lift 0.29×). COLOR.JP2 verified.
+- `ESP_055253_2245` — anti-signal #2 (AUC 0.42). COLOR.JP2 verified. **Substituted for
+  the original `ESP_055978_2270`**, which has no COLOR.JP2 in PDS (verified directly).
+  The substitute is *better* for the gate: two anti-signal images means if the spectral
+  test surfaces boulders in BOTH where the model fails, that's much stronger evidence
+  the colour signal is complementary to CTX-texture inference than a single 1-vs-1
+  contrast would give.
 
 **Methodology for 7.0**:
 
@@ -284,6 +332,11 @@ Per image and pooled:
   on a sloped surface). Mitigate via simple Lambertian correction at Stage 7b:
   `I/F_corrected = I/F_observed / cos(incidence_angle)`. More sophisticated corrections
   (Hapke, Minnaert) deferred unless first-pass is dominated by photometric variation.
+  **Note (2026-05-31): the per-image Lambertian correction is a multiplicative scalar,
+  so it CANCELS in (interior − ring) paired differences (Test A) AND in all band ratios
+  (`IR/BG`, `IR/RED`, `dust_index = RED/BG`). The within-image Test A results and the
+  ratio-based Stage 7e dust discriminator are therefore Lambertian-invariant. Cross-image
+  pooling (§4.2) still requires the correction.**
 - **Atmospheric scattering**: scattered light is redder than direct sunlight, so the
   apparent `dust_index` of any surface depends on atmospheric opacity at acquisition
   time. The HiRISE PDS LBL includes the optical depth (`OPTICAL_DEPTH`) which we can use
@@ -338,9 +391,13 @@ risk at ~2 days** if the methodology turns out not to work.
 
 ## 8. Open questions for runtime (to surface via AskUserQuestion when execution starts)
 
-1. **Colour coverage per ObsId**: how many of the 38 v2 images actually have IRB +
-   RGB products in PDS? (Suspect ~60–80 % based on standard HiRISE acquisition modes,
-   but needs PDS query at Stage 7a.) **VERIFY AT RUNTIME.**
+1. **Colour coverage per ObsId**: **ANSWERED 2026-05-31** —
+   `scripts/run_stage7a_audit.py` HEAD-probed all 39 v2 ObsIds: **37 / 39 (94.9 %)
+   have a PDS `COLOR.JP2`**, total fetch volume 9.1 GB. The two without are
+   `ESP_055690_2200` and `ESP_055978_2270` (the latter was already replaced in
+   the 7.0 trio). Coverage cache layout pinned in
+   [`DECISIONS.md`](DECISIONS.md) 2026-05-31 night entry. The earlier 60–80 %
+   estimate was too pessimistic; "no colour" is the exception, not the rule.
 2. **Photometric correction sophistication**: first-pass Lambertian only, or invest in
    Hapke / Minnaert? Probably Lambertian is fine for this first study; flag for revision
    if the per-image effects dominate the per-tile signal.
