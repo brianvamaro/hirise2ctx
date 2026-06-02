@@ -468,3 +468,49 @@ This last point is important and parallel to the HiRISE-LBL "out of scope" findi
 [PROMOTION_QUEUE.md](PROMOTION_QUEUE.md): **HiRISE colour features are out of scope as
 model inputs for the same reason**. They're an *analysis* layer on top of the model
 output, not a model input.
+
+## 11. Future work — provenance disambiguation beyond Stage 7e
+
+The Stage 7d / 7e pipeline answers "is the colour signal composition or dust?" but it does
+not by itself resolve "are the boulders locally sourced or transported?", because two
+different geological scenarios can produce the same kind of band-ratio residual after dust
+control:
+
+1. **Surface-maturity confound (locally sourced, same parent rock)** — a boulder is a fresh,
+   intact mineral surface; the surrounding regolith is the mechanically pulverised + chemically
+   weathered version of *the same* parent rock (oxidation rims, hydrated alteration products
+   from olivine breakdown). On Mars these alteration products are ferric-shifted, so a "boulders
+   less ferric than surroundings" residual is consistent with locally-sourced boulders that
+   merely look spectrally distinct because of weathering state — not because they came from
+   anywhere else. Crater-derived ejecta is the textbook case: boulder + ejecta blanket share a
+   parent rock by construction, so the prediction is null *unless* surface maturity dominates.
+
+2. **Transported, distinct parent (long-range emplacement)** — boulder fields not from local
+   impact ejecta but from distal sources. A significant working hypothesis for several of the
+   v2 cohort boulder fields is **megatsunami transport** from the late-Hesperian outflow events
+   into the northern lowlands (see [Rodriguez et al. 2016, *Sci. Reports*](https://doi.org/10.1038/srep25106)
+   and [Costard et al. 2017, *JGR Planets*](https://doi.org/10.1002/2016JE005230)). The cohort
+   latitudes (~40–46°N, eastern Chryse / western Arabia margins) are consistent with proposed
+   tsunami-deposit zones. Under this scenario the boulders are a mixed assemblage from highland
+   source regions and should be compositionally *distinct* from the local lowland substrate —
+   a real provenance signal, not a maturity signal.
+
+Stage 7d cannot distinguish (1) from (2). To resolve provenance:
+
+- **Quick (manual)**: classify each v2 ObsId by terrain context using the HiRISE browse images
+  ({crater-ejecta-dominated, plains, mass-wasting, mixed, candidate-tsunami-deposit}). Add a
+  `terrain_class` column to the manifest. Stage 7d's per-image effect sizes already exist —
+  re-stratify and compare. Crater-ejecta tiles where the residual *persists* point to (1);
+  candidate-tsunami tiles where the residual is *distinct in direction* from crater-ejecta
+  tiles point to (2). ~half a day.
+- **Cleaner**: cross-reference against the [Robbins & Hynek 2012](https://doi.org/10.1029/2011JE003966)
+  crater catalog to flag tiles within N crater radii of catalogued impacts; restrict the analysis
+  to crater-proximal vs crater-distal and check whether the composition residual concentrates
+  in the latter.
+- **Most rigorous**: compare the colour signature of candidate-tsunami boulder fields against
+  the spectral signature of inferred southern-highlands source terrains (CRISM or HiRISE colour
+  of plausible upstream source units). Match would support (2); mismatch with the local lowland
+  regolith composition would too.
+
+None of this is in scope for the current Week-1/2 work; recording here so the maturity-vs-
+provenance disambiguation is not lost as a follow-up study. Added 2026-06-02.
