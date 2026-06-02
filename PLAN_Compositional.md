@@ -38,6 +38,17 @@ collected here for quick reference):
    each tile bounds CTX → source-CRS at read time (proven by the Stage 7.0 Test B
    pattern). See §3 table for the updated stage list and the §3 paragraph that
    captures the decision.
+8. **Stage 7d PASS (2026-06-02)** — pooled standardised |d| 0.21 – 0.37 (p ≤ 1e-26)
+   on rich vs poor across all 6 features under both P4_area and P2_count partitions.
+   Partial-dust |d| 0.07 – 0.16 (p ≤ 1e-15) survives on all 5 non-dust features —
+   composition signal persists after dust control, strongest in the band ratios
+   `IR/BG` and `IR/RED` (smallest dust-shrinkage: 42 %, 54 %). Single bands shrink
+   67 – 80 % under dust control, i.e. mostly dust-loading. The dust narrative
+   explains ~50 – 80 % of the raw effect; the composition narrative explains the
+   remaining ~20 – 50 %. Per-image sign consistency 0.77 – 0.83 — broad, not driven
+   by outliers. The §4 + §5 questions are now empirically answered for the v2
+   cohort. See [`DECISIONS.md`](DECISIONS.md) 2026-06-02 entry +
+   [`notebooks/15_stage7d_pooled.ipynb`](notebooks/15_stage7d_pooled.ipynb).
 
 ## 1. Goal (one paragraph)
 
@@ -133,8 +144,8 @@ improvements of Stage 6).
 | **7a** | Discover + cache HiRISE colour JP2s for each manifest ObsId | New Stage 1-like fetch. **Status 2026-05-31 night: DONE — 37/39 v2 ObsIds (94.9 %) have a PDS COLOR.JP2; 9.1 GB cached under `cache_v2/hirise_color/`, plus `coverage.parquet` and `lbl_metadata.parquet`.** |
 | ~~**7b**~~ | ~~Per-image radiometric correction + reprojection of colour bands onto the CTX grid~~ | **SKIPPED 2026-05-31 — folded into 7c.** Architectural decision: *stay in source CRS*. Rather than pre-reprojecting every COLOR.JP2 onto the CTX grid (a ~10 GB derived cache), Stage 7c reprojects each *tile bounds* CTX → source-CRS at read time and does a windowed COLOR.JP2 read (the Stage 7.0 Test B pattern, proven on the trio). This eliminates the 7b cache, avoids a reprojection-induced resampling step on the colour bands, and trades it for ~1 windowed JP2 read per tile (cheap). Lambertian correction moves from "Stage 7b raster pass" to "Stage 7c per-tile arithmetic" (still applied at I/F-extraction time for any cross-image pooled features; cancels in within-image diffs and band ratios per §5.3). |
 | **7c** | Per-tile colour features: mean BG, mean RED, mean IR, plus band ratios IR/RED, IR/BG, BG/RED, and a dust index (§5.1) | Joinable on `(obs_id, scale_idx, ti, tj)` to the existing feature parquet. **Now also owns the source-CRS reprojection + Lambertian correction inherited from 7b.** **Status 2026-06-01: DONE — `dataset_v2/features_colour.parquet`, 9 860 rows across 36 / 37 colour-eligible images, computed in 145 min. See [`DECISIONS.md`](DECISIONS.md) 2026-06-01 entry for cohort numbers + the one excluded image (`ESP_046803_2325`, no Stage 4 labels parquet).** |
-| **7d** | Statistical comparison: boulder-rich vs boulder-poor tile spectra, per image and pooled | The hypothesis test (§4). |
-| **7e** | Dust-confound analysis: does the colour difference look more like dust or like composition? | (§5). |
+| **7d** | Statistical comparison: boulder-rich vs boulder-poor tile spectra, per image and pooled | The hypothesis test (§4). **Status 2026-06-02: PASS — pooled standardised |d| 0.21 – 0.37 (p ≤ 1e-26) across all 6 features under both P4_area and P2_count partitions; partial-dust |d| 0.07 – 0.16 (p ≤ 1e-15) survives on all 5 non-dust features. Band ratios (`IR/BG`, `IR/RED`) shrink the least under dust control — strongest composition signal. See [`DECISIONS.md`](DECISIONS.md) 2026-06-02 entry; [`notebooks/15_stage7d_pooled.ipynb`](notebooks/15_stage7d_pooled.ipynb) renders the verdict.** |
+| **7e** | Dust-confound analysis: does the colour difference look more like dust or like composition? | (§5). **Status 2026-06-02: PARTIALLY ANSWERED by 7d's partial-dust discriminator (crude `RED/BG` proxy, no shadow masking). 7e refines with [Atwood-Stone & McEwen 2013](https://doi.org/10.1029/2013GL058355) dust index + Stage 4b `shadow_fraction` masking, expected to sharpen the composition vs dust attribution.** |
 
 Stage 7a is the data-engineering chunk; ~~7b~~ (skipped) and 7c / 7d / 7e are the analysis chunks.
 **Stage 7.0 is a separate prerequisite that uses a hand-cut subset of the data** and is the
@@ -384,7 +395,7 @@ manifest BoulderLabel or with geographic context (latitude, terrain type)?
 | 7a — colour JP2 fetch (full v2 cohort) | 1 day → **DONE 2026-05-31 in ~1 hr** | PDS URL discovery per ObsId; 9.1 GB cache |
 | ~~7b — reprojection + photometric correction~~ | **SKIPPED 2026-05-31** (folded into 7c) | "Stay in source CRS" — no per-image colour raster cache; tile-bounds reproj on read instead |
 | 7c — per-tile colour features (now also owns source-CRS reproj + Lambertian) | 0.5–1 day → **DONE 2026-06-01 in 2.4 hr wall-clock + ~30 min of dev** | 9 860 rows / 36 images; the JP2-codec slow-outlier note is in DECISIONS.md |
-| 7d — statistical comparison | 1 day | scipy, statsmodels |
+| 7d — statistical comparison | 1 day → **DONE 2026-06-02 in ~1 hr of dev** | scipy only; runner finishes in ~2 s on the cached parquets |
 | 7e — dust-confound analysis | 1 day | Partial correlation + per-image discrimination |
 | Writeup + figures | 1–2 days | Notebook 14 + a docs/compositional.md paper-Methods style writeup |
 

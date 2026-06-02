@@ -1914,3 +1914,141 @@ Stage 7c run.
 Stage 7d (pooled cross-image boulder-rich vs boulder-poor test) can now run
 without further data engineering. Stage 7e (formal dust analysis) refines the
 `dust_index` proxy + adds shadow masking but uses the same parquet as its base.
+
+## 2026-06-02 — Stage 7d pooled cross-image colour test (PASS)
+
+### Verdict
+
+**Stage 7d passes the PLAN_Compositional.md §4 + §5 criteria** at the chosen
+thresholds. The boulder-rich vs boulder-poor colour difference is real, broad
+across the cohort, AND retains a statistically robust residual after per-image
+dust control — supporting both the dust-age narrative (most of the raw effect)
+AND a composition narrative (the residual). The band ratios `IR/RED` and
+`IR/BG` are the **most compositional** features (smallest dust-shrinkage), as
+expected from the [HiRISE colour
+documentation](https://www.uahirise.org/pdf/color-products.pdf): ratios are
+sensitive to ferric vs ferrous iron and largely independent of dust loading.
+
+### Method (per PLAN §4.2, §4.3, §5.2)
+
+1. Inner-join `dataset_v2/features_colour.parquet` (Stage 7c, 9 860 rows × 36
+   images) with `dataset_v2/labels/{ObsId}.parquet` on
+   `(obs_id, scale_idx, ti, tj)` at S=64.
+2. Add two partition columns:
+   - **P4_area** — `fractional_area >= 1e-2` (P4 binary promotion threshold)
+   - **P2_count** — `boulder_count > 50`
+3. Drop images with < 5 rich OR < 5 poor tiles under the partition. P4_area
+   keeps 30 / 36 images (8 355 tiles); P2_count keeps 33 / 36 (8 995 tiles).
+4. Per-image standardise each colour feature (subtract mean, divide by std).
+5. Pooled Mann-Whitney U + Cohen's d on rich vs poor under three transforms:
+   - `mann_whitney_raw` — raw values
+   - `mann_whitney_standardised` — z-scored per image (the §4.2 headline)
+   - `mann_whitney_partial_dust` — per-image residualised on
+     `dust_index_RED_over_BG` (the §5.2 discriminator)
+6. Per-image MW + Cohen's d on raw features (heterogeneity check).
+7. Spearman rho vs continuous `boulder_count` (per-image standardised + the
+   partial-dust variant + per-image) — §4.3 monotonicity check.
+
+### Numbers (`dataset_v2/stage7d_pooled.parquet`, 639 rows)
+
+**Condition 1 — cross-image significance (P4_area, pooled standardised)**:
+all 6/6 features pass the |d| ≥ 0.1, p ≤ 1e-3 bar.
+
+| feature | Cohen's d | p-value |
+|---|---|---|
+| IR_iof | -0.372 | 1.7e-73 |
+| RED_iof | -0.365 | 5.1e-69 |
+| IR_over_RED | -0.331 | 1.7e-61 |
+| BG_iof | -0.346 | 1.1e-59 |
+| IR_over_BG | -0.279 | 9.9e-43 |
+| dust_index_RED_over_BG | -0.252 | 9.3e-33 |
+
+P2_count gives the same ordering with slightly smaller magnitudes
+(|d| 0.21 – 0.28) — the binary partition rule is not driving the conclusion.
+
+**Per-image sign consistency** (P4): 0.77 – 0.83 of eligible images carry the
+same effect-size sign as the pooled result, across all 6 features. The signal
+is broad, not driven by outliers.
+
+**Condition 2 — dust discrimination (partial-dust, P4_area)**: all 5 non-dust
+features survive at |d| ≥ 0.05, p ≤ 0.05.
+
+| feature | partial-d | partial-p | shrinkage vs raw |
+|---|---|---|---|
+| IR_over_BG | -0.162 | 1.5e-17 | 42 % |
+| IR_over_RED | -0.152 | 8.5e-18 | 54 % |
+| IR_iof | -0.122 | 6.2e-25 | 67 % |
+| RED_iof | -0.082 | 9.1e-18 | 77 % |
+| BG_iof | -0.068 | 3.9e-16 | 80 % |
+
+**Key compositional interpretation**: the band-ratio features `IR/BG` and
+`IR/RED` shrink the *least* (42 %, 54 %) under dust control — i.e. they carry
+the strongest composition signal. The single bands shrink the most (67 – 80 %),
+i.e. their effect is mostly dust-loading. This matches [HiRISE colour
+documentation](https://www.uahirise.org/pdf/color-products.pdf): ratios index
+ferric/ferrous mineralogy and are robust to a multiplicative dust albedo
+shift, whereas single-band differences are largely an "amount of dust" signal.
+
+**Condition 3 — continuous-target monotonicity (Spearman rho vs `boulder_count`)**:
+all 6 standardised Spearman rhos (−0.123 to −0.172) sign-match the binary
+effect direction. Partial-dust Spearman (rhos −0.119 to −0.141) preserves the
+sign on 5/5 non-dust features.
+
+### Interpretation
+
+- Boulder-rich tiles are **systematically darker** than boulder-poor tiles of
+  the same image (negative IR/RED/BG effects).
+- Boulder-rich tiles have **lower dust_index = RED/BG**, i.e. less dust loading
+  — consistent with either younger emplacement age OR boulders shedding dust
+  off their flanks.
+- After per-image residualisation on dust_index, a real residual remains in
+  the ratio features (IR/BG, IR/RED) — boulder-rich material has a different
+  ferric/ferrous signature even after accounting for dust loading. This is the
+  composition signal the PLAN was set up to detect.
+- The dust narrative explains roughly 50–80 % of the raw observed effect; the
+  composition narrative explains the remaining 20–50 %.
+
+### Decisions encoded
+
+1. **Partition rule**: emit both P4_area and P2_count (per the 2026-06-01
+   user decision at session start). Conclusions are rule-robust.
+2. **Per-image inclusion threshold**: `min_per_class = 5` rich AND 5 poor
+   tiles. Drops 6 images under P4, 3 images under P2 — including
+   ESP_054622_2240 (340 rich / 0–2 poor — monoclass) and ESP_059686_2235 /
+   ESP_055055_2255 / ESP_048688_2085 (low rich counts). The signal is robust
+   to this filter.
+3. **Spearman included** for the §4.3 continuous-monotonicity check, not just
+   the binary partition tests (per the 2026-06-01 user decision).
+
+### Code changes (tracked)
+
+- `src/stage7d_pooled.py` — new: load_joined, add_partitions, cohen_d,
+  mann_whitney_with_effect, spearman_with_p, per_image_standardise,
+  residualise_per_image, eligible_images, run_pooled_binary_tests,
+  run_per_image_binary_tests, run_spearman_tests, run_all.
+- `scripts/run_stage7d_pooled.py` — runner; ~2 s on the cached parquet.
+- `scripts/probes/_inspect_nb15_outputs.py` — dev probe to read executed
+  notebook outputs.
+- `tests/test_stage7d.py` — 19 new unit tests (synthetic data; no parquet
+  I/O). All passing.
+- `notebooks/_build_15.py` + `notebooks/15_stage7d_pooled.ipynb` — built +
+  executed.
+- `reports/figures/stage7d_pooled_effect_sizes.png`,
+  `stage7d_per_image_effects.png`, `stage7d_dust_discriminator.png`,
+  `stage7d_spearman_continuous.png`.
+- **Pytest suite**: 272 tests pass (+19 over Stage 7c baseline).
+
+### Outputs (gitignored, regenerable)
+
+- `dataset_v2/stage7d_pooled.parquet` — 639 rows. Schema: `level`, `obs_id`,
+  `partition_rule`, `feature`, `test_type`, `controls_for`, `n_images_pooled`,
+  `n_rich`, `n_poor`, `n_total`, `mean_rich/poor`, `median_rich/poor`,
+  `std_rich/poor`, `statistic`, `p_value`, `effect_size`, `effect_size_type`.
+
+### Next: Stage 7e (formal dust analysis) is the natural follow-up
+
+The partial-dust discriminator above uses the crude `RED/BG` proxy and
+no shadow masking. Stage 7e refines both — a literature-validated dust index
+([Atwood-Stone & McEwen 2013](https://doi.org/10.1029/2013GL058355))
+and explicit shadow exclusion via the Stage 4b `shadow_fraction` machinery —
+and should sharpen (or attenuate) the composition residual reported above.
