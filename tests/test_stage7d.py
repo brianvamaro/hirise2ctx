@@ -241,3 +241,96 @@ def test_run_all_returns_concatenated_results():
     assert set(out["partition_rule"].dropna().unique()) == {"P4_area", "P2_count"}
     levels = set(out["level"].unique())
     assert {"pooled", "per_image"}.issubset(levels)
+
+
+# ---------------------------------------------------------------------------
+# Shadow masking
+# ---------------------------------------------------------------------------
+def test_filter_shadow_none_is_noop():
+    df = pd.DataFrame({"obs_id": ["A"] * 3, "shadow_fraction": [0.0, 0.5, 0.9]})
+    out = s7d.filter_shadow(df, None)
+    assert len(out) == 3
+
+
+def test_filter_shadow_drops_above_threshold():
+    df = pd.DataFrame({"obs_id": ["A"] * 5, "shadow_fraction": [0.0, 0.05, 0.1, 0.15, 0.5]})
+    out = s7d.filter_shadow(df, 0.1)
+    assert list(out["shadow_fraction"]) == [0.0, 0.05, 0.1]
+
+
+def test_filter_shadow_missing_column_errors():
+    df = pd.DataFrame({"obs_id": ["A"]})
+    with pytest.raises(KeyError):
+        s7d.filter_shadow(df, 0.1)
+
+
+# ---------------------------------------------------------------------------
+# Per-image partial-dust + attribution
+# ---------------------------------------------------------------------------
+def test_per_image_partial_dust_skips_dust_col():
+    df = s7d.add_partitions(_make_synth_dataset(np.random.default_rng(31)))
+    out = s7d.run_per_image_partial_dust(df, "P4_area", min_per_class=10)
+    # The dust column itself should not be tested (partial-correlate vs itself)
+    assert (out["feature"] != s7d.DUST_COL).all()
+    # 2 eligible images (A, B) x 5 non-dust features = 10 rows
+    assert len(out) == 10
+    assert (out["test_type"] == "mann_whitney_partial_dust").all()
+
+
+def test_run_all_with_per_image_partial_dust_includes_it():
+    df = s7d.add_partitions(_make_synth_dataset(np.random.default_rng(32)))
+    out = s7d.run_all(df, min_per_class=10, include_per_image_partial_dust=True)
+    pi_partial = out.query(
+        "level == 'per_image' and test_type == 'mann_whitney_partial_dust'")
+    assert len(pi_partial) > 0
+
+
+def _hand_classify_rows(obs_id: str, raw_d: float, raw_p: float,
+                       partial_d: float, partial_p: float,
+                       feature: str = "IR_over_BG") -> tuple[pd.DataFrame, pd.DataFrame]:
+    raw = pd.DataFrame([{
+        "level": "per_image", "obs_id": obs_id, "partition_rule": "P4_area",
+        "feature": feature, "test_type": "mann_whitney_raw",
+        "effect_size": raw_d, "p_value": raw_p,
+        "n_rich": 50, "n_poor": 50,
+    }])
+    partial = pd.DataFrame([{
+        "level": "per_image", "obs_id": obs_id, "partition_rule": "P4_area",
+        "feature": feature, "test_type": "mann_whitney_partial_dust",
+        "effect_size": partial_d, "p_value": partial_p,
+        "controls_for": "dust_index_RED_over_BG",
+    }])
+    return raw, partial
+
+
+def test_classify_image_no_signal():
+    raw, partial = _hand_classify_rows("X", raw_d=0.05, raw_p=0.5,
+                                       partial_d=0.0, partial_p=1.0)
+    assert s7d.classify_image(raw, partial) == "no_signal"
+
+
+def test_classify_image_dust_attributable():
+    raw, partial = _hand_classify_rows("X", raw_d=-0.4, raw_p=1e-8,
+                                       partial_d=-0.02, partial_p=0.4)
+    assert s7d.classify_image(raw, partial) == "dust_attributable"
+
+
+def test_classify_image_composition_residual():
+    raw, partial = _hand_classify_rows("X", raw_d=-0.4, raw_p=1e-8,
+                                       partial_d=-0.18, partial_p=1e-3)
+    assert s7d.classify_image(raw, partial) == "composition_residual"
+
+
+def test_build_attribution_table_per_image():
+    rng = np.random.default_rng(33)
+    df = s7d.add_partitions(_make_synth_dataset(rng))
+    out = s7d.run_all(df, min_per_class=10, include_per_image_partial_dust=True)
+    attr = s7d.build_attribution_table(out, out, "P4_area")
+    # 2 eligible images
+    assert len(attr) == 2
+    assert set(attr["obs_id"]) == {"A", "B"}
+    # Required columns present
+    for feat in s7d.ATTRIBUTION_FEATURES:
+        for suffix in ("_raw_d", "_raw_p", "_partial_d", "_partial_p"):
+            assert f"{feat}{suffix}" in attr.columns
+    assert attr["attribution"].notna().all()

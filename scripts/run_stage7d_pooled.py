@@ -46,20 +46,42 @@ def main() -> int:
                         default=REPO_ROOT / "dataset_v2" / "features_colour.parquet")
     parser.add_argument("--labels-dir", type=Path,
                         default=REPO_ROOT / "dataset_v2" / "labels")
+    parser.add_argument("--ctx-features-dir", type=Path,
+                        default=REPO_ROOT / "dataset_v2" / "features",
+                        help="Stage 4b per-image feature parquets (for shadow_fraction).")
     parser.add_argument("--out", type=Path,
                         default=REPO_ROOT / "dataset_v2" / "stage7d_pooled.parquet")
+    parser.add_argument("--attribution-out", type=Path,
+                        default=REPO_ROOT / "dataset_v2" / "stage7d_per_image_attribution.parquet")
     parser.add_argument("--min-per-class", type=int, default=5)
     parser.add_argument("--scale-idx", type=int, default=s7d.SCALE_IDX_S64)
+    parser.add_argument("--shadow-threshold", type=float, default=None,
+                        help="If set, drop tiles where shadow_fraction > T (e.g. 0.10).")
+    parser.add_argument("--no-attribution", action="store_true",
+                        help="Skip the per-image attribution table emission.")
     args = parser.parse_args()
 
     t0 = time.time()
-    print(f"[stage7d] features = {args.features}")
-    print(f"[stage7d] labels-dir = {args.labels_dir}")
-    print(f"[stage7d] out      = {args.out}")
-    print(f"[stage7d] min-per-class = {args.min_per_class}, scale_idx = {args.scale_idx}")
+    print(f"[stage7d] features         = {args.features}")
+    print(f"[stage7d] labels-dir       = {args.labels_dir}")
+    print(f"[stage7d] ctx-features-dir = {args.ctx_features_dir}")
+    print(f"[stage7d] out              = {args.out}")
+    print(f"[stage7d] attribution-out  = {args.attribution_out}")
+    print(f"[stage7d] min-per-class    = {args.min_per_class}, scale_idx = {args.scale_idx}")
+    print(f"[stage7d] shadow-threshold = {args.shadow_threshold}")
 
     df = s7d.load_joined(args.features, args.labels_dir, scale_idx=args.scale_idx)
     print(f"[stage7d] joined rows: {len(df)} across {df['obs_id'].nunique()} images")
+
+    df = s7d.attach_shadow_fraction(df, args.ctx_features_dir, scale_idx=args.scale_idx)
+    print(f"[stage7d] after shadow-fraction join: {len(df)} rows "
+          f"(shadow_fraction median = {df['shadow_fraction'].median():.4f})")
+
+    n_before = len(df)
+    df = s7d.filter_shadow(df, args.shadow_threshold)
+    if args.shadow_threshold is not None:
+        print(f"[stage7d] shadow-masked rows: {len(df)} / {n_before} "
+              f"({100*len(df)/n_before:.1f}% kept at threshold {args.shadow_threshold})")
 
     df = s7d.add_partitions(df)
     n_rich_p4 = int(df["is_rich_P4"].sum())
@@ -74,13 +96,29 @@ def main() -> int:
         print(f"[stage7d] eligible images for {rule}: {len(keep)} / "
               f"{df['obs_id'].nunique()}")
 
-    print("[stage7d] running pooled + per-image binary tests + Spearman ...")
-    results = s7d.run_all(df, min_per_class=args.min_per_class)
+    include_pi_partial = not args.no_attribution
+    print(f"[stage7d] running pooled + per-image binary + Spearman "
+          f"(per_image_partial_dust={include_pi_partial}) ...")
+    results = s7d.run_all(df, min_per_class=args.min_per_class,
+                          include_per_image_partial_dust=include_pi_partial)
     print(f"[stage7d] result rows: {len(results)}")
 
     print(f"[stage7d] writing {args.out} ...")
     args.out.parent.mkdir(parents=True, exist_ok=True)
     results.to_parquet(args.out, index=False)
+
+    if not args.no_attribution:
+        attr_frames = []
+        for rule in ("P4_area", "P2_count"):
+            attr = s7d.build_attribution_table(results, results, rule)
+            attr_frames.append(attr)
+        attribution = pd.concat(attr_frames, ignore_index=True)
+        attribution.to_parquet(args.attribution_out, index=False)
+        print(f"[stage7d] wrote attribution table: {args.attribution_out}")
+        for rule in ("P4_area", "P2_count"):
+            sub = attribution[attribution["partition_rule"] == rule]
+            counts = sub["attribution"].value_counts()
+            print(f"[stage7d] {rule} attribution counts: {counts.to_dict()}")
 
     # Headline print: pooled standardised, P4 partition, sorted by |effect_size|
     pooled_p4 = results[(results.level == "pooled")

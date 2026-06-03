@@ -93,6 +93,42 @@ def add_partitions(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def attach_shadow_fraction(
+    df: pd.DataFrame,
+    ctx_features_dir: Path | str,
+    scale_idx: int = SCALE_IDX_S64,
+) -> pd.DataFrame:
+    """Inner-join per-tile ``shadow_fraction`` and ``shadow_fraction_strict`` columns.
+
+    Reads ``ctx_features_dir/{ObsId}.parquet`` (the Stage 4b feature output, computed
+    from CTX DN < shadow-DN threshold) and joins on ``(obs_id, scale_idx, ti, tj)``.
+    Tiles missing from the CTX features parquet are dropped (inner join).
+    """
+    ctx_features_dir = Path(ctx_features_dir)
+    keep_cols = ["obs_id", "scale_idx", "ti", "tj",
+                 "shadow_fraction", "shadow_fraction_strict"]
+    frames: list[pd.DataFrame] = []
+    for obs_id in df["obs_id"].unique():
+        path = ctx_features_dir / f"{obs_id}.parquet"
+        if not path.exists():
+            continue
+        sub = pd.read_parquet(path)
+        sub = sub[sub["scale_idx"] == scale_idx][keep_cols]
+        frames.append(sub)
+    shadow = pd.concat(frames, ignore_index=True)
+    return df.merge(shadow, on=["obs_id", "scale_idx", "ti", "tj"], how="inner")
+
+
+def filter_shadow(df: pd.DataFrame, threshold: float | None) -> pd.DataFrame:
+    """Drop tiles where ``shadow_fraction > threshold``. ``None`` is a no-op."""
+    if threshold is None:
+        return df
+    if "shadow_fraction" not in df.columns:
+        raise KeyError("filter_shadow needs a `shadow_fraction` column; "
+                       "call attach_shadow_fraction first")
+    return df[df["shadow_fraction"] <= threshold].copy()
+
+
 # ---------------------------------------------------------------------------
 # Stats primitives
 # ---------------------------------------------------------------------------
@@ -346,17 +382,150 @@ def run_spearman_tests(
     return pd.DataFrame(rows)
 
 
+def run_per_image_partial_dust(
+    df: pd.DataFrame,
+    partition_rule: PartitionRule,
+    feature_cols: Iterable[str] = COLOUR_FEATURES,
+    dust_col: str = DUST_COL,
+    min_per_class: int = 5,
+) -> pd.DataFrame:
+    """Per-image MW + Cohen's d on dust-residualised features (the per-image §5.2 test)."""
+    feature_cols = list(feature_cols)
+    rich_col = _PARTITION_COLS[partition_rule]
+    rows: list[dict] = []
+    for obs_id, sub in df.groupby("obs_id"):
+        n_rich = int(sub[rich_col].sum())
+        n_poor = int((~sub[rich_col]).sum())
+        if n_rich < min_per_class or n_poor < min_per_class:
+            continue
+        for feat in feature_cols:
+            if feat == dust_col:
+                continue
+            resid = residualise_per_image(sub, y_col=feat, x_col=dust_col)
+            rich = resid[sub[rich_col]].to_numpy()
+            poor = resid[~sub[rich_col]].to_numpy()
+            r = mann_whitney_with_effect(rich, poor)
+            rows.append({**_empty_row_skeleton(),
+                         "level": "per_image", "obs_id": obs_id,
+                         "partition_rule": partition_rule, "feature": feat,
+                         "test_type": "mann_whitney_partial_dust",
+                         "controls_for": dust_col,
+                         "n_images_pooled": 1, **r})
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# Per-image attribution classifier (PLAN §6 deliverable)
+# ---------------------------------------------------------------------------
+ATTRIBUTION_FEATURES = ("IR_over_BG", "IR_over_RED")  # the ratio features
+ATTRIBUTION_RAW_D = 0.20
+ATTRIBUTION_RAW_P = 1e-3
+ATTRIBUTION_PARTIAL_D = 0.10
+ATTRIBUTION_PARTIAL_P = 0.05
+
+
+def classify_image(
+    raw_image_rows: pd.DataFrame,
+    partial_image_rows: pd.DataFrame,
+    features: Iterable[str] = ATTRIBUTION_FEATURES,
+    raw_d_thresh: float = ATTRIBUTION_RAW_D,
+    raw_p_thresh: float = ATTRIBUTION_RAW_P,
+    partial_d_thresh: float = ATTRIBUTION_PARTIAL_D,
+    partial_p_thresh: float = ATTRIBUTION_PARTIAL_P,
+) -> str:
+    """Classify a single image into a Stage 7 attribution category.
+
+    Categories (conservative, per the maturity-vs-provenance caveat in
+    PLAN_Compositional.md §11):
+
+      * ``composition_residual``  -- raw signal present in any of ``features``
+        AND partial-dust signal also present (|d| >= ``partial_d_thresh`` and
+        p <= ``partial_p_thresh``) -- provenance ambiguous between locally-
+        sourced-with-maturity vs transported
+      * ``dust_attributable``     -- raw signal present in any of ``features``
+        but partial-dust signal disappears (|d| < ``partial_d_thresh`` OR
+        p > ``partial_p_thresh``)
+      * ``no_signal``             -- raw signal absent in all features
+      * ``inconclusive``          -- ambiguous (only some features pass)
+    """
+    feature_list = list(features)
+    raw = raw_image_rows[raw_image_rows["feature"].isin(feature_list)]
+    partial = partial_image_rows[partial_image_rows["feature"].isin(feature_list)]
+
+    def _passes(rows: pd.DataFrame, d_thresh: float, p_thresh: float) -> set[str]:
+        m = (rows["effect_size"].abs() >= d_thresh) & (rows["p_value"] <= p_thresh)
+        return set(rows.loc[m, "feature"].tolist())
+
+    raw_pass = _passes(raw, raw_d_thresh, raw_p_thresh)
+    partial_pass = _passes(partial, partial_d_thresh, partial_p_thresh)
+
+    if not raw_pass:
+        return "no_signal"
+    if partial_pass:
+        return "composition_residual"
+    if raw_pass and not partial_pass:
+        return "dust_attributable"
+    return "inconclusive"
+
+
+def build_attribution_table(
+    raw_results: pd.DataFrame,
+    partial_results: pd.DataFrame,
+    partition_rule: PartitionRule,
+    features: Iterable[str] = ATTRIBUTION_FEATURES,
+) -> pd.DataFrame:
+    """Per-image attribution table (one row per ObsId)."""
+    raw_pi = raw_results.query(
+        "level == 'per_image' and partition_rule == @partition_rule "
+        "and test_type == 'mann_whitney_raw'")
+    partial_pi = partial_results.query(
+        "level == 'per_image' and partition_rule == @partition_rule "
+        "and test_type == 'mann_whitney_partial_dust'")
+
+    feature_list = list(features)
+    obs_ids = sorted(set(raw_pi["obs_id"]).union(partial_pi["obs_id"]))
+    rows: list[dict] = []
+    for obs_id in obs_ids:
+        raw_sub = raw_pi[raw_pi["obs_id"] == obs_id]
+        partial_sub = partial_pi[partial_pi["obs_id"] == obs_id]
+        category = classify_image(raw_sub, partial_sub, features=feature_list)
+        row = {"obs_id": obs_id, "partition_rule": partition_rule,
+               "attribution": category,
+               "n_rich": int(raw_sub["n_rich"].iloc[0]) if len(raw_sub) else None,
+               "n_poor": int(raw_sub["n_poor"].iloc[0]) if len(raw_sub) else None}
+        for feat in feature_list:
+            raw_f = raw_sub[raw_sub["feature"] == feat]
+            pf = partial_sub[partial_sub["feature"] == feat]
+            row[f"{feat}_raw_d"] = (float(raw_f["effect_size"].iloc[0])
+                                    if len(raw_f) else float("nan"))
+            row[f"{feat}_raw_p"] = (float(raw_f["p_value"].iloc[0])
+                                    if len(raw_f) else float("nan"))
+            row[f"{feat}_partial_d"] = (float(pf["effect_size"].iloc[0])
+                                        if len(pf) else float("nan"))
+            row[f"{feat}_partial_p"] = (float(pf["p_value"].iloc[0])
+                                        if len(pf) else float("nan"))
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
 def run_all(
     df: pd.DataFrame,
     feature_cols: Iterable[str] = COLOUR_FEATURES,
     dust_col: str = DUST_COL,
     min_per_class: int = 5,
+    include_per_image_partial_dust: bool = False,
 ) -> pd.DataFrame:
-    """Run the full Stage 7d suite. ``df`` must already have partition columns."""
+    """Run the full Stage 7d suite. ``df`` must already have partition columns.
+
+    With ``include_per_image_partial_dust=True``, also emits per-image partial-dust
+    rows (needed for the §6 attribution classifier).
+    """
     feature_cols = list(feature_cols)
     parts: list[pd.DataFrame] = []
     for rule in ("P4_area", "P2_count"):
         parts.append(run_pooled_binary_tests(df, rule, feature_cols, dust_col, min_per_class))
         parts.append(run_per_image_binary_tests(df, rule, feature_cols, min_per_class))
+        if include_per_image_partial_dust:
+            parts.append(run_per_image_partial_dust(df, rule, feature_cols, dust_col, min_per_class))
     parts.append(run_spearman_tests(df, feature_cols, dust_col=dust_col))
     return pd.concat(parts, ignore_index=True)
