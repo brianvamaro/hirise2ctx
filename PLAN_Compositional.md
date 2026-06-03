@@ -396,8 +396,9 @@ manifest BoulderLabel or with geographic context (latitude, terrain type)?
 | ~~7b — reprojection + photometric correction~~ | **SKIPPED 2026-05-31** (folded into 7c) | "Stay in source CRS" — no per-image colour raster cache; tile-bounds reproj on read instead |
 | 7c — per-tile colour features (now also owns source-CRS reproj + Lambertian) | 0.5–1 day → **DONE 2026-06-01 in 2.4 hr wall-clock + ~30 min of dev** | 9 860 rows / 36 images; the JP2-codec slow-outlier note is in DECISIONS.md |
 | 7d — statistical comparison | 1 day → **DONE 2026-06-02 in ~1 hr of dev** | scipy only; runner finishes in ~2 s on the cached parquets |
-| 7e — dust-confound analysis | 1 day | Partial correlation + per-image discrimination |
-| Writeup + figures | 1–2 days | Notebook 14 + a docs/compositional.md paper-Methods style writeup |
+| 7e — dust-confound analysis | 1 day | Partial correlation + per-image discrimination. **Partial-dust discriminator done as part of Stage 7d (2026-06-02); the formal [Atwood-Stone & McEwen 2013](https://doi.org/10.1029/2013GL058355) dust index + pixel-level shadow masking refinements remain as future work.** |
+| Writeup + figures | 1–2 days → **DONE 2026-06-02** | Notebooks 14 + 15 + 16 + 17 executed; [`docs/compositional.md`](docs/compositional.md) paper-Methods style writeup at project wrap-up (~1100 lines, 8 figures, 10 references). |
+| Tier 1 + Tier 2 provenance disambiguation (per §11) | 1 day → **DONE 2026-06-03 in ~1.5 hr** | Notebook 17 + Tier 1 OR = 12.0 p = 0.034 + Tier 2 KW null |
 
 **Total**: ~6–9 days end to end (1–2 for 7.0 gate + 5–7 for the full pipeline if 7.0
 passes). Cheap relative to the full Stage 6 work, and **the 7.0 gate caps the downside
@@ -497,20 +498,32 @@ control:
 
 Stage 7d cannot distinguish (1) from (2). To resolve provenance:
 
-- **Quick (manual)**: classify each v2 ObsId by terrain context using the HiRISE browse images
-  ({crater-ejecta-dominated, plains, mass-wasting, mixed, candidate-tsunami-deposit}). Add a
-  `terrain_class` column to the manifest. Stage 7d's per-image effect sizes already exist —
-  re-stratify and compare. Crater-ejecta tiles where the residual *persists* point to (1);
-  candidate-tsunami tiles where the residual is *distinct in direction* from crater-ejecta
-  tiles point to (2). ~half a day.
-- **Cleaner**: cross-reference against the [Robbins & Hynek 2012](https://doi.org/10.1029/2011JE003966)
-  crater catalog to flag tiles within N crater radii of catalogued impacts; restrict the analysis
-  to crater-proximal vs crater-distal and check whether the composition residual concentrates
-  in the latter.
-- **Most rigorous**: compare the colour signature of candidate-tsunami boulder fields against
-  the spectral signature of inferred southern-highlands source terrains (CRISM or HiRISE colour
-  of plausible upstream source units). Match would support (2); mismatch with the local lowland
-  regolith composition would too.
+- ~~**Quick (manual)**: classify each v2 ObsId by terrain context using the HiRISE browse images~~
+  **DONE 2026-06-03** (Tier 1). Used Brian's pre-existing mapping spreadsheet (37 of 39
+  ObsIds annotated). Parsed `deposit_flag` ("Deposit!" in note) and `streamlined_flag`
+  ("streamlined" in note); combined `transport_indicator` is the test variable. Fisher's
+  exact on `transport_indicator × is_composition_residual`: **OR = 12.0, p = 0.034 under
+  P2_count**; OR = 6.38, p = 0.10 under P4_area. **Significant under P2; transport-indicator
+  images are ~6× enriched in `composition_residual`.** See
+  [`docs/compositional.md §4.7`](docs/compositional.md) +
+  [`notebooks/17_provenance_disambiguation.ipynb`](notebooks/17_provenance_disambiguation.ipynb).
+- ~~**Cleaner**: cross-reference against the Robbins & Hynek 2012 crater catalog~~
+  **DONE 2026-06-03** (Tier 2). Fetched [Robbins 2012](https://doi.org/10.1029/2011JE003966)
+  (384 343 craters globally) from [craters.sjrdesign.net](https://craters.sjrdesign.net/).
+  Per-image great-circle distance to nearest crater of D >= {1, 5, 10, 25} km; both center
+  and rim distances. **Kruskal-Wallis null at p > 0.7 across all diameter thresholds and
+  both partition rules** — composition_residual images do NOT cluster at crater-proximal
+  locations. The null is geologically informative: it weakly disfavours
+  locally-sourced-from-crater-ejecta.
+- **Most rigorous (Tier 3, REMAINS)**: compare the colour signature of candidate-tsunami
+  boulder fields against the spectral signature of inferred southern-highlands source
+  terrains (CRISM or HiRISE colour of plausible upstream source units). The **decisive**
+  test that would distinguish transported-from-highland-source from
+  surface-maturity-of-local-bedrock (the latter remains in play after Tiers 1 + 2).
 
-None of this is in scope for the current Week-1/2 work; recording here so the maturity-vs-
-provenance disambiguation is not lost as a follow-up study. Added 2026-06-02.
+**Combined Tier 1 + Tier 2 verdict (2026-06-03)**: modest empirical support for the
+**transported-with-distinct-deposit-character** interpretation over
+**crater-ejecta-locally-sourced**. The **surface-maturity-locally-sourced** alternative
+remains in play and is the natural target for Tier 3. The §6 Q3 question is now at
+"partially achieved" in [`docs/compositional.md §6.2`](docs/compositional.md). Originally
+recorded 2026-06-02 as future work; updated 2026-06-03 with the Tier 1 + Tier 2 results.

@@ -11,10 +11,19 @@ won't touch the code (collaborators, reviewers, committee members) see
 
 ## Status
 
-**Stages 0–5 of the build pipeline are done. Modeling iteration (Stage 6 — model
-improvement) is the current focus.** See
-[PROMOTION_QUEUE.md](PROMOTION_QUEUE.md) for the live docket and
-[docs/modeling_results.md](docs/modeling_results.md) §9–11 for the modeling writeup.
+**Project wrapped at v1-reportable state 2026-06-03.** Stage 7 compositional
+analysis landed at "modest empirical support for transported provenance over
+crater-ejecta-locally-sourced; surface-maturity-locally-sourced alternative
+remains in play and needs Tier 3 (CRISM/HiRISE upstream source-unit comparison)
+to disambiguate." Paper-Methods style writeups in [docs/](docs/).
+
+| Deliverable | Where |
+|---|---|
+| **Headline compositional thread writeup** | [docs/compositional.md](docs/compositional.md) |
+| **Modeling thread methods writeup** | [docs/modeling.md](docs/modeling.md) |
+| **Modeling results (deep dive)** | [docs/modeling_results.md](docs/modeling_results.md) |
+| **Data-pipeline methods writeup** | [docs/methods.md](docs/methods.md) |
+| **Docs index + style guide** | [docs/index.md](docs/index.md) |
 
 **Pipeline (build stages):**
 
@@ -27,27 +36,42 @@ improvement) is the current focus.** See
 | 4 | Label generation on nested ×2 grid (8/16/32/64 CTX px) | ✓ |
 | 4b | Per-tile CTX texture features (9 families) + bundled context patches | ✓ |
 | 5 | Leave-image-out splits + dataset packaging | ✓ schemes `loio_9fold` (v1), `loio_nfold` (v2 38-fold), `within_image_4fold` |
-| 5b | Binary-classification reframing | ✓ (shipped 2026-05-27) |
-| 5c | Within-image diagnostic CV | ✓ (shipped 2026-05-27; "within ≈ LOIO" finding) |
+| 5b / 5c | Binary-classification reframing + within-image diagnostic CV | ✓ (shipped 2026-05-27) |
 
-**Modeling (current focus, Stage 6):**
+**Modeling (Stage 6):**
 
 | Item | Status | See |
 |---|---|---|
 | v2 LOIO modeling A/B (denser labels vs v1 ceiling) | ✓ shipped 2026-05-29 | [modeling_results.md §9](docs/modeling_results.md) |
-| Compression diagnosis + 4 hurdle variants + boulder_count target | ✓ shipped 2026-05-29 (commit a003d33) | [notebook 12](notebooks/12_compression_diagnostic.ipynb), [modeling_results.md §11](docs/modeling_results.md) |
-| Per-image heterogeneity exploration (H3) | ✓ shipped 2026-05-29 night, uncommitted | [notebook 13](notebooks/13_per_image_heterogeneity.ipynb) |
-| Promotion queue + Stage 6 docket (Part A pipeline tweaks; Part B Stage 6 feature engineering) | live docket | [PROMOTION_QUEUE.md](PROMOTION_QUEUE.md) |
+| Phase A2 compression diagnosis + 4 hurdle variants + `boulder_count` target | ✓ shipped 2026-05-29 (`a003d33`) | [modeling_results.md §11](docs/modeling_results.md) |
+| Stage 6a spatial-context neighbour features | ✓ dev-PASS at 5×5/S=32 (promotion deferred) | [modeling_results.md §12](docs/modeling_results.md) |
+| Stage 6b CTX-source illumination + H3 mechanism check | ✓ strict-FAIL net flat; H3 falsified, Stage 6e mechanism empirically validated | [modeling_results.md §13](docs/modeling_results.md) |
+| Stage 6c image-level reliability gate | ✓ soft PASS at +0.056 pooled-global PR-AUC via Strategy B | [modeling_results.md §14](docs/modeling_results.md) |
+| Path A bank (P1+P2 full-v2 LOIO promotion) | open | [PROMOTION_QUEUE.md](PROMOTION_QUEUE.md) |
 
-**220 pytest pass** (was 125 at end-of-pipeline; +95 from modeling-side tests).
-ESP_057469_2215 is excluded from Stage 4 / 4b / 5 sweeps because its polygon bbox
-straddles a Murray Lab tile boundary (see [DECISIONS.md](DECISIONS.md) 2026-05-22
-entry).
+**Compositional analysis (Stage 7):**
 
-**Next: dev-validated changes in [PROMOTION_QUEUE.md](PROMOTION_QUEUE.md) Part A (P1
-`balanced` presence-head fix, P2 `boulder_count` target — +22 % PR-AUC dev win)
-awaiting full-v2 confirmation, plus Stage 6 untested-hypothesis items (spatial-context
-neighbour features, CTX-source illumination angles).**
+| Item | Status | See |
+|---|---|---|
+| Stage 7.0 feasibility gate (3-image trio on truth labels) | ✓ PASS 2026-05-31 | [notebook 14](notebooks/14_compositional_feasibility.ipynb) |
+| Stage 7a HiRISE COLOR.JP2 fetch | ✓ 37 of 39 v2 ObsIds (94.9 %) | [DECISIONS.md](DECISIONS.md) 2026-05-31 night |
+| Stage 7b reprojection cache | ✗ skipped (folded into 7c via "stay in source CRS") | [DECISIONS.md](DECISIONS.md) 2026-05-31 night |
+| Stage 7c per-tile colour features | ✓ 9 860 rows / 36 images, 2026-06-01 | `dataset_v2/features_colour.parquet` |
+| Stage 7d pooled rich-vs-poor + shadow refinement + per-image attribution | ✓ PASS 2026-06-02/03 | [docs/compositional.md §4](docs/compositional.md), [notebooks 15+16](notebooks/) |
+| Provenance disambiguation Tier 1 (terrain context) | ✓ Fisher's exact OR=12 p=0.034 (P2) | [docs/compositional.md §4.7](docs/compositional.md), [notebook 17](notebooks/17_provenance_disambiguation.ipynb) |
+| Provenance disambiguation Tier 2 (Robbins 2012 crater catalog) | ✓ Kruskal-Wallis null (p>0.7); disfavours crater-ejecta-locally-sourced | [docs/compositional.md §4.7](docs/compositional.md), [notebook 17](notebooks/17_provenance_disambiguation.ipynb) |
+| Provenance disambiguation Tier 3 (CRISM/HiRISE upstream source comparison) | open — decisive transport-vs-maturity test | [docs/compositional.md §8](docs/compositional.md) |
+| Stage 7e (Atwood-Stone & McEwen 2013 dust index + pixel-level shadow masking) | open | [docs/compositional.md §8](docs/compositional.md) |
+
+**281 pytest pass.** ESP_057469_2215 is excluded from Stage 4 / 4b / 5 sweeps
+because its polygon bbox straddles a Murray Lab tile boundary (see
+[DECISIONS.md](DECISIONS.md) 2026-05-22 entry). ESP_046803_2325 is in the v2
+cohort with COLOR.JP2 + LBL on disk but never had Stage 4 run; it is excluded
+from Stage 7 (cohort 36 of 37 colour-eligible).
+
+**Next priorities (see [HANDOFF_NEXT_SESSION.md](HANDOFF_NEXT_SESSION.md)):**
+Tier 3 (decisive composition vs maturity test, multi-day) + Stage 7e
+refinement + Path A model bank + ESP_046803_2325 Stage 4 backfill.
 
 ## Setup
 
