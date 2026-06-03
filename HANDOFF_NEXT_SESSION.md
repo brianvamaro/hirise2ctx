@@ -1,10 +1,17 @@
 # Handoff prompt — next session
 
-**Last updated 2026-06-03 — PROJECT WRAPPED at a v1-reportable state.
-Stage 7d closed with shadow masking + per-image attribution. Paper-Methods
-style writeups landed at `docs/compositional.md` + `docs/modeling.md`.
-Unfinished items (Stage 7e refinement, provenance disambiguation, ESP_046803_2325
-backfill, Path A model bank) are recorded as future work, not blockers.**
+**Last updated 2026-06-03 — Provenance disambiguation Tiers 1 + 2 done.
+Tier 1 deposit_flag x composition_residual Fisher's exact p=0.034
+(P2_count); Tier 2 crater proximity null (KW p>0.7). Combined verdict:
+modest empirical support for transported > crater-ejecta-locally-sourced;
+surface-maturity-locally-sourced alternative remains in play and needs
+Tier 3 (CRISM/HiRISE upstream source-unit comparison) to disambiguate.
+Q3 verdict in docs/compositional.md §6.2 updated from "not achieved" to
+"partially achieved".**
+
+Previously (project-state-2026-06-03 entry): Stage 7d closed with shadow
+masking + per-image attribution. Paper-Methods style writeups landed at
+`docs/compositional.md` + `docs/modeling.md`.
 
 Working dir: `c:\Users\brian\Documents\PhD\HiRiseToCTXBoulders\hirise2ctx`.
 Conda: `C:\Users\brian\anaconda3\Scripts\conda.exe run --no-capture-output -n geospatial python -u ...`
@@ -56,26 +63,36 @@ fully). Per-image bimodality remains: 7 images AUC > 0.70, 4 anti-signal
 
 ## Goal of this session (Brian to decide at start)
 
-The project is in a publishable shape. The most likely next moves, in
-order of "tight science follow-up to wrap better":
+Tiers 1 + 2 of the provenance disambiguation programme are now done; the
+project sits at a partial Q3 conclusion (modestly supports transported >
+crater-ejecta-locally-sourced; surface-maturity-locally-sourced remains
+in play). Most likely next moves:
 
-- **D1. Provenance disambiguation (the original instructor goal).** Stage 7d
-  cannot distinguish locally-sourced-with-maturity from transported. Three
-  tiers in [`PLAN_Compositional.md §11`](PLAN_Compositional.md):
-  - **Quick (½ day)**: manually classify the 36 ObsIds by terrain context
-    using HiRISE browse images, into {crater-ejecta-dominated / plains /
-    mass-wasting / mixed / candidate-tsunami-deposit}. Re-stratify Stage 7d
-    per-image effect sizes. Tests whether the composition_residual images
-    cluster on candidate-tsunami terrain or distribute uniformly.
-  - **Cleaner (1 – 2 days)**: cross-reference against [Robbins & Hynek 2012](https://doi.org/10.1029/2011JE003966)
-    crater catalog; flag tiles within N crater radii; check whether the
-    composition residual concentrates in crater-distal tiles (the
-    transported prediction).
-  - **Most rigorous (multi-day)**: compare composition signature of
-    candidate-tsunami boulder fields against inferred southern-highlands
-    source-unit colour (CRISM or HiRISE colour of plausible upstream
-    units). The headline science answer the project was originally set
-    up to give.
+- **E1. Tier 3 — CRISM / HiRISE upstream source-unit comparison.** The
+  decisive composition vs surface-maturity test. Compare the colour
+  signature of `composition_residual` boulder fields against the
+  signature of plausible megatsunami source units (southern highland
+  exposures near the Chryse / Arabia outflow channels — Mawrth Vallis,
+  Margaritifer Sinus highland boundary). Match against highland source
+  would support transport; match against local-lowland regolith would
+  support maturity-of-local-bedrock. Multi-day; needs a literature search
+  to identify the right source units.
+- **E2. Tier 1 strengthening (cheap)**: classify the 2 missing ObsIds
+  (ESP_017355_2260 in composition_residual, ESP_076499_1160 in no_signal)
+  via HiRISE browse images. Currently scored conservatively at
+  `transport_indicator = False`, which biases toward the null. Filling
+  these in could shift the Fisher's p-value either way; if the missing
+  ESP_017355_2260 turns out to be a deposit/streamlined image, the Tier 1
+  result becomes more robust. ~1 hr.
+- **E3. Tile-level Tier 2** — for each `composition_residual` image
+  footprint, partition tiles by crater-rim distance within the image
+  and re-test for partial-dust effect-size variation. Would refine but
+  not eliminate the n=5 power limitation. ~half day.
+- **E4. Stage 7e refinements** — Atwood-Stone & McEwen 2013 dust index
+  + pixel-level COLOR.JP2 shadow masking. ~1 day.
+- **E5. ESP_046803_2325 Stage 4 backfill** — half hour.
+- **E6. Path A model bank** — P1+P2 full-v2 LOIO sweep promotion.
+  ~2-3 hr.
 - **D2. Stage 7e formal dust analysis.** Two refinements with cheap upside:
   - [Atwood-Stone & McEwen 2013](https://doi.org/10.1029/2013GL058355)
     dust index (absolute reflectance + band-shape, not RED/BG ratio).

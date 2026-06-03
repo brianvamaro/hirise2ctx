@@ -2201,3 +2201,125 @@ the §11 plan covers it.
 - Provenance disambiguation: manual terrain classification → Robbins &
   Hynek crater catalog cross-ref → upstream source-unit comparison
 - Path A model bank: P1+P2 full-v2 LOIO sweep promotion
+
+## 2026-06-03 — Stage 7 Tier 1 + Tier 2 provenance disambiguation
+
+### Scope
+
+Per HANDOFF D1 + PLAN_Compositional.md §11, ran the first two of three
+tiers of the provenance-disambiguation programme. Tier 3 (CRISM/HiRISE
+upstream source-unit comparison) is left as future work.
+
+### Tier 1 — terrain context cross-reference (Fisher's exact)
+
+User supplied a pre-existing mapping spreadsheet
+(`C:/Users/brian/Downloads/Mapping_Images_33_36.xlsx`, Sorted_Lon sheet)
+with geological terrain annotations for 37 of 39 v2 ObsIds. Free-text
+notes parsed by [`scripts/probes/_terrain_classify.py`](../scripts/probes/_terrain_classify.py)
+into structured boolean flags + a `terrain_category`.
+
+Key transport indicators:
+- `deposit_flag` = `"Deposit!"` appears in note (6 of 39 cohort images)
+- `streamlined_flag` = `"streamlined"` appears in note (1 of 39)
+- combined `transport_indicator = deposit_flag OR streamlined_flag` (7 of 39)
+
+Fisher's exact two-sided on `transport_indicator × is_composition_residual`:
+
+| Partition | OR | p | n_trans_comp / n_trans | n_other_comp / n_other |
+|---|---:|---:|---:|---:|
+| **P2_count** | **12.0** | **0.034** | 3 / 6 | 2 / 26 |
+| P4_area | 6.38 | 0.10 | 2 / 6 | 3 / 20 |
+
+**Significant at p < 0.05 under P2_count partition.** Direction holds in
+both partitions; magnitude smaller and only marginal under P4_area.
+
+The two ObsIds missing from the spreadsheet (`ESP_017355_2260` in
+composition_residual, `ESP_076499_1160` in no_signal) are scored
+`transport_indicator = False`, biasing toward the null — the true effect
+may be stronger.
+
+Output: `dataset_v2/terrain_classification_v2.parquet`.
+
+### Tier 2 — crater-distance cross-reference (Kruskal-Wallis)
+
+Fetched the Robbins 2012 Mars crater database from
+[craters.sjrdesign.net](https://craters.sjrdesign.net/) (12 MB
+TSV.zip → 56 MB TSV, 384 343 craters globally, ≥ 1 km diameter).
+Verified projection: both manifest `CenterLat/Lon_180` and Robbins
+`LATITUDE/LONGITUDE_CIRCLE_IMAGE` are planetocentric, east-positive
+-180..180, IAU 2000 Mars frame. Computed great-circle distance
+(haversine on a sphere of R = 3389.5 km, IAU 2009 mean) from each
+HiRISE image center to nearest crater of D ≥ {1, 5, 10, 25} km. Both
+center distance and rim distance (center distance − D/2, floored at 0)
+emitted.
+
+Kruskal-Wallis across 3 attribution categories on rim distance:
+
+| Partition | Diameter threshold | KW H | KW p |
+|---|---|---:|---:|
+| P2_count | D ≥ 5 km | 0.62 | 0.73 |
+| P2_count | D ≥ 10 km | 0.66 | 0.72 |
+| P4_area | D ≥ 5 km | 0.39 | 0.83 |
+
+Mann-Whitney composition_residual vs rest also returns no significant
+separation at any diameter threshold (all p > 0.30).
+
+**Null finding.** Crater proximity does not separate the attribution
+categories. The null is geologically informative: under the
+crater-ejecta-locally-sourced interpretation,
+`composition_residual` images should have shown significantly closer
+crater rim distances. They do not — **weakly disfavours
+locally-sourced-from-crater-ejecta**.
+
+Output: `dataset_v2/crater_distance_v2.parquet`. Catalog cached at
+`cache_v2/craters/RobbinsCraters_20121016.tsv`.
+
+### Combined verdict
+
+The two tests together give **modest empirical support for the
+transported-with-distinct-deposit-character interpretation** over
+crater-ejecta-locally-sourced:
+
+1. Crater-ejecta-locally-sourced predicts Tier 2 positive (crater
+   proximity). We don't see it.
+2. Transported-with-deposit-character predicts Tier 1 positive (deposit
+   annotation correlation). We see it at p = 0.034 under P2.
+
+The **surface-maturity-locally-sourced** alternative (boulders = fresh
+parent rock, surroundings = weathered version, from non-crater bedrock)
+is NOT directly tested by Tiers 1 or 2 and remains in play. Tier 3
+(CRISM/HiRISE upstream source-unit colour comparison) would be needed
+to distinguish transported-from-highland-source from
+regional-maturity-of-local-bedrock.
+
+### Caveats (recorded in notebook 17 + docs/compositional.md §4.7)
+
+- n = 5 in `composition_residual`; Tier 1 significant but marginal, Tier 2 underpowered.
+- Brian's terrain annotations are single-rater.
+- Robbins 2012 catalogues only D ≥ 1 km; sub-km secondaries are missed
+  (Tier 2 null is robust to this only if the relevant ejecta sources
+  are ≥ 1 km).
+- Image-center vs tile-level test resolution — a tile-level analysis
+  inside each composition_residual footprint would refine but cannot
+  easily lift the n = 5 power limitation.
+
+### Code artefacts (tracked)
+
+- `scripts/probes/_dump_browse_terrain.py` — manifest + browse-URL dump
+- `scripts/probes/_dump_terrain_excel.py` — Excel inspect
+- `scripts/probes/_terrain_join_v2.py` — v2-cohort filter on the spreadsheet
+- `scripts/probes/_terrain_classify.py` — terrain parser + emits parquet
+- `scripts/probes/_terrain_stats.py` — Fisher's exact (Tier 1)
+- `scripts/probes/_crater_distance.py` — R&H fetch + per-image distance (Tier 2)
+- `notebooks/_build_17.py` + `notebooks/17_provenance_disambiguation.ipynb` (executed)
+- `reports/figures/stage7_tier1_terrain_attribution.png`
+- `reports/figures/stage7_tier2_crater_distance.png`
+- `docs/compositional.md` — added §4.7 (Tier 1 + Tier 2 results); updated
+  §6.2 Q3 verdict (was "not achieved", now "partially achieved");
+  updated §8 future-work (Tiers 1 + 2 → done, Tier 3 remains).
+
+### Outputs (gitignored)
+
+- `dataset_v2/terrain_classification_v2.parquet` (39 rows, structured terrain)
+- `dataset_v2/crater_distance_v2.parquet` (39 rows, per-image distances)
+- `cache_v2/craters/RobbinsCraters_20121016.tsv` (56 MB)
