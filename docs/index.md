@@ -11,11 +11,12 @@ care about how the results were produced but won't necessarily touch the code.
 | Document | Audience | Scope |
 |---|---|---|
 | [methods.md](methods.md) | Mixed / general scientific reader | Full data-pipeline Methods section in paper-Methods style: inputs → coordinate handling → co-registration → labels → features → cross-validation. Stops at the point where the modeler receives a packaged train/test dataset. ~20 pages of narrative + 9 embedded figures + 5 quantitative tables. |
-| [modeling_results.md](modeling_results.md) | Mixed / general scientific reader | First-pass assessment of the Week 3 LightGBM + CNN baselines: what the headline numbers do and do not say, what signal exists in the model and where it falls short, and a short list of next experiments that would either resolve or close out the "is this approach working?" question. Embeds the five notebook 10 figures. |
+| [modeling.md](modeling.md) | Mixed / general scientific reader | Methods companion to `modeling_results.md` — describes the modelling stage on top of the packaged dataset: targets, features (incl. Stage 6a/6b/6c extensions), variants, CV design, evaluation, reproducibility. Written 2026-06-02 at project wrap-up. |
+| [modeling_results.md](modeling_results.md) | Mixed / general scientific reader | First-pass assessment of the Week 3 LightGBM + CNN baselines: what the headline numbers do and do not say, what signal exists in the model and where it falls short, and a short list of next experiments that would either resolve or close out the "is this approach working?" question. Embeds the five notebook 10 figures. Updated through Stage 6c (2026-05-31). |
+| [compositional.md](compositional.md) | Mixed / general scientific reader | Stage 7 wrap-up — does boulder-rich HiRISE tile colour differ from boulder-poor surroundings, and if so, is the difference composition or dust? Methods + Results + Discussion for Stages 7.0 / 7a / 7c / 7d (including the shadow-masking refinement and per-image attribution table). Written 2026-06-02. |
 
 Planned future documents (not yet written):
 
-- `modeling.md` — *Methods* for the Week 3 modeling stage, written in the same paper-Methods style as `methods.md`. Complementary to `modeling_results.md`, which discusses *results*.
 - `data_release.md` — A short, citeable description of the released dataset version (manifest, ObsId list, pipeline commit hash, schema reference) for use when the data is shared externally.
 
 ## When to read what
@@ -25,6 +26,8 @@ Planned future documents (not yet written):
 - **You want the per-column output schemas:** read [dataset/DATA_DICTIONARY.md](../dataset/DATA_DICTIONARY.md).
 - **You want to understand how the dataset was produced, in paper-Methods style, without reading code:** read [methods.md](methods.md).
 - **You want the per-feature literature trail:** read [notebooks/08_features_explained.ipynb](../notebooks/08_features_explained.ipynb).
+- **You want to understand the rock-abundance modelling stage:** read [modeling.md](modeling.md) (methods) then [modeling_results.md](modeling_results.md) (results).
+- **You want the Stage 7 compositional-analysis conclusion:** read [compositional.md](compositional.md).
 
 ## Style conventions for this folder
 

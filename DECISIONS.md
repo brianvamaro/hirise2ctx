@@ -2052,3 +2052,152 @@ no shadow masking. Stage 7e refines both — a literature-validated dust index
 ([Atwood-Stone & McEwen 2013](https://doi.org/10.1029/2013GL058355))
 and explicit shadow exclusion via the Stage 4b `shadow_fraction` machinery —
 and should sharpen (or attenuate) the composition residual reported above.
+
+## 2026-06-03 — Stage 7d wrap-up: shadow masking + per-image attribution + final docs
+
+### Project wrap-up scope
+
+Brian asked to wrap up a reportable version of the project. Scope picked
+(option B from the 2026-06-03 AskUserQuestion): shadow masking + per-image
+attribution before the writeup. Skipped the Atwood-Stone & McEwen 2013 dust
+index refinement (Stage 7e full) and the Path A modeling bank — both flagged
+as future work in the writeup.
+
+### Shadow masking — tile-level filter on Stage 4b `shadow_fraction`
+
+The Stage 4b features parquet (`dataset_v2/features/{ObsId}.parquet`)
+already carries a per-tile `shadow_fraction` column (fraction of in-tile
+CTX pixels below the per-image shadow-DN threshold) at S=64. Cohort
+distribution: median 0.0605, mean 0.053, max 0.87. Cheap shadow refinement
+path: inner-join the column and drop tiles where `shadow_fraction > T` for
+T ∈ {0.05, 0.10, 0.20}, compare effect-size pivots. **Tile-level filtering
+on CTX-derived shadow_fraction, not pixel-level masking on the COLOR.JP2
+itself** — coarser but cheap. Pixel-level masking is deferred to Stage 7e.
+
+Implementation: extended `src/stage7d_pooled.py` with `attach_shadow_fraction`
+(inner-join from `dataset_v2/features/`) and `filter_shadow` (no-op if
+T=None). Runner accepts `--shadow-threshold` and `--ctx-features-dir` flags.
+
+### Shadow sweep — striking pattern
+
+Pooled standardised + partial-dust effects (P4_area):
+
+| feature | test | baseline | T=0.20 | T=0.10 | T=0.05 |
+|---|---|---:|---:|---:|---:|
+| IR_iof | raw d | -0.372 | -0.358 | -0.287 | -0.238 |
+| IR_iof | partial-dust d | -0.122 | -0.199 | -0.183 | -0.184 |
+| BG_iof | raw d | -0.346 | -0.358 | -0.306 | -0.275 |
+| BG_iof | partial-dust d | -0.068 | -0.151 | -0.133 | -0.141 |
+| IR_over_BG | raw d | -0.279 | -0.216 | -0.127 | -0.067 |
+| IR_over_BG | partial-dust d | -0.162 | -0.129 | -0.140 | -0.127 |
+| dust_index | raw d | -0.252 | -0.191 | -0.100 (m) | -0.043 (ns) |
+
+(m = marginal p=0.011; ns = not significant p=0.55.)
+
+Three findings:
+
+1. **The raw `dust_index` effect is mostly shadow-driven.** At T=0.05
+   the raw rich-vs-poor `dust_index` effect loses significance entirely.
+   The crude RED/BG proxy was indexing shadow as much as it was indexing
+   actual dust loading.
+2. **Partial-dust single-band effects GROW under shadow filtering** —
+   IR_iof goes from -0.122 (baseline) to -0.183 (T=0.10). The composition
+   residual was being *masked* by shadow contamination at baseline, not
+   amplified by it.
+3. **Partial-dust band-ratio effects are roughly stable** across thresholds
+   (IR/BG: -0.162 → -0.127). The ratios were robust to shadow by
+   construction.
+
+Bottom line: composition narrative **strengthens** under shadow control,
+particularly for single bands. Headline T=0.10 partial-dust |d| ranges
+0.13 – 0.18 across all 5 non-dust features (p ≤ 1e-8).
+
+### Per-image attribution classifier
+
+Implementation: `classify_image` + `build_attribution_table` in
+`src/stage7d_pooled.py`. Conservative 3-way classifier on the band-ratio
+features (`IR_over_BG`, `IR_over_RED`):
+
+- `composition_residual` — per-image raw effect passes (|d| ≥ 0.20, p ≤ 1e-3)
+  AND per-image partial-dust effect also passes (|d| ≥ 0.10, p ≤ 0.05) on
+  at least one ratio feature
+- `dust_attributable` — raw passes but partial-dust does not
+- `no_signal` — no raw effect detected (either truly null OR underpowered)
+- `inconclusive` — ambiguous cross-feature
+
+At T=0.10 / P4_area / 26 eligible images:
+- 5 `composition_residual`
+- 5 `dust_attributable`
+- 16 `no_signal`
+- 0 `inconclusive`
+
+The 16 `no_signal` images are mostly the small-n-per-class images
+(median n_poor ≈ 60, but ESP_055253_2245 has n_poor=165 with n_rich=8;
+ESP_069763_2235 has n_rich=99 with n_poor=11). Per-image power is the
+binding constraint on the per-image table, not lack of signal — the
+pooled cohort evidence is much stronger than the per-image counts
+suggest.
+
+**Two striking per-image cases (composition_residual)**: ESP_066634_2210
+and ESP_076723_2265 both have *positive* raw rich-vs-poor d (rich looks
+redder / more ferric) but *negative* partial-dust d (rich less ferric
+after controlling for dust). Clean per-image demonstration that the
+composition residual lives independently of, and in opposite direction
+from, the dominant dust signal.
+
+### Stage 7d wrap-up verdict
+
+Stage 7 as scoped in PLAN_Compositional.md has landed at a publishable +
+properly-bounded conclusion. The boulder-rich vs boulder-poor colour
+difference is real (loud), is ~50–80 % dust-attributable and ~20–50 %
+composition-attributable in the cohort, and the composition residual
+survives both per-image dust control and tile-level shadow filtering.
+The composition residual direction is "boulders less ferric-altered than
+surrounding regolith," which is consistent with EITHER a locally-sourced
+surface-maturity scenario OR a transported provenance scenario (the
+[Rodriguez 2016](https://doi.org/10.1038/srep25106) / [Costard 2017](https://doi.org/10.1002/2016JE005230)
+megatsunami hypothesis is the natural transported candidate given the
+cohort latitudes). Stage 7d alone cannot disambiguate; future work in
+the §11 plan covers it.
+
+### Code changes (tracked)
+
+- `src/stage7d_pooled.py` — added `attach_shadow_fraction`,
+  `filter_shadow`, `run_per_image_partial_dust`, `classify_image`,
+  `build_attribution_table`, `ATTRIBUTION_FEATURES` / thresholds.
+- `scripts/run_stage7d_pooled.py` — added `--ctx-features-dir`,
+  `--shadow-threshold`, `--attribution-out`, `--no-attribution` flags;
+  emits attribution table by default.
+- `scripts/probes/_dump_attribution.py` — dev probe to print the per-image
+  attribution table for the writeup.
+- `tests/test_stage7d.py` — +9 tests (filter_shadow no-op / threshold /
+  missing-column error; run_per_image_partial_dust skips dust col;
+  run_all with per_image_partial_dust; classify_image no_signal /
+  dust_attributable / composition_residual; build_attribution_table).
+- `notebooks/_build_16.py` + `notebooks/16_stage7d_shadow_attribution.ipynb`
+  — built + executed.
+- `reports/figures/stage7d_shadow_sweep.png`,
+  `stage7d_partial_dust_shadow_compare.png`,
+  `stage7d_attribution_bars.png` — three new figures.
+- `docs/compositional.md` — new: Methods + Results + Discussion +
+  Limitations + Future-work + References paper-style writeup of Stage 7.
+- `docs/modeling.md` — new: Methods companion to modeling_results.md.
+- `docs/index.md` — updated to point at the two new docs.
+- **Pytest suite**: 281 tests pass (+9 over Stage 7d baseline; +28 over
+  Stage 7c baseline).
+
+### Outputs (gitignored)
+
+- `dataset_v2/stage7d_pooled.parquet` (baseline, 639 rows)
+- `dataset_v2/stage7d_pooled_shadow_{0.05,0.10,0.20}.parquet` (sweep)
+- `dataset_v2/stage7d_per_image_attribution.parquet` (baseline attribution)
+- `dataset_v2/stage7d_attribution_shadow_{0.05,0.10,0.20}.parquet` (sweep)
+
+### Unfinished follow-ups (recorded so they don't get lost)
+
+- Stage 7e Atwood-Stone & McEwen 2013 dust-index refinement
+- Stage 7e pixel-level HiRISE-side shadow masking
+- ESP_046803_2325 Stage 4 backfill (would lift cohort 36→37)
+- Provenance disambiguation: manual terrain classification → Robbins &
+  Hynek crater catalog cross-ref → upstream source-unit comparison
+- Path A model bank: P1+P2 full-v2 LOIO sweep promotion
