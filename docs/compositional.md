@@ -99,6 +99,26 @@ the wrap-up of what Stage 7 has actually delivered against that plan.
 
 ## 2. Data
 
+### 2.1 Datasets at a glance
+
+| Dataset | Source | Range / extent | Resolution | Cohort coverage |
+|---|---|---|---|---|
+| HiRISE COLOR.JP2 (3-band IR/RED/BG, I/F) | NASA PDS RDR | ~2 – 6 km wide swath per observation, ~10 – 60 km along-track | 0.25 m/px | 37 of 39 v2 ObsIds (94.9 %), 9.1 GB cached |
+| HiRISE COLOR.LBL | NASA PDS RDR | per-observation metadata | per-image scalars (`SCALING_FACTOR`, `OFFSET`, `INCIDENCE_ANGLE`, `MAP_SCALE`) | 37 ObsIds, paired with COLOR.JP2 |
+| BoulderNet polygon shapefiles | upstream BoulderNet run on HiRISE RED.JP2 | per-image ~6 km × tens of km footprint | meter-scale polygons, ~10⁴ – 10⁵ per image | 38 of 39 v2 ObsIds |
+| Murray Lab CTX mosaic | [Dickson 2018](https://repository.gatech.edu/server/api/core/bitstreams/d2671fb1-4a1d-4b9b-ad8f-c7c5d3aafda2/content) / [2024](https://doi.org/10.1029/2024EA003555) | global Mars, 4° × 4° tiles | 5 m/px | windowed reads per HiRISE footprint (+buffer) |
+| Stage 4b per-tile features (incl. `shadow_fraction`) | computed from CTX in this pipeline | per-tile at scales S=8/16/32/64 | 40 m / 80 m / 160 m / 320 m | full v2 cohort, 36 of 36 colour-eligible joinable |
+| Per-tile truth labels (`fractional_area`, `boulder_count`) | this pipeline Stage 4 | per-tile at scales S=8/16/32/64 | 1 row per CTX-mosaic-aligned tile | 36 of 39 v2 ObsIds for Stage 7 (36 of 37 colour-eligible) |
+
+Cohort latitude range: ~40 – 46°N (one outlier at ~16°N), longitude ~0 –
+20°E — i.e. eastern Chryse Planitia / western Arabia margins, the
+proposed deposit zones for the late-Hesperian megatsunami hypothesis
+([Rodriguez 2016](https://doi.org/10.1038/srep25106) / [Costard
+2017](https://doi.org/10.1002/2016JE005230)). Relevant to the
+provenance interpretation in §6.
+
+### 2.2 New dataset for the compositional thread
+
 The compositional analysis adds one new dataset to the rock-abundance
 pipeline:
 
@@ -144,7 +164,7 @@ Auxiliary inputs reused from the data pipeline:
   model's quality and remains valid wherever BoulderNet detection
   polygons exist, regardless of what the CTX-only model can recover.**
 
-### 2.1 Three data gotchas relevant to colour
+### 2.3 Three data gotchas relevant to colour
 
 Each was caught at runtime and is documented in
 [`DECISIONS.md`](../DECISIONS.md):
@@ -643,30 +663,99 @@ Three confounds were considered and addressed:
 
 Other confounds remain unaddressed and are documented in §7 below.
 
+### 5.4 Validation and robustness summary
+
+Five independent validation/robustness checks support the headline
+conclusion in §6:
+
+1. **Methodology gate (Stage 7.0 trio)** — a three-image truth-label
+   feasibility test was run before the full cohort build and required
+   to pass before committing the Stage 7a-7e engineering work. One of
+   three (`ESP_055253_2245`) passed the partial-correlation dust
+   discriminator at p < 0.05 with |partial-ρ| > 0.10 — sufficient
+   evidence to proceed.
+2. **Two independent partition rules.** P4_area (`fractional_area >=
+   1e-2`) and P2_count (`boulder_count > 50`) give the same effect
+   sign and ordering across all six features, with P2 magnitudes
+   slightly smaller. The conclusion is not threshold-dependent.
+3. **Cohort sign-consistency check.** Per-image effect sizes
+   sign-match the pooled effect on 77 – 83 % of eligible images per
+   feature. The pooled signal is broad cohort agreement, not a
+   few-outlier effect.
+4. **Shadow-fraction sensitivity sweep.** Effect sizes are reported at
+   four shadow thresholds T ∈ {None, 0.20, 0.10, 0.05}; the composition
+   residual *strengthens* in single bands under filtering and is stable
+   in ratios. A shadow-driven false positive would show the opposite
+   pattern.
+5. **Independent continuous-target check.** Spearman rho on
+   per-image-standardised features vs `boulder_count` sign-matches the
+   binary partition result on all 6 features and survives partial-dust
+   residualisation on 5 of 5 non-dust features. The signal is not an
+   artefact of the binary partition choice.
+
 ---
 
-## 6. Headline conclusion
+## 6. Conclusions
 
-A small but statistically robust compositional difference exists
-between boulder-rich and boulder-poor tiles across the v2 cohort, and
-it persists after both per-image dust control and tile-level shadow
-filtering. The conclusion holds under two independent partition rules
-and at the continuous-target Spearman level. The signal direction is
-"boulders less ferric-altered than surrounding regolith," which is
-consistent with either local-source maturity differences or
-distal-source provenance differences but cannot be attributed to one
-or the other from this analysis alone. The composition signal lives
-preferentially in the band-ratio features `IR/BG` and `IR/RED`, as
-predicted by the HiRISE colour documentation's interpretation of
-those ratios as ferric/ferrous mineralogy indicators robust to dust
-loading.
+### 6.1 Principal findings
 
-Stage 7 as scoped in [`PLAN_Compositional.md`](../PLAN_Compositional.md)
-has therefore landed at a conclusion that is both publishable and
-properly bounded by its own limitations. The provenance disambiguation
-(locally-sourced vs transported) the original instructor goal asked
-for is not in hand, but the methodology required to obtain it is
-specified and the data plumbing is in place.
+1. **Boulder-rich tiles are spectrally distinct from boulder-poor
+   tiles of the same image** across the v2 cohort, at pooled
+   standardised |d| 0.21 – 0.37 (p ≤ 1e-26) on all six colour
+   features under both binary partition rules. The signal is
+   broad, not outlier-driven.
+2. **The dust narrative explains ~50 – 80 % of the raw effect.** The
+   crude `dust_index = RED/BG` proxy captures the bulk of the
+   rich-vs-poor difference; per-image residualisation on `dust_index`
+   collapses raw effects by 67 – 80 % for single bands and 42 – 54 %
+   for band ratios.
+3. **A small but statistically robust composition residual survives
+   both dust control and tile-level shadow filtering.** Pooled
+   partial-dust |d| 0.07 – 0.18 (p ≤ 1e-15) at baseline; grows to |d|
+   0.13 – 0.18 (p ≤ 1e-8) under T=0.10 shadow filtering. The residual
+   is concentrated in the ratio features `IR/BG` and `IR/RED`, as
+   predicted by HiRISE colour documentation for a ferric/ferrous
+   mineralogy signal robust to dust albedo shifts.
+4. **The signal direction is "boulders less ferric-altered than
+   surrounding regolith."** Consistent with either a locally-sourced
+   surface-maturity scenario OR a transported-provenance scenario;
+   not disambiguable from this analysis alone.
+5. **Per-image attribution** at the T=0.10 / P4_area headline (26
+   eligible images) places 5 images in `composition_residual`, 5 in
+   `dust_attributable`, and 16 in `no_signal`. Two
+   composition_residual images (`ESP_066634_2210`, `ESP_076723_2265`)
+   show a clean composition-vs-dust direction reversal — raw effect
+   positive but partial-dust effect negative — the cleanest
+   per-image demonstration of a real composition residual hiding
+   under a larger but opposite-direction dust signal.
+
+### 6.2 Was the expected outcome achieved?
+
+The Stage 7 study was set up to answer two questions:
+
+- **Q1 — Is there a spectral difference between boulder-rich and
+  boulder-poor areas?** *Expected outcome: yes/no with quantitative
+  effect size and significance.* **Achieved.** Yes, robustly, with
+  effect sizes and p-values quantified across two partition rules and
+  six features.
+- **Q2 — If yes, is the difference compositional or dust-attributable
+  (relative age)?** *Expected outcome: a quantitative attribution
+  between the two.* **Achieved.** Approximately 50 – 80 % dust,
+  20 – 50 % composition; the composition share is concentrated in
+  the band-ratio features for the geologically expected reason.
+- **Q3 (instructor's extra goal) — Are the boulders locally sourced
+  or transported (e.g. by megatsunami)?** *Expected outcome: a
+  per-image attribution.* **Not achieved from this data alone.**
+  Stage 7d cannot distinguish surface-maturity from
+  provenance-distinction scenarios — both predict the same residual
+  direction. The methodology needed to close this gap is specified
+  in §8 future work and in [PLAN_Compositional.md §11](../PLAN_Compositional.md);
+  the data plumbing is in place and the per-image effect sizes are
+  already on disk awaiting a terrain-context classification.
+
+Stage 7 as scoped has therefore landed at a publishable + properly-bounded
+conclusion on Q1 and Q2; Q3 is partially scoped but requires a follow-up
+study to close.
 
 ---
 
