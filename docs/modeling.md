@@ -44,12 +44,18 @@ CTX-only regions, which is the whole point of the exercise.
 
 The expected outcome at project start was a per-tile abundance
 predictor with leave-image-out generalisation good enough to claim
-"this CTX tile probably contains a boulder field." The actual outcome
+"this CTX tile probably contains a boulder field." The honest answer
 — headline results in §8, full conclusions including the
-expected-vs-achieved framing in §10 — is more nuanced: a usable
-abundance ranker with a per-tile signal floor at ~5 m/px CTX texture,
-falling short of a usable rare-event classifier within the CTX-only
-inference-time constraint.
+expected-vs-achieved framing in §10 — is **no, not as a stand-alone
+boulder-detection deliverable at 5 m/px CTX resolution**: at any
+operationally meaningful boulder-rich threshold the model is not a
+usable rare-event classifier at the cohort-aggregate level. What does
+work is a small but statistically robust continuous *ranking* signal
+(Spearman ρ +0.17 at v2 S=64), and the project documents *why* the
+classifier story doesn't pan out — three independent target framings
+converge on the same per-tile ranking ceiling, identifying the
+per-tile CTX texture signal at 5 m/px (not data quantity, not
+per-image transfer) as the binding constraint.
 
 ---
 
@@ -305,33 +311,62 @@ Full per-fold numbers and the figure dump are in
 [`modeling_results.md`](modeling_results.md); this section pulls the
 headline numbers + figures relevant to the rubric.
 
-### 8.1 Per-tile presence-AUC ceiling
+### 8.1 The honest framing: this is not a tractable classification task at CTX resolution
 
-Across all variants × scales × cohorts × CV schemes, the per-tile
-presence-AUC plateau sits at roughly **0.55 – 0.62**:
+Before reporting numbers, the framing matters. Earlier drafts of this
+writeup quoted a "presence AUC ceiling of ~0.55 – 0.62" across variants,
+scales, and cohorts. That number conflates two binary partitions that
+are essentially the same question (`truth > 0` vs `boulder_count >= 1`)
+at saturated class balances (v1 S=64: 72 % zero-truth tiles; v2 S=64:
+93 % positive — so the partition is meaningful in *neither* direction
+operationally) and dressing it as "presence-classifier capability" gives
+a false impression of what the model can do. We are not reporting those
+AUCs as a model deliverable; they are listed in
+[`modeling_results.md`](modeling_results.md) for completeness but do
+not figure in any operational claim below.
 
-| Cohort | Scheme | Variant | Scale | Presence AUC |
-|---|---|---|---:|---:|
-| v1 (9 images) | LOIO | `lightgbm_two_stage` | S=64 | 0.568 ± 0.102 |
-| v1 | Within-image quadrant | `lightgbm_two_stage` | S=64 | 0.578 |
-| v2 (38 images) | LOIO | `lightgbm_two_stage` | S=64 | 0.579 |
-| v2 | LOIO | `lightgbm_classification`, `bc_ge_1` | S=64 | 0.616 (n=26 single-class-excluded folds) |
-| v2 | Within-image quadrant | `lightgbm_two_stage` | S=64 | 0.607 |
+The operationally meaningful "boulder-rich" threshold is
+`fa_gt_1e-2` (`fractional_area > 1 %` of tile area — at S=64, roughly
+"more than 32 m × 32 m worth of detected boulder coverage in a 320 m
+tile"). At this threshold the model is **not a usable rare-event
+classifier** at the cohort-aggregate level: the v1 dataset had too few
+positive tiles for several folds to even compute an AUC, and the v2
+per-image distribution at `fa_gt_1e-2` is **strongly bimodal** (§8.3
+below) so the cohort-mean masks an unusable aggregate underneath strong
+individual-image results. The honest takeaway at this threshold is "we
+can't reliably point at specific CTX tiles and say *this one is
+boulder-rich*" at any operational threshold an instrument-planning
+workflow would accept.
 
-The Spearman rank-correlation signal lifts substantially v1 → v2
-(driven by label density), but the presence-AUC ceiling rises only
-modestly:
+### 8.2 What does work: the continuous abundance ranking
 
-| Tile scale | v1 Spearman ρ | v2 Spearman ρ | v1 presence AUC | v2 presence AUC |
-|---:|---:|---:|---:|---:|
-| S=8  | -0.000 | **+0.096** | 0.508 | 0.559 |
-| S=16 | +0.003 | **+0.127** | 0.515 | 0.568 |
-| S=32 | +0.018 | **+0.125** | 0.520 | 0.573 |
-| S=64 | +0.059 | **+0.169** | 0.568 | 0.579 |
+What the model *can* do, on v2, is rank tiles by predicted abundance in
+a way that correlates with truth across the whole distribution. The
+Spearman rank-correlation at the coarsest tile size lifts substantially
+v1 → v2 as label density rose:
+
+| Tile scale | v1 Spearman ρ | v2 Spearman ρ |
+|---:|---:|---:|
+| S=8  | -0.000 | **+0.096** |
+| S=16 | +0.003 | **+0.127** |
+| S=32 | +0.018 | **+0.125** |
+| S=64 | +0.059 | **+0.169** |
 
 ![v2 sweep Spearman bar chart](../reports/figures/10_sweep_spearman_bar.png)
 
-### 8.2 The model is keying on the physically expected feature
+ρ = +0.169 at S=64 on v2 (mean ± std = +0.169 ± 0.226 over 38 LOIO
+folds, SE ≈ 0.037, ~4.6 σ from zero) is the only headline number in
+this section. It is a real, statistically unambiguous ranking signal
+— tiles with higher predicted scores really do have more boulders on
+average — but the magnitude is small ("small" in Cohen's-correlation
+convention, |ρ| < 0.3) and the predictions don't span enough dynamic
+range to be calibrated abundance estimates (§9.2). The product is a
+**relative ranking**, useful as an input to downstream work that can
+absorb small per-tile ranking signal (regional abundance maps,
+two-stage frameworks, prioritisation), and *not* a stand-alone
+boulder-presence classifier.
+
+### 8.3 The model is keying on the physically expected feature
 
 GBM split-gain feature importance places **`shadow_fraction` first at
 every scale** (12 – 16 % of total split gain), at both v1 and v2. The
@@ -344,31 +379,38 @@ specifically tests against).
 
 ![Tweedie S=8 feature importance](../reports/figures/10_feature_importance_tweedie_S8.png)
 
-### 8.3 Class-stratified bimodality (per-image)
+### 8.4 Per-image bimodality at the boulder-rich threshold
 
-Per-image performance is strongly bimodal at the operational threshold
-`fa_gt_1e-2` (S=64): median AUC 0.61, max **0.91** (`ESP_042964_2160`,
-lift 5.4× over base rate), min 0.40 ("anti-signal" images where the
-top-ranked predictions are systematically negative). About 7 of 38 v2
-images perform usably (AUC > 0.70), ~4 are anti-signal (AUC < 0.50),
-the rest sit near chance. **The cross-image mean buries strong
-individual-image performance**; reporting only the cohort-aggregate
-AUC understates what the model can do on the subset of images where
-it works.
+Per-image performance at `fa_gt_1e-2` (S=64) is strongly bimodal: out
+of 38 v2 images, about 7 perform usably (per-image AUC > 0.70 — top
+performer `ESP_042964_2160` at AUC 0.91, lift 5.4× over base rate),
+about 4 are anti-signal (per-image AUC < 0.50, where the top-ranked
+predictions are systematically *negative*), and the rest sit near
+chance. We report this distribution rather than the cohort-mean
+AUC because the cohort-mean at this threshold is not a usable signal
+on its own (single-class folds, large variance), and the per-image
+distribution is what tells the actual story: **the model works as a
+boulder-rich predictor on a geographically-restricted subset of the
+cohort and fails on others**, and Stage 6b (§8.6 below) identified
+mosaic-seam-driven CTX-source heterogeneity as a substantial mechanism
+behind the failure cases.
 
-### 8.4 The diagnostic isolator: within-image ≈ LOIO
+### 8.5 The diagnostic isolator: within-image ≈ LOIO
 
 The decisive diagnostic for "is the binding constraint per-image
 generalisation or per-tile signal?" is the within-image quadrant CV.
-At every variant × scale × cohort, the within-image AUC sits within
-sampling noise of the LOIO AUC (every 95 % bootstrap CI on the mean
-delta brackets zero; every Wilcoxon p > 0.05). Training and testing
-on the *same image*, with per-image transfer entirely removed from
-the problem, does **not** lift the per-tile AUC above the LOIO
-ceiling. The binding constraint is therefore **per-tile signal at
-5 m/px CTX texture**, not data quantity or per-image transfer.
+At every variant × scale × cohort, the within-image AUC and Spearman
+ρ sit within sampling noise of the LOIO values (every 95 % bootstrap
+CI on the mean delta brackets zero; every Wilcoxon p > 0.05).
+Training and testing on the *same image*, with per-image transfer
+entirely removed from the problem, does **not** lift the per-tile
+ranking signal above the LOIO level. The binding constraint is
+therefore **per-tile signal at 5 m/px CTX texture**, not data
+quantity or per-image transfer — three independent target framings
+(regression, classification, within-image CV) converge on the same
+per-tile ceiling.
 
-### 8.5 Stage 6 model improvements
+### 8.6 Stage 6 model improvements
 
 Three model-improvement chunks were tested against the v2 LOIO
 baseline:
@@ -394,14 +436,17 @@ without retraining.
 2. **Within-image quadrant CV as a diagnostic isolator** — independent
    measurement of whether the cap is signal or generalisation. Three
    independent target framings (regression, binary classification,
-   within-image CV) converge on the same ~0.55 – 0.62 ceiling, the
-   strongest available evidence that the binding constraint is signal,
-   not data quantity.
+   within-image CV) converge on the same per-tile ranking ceiling,
+   the strongest available evidence that the binding constraint is
+   per-tile signal at 5 m/px CTX texture, not data quantity.
 3. **Sign tests across 12 (variant × scale) configurations** for the
-   v1 sweep — pooled sign-test p = 0.0002 against the
-   no-skill null on presence AUC > 0.5; 10/12 cells above zero on
-   Spearman (sign-test p = 0.019). Confirms the small signal is not
-   sampling noise.
+   v1 sweep — 10 of 12 cells above zero on Spearman ρ (sign-test
+   p = 0.019). Confirms the small ranking signal is not sampling
+   noise. (The companion "all 12 cells above AUC 0.5, p = 0.0002"
+   from the regression sweep is computed on the same
+   `truth > 0` vs `truth = 0` partition that §8.1 explicitly disclaims
+   as a presence-classifier capability claim; we list it for
+   completeness but the Spearman sign test is the load-bearing version.)
 4. **Feature-importance physical-plausibility check** — `shadow_fraction`
    is the top-ranked feature at every scale + cohort, which is the
    physically expected causal cue (boulders cast shadows under oblique
@@ -423,18 +468,25 @@ without retraining.
 
 ### 9.2 Limitations
 
-- **Per-tile signal floor at 5 m/px CTX.** Three independent target
-  framings put the per-tile presence AUC ceiling at ≈ 0.55 – 0.62 on
-  v2. The model is a usable abundance *ranker* (Spearman ρ +0.17 at
-  S=64) but not a usable presence *classifier* — top-K lift is 1.07 –
-  1.43, modestly above the random baseline. Calibrated quantitative
-  abundance prediction is not in reach at this CTX resolution with
-  this feature family.
-- **Per-image bimodality.** The cohort mean masks strong individual-
-  image performance (median per-image AUC 0.61, max 0.91, min 0.40 on
-  `fa_gt_1e-2`/S=64). Some images carry usable signal; others
-  anti-signal. Stage 6c soft PASS partially compensates via per-image
-  down-weighting but does not eliminate the anti-signal cases.
+- **Boulder-rich classification is not tractable at CTX resolution.**
+  At the operationally meaningful `fa_gt_1e-2` threshold the model is
+  not a usable rare-event classifier at the cohort-aggregate level —
+  cohort-mean AUC is dragged into the uninformative range by
+  single-class folds and large per-image variance. The
+  ranking signal (Spearman ρ +0.17 at S=64 on v2) is the only
+  operationally-meaningful headline we report. Top-K lift at the same
+  threshold is 1.07 – 1.43, modestly above random. Calibrated
+  quantitative abundance prediction is not in reach at this CTX
+  resolution with this feature family.
+- **Per-image bimodality at the boulder-rich threshold.** The cohort
+  mean masks the actual distribution: of 38 v2 images at
+  `fa_gt_1e-2`/S=64, ~7 perform usably (per-image AUC > 0.70, top
+  performer at 0.91 with 5.4× lift), ~4 are anti-signal (AUC < 0.50,
+  top-ranked predictions systematically negative), and the rest sit
+  near chance. The model works as a boulder-rich predictor only on a
+  geographically-restricted subset of the cohort. Stage 6c soft PASS
+  partially compensates via per-image down-weighting but does not
+  eliminate the anti-signal cases.
 - **Mosaic-seam confound (Stage 6e mechanism).** Stage 6b empirically
   validated that **CTX-source heterogeneity** (a HiRISE footprint
   stitched from many CTX source images with varying acquisition
@@ -458,8 +510,9 @@ without retraining.
   was partly a *missed-boulder* artefact rather than a true signal
   floor; v2 dense labels lifted the Spearman 3 – 10× at every scale
   (§9.2 of [`modeling_results.md`](modeling_results.md)). The
-  remaining presence AUC ceiling at 0.55 – 0.62 is the more honest
-  measurement after this confound was controlled for.
+  v2 ranking signal (ρ +0.17 at S=64) is the more honest
+  measurement after this confound was controlled for, and the
+  classification non-tractability finding above is robust to it.
 - **CNN baseline did not unlock new signal.** v1 CNN performed below
   chance (loss-design problem); v2 `SmallCNNClassifier` with
   `BCEWithLogitsLoss(pos_weight)` fixes the collapse but does not
@@ -474,61 +527,84 @@ without retraining.
 
 ### 10.1 Principal findings
 
-1. **A real per-tile signal exists.** Pooled sign tests across 12
-   (variant × scale) v1 configurations give p = 0.0002 on presence
-   AUC > 0.5, with the model keying on `shadow_fraction` (the
-   physically expected feature) at every scale.
-2. **The signal is bounded by a per-tile texture floor at 5 m/px.**
-   Three independent target framings — regression, binary
-   classification, and within-image quadrant CV — converge on a
-   presence-AUC ceiling of ≈ 0.55 – 0.62 on v2. Adding data quantity
-   tightens error bars but does not move the mean.
-3. **The model is a usable abundance ranker, not a usable
-   classifier.** Spearman ρ +0.17 at v2 S=64 supports per-tile
-   ranking for follow-up prioritisation; top-K lift 1.07 – 1.43 falls
-   short of a usable rare-event detector.
-4. **Per-image performance is bimodal.** Median per-image AUC 0.61
-   with max 0.91 and min 0.40 on `fa_gt_1e-2`/S=64 — strong individual
-   results buried by cohort averaging. Stage 6c soft PASS at +0.056
-   pooled-global PR-AUC partially recovers this through per-image
-   confidence weighting.
-5. **Mosaic seam artefacts are a real confound.** Stage 6b
-   empirically validated that CTX-source heterogeneity predicts
-   per-image model reliability at p < 0.05, matching the [Dickson
-   2024](https://doi.org/10.1029/2024EA003555) seam prediction —
-   identifying a mechanism for some of the per-image bimodality but
-   not a fully recoverable one.
+1. **A small but real per-tile ranking signal exists.** Spearman ρ
+   = +0.169 at S=64 on v2 (~4.6 σ from zero across 38 LOIO folds),
+   confirmed by an independent sign test across 12 v1 configurations
+   (p = 0.019 on ρ > 0). The model is keying on `shadow_fraction`
+   (the physically expected feature) at every scale — the small
+   signal is consistent with a real causal mechanism.
+2. **Boulder-rich classification is not tractable at CTX resolution
+   at the cohort-aggregate level.** At the operationally meaningful
+   `fa_gt_1e-2` threshold, cohort-aggregate AUC is uninformative
+   (single-class folds at v1; large per-image variance at v2). We
+   do not report a "presence-AUC ceiling" as a model capability claim
+   — the more permissive `truth > 0` partition that drove the original
+   "0.55 – 0.62 ceiling" framing is saturated in both v1 (72 % zeros)
+   and v2 (93 % positives) at S=64 and asks an operationally
+   uninteresting question.
+3. **Per-image performance is bimodal at the boulder-rich threshold.**
+   Of 38 v2 images at `fa_gt_1e-2`/S=64, ~7 perform usably (per-image
+   AUC > 0.70, top performer at 0.91 with 5.4× lift over base rate),
+   ~4 are anti-signal (AUC < 0.50), the rest near chance. The model
+   works as a boulder-rich predictor only on a geographically-
+   restricted subset of the cohort.
+4. **The within-image diagnostic identifies the binding constraint.**
+   Three independent target framings (regression, classification,
+   within-image quadrant CV) all converge on the same per-tile
+   ranking ceiling — training and testing on the *same image*
+   doesn't lift the per-tile signal. The bottleneck is **per-tile CTX
+   texture at 5 m/px**, not data quantity or per-image transfer.
+5. **Mosaic seam artefacts explain part of the per-image bimodality.**
+   Stage 6b empirically validated that CTX-source heterogeneity
+   predicts per-image model reliability at p < 0.05, matching the
+   [Dickson 2024](https://doi.org/10.1029/2024EA003555) seam
+   prediction. Stage 6c soft PASS (+0.056 pooled-global PR-AUC via
+   per-image down-weighting) partially recovers this; not fully.
 
 ### 10.2 Was the expected outcome achieved?
 
 The expected outcome at project start was a per-tile rock-abundance
 predictor good enough to extend HiRISE-derived rock-abundance to
-CTX-only regions. **The achieved outcome falls short of that as a
-calibrated predictor but lands solidly as an abundance ranker, with a
-specific identified ceiling.**
+CTX-only regions. **The honest answer is no, not as a stand-alone
+boulder-detection deliverable: at 5 m/px CTX resolution we cannot
+reliably classify boulder-rich tiles.** The work did produce a real
+but small ranking signal (ρ +0.17 at v2 S=64) and a clean diagnostic
+narrowing where the bottleneck lives.
 
 What was achieved:
 
 - A reproducible, sweep-driven LightGBM pipeline producing per-fold
   artefacts under `models/_sweep*/` for every variant × scale × CV
   scheme tested.
-- An empirically calibrated estimate of where the per-tile CTX
-  texture signal ceiling sits (≈ 0.55 – 0.62 presence AUC), with a
-  clean diagnostic (within-image ≈ LOIO) showing the ceiling is a
-  signal floor rather than a generalisation problem.
-- A characterised + mechanistically-explained anti-signal mode
-  (Stage 6b/6c) with a partial operational remedy (Stage 6c soft PASS
-  Strategy B).
+- An empirically tested falsification of the "can CTX texture at
+  5 m/px discriminate boulder-rich vs boulder-poor tiles" hypothesis:
+  three independent target framings (regression, classification,
+  within-image quadrant CV) converge on the same per-tile ranking
+  ceiling. The bottleneck lives at the per-tile feature signal, not
+  at data quantity or per-image transfer.
+- A small but statistically robust per-tile ranking signal (Spearman
+  ρ = +0.169 at v2 S=64, ~4.6 σ from zero across 38 LOIO folds), with
+  the model keying on the physically expected features
+  (`shadow_fraction` + texture descriptors).
+- A characterised + mechanistically-explained per-image bimodality at
+  the boulder-rich threshold (Stage 6b: CTX-source heterogeneity
+  predicts model reliability at p < 0.05, matching the
+  [Dickson 2024](https://doi.org/10.1029/2024EA003555) seam
+  prediction) with a partial operational remedy (Stage 6c soft PASS
+  Strategy B at +0.056 pooled-global PR-AUC).
 - A documented + empirically tested set of model-improvement
   candidates (Stage 6a/6b/6c/6d/6e/6f) with verdicts on each.
 
 What was not achieved:
 
-- A model that can produce **calibrated** per-tile boulder abundance
-  for downstream geological use without per-image recalibration.
+- A model that can reliably point at a specific CTX tile and call it
+  boulder-rich at any operationally meaningful threshold. At
+  `fa_gt_1e-2` the cohort-aggregate AUC is uninformative; the per-image
+  distribution is bimodal and the model is only usable on a
+  geographically restricted subset of the cohort.
 - A model whose top-K predictions can be used directly to flag CTX
-  regions for HiRISE follow-up (top-K lift is modestly above 1.0 but
-  not strong enough).
+  regions for HiRISE follow-up (top-K lift is 1.07 – 1.43, modestly
+  above random — not enough to spend imaging budget on).
 - A within-CTX-feature-family resolution of the bimodality.
 
 The closing diagnostic narrows the path forward to **inputs beyond CTX
@@ -540,7 +616,8 @@ in non-texture signal that breaks through it. The instructor's
 extra-goal compositional analysis (separately delivered in
 [`compositional.md`](compositional.md)) is the natural science layer
 on top of this engineering deliverable: the modelling thread answered
-"how well can CTX predict where boulders are?" and the compositional
+"how well can CTX predict where boulders are?" (small ranking signal,
+no operationally-meaningful classification) and the compositional
 thread answered "what are the boulders made of, and how do they differ
 from their surroundings?"
 

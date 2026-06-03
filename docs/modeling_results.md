@@ -26,6 +26,31 @@
 
 ---
 
+## Framing correction (2026-06-03)
+
+This document is the chronological analysis log for the modelling stage; the
+numerical claims below were correct at the time each section was written and
+are preserved as a record of what we tried. After auditing the
+framing at project wrap-up, **the headline summary of
+"presence-AUC ceiling ~0.55 – 0.62" used throughout the early sections is
+disclaimed as a model-capability claim** — that range comes from the
+`truth > 0` vs `truth == 0` partition (regression) and the `bc_ge_1`
+partition (binary classifier), which at S=64 are saturated in opposite
+directions on the two cohorts (v1: 72 % zero-truth; v2: 93 % positive at
+`bc_ge_1`) and ask an operationally uninteresting question. The
+load-bearing operational metric is the continuous Spearman ρ on the
+ranking (which lifts from near-zero on v1 to +0.169 at v2 S=64) and the
+*per-image* distribution of AUC at the genuinely
+boulder-rich threshold `fa_gt_1e-2` (which is strongly bimodal — see
+§11.4 / §11.7 — and does not have a meaningful cohort-aggregate). The
+short paper-style writeup in [`modeling.md`](modeling.md) leads with
+this corrected framing; cite that document for the headline conclusion
+("not a usable boulder-rich classifier at CTX resolution; a real but
+small ranking signal"). The fold-by-fold numbers + diagnostic tables
+below remain valid as evidence.
+
+---
+
 ## Bottom line
 
 **The method shows a small, statistically real, but practically negligible
