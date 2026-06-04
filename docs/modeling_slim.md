@@ -50,6 +50,15 @@ data:
   ([Prieur et al. 2023, *JGR Planets*](https://doi.org/10.1029/2023JE008013)),
   one polygon per detected boulder. The polygons provide the
   **truth labels** the model is trained to predict.
+- **HiRISE imagery** — the same HiRISE panchromatic scenes
+  ([McEwen et al. 2007](https://doi.org/10.1029/2005JE002605))
+  the boulder polygons were detected on, decimated to ~5 m/px and
+  used only as the *moving image* in the HiRISE → CTX
+  co-registration step (next paragraph). Not a model feature: the
+  trained model must run on CTX alone at inference time, where no
+  HiRISE image exists. Listed as a source because the dataset
+  cannot be built without it, even though it does not directly feed
+  the model.
 - **CTX imagery** — the [Murray Lab global CTX
   mosaic](https://doi.org/10.1029/2024EA003555), a ~5 m/px
   panchromatic image of Mars assembled from many MRO Context Camera
@@ -86,6 +95,18 @@ HiRISE coverage mask is incomplete (i.e. the tile partially falls
 outside the HiRISE image footprint) are excluded from training and
 evaluation, so every label is computed against the same boulder
 detector's full coverage of that tile.
+
+![BoulderNet polygon detections overlaid on CTX for two exemplar images](../reports/figures/modeling_slim_boulders_on_ctx.png)
+
+*Figure 1. BoulderNet detections overlaid on the CTX window for two
+exemplar held-out images, to make the input data concrete. Each red
+dot is the centroid of one detected boulder polygon (over 300 000 on
+the left, 138 000 on the right); dense clusters appear saturated red,
+sparser regions show through to CTX grey. The 5 m/px CTX surface
+context — craters, terrain texture — is visible underneath. Both
+images contain many boulders across most of the HiRISE footprint;
+the slim model's task is to recover the spatial distribution of those
+boulders from the CTX-derived per-tile features alone.*
 
 **Cohort.** 36 of 38 HiRISE images from the v2 cohort. The 2 manifest
 images with `unknown` boulder-density label (`ESP_017355_2260` and
@@ -127,9 +148,17 @@ per-image classification at the "boulder-rich" threshold, we use
 `fractional boulder area ≥ 1 %` as the operationally meaningful cut.
 
 **Tile size.** 320 m × 320 m (`S=64` — 64 CTX pixels on a side,
-aligned to the Murray Lab CTX mosaic grid). This is the coarsest
-scale at which the per-image label set provides enough positive tiles
-to evaluate.
+aligned to the Murray Lab CTX mosaic grid). Two constraints set the
+scale: tiles must be large enough to suppress per-pixel CTX noise
+(at 320 m each tile aggregates over ~4 000 CTX pixels, smoothing the
+high-frequency variation that would otherwise dominate the
+boulder-related signal), and tiles must be small enough to deliver
+a meaningful spatial-resolution improvement over the thermal-IR
+rock-abundance maps that are the standard alternative for Mars
+surface-rock estimation ([Nowicki & Christensen 2007](https://doi.org/10.1029/2006JE002798)),
+which provide rock-abundance estimates at kilometre scales rather
+than the few-hundred-metre scale this pipeline targets. 320 m
+satisfies both bounds and is the scale we evaluate.
 
 ---
 
@@ -147,16 +176,17 @@ boosting rounds, learning rate 0.05, 63 leaves, early stopping after
 held-out images, the model is trained on the other 35 and predicts on
 the held-out image's tiles. This protocol matches the eventual
 scientific use of the model (predicting on geographic regions where
-no HiRISE coverage exists), so per-fold generalisation measures the
-right thing.
+no HiRISE coverage exists), so generalisation to an unseen image
+measures the right thing.
 
 **Reported metrics.**
 
 - **Pooled Spearman ρ** between predicted and true `boulder_count`,
-  computed across all held-out tiles from all folds (~33 000 tiles).
-  This is the headline number.
-- **Per-fold Spearman ρ** for each of the 36 held-out images — used
-  to characterise per-image variance.
+  computed across all held-out tiles pooled across the 36 LOIO
+  evaluations (~33 000 tiles). This is the headline number.
+- **Per-image Spearman ρ** computed within each of the 36 held-out
+  images (one number per image, since each LOIO fold holds out exactly
+  one image) — used to characterise cross-image variance.
 - **Per-image AUC at the boulder-rich threshold** (`fractional area
   ≥ 1 %`), computed on each fold whose held-out image contains both
   rich and poor tiles. This characterises whether the model could be
@@ -184,11 +214,12 @@ do not match true counts at the magnitude level — and the predicted
 ranking is not strong enough to reliably identify individual
 boulder-rich tiles.
 
-### 4.2 Per-fold variance
+### 4.2 Per-image variance
 
-Spearman ρ across the 36 LOIO folds:
+Spearman ρ computed within each held-out image (one number per
+LOIO-held-out image, 36 images total):
 
-| | per-fold ρ |
+| | per-image ρ |
 |---|---:|
 | mean | +0.151 |
 | median | +0.130 |
@@ -196,9 +227,9 @@ Spearman ρ across the 36 LOIO folds:
 | max | +0.684 |
 | std | 0.216 |
 
-The mean per-fold ρ is positive at ~3.6 standard errors above zero —
-the same conclusion as the pooled result reached on a different
-aggregation. The per-fold distribution shows substantial variance:
+The mean per-image ρ is positive at ~3.6 standard errors above zero —
+the same conclusion as the pooled result, reached on a different
+aggregation. The distribution shows substantial cross-image variance:
 some held-out images reach ρ > +0.5, while a few are at or below
 zero, reflecting the per-image bimodality described next.
 
@@ -211,6 +242,14 @@ operationally meaningful evaluation: "could the model flag boulder-
 rich tiles in this specific image for follow-up?"
 
 ![Per-image AUC at boulder-rich threshold](../reports/figures/modeling_slim_per_image_auc.png)
+
+*Figure 2. Per-image AUC at the boulder-rich threshold
+(`fractional area ≥ 1%`), one bar per held-out image, sorted from
+worst on the left to best on the right. Red = anti-signal (AUC < 0.5);
+grey = chance-band (0.5 ≤ AUC < 0.7); green = usable on that image
+(AUC ≥ 0.7). The distribution is bimodal — a small minority of images
+sit clearly above and below the usable / anti-signal thresholds, with
+the majority in the noisy chance band.*
 
 | | per-image AUC at fa ≥ 1 % |
 |---|---:|
@@ -227,6 +266,31 @@ chance. The remaining majority sits in a noisy band near 0.5–0.7.
 The cohort-aggregate AUC is therefore not a meaningful single
 number — the model works on some images and not others, and reporting
 only an aggregate would hide the bimodality.
+
+![Binary boulder-rich tiles highlighted on CTX: truth vs slim model for two exemplar images](../reports/figures/modeling_slim_good_vs_bad.png)
+
+*Figure 3. Boulder-rich tiles highlighted on CTX for two contrasting
+held-out images; boulder-poor tiles are kept transparent so the CTX
+surface context (craters, terrain) shows through. The left panel of
+each row shows truth — green tiles have `fractional area ≥ 1%`. The
+right panel shows the slim model's call: green is the top-K tiles by
+predicted boulder count, where K is set to match the count of
+truth-rich tiles in that image, so both panels show the same number
+of "rich" tiles by construction. The question the figure asks is
+then whether the model picks the same tiles as the truth threshold.*
+
+***Top row** — `ESP_053989_2260`, a "good" case (per-image AUC 0.88,
+Spearman ρ +0.63): the model's green pattern matches the truth's
+green pattern closely (476 of 523 rich-tile calls agree).*
+
+***Bottom row** — `ESP_046328_2180`, an "anti-signal" case (AUC 0.34,
+ρ −0.38): the model places its green predictions in the *opposite*
+region from the truth's green — only 20 of 129 rich-tile calls agree,
+well below the ~30% agreement a random ranking would produce at this
+base rate. The two big craters anchor the geological context: the
+truth puts boulder-rich tiles between and above them, while the
+model's predictions cluster around the upper rim and miss the actual
+distribution.*
 
 ---
 
@@ -288,7 +352,8 @@ imagery.
 | Figure builder | [`scripts/probes/_modeling_slim_figures.py`](../scripts/probes/_modeling_slim_figures.py) |
 | Per-tile predictions | `dataset_v2/modeling_slim_predictions.parquet` (33 102 rows; gitignored) |
 | Per-fold summary | `dataset_v2/modeling_slim_summary.parquet` (37 rows = 36 folds + 1 pooled row; gitignored) |
-| Figure | `reports/figures/modeling_slim_per_image_auc.png` |
+| Figures | `reports/figures/modeling_slim_boulders_on_ctx.png`, `reports/figures/modeling_slim_per_image_auc.png`, `reports/figures/modeling_slim_good_vs_bad.png` |
+| Figure builders | [`scripts/probes/_modeling_slim_figures.py`](../scripts/probes/_modeling_slim_figures.py), [`scripts/probes/_modeling_slim_panels.py`](../scripts/probes/_modeling_slim_panels.py), [`scripts/probes/_modeling_slim_boulders_overlay.py`](../scripts/probes/_modeling_slim_boulders_overlay.py) |
 
 Re-run via:
 
