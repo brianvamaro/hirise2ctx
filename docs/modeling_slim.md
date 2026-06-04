@@ -41,6 +41,52 @@ across the parts of Mars no HiRISE image has covered.
 
 ## 2. Data
 
+**Source data.** The modelling step consumes two pieces of upstream
+data:
+
+- **Boulder polygons** — meter-scale boulder detections on HiRISE
+  imagery (~0.25 m/px native resolution). These were produced by the
+  upstream BoulderNet Mask R-CNN instance-segmentation detector
+  ([Prieur et al. 2023, *JGR Planets*](https://doi.org/10.1029/2023JE008013)),
+  one polygon per detected boulder. The polygons provide the
+  **truth labels** the model is trained to predict.
+- **CTX imagery** — the [Murray Lab global CTX
+  mosaic](https://doi.org/10.1029/2024EA003555), a ~5 m/px
+  panchromatic image of Mars assembled from many MRO Context Camera
+  ([Malin et al. 2007](https://doi.org/10.1029/2006JE002808))
+  source images. The CTX mosaic provides the **inputs** from which
+  per-tile texture features are computed.
+
+The end-to-end pipeline that turns these two inputs into a tile-level
+training dataset is documented at higher detail in
+[`methods.md`](methods.md); the next two paragraphs sketch the parts
+relevant to the model.
+
+**HiRISE → CTX co-registration.** The boulder polygons live in
+HiRISE's native coordinate system (0.25 m/px); to use them as per-tile
+labels on the 5 m/px CTX grid they must be aligned. The pipeline
+reprojects the polygons onto a common Mars-equirectangular coordinate
+system shared with the CTX mosaic, decimates the HiRISE imagery to
+~5 m/px to match CTX scale, runs a block-median phase-correlation
+routine to estimate a per-image translation shift between the
+decimated HiRISE and the corresponding CTX window, and applies the
+shift to the polygon coordinates. The result is boulder polygons in
+CTX-aligned coordinates. The same per-image shift is applied
+uniformly across all tiles in that image; we do not attempt per-tile
+registration.
+
+**Per-tile label generation.** Tiles are defined as integer blocks of
+CTX pixels (e.g. 64 × 64 CTX pixels = 320 m × 320 m at the S=64
+scale used here) anchored to the Murray Lab mosaic's pixel origin —
+so the tile grid is reproducible across images by construction. For
+each tile the pipeline computes the number of CTX-aligned boulder
+polygons that overlap it (`boulder_count`) and the fraction of tile
+area covered by polygon footprints (`fractional_area`). Tiles whose
+HiRISE coverage mask is incomplete (i.e. the tile partially falls
+outside the HiRISE image footprint) are excluded from training and
+evaluation, so every label is computed against the same boulder
+detector's full coverage of that tile.
+
 **Cohort.** 36 of 38 HiRISE images from the v2 cohort. The 2 manifest
 images with `unknown` boulder-density label (`ESP_017355_2260` and
 `ESP_076499_1160`) were excluded because they are geographic-diversity
