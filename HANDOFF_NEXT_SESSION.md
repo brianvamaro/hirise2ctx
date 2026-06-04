@@ -1,13 +1,19 @@
 # Handoff prompt — next session
 
-**Last updated 2026-06-03 — Provenance disambiguation Tiers 1 + 2 done.
+**Last updated 2026-06-03 — Slim modeling variant built for the project
+report. docs/modeling_slim.md is the report's model writeup: 5-feature
+LightGBM (shadow + roughness), 36-image cohort, pooled Spearman rho =
++0.275, per-image AUC at fa_gt_1e-2 median 0.572 / max 0.880 / 14 %
+images above 0.70. Standalone writeup, NOT a comparison to the full
+52-feature model -- user explicit direction.
+
+Earlier today: provenance disambiguation Tiers 1 + 2 done.
 Tier 1 deposit_flag x composition_residual Fisher's exact p=0.034
 (P2_count); Tier 2 crater proximity null (KW p>0.7). Combined verdict:
 modest empirical support for transported > crater-ejecta-locally-sourced;
 surface-maturity-locally-sourced alternative remains in play and needs
 Tier 3 (CRISM/HiRISE upstream source-unit comparison) to disambiguate.
-Q3 verdict in docs/compositional.md §6.2 updated from "not achieved" to
-"partially achieved".**
+Q3 verdict in docs/compositional.md §6.2 at "partially achieved".**
 
 Previously (project-state-2026-06-03 entry): Stage 7d closed with shadow
 masking + per-image attribution. Paper-Methods style writeups landed at

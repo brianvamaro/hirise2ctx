@@ -2323,3 +2323,99 @@ regional-maturity-of-local-bedrock.
 - `dataset_v2/terrain_classification_v2.parquet` (39 rows, structured terrain)
 - `dataset_v2/crater_distance_v2.parquet` (39 rows, per-image distances)
 - `cache_v2/craters/RobbinsCraters_20121016.tsv` (56 MB)
+
+## 2026-06-03 — Slim modeling variant for project writeup
+
+### Scope
+
+User asked for a simplified modelling variant that uses fewer features
+and stands on its own as the model for the project report, separate
+from the full 52-feature implementation documented in
+[`modeling.md`](docs/modeling.md). Built so the reportable modeling
+story can be explained at a higher level without losing the headline
+conclusion.
+
+### Design choices
+
+- **Feature set**: 5 features, two physically-motivated mechanisms.
+  Option B from the planning AskUserQuestion (recommended pick):
+  `shadow_fraction`, `shadow_fraction_strict`, `bright_cap_fraction`
+  (shadow mechanism); `grad_mag_std`, `intensity_std` (texture
+  roughness mechanism). All five are derivable from CTX DN values
+  alone.
+- **Cohort filter**: drop the 2 manifest `unknown`-BoulderLabel
+  images (`ESP_017355_2260`, `ESP_076499_1160`). User flagged a
+  preference for "filters that are decisions from before the modeling
+  step as opposed to afterwards" → no anti-signal / Stage-6b
+  post-modeling filters. A coregistration-peak-correlation cut was
+  considered (user originally suggested ≥ 0.9 → 0 images cleared,
+  then ≥ 0.5 → all 38 cleared, so effectively no coreg filter).
+  Final cohort: 36 of 38 images.
+- **Target**: `boulder_count` (P2 promotion winner).
+- **Variant**: `lightgbm_two_stage_balanced` (P1 promotion winner)
+  with default LightGBM hyperparameters; no hyperparameter tuning.
+- **Scale**: S=64 (320 m tiles) only.
+- **CV**: LOIO on the 36-image cohort.
+
+### Coregistration-peak-correlation distribution (recorded for context)
+
+The v2 cohort's `coreg_peak_correlation` values span 0.58 – 0.88
+(median ~0.71). v2 uses block-median phase correlation rather than
+single-peak phase correlation, so the absolute values are not
+directly comparable to standard cross-correlation literature. None of
+the 38 images is below an empirically reasonable noise floor (~0.3 –
+0.5 for cross-instrument HiRISE→CTX matching after decimation), so
+the cut at 0.5 effectively removes nothing.
+
+### Numbers
+
+- **Pooled Spearman ρ** = +0.275 across 33 102 held-out tiles from 36
+  LOIO folds (p ≪ 1e-50).
+- **Per-fold ρ**: mean +0.151, std 0.216, median +0.130, range
+  -0.378 to +0.684.
+- **Per-image AUC at fa_gt_1e-2**: 35 folds with both classes;
+  median 0.572, max 0.880, min 0.311. 14 % above 0.70 ("usable on
+  this image"); 26 % below 0.50 ("anti-signal on this image").
+
+### Headline framing for the writeup
+
+The slim model writeup ([`docs/modeling_slim.md`](docs/modeling_slim.md))
+is positioned as **the model used in the project report**, not as a
+comparison piece against the 52-feature full model. User explicit
+direction 2026-06-03: "we don't need to make comparisons to the
+original full run -- this is just supposed to be a simpler/slimmer
+version that will be easier to explain." First drafts of the doc
+included slim-vs-full comparison tables and figures; those were
+removed in the final version. The headline conclusion is the same as
+the full modeling writeup: real but small ranking signal, per-tile
+boulder-rich classification not tractable at CTX resolution, model
+keys on the physically expected features.
+
+### Code artefacts (tracked)
+
+- [`scripts/run_modeling_slim.py`](scripts/run_modeling_slim.py) —
+  the runner; ~2 min on a CPU-only laptop.
+- [`scripts/probes/_modeling_slim_figures.py`](scripts/probes/_modeling_slim_figures.py)
+  — the figure builder.
+- [`docs/modeling_slim.md`](docs/modeling_slim.md) — the writeup.
+- [`docs/index.md`](docs/index.md) — index entry added.
+- `reports/figures/modeling_slim_per_image_auc.png` — per-image AUC
+  distribution at the boulder-rich threshold (the only figure in
+  the writeup).
+
+### Outputs (gitignored, regenerable)
+
+- `dataset_v2/modeling_slim_predictions.parquet` (33 102 rows)
+- `dataset_v2/modeling_slim_summary.parquet` (37 rows = 36 folds +
+  1 pooled row)
+
+### Recorded for posterity (not surfaced in docs)
+
+An earlier version of the runner trained the 52-feature full model
+alongside the slim model on the same filtered training set and
+computed pooled and per-fold comparison metrics. The pooled
+ρ values were essentially identical (slim +0.275 vs full +0.280),
+with the slim model showing slightly higher per-fold mean ρ due to
+lower overfitting variance on a few folds. Recorded here in case a
+future session wants to revisit the "less is more" framing, but
+removed from the current writeup per user direction above.
