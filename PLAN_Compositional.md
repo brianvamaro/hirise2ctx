@@ -398,7 +398,7 @@ manifest BoulderLabel or with geographic context (latitude, terrain type)?
 | 7d — statistical comparison | 1 day → **DONE 2026-06-02 in ~1 hr of dev** | scipy only; runner finishes in ~2 s on the cached parquets |
 | 7e — dust-confound analysis | 1 day | Partial correlation + per-image discrimination. **Partial-dust discriminator done as part of Stage 7d (2026-06-02); the formal [Atwood-Stone & McEwen 2013](https://doi.org/10.1029/2013GL058355) dust index + pixel-level shadow masking refinements remain as future work.** |
 | Writeup + figures | 1–2 days → **DONE 2026-06-02** | Notebooks 14 + 15 + 16 + 17 executed; [`docs/compositional.md`](docs/compositional.md) paper-Methods style writeup at project wrap-up (~1100 lines, 8 figures, 10 references). |
-| Tier 1 + Tier 2 provenance disambiguation (per §11) | 1 day → **DONE 2026-06-03 in ~1.5 hr** | Notebook 17 + Tier 1 OR = 12.0 p = 0.034 + Tier 2 KW null |
+| Tier 1 + Tier 2 provenance disambiguation (per §11) | 1 day → **DONE 2026-06-03 in ~1.5 hr; numbers corrected 2026-06-04** | Notebook 17 + Tier 1 OR = 23.0 p = 0.018 (honest exclusion) + Tier 2 KW null |
 
 **Total**: ~6–9 days end to end (1–2 for 7.0 gate + 5–7 for the full pipeline if 7.0
 passes). Cheap relative to the full Stage 6 work, and **the 7.0 gate caps the downside
@@ -499,14 +499,16 @@ control:
 Stage 7d cannot distinguish (1) from (2). To resolve provenance:
 
 - ~~**Quick (manual)**: classify each v2 ObsId by terrain context using the HiRISE browse images~~
-  **DONE 2026-06-03** (Tier 1). Used Brian's pre-existing mapping spreadsheet (37 of 39
-  ObsIds annotated). Parsed `deposit_flag` ("Deposit!" in note) and `streamlined_flag`
-  ("streamlined" in note); combined `transport_indicator` is the test variable. Fisher's
-  exact on `transport_indicator × is_composition_residual`: **OR = 12.0, p = 0.034 under
-  P2_count**; OR = 6.38, p = 0.10 under P4_area. **Significant under P2; transport-indicator
-  images are ~6× enriched in `composition_residual`.** See
-  [`docs/compositional.md §4.7`](docs/compositional.md) +
-  [`notebooks/17_provenance_disambiguation.ipynb`](notebooks/17_provenance_disambiguation.ipynb).
+  **DONE 2026-06-03; numbers corrected 2026-06-04 to honest exclusion** (Tier 1). Used
+  Brian's pre-existing mapping spreadsheet (37 of 39 ObsIds annotated). Parsed
+  `deposit_flag` ("Deposit!" in note) and `streamlined_flag` ("streamlined" in note);
+  combined `transport_indicator` is the test variable. The 2 ObsIds missing from the
+  spreadsheet are excluded from the test (not imputed as False, which would dilute the
+  association). Fisher's exact on `transport_indicator × is_composition_residual`:
+  **OR = 23.0, p = 0.018 under P2_count**; OR = 12.0, p = 0.059 under P4_area.
+  **Significant under P2; transport-indicator images are an order of magnitude enriched
+  in `composition_residual`.** See [`docs/compositional.md §4.7`](docs/compositional.md)
+  + [`notebooks/17_provenance_disambiguation.ipynb`](notebooks/17_provenance_disambiguation.ipynb).
 - ~~**Cleaner**: cross-reference against the Robbins & Hynek 2012 crater catalog~~
   **DONE 2026-06-03** (Tier 2). Fetched [Robbins 2012](https://doi.org/10.1029/2011JE003966)
   (384 343 craters globally) from [craters.sjrdesign.net](https://craters.sjrdesign.net/).

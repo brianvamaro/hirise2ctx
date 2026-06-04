@@ -134,20 +134,24 @@ Stage 7d work, so the cross-tabulation against per-image attribution is a
 clean test.
 
 Two ObsIds (`ESP_017355_2260`, `ESP_076499_1160`) are not in the
-spreadsheet and carry no terrain flags; they are conservatively scored
-`transport_indicator = False` (which biases toward the null).
+spreadsheet and have no terrain annotation. We **exclude** them from
+the test (rather than imputing `transport_indicator = False`), since
+imputing missing data is a form of fabrication and one of the two
+(ESP_017355_2260) is a `composition_residual` image whose imputed
+value would mechanically dilute the association.
 """,
     cell_id="tier1-md",
 ))
 
 cells.append(code(
     """def tier1_test(sub, label):
-    sub = sub.copy()
+    # Honest exclusion: drop images without terrain annotations entirely.
+    sub = sub[sub["in_spreadsheet"].fillna(False)].copy()
     sub["transport_indicator"] = sub["deposit_flag"] | sub["streamlined_flag"]
     sub["is_comp_resid"] = (sub["attribution"] == "composition_residual")
     ct = pd.crosstab(sub["transport_indicator"], sub["is_comp_resid"])
     odds, p = stats.fisher_exact(ct.values, alternative="two-sided")
-    print(f"=== {label} ===")
+    print(f"=== {label} (honest exclusion, n={len(sub)}) ===")
     print("transport_indicator x is_composition_residual:")
     print(ct)
     print(f"Fisher's exact two-sided: OR = {odds:.2f}, p = {p:.4f}")
@@ -172,10 +176,11 @@ disp
 
 cells.append(code(
     """# Bar chart: composition_residual fraction by transport_indicator
+# Uses the honest-exclusion subset (drops missing-terrain ObsIds).
 fig, axes = plt.subplots(1, 2, figsize=(11, 4), sharey=True)
 for ax, sub, label in [(axes[0], sub_p2, "P2_count"),
                        (axes[1], sub_p4, "P4_area")]:
-    sub = sub.copy()
+    sub = sub[sub["in_spreadsheet"].fillna(False)].copy()
     sub["transport_indicator"] = sub["deposit_flag"] | sub["streamlined_flag"]
     sub["is_comp_resid"] = (sub["attribution"] == "composition_residual")
     by_ti = sub.groupby("transport_indicator")["is_comp_resid"].agg(["sum", "count"])
@@ -201,12 +206,12 @@ plt.show()
 
 cells.append(md(
     """**Tier 1 verdict.** Under the P2_count partition,
-transport-indicator images are ~6x more likely to be classified
-`composition_residual` (Fisher's exact OR = 12.0, **p = 0.034**). Under
-P4_area the same pattern holds marginally (OR = 6.38, p = 0.10). The
-effect direction is consistent across partition rules; the partition
-that gave a larger composition_residual set (P2_count, n=5 vs 5) carries
-a significant result.
+transport-indicator images are an order of magnitude more likely to be
+classified `composition_residual` (Fisher's exact OR = 23.0,
+**p = 0.018**). Under P4_area the same pattern holds marginally
+(OR = 12.0, p = 0.059). The effect direction is consistent across
+partition rules; the partition that gave a larger composition_residual
+set (P2_count) carries the significant result.
 """,
     cell_id="tier1-verdict",
 ))
@@ -326,9 +331,10 @@ cells.append(md(
     """## 4. Combined verdict
 
 Tier 1 finds a statistically significant enrichment of `composition_residual`
-on transport-indicator terrain (Fisher's exact OR = 12.0, p = 0.034 under
-P2_count). Tier 2 finds no significant separation of `composition_residual`
-on crater proximity (Kruskal-Wallis p > 0.8).
+on transport-indicator terrain (Fisher's exact OR = 23.0, p = 0.018 under
+P2_count, honest-exclusion handling of missing terrain data). Tier 2 finds
+no significant separation of `composition_residual` on crater proximity
+(Kruskal-Wallis p > 0.8).
 
 The two tests *together* most strongly support the **transported-with-
 distinct-deposit-character interpretation** over the
@@ -337,7 +343,7 @@ distinct-deposit-character interpretation** over the
 1. Crater-ejecta-locally-sourced predicts a Tier 2 positive (crater
    proximity). We don't see it.
 2. Transported-distinct-deposit predicts a Tier 1 positive (deposit-flag
-   correlation). We see it at p = 0.034.
+   correlation). We see it at p = 0.018.
 
 The **surface-maturity-locally-sourced** interpretation (boulders = fresh
 version of the same regional parent rock as surrounding regolith, e.g.

@@ -2227,16 +2227,39 @@ Fisher's exact two-sided on `transport_indicator × is_composition_residual`:
 
 | Partition | OR | p | n_trans_comp / n_trans | n_other_comp / n_other |
 |---|---:|---:|---:|---:|
-| **P2_count** | **12.0** | **0.034** | 3 / 6 | 2 / 26 |
-| P4_area | 6.38 | 0.10 | 2 / 6 | 3 / 20 |
+| **P2_count** | **23.0** | **0.018** | 3 / 6 | 1 / 24 |
+| P4_area | 12.0 | 0.059 | 3 / 7 | 1 / 17 |
 
 **Significant at p < 0.05 under P2_count partition.** Direction holds in
-both partitions; magnitude smaller and only marginal under P4_area.
+both partitions; magnitude smaller and marginal under P4_area.
+
+### Methodology correction (2026-06-04)
 
 The two ObsIds missing from the spreadsheet (`ESP_017355_2260` in
-composition_residual, `ESP_076499_1160` in no_signal) are scored
-`transport_indicator = False`, biasing toward the null — the true effect
-may be stronger.
+composition_residual, `ESP_076499_1160` in no_signal) were originally
+scored `transport_indicator = False` (treating "missing data" as the
+default value). Under that approach the numbers were P2 OR=12.0
+p=0.034 and P4 OR=6.38 p=0.10. Brian flagged 2026-06-04 that this is
+imputation, not honest exclusion — and since `ESP_017355_2260` is a
+composition_residual image whose imputed-False value lands it in the
+"other-terrain composition_residual" cell, the imputation
+mechanically dilutes the association. The honest fix is to **exclude
+those two ObsIds from the test** (they have no terrain row in the
+contingency table). The above corrected numbers use the
+honest-exclusion approach. The earlier impute-as-False numbers are
+preserved here for the historical record but the corrected numbers
+supersede in the canonical writeups (`docs/compositional.md` §4.7,
+`docs/compositional_slim.md` §4.4).
+
+A second correction: the original P4_area cell-count row above and in
+the earlier `compositional.md` table also had a transcription error
+(swapped which of the 5 composition_residual images were in the
+transport-flagged vs other-terrain cell). The actual contingency
+table at P4 under imputation was 3/7 transport-flagged + 2/19
+other-terrain, not 2/6 + 3/20. The OR and p reported on the
+imputation approach (6.38, 0.10) were the correct test statistic but
+the cell counts in the table were wrong. The corrected numbers
+above use the honest-exclusion contingency table.
 
 Output: `dataset_v2/terrain_classification_v2.parquet`.
 
@@ -2283,7 +2306,10 @@ crater-ejecta-locally-sourced:
 1. Crater-ejecta-locally-sourced predicts Tier 2 positive (crater
    proximity). We don't see it.
 2. Transported-with-deposit-character predicts Tier 1 positive (deposit
-   annotation correlation). We see it at p = 0.034 under P2.
+   annotation correlation). We see it at p = 0.018 under P2
+   (OR = 23.0; honest-exclusion). The earlier-reported p = 0.034 was
+   the impute-as-False number; the methodology correction is recorded
+   above.
 
 The **surface-maturity-locally-sourced** alternative (boulders = fresh
 parent rock, surroundings = weathered version, from non-crater bedrock)

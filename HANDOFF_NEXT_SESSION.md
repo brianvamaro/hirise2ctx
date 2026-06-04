@@ -8,7 +8,7 @@ images above 0.70. Standalone writeup, NOT a comparison to the full
 52-feature model -- user explicit direction.
 
 Earlier today: provenance disambiguation Tiers 1 + 2 done.
-Tier 1 deposit_flag x composition_residual Fisher's exact p=0.034
+Tier 1 deposit_flag x composition_residual Fisher's exact p=0.018
 (P2_count); Tier 2 crater proximity null (KW p>0.7). Combined verdict:
 modest empirical support for transported > crater-ejecta-locally-sourced;
 surface-maturity-locally-sourced alternative remains in play and needs

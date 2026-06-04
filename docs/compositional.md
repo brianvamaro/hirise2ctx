@@ -550,21 +550,29 @@ A combined `transport_indicator = deposit_flag OR streamlined_flag` is
 the Tier 1 test variable. Brian's annotations were made independently of
 any Stage 7d work, so the cross-tabulation is a clean test.
 
-Fisher's exact two-sided on `transport_indicator × is_composition_residual`:
+Fisher's exact two-sided on `transport_indicator × is_composition_residual`.
+The two ObsIds without terrain annotations (`ESP_017355_2260` and
+`ESP_076499_1160`) are **excluded** from the test entirely rather than
+imputed as `transport_indicator = False` — imputing missing data is a
+form of fabrication, and ESP_017355_2260 in particular is a
+composition_residual image whose imputed-False value would
+inappropriately weaken the association. Honest exclusion:
 
 | Partition | Transport-indicator comp_resid | Other-terrain comp_resid | Odds ratio | p |
 |---|---:|---:|---:|---:|
-| **P2_count** | **3 / 6 (50 %)** | **2 / 26 (8 %)** | **12.0** | **0.034** |
-| P4_area | 2 / 6 (33 %) | 3 / 20 (15 %) | 6.38 | 0.10 |
+| **P2_count** | **3 / 6 (50 %)** | **1 / 24 (4 %)** | **23.0** | **0.018** |
+| P4_area | 3 / 7 (43 %) | 1 / 17 (6 %) | 12.0 | 0.059 |
 
 ![Tier 1 terrain x attribution](../reports/figures/stage7_tier1_terrain_attribution.png)
 
-The two missing ObsIds are conservatively scored
-`transport_indicator = False`, which biases toward the null --
-the true effect may be stronger. Under the P2_count partition, the result
-is significant at the conventional p = 0.05 bar with a large odds ratio.
-Under P4_area, the direction is the same but the magnitude is smaller and
-the p-value is marginal.
+Under the P2_count partition the result is significant at p = 0.018
+(below the conventional 0.05 bar) with an odds ratio of 23. Under
+P4_area the direction is the same but the p-value is marginal at
+0.059. (Earlier drafts of this writeup reported the impute-as-False
+numbers — P2 p = 0.034, P4 p = 0.10 — which under-state the true
+association by including the missing-data composition_residual image
+in the "other-terrain" cell; the honest-exclusion numbers above are
+the corrected reporting and supersede those.)
 
 **Tier 2 -- crater-distance cross-reference.** For each HiRISE image
 center, compute the great-circle distance to the nearest crater of
@@ -609,7 +617,7 @@ interpretation over **crater-ejecta-locally-sourced**:
    proximity). We don't see it.
 2. The transported-with-deposit-character hypothesis predicts a Tier 1
    positive (correlation with deposit / streamlined annotations). We see
-   it at p = 0.034 under P2.
+   it at p = 0.018 under P2 (OR = 23.0; honest exclusion).
 
 The **surface-maturity-locally-sourced** interpretation (boulders = fresh
 parent rock, surroundings = weathered version of the same parent rock,
@@ -863,7 +871,7 @@ The Stage 7 study was set up to answer two questions:
   follow-up programme in §4.7 gives **modest empirical support for the
   transported-provenance interpretation**: the per-image composition
   residual concentrates on terrain Brian's mapping spreadsheet flagged
-  as depositional or streamlined (Fisher's exact OR = 12.0, p = 0.034
+  as depositional or streamlined (Fisher's exact OR = 23.0, p = 0.018
   under P2_count), and it does *not* concentrate at
   crater-ejecta-proximal locations (Kruskal-Wallis p > 0.7 across
   crater-diameter thresholds). The two tests together disfavour
@@ -939,10 +947,12 @@ provenance-disambiguation note added 2026-06-02) and in
    remains the natural next study:
 
    - *~~Quick: manual terrain classification + cross-ref against
-     Stage 7d attribution~~* **DONE 2026-06-03**. Result: Fisher's
-     exact OR = 12.0, p = 0.034 under P2_count partition;
-     deposit-flagged / streamlined-shapes images are 6× enriched in
-     `composition_residual`. See §4.7.
+     Stage 7d attribution~~* **DONE 2026-06-03** (numbers corrected
+     2026-06-04 to honest-exclusion handling of missing terrain
+     annotations). Result: Fisher's exact OR = 23.0, p = 0.018 under
+     P2_count partition; deposit-flagged / streamlined-shapes images
+     are an order of magnitude enriched in `composition_residual`.
+     See §4.7.
    - *~~Cleaner: Robbins 2012 crater-catalog cross-reference~~*
      **DONE 2026-06-03**. Result: null. Crater proximity does not
      separate the attribution categories (KW p > 0.7). The null

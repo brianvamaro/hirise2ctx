@@ -58,7 +58,7 @@ to disambiguate." Paper-Methods style writeups in [docs/](docs/).
 | Stage 7b reprojection cache | ✗ skipped (folded into 7c via "stay in source CRS") | [DECISIONS.md](DECISIONS.md) 2026-05-31 night |
 | Stage 7c per-tile colour features | ✓ 9 860 rows / 36 images, 2026-06-01 | `dataset_v2/features_colour.parquet` |
 | Stage 7d pooled rich-vs-poor + shadow refinement + per-image attribution | ✓ PASS 2026-06-02/03 | [docs/compositional.md §4](docs/compositional.md), [notebooks 15+16](notebooks/) |
-| Provenance disambiguation Tier 1 (terrain context) | ✓ Fisher's exact OR=12 p=0.034 (P2) | [docs/compositional.md §4.7](docs/compositional.md), [notebook 17](notebooks/17_provenance_disambiguation.ipynb) |
+| Provenance disambiguation Tier 1 (terrain context) | ✓ Fisher's exact OR=23 p=0.018 (P2, honest exclusion) | [docs/compositional.md §4.7](docs/compositional.md), [notebook 17](notebooks/17_provenance_disambiguation.ipynb) |
 | Provenance disambiguation Tier 2 (Robbins 2012 crater catalog) | ✓ Kruskal-Wallis null (p>0.7); disfavours crater-ejecta-locally-sourced | [docs/compositional.md §4.7](docs/compositional.md), [notebook 17](notebooks/17_provenance_disambiguation.ipynb) |
 | Provenance disambiguation Tier 3 (CRISM/HiRISE upstream source comparison) | open — decisive transport-vs-maturity test | [docs/compositional.md §8](docs/compositional.md) |
 | Stage 7e (Atwood-Stone & McEwen 2013 dust index + pixel-level shadow masking) | open | [docs/compositional.md §8](docs/compositional.md) |
