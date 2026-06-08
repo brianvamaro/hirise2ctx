@@ -45,13 +45,15 @@ across the parts of Mars no HiRISE image has covered.
 data:
 
 - **Boulder polygons** — meter-scale boulder detections on HiRISE
-  imagery (~0.25 m/px native resolution). These were produced by the
-  upstream BoulderNet Mask R-CNN instance-segmentation detector
-  ([Prieur et al. 2023, *JGR Planets*](https://doi.org/10.1029/2023JE008013)),
+  imagery (~0.25 m/px native resolution). These were produced by a
+  YOLO-based updated version of the BoulderNet boulder detector
+  ([Amaro et al., 2026](https://doi.org/10.1029/2024JE008769);
+  the original Mask R-CNN BoulderNet is
+  [Prieur et al., 2023](https://doi.org/10.1029/2023JE008013)),
   one polygon per detected boulder. The polygons provide the
   **truth labels** the model is trained to predict.
 - **HiRISE imagery** — the same HiRISE panchromatic scenes
-  ([McEwen et al. 2007](https://doi.org/10.1029/2005JE002605))
+  ([McEwen et al., 2007](https://doi.org/10.1029/2005JE002605))
   the boulder polygons were detected on, decimated to ~5 m/px and
   used only as the *moving image* in the HiRISE → CTX
   co-registration step (next paragraph). Not a model feature: the
@@ -59,10 +61,11 @@ data:
   HiRISE image exists. Listed as a source because the dataset
   cannot be built without it, even though it does not directly feed
   the model.
-- **CTX imagery** — the [Murray Lab global CTX
-  mosaic](https://doi.org/10.1029/2024EA003555), a ~5 m/px
-  panchromatic image of Mars assembled from many MRO Context Camera
-  ([Malin et al. 2007](https://doi.org/10.1029/2006JE002808))
+- **CTX imagery** — the
+  [Murray Lab global CTX mosaic](https://doi.org/10.1029/2024EA003555)
+  ([Dickson, 2024](https://doi.org/10.1029/2024EA003555)), a
+  ~5 m/px panchromatic image of Mars assembled from many MRO
+  Context Camera ([Malin et al., 2007](https://doi.org/10.1029/2006JE002808))
   source images. The CTX mosaic provides the **inputs** from which
   per-tile texture features are computed.
 
@@ -155,7 +158,7 @@ high-frequency variation that would otherwise dominate the
 boulder-related signal), and tiles must be small enough to deliver
 a meaningful spatial-resolution improvement over the thermal-IR
 rock-abundance maps that are the standard alternative for Mars
-surface-rock estimation ([Nowicki & Christensen 2007](https://doi.org/10.1029/2006JE002798)),
+surface-rock estimation ([Nowicki & Christensen, 2007](https://doi.org/10.1029/2006JE002798)),
 which provide rock-abundance estimates at kilometre scales rather
 than the few-hundred-metre scale this pipeline targets. 320 m
 satisfies both bounds and is the scale we evaluate.

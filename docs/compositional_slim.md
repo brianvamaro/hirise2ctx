@@ -56,8 +56,8 @@ from underlying bedrock, exposed by impacts, or otherwise derived
 from the immediate substrate) or **transported** by long-range
 processes (notably megatsunami transport from the late-Hesperian
 outflow events into the northern lowlands per
-[Rodriguez et al. 2016](https://doi.org/10.1038/srep25106) /
-[Costard et al. 2017](https://doi.org/10.1002/2016JE005230); the
+[Rodriguez et al., 2016](https://doi.org/10.1038/srep25106) /
+[Costard et al., 2017](https://doi.org/10.1002/2016JE005230); the
 cohort's geographic location at ~40 – 46°N on the eastern Chryse /
 western Arabia margins sits in their proposed deposit zones).
 
@@ -76,17 +76,20 @@ upstream data:
   panchromatic footprint — roughly 2 – 6 km wide vs the
   full ~6 km HiRISE swath — so the colour data covers only the
   central 24 – 31 % of tiles within each image. Camera description in
-  [Delamere et al. 2010, *Icarus*](https://doi.org/10.1016/j.icarus.2009.03.012);
+  [Delamere et al., 2010](https://doi.org/10.1016/j.icarus.2009.03.012);
   observational properties documented in the
   [HiRISE colour products notes](https://www.uahirise.org/pdf/color-products.pdf).
 - **Boulder polygons** — meter-scale boulder detections on the
-  HiRISE panchromatic images, produced by the BoulderNet Mask R-CNN
-  detector ([Prieur et al. 2023, *JGR Planets*](https://doi.org/10.1029/2023JE008013))
+  HiRISE panchromatic images, produced by a YOLO-based updated
+  version of the BoulderNet boulder detector
+  ([Amaro et al., 2026](https://doi.org/10.1029/2024JE008769);
+  the original Mask R-CNN BoulderNet is
+  [Prieur et al., 2023](https://doi.org/10.1029/2023JE008013))
   and used as truth labels for the compositional partition. The
   polygons enter the analysis already aligned to the upstream
-  per-tile coordinate grid (see "tile-aligned coordinates" below);
-  the alignment work is done by the rock-abundance modelling
-  pipeline ([modeling_slim.md](modeling_slim.md)).
+  per-tile coordinate grid (see "tile grid + boulder labels"
+  below); the alignment work is done by the rock-abundance
+  modelling pipeline ([modeling_slim.md](modeling_slim.md)).
 
 Of the 39 v2 cohort observations, **37 (94.9 %) have a usable
 COLOR.JP2** on PDS. Cohort coverage cluster lat/lon: ~40 – 46°N,
@@ -320,11 +323,11 @@ construction.
 ![Per-image attribution counts across the four shadow-filter thresholds](../reports/figures/stage7d_attribution_bars.png)
 
 *Figure 3. Per-image attribution category counts across four shadow-
-filter thresholds. At the headline T=0.10 cut with the P4_area
-partition, the 26 eligible images split into 5 `composition_residual`,
-5 `dust_attributable`, and 16 `no_signal`. The bimodality of the
-attribution is robust across partition rules and shadow-filter
-choices.*
+filter thresholds. At the headline T=0.10 cut with the area-based
+partition (`fractional_area ≥ 1%`), the 26 eligible images split into
+5 `composition_residual`, 5 `dust_attributable`, and 16 `no_signal`.
+The bimodality of the attribution is robust across partition rules
+and shadow-filter choices.*
 
 Roughly a fifth of the eligible images carry a per-image composition
 residual; another fifth are dust-attributable at the per-image level;
@@ -346,15 +349,17 @@ The geological terrain annotations cover 37 of the 39 cohort
 images; we exclude the 2 unannotated images from the test below
 (rather than imputing a transport-indicator value for them, which
 would be a form of data fabrication). Of the remaining images, six
-to seven (depending on partition cut) carry a `transport_indicator`
-annotation. Crossing terrain against the per-image attribution
-categories at the headline shadow-filter cut produces (Fisher's exact
-two-sided):
+to seven (depending on which partition rule defines "boulder-rich")
+carry a `transport_indicator` annotation. Crossing terrain against
+the per-image attribution categories at the headline shadow-filter
+cut produces (Fisher's exact two-sided), under both the
+area-based partition (the headline definition of "boulder-rich")
+and the count-based partition (sensitivity check):
 
-| Partition cut | Transport-flagged: composition_residual | Other-terrain: composition_residual | Fisher's exact OR | p |
+| Partition | Transport-flagged: composition_residual | Other-terrain: composition_residual | Fisher's exact OR | p |
 |---|---:|---:|---:|---:|
-| P4_area (fa ≥ 1%) | 3 / 7 (43 %) | 1 / 17 (6 %) | 12.0 | 0.059 |
-| **P2_count (count > 50)** | **3 / 6 (50 %)** | **1 / 24 (4 %)** | **23.0** | **0.018** |
+| by area (`fractional_area ≥ 1%`) | 3 / 7 (43 %) | 1 / 17 (6 %) | 12.0 | 0.059 |
+| **by count (`boulder_count > 50`)** | **3 / 6 (50 %)** | **1 / 24 (4 %)** | **23.0** | **0.018** |
 
 ![Terrain context vs per-image attribution](../reports/figures/stage7_tier1_terrain_attribution.png)
 
@@ -362,8 +367,8 @@ two-sided):
 likely to fall in the `composition_residual` attribution category
 than other-terrain images. The Fisher's exact two-sided p-value
 reaches 0.018 under the count-based partition and 0.059 under the
-area-based partition; the direction is consistent across both
-partitions. The two annotation sources are independent — the terrain
+area-based partition; the direction is consistent across both.
+The two annotation sources are independent — the terrain
 annotations were made on HiRISE browse imagery; the attribution
 categories come from per-image colour-statistical tests — so the
 correlation is not circular.*
@@ -415,8 +420,8 @@ than the surrounding lowland surface, brought in by long-range
 transport. The leading candidate for many of the v2 cohort's boulder
 fields is **late-Hesperian megatsunami transport** from the
 outflow-channel events that delivered highland material into the
-northern lowlands ([Rodriguez et al. 2016](https://doi.org/10.1038/srep25106),
-[Costard et al. 2017](https://doi.org/10.1002/2016JE005230)). Under
+northern lowlands ([Rodriguez et al., 2016](https://doi.org/10.1038/srep25106),
+[Costard et al., 2017](https://doi.org/10.1002/2016JE005230)). Under
 this scenario the boulders are a mixed assemblage from highland
 source regions and should be compositionally distinct from the local
 lowland substrate — a real provenance signal, not a maturity signal.
@@ -512,14 +517,15 @@ The study was set up to answer three questions:
   significant p-values reflect the large pooled sample size, not
   large per-tile separability.
 - **Crude dust proxy.** The `RED/BG` dust index is a placeholder; a
-  literature-validated dust index ([Atwood-Stone & McEwen 2013](https://doi.org/10.1029/2013GL058355)
+  literature-validated dust index ([Atwood-Stone & McEwen, 2013](https://doi.org/10.1029/2013GL058355)
   is the natural refinement) would shift the per-image dust
   attribution by some amount in either direction. The numbers
   reported here should be read as "under the current proxy."
-- **Single-rater terrain annotations.** The "Deposit!" /
-  "streamlined" annotations come from a single observer's HiRISE
-  browse-image review. A second annotator would strengthen the
-  Fisher's exact result.
+- **Terrain annotations could be confirmed and expanded.** The
+  "Deposit!" / "streamlined" annotations were made from a single
+  pass of HiRISE browse-image review and cover 37 of 39 cohort
+  images. Confirming the existing annotations and extending them to
+  the two missing images would tighten the Fisher's exact result.
 - **Small terrain-flag sample.** Only 6 of the 26 eligible images
   carry a transport indicator, of which 3 are `composition_residual`.
   The p = 0.018 finding is real but fragile — one image moving from
@@ -527,11 +533,11 @@ The study was set up to answer three questions:
 - **Image-center, not tile-level, analysis for the terrain step.**
   The terrain annotations are image-level; a tile-level test inside
   each `composition_residual` image's footprint would refine the
-  spatial granularity but cannot easily lift the n = 5 per-image
-  power limitation.
-- **Surface-maturity alternative not directly tested.** Tiers 1
-  (terrain) covers transported provenance but does not address the
-  maturity-of-local-bedrock alternative, which would require
+  spatial granularity but cannot easily lift the small-cohort power
+  limitation.
+- **Surface-maturity alternative not directly tested.** The terrain
+  cross-reference covers transported provenance but does not address
+  the maturity-of-local-bedrock alternative, which would require
   comparing the boulder-field signature against the inferred
   upstream source-unit signature to disambiguate.
 
@@ -553,19 +559,28 @@ Two cheaper refinements that would strengthen the existing
 conclusions:
 
 - **Refined dust index.** Replace the `RED/BG` proxy with the
-  Atwood-Stone & McEwen 2013 dust index, which uses absolute
+  Atwood-Stone & McEwen (2013) dust index, which uses absolute
   reflectance + band-shape information rather than a two-band ratio.
   Could shift the dust attribution share by a substantial amount in
   either direction.
-- **Independent terrain re-annotation.** A second observer working
-  from HiRISE browse images, blinded to the colour-test results,
-  would either strengthen the Tier-1 Fisher's exact finding or
-  reveal it as a single-rater artefact.
+- **Confirm and expand the terrain annotations.** The current
+  geological terrain notes were made on HiRISE browse images for 37
+  of 39 cohort images; confirming the existing annotations on a
+  second review pass and extending them to cover the two missing
+  images would tighten the Fisher's exact result (currently sensitive
+  to small movements in the contingency table) and let us include
+  the missing-data ObsIds in the test rather than dropping them.
 
 ---
 
 ## 9. References
 
+- Amaro, B., et al. (2026). Effect of Boulder-Size Distributions on
+  Thermally Derived Rock Abundances on the Moon. *Journal of
+  Geophysical Research: Planets*.
+  [doi.org/10.1029/2024JE008769](https://doi.org/10.1029/2024JE008769).
+  (The current YOLO-based BoulderNet variant used to produce the
+  boulder polygons in this study.)
 - Atwood-Stone, C., & McEwen, A. S. (2013). Avalanche slope angles
   in low-gravity environments from active Martian sand dunes.
   *Geophysical Research Letters*, 40(12), 2929 – 2934.
@@ -590,10 +605,11 @@ conclusions:
   Resolution Imaging Science Experiment (HiRISE). *Journal of
   Geophysical Research: Planets*, 112, E05S02.
   [doi.org/10.1029/2005JE002605](https://doi.org/10.1029/2005JE002605).
-- Prieur, N. C., et al. (2023). Automatic crater detection through
-  Mask R-CNN: applications to a Mars dataset. *Journal of
-  Geophysical Research: Planets*, 128, e2023JE008013.
+- Prieur, N. C., et al. (2023). Automatic Characterization of
+  Boulders on Planetary Surfaces From High-Resolution Satellite
+  Images. *Journal of Geophysical Research: Planets*, 128.
   [doi.org/10.1029/2023JE008013](https://doi.org/10.1029/2023JE008013).
+  (The original Mask R-CNN BoulderNet.)
 - Rodriguez, J. A. P., et al. (2016). Tsunami waves extensively
   resurfaced the shorelines of an early Martian ocean. *Scientific
   Reports*, 6, 25106.

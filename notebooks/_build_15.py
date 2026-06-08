@@ -184,11 +184,13 @@ def _annotate(ax, x, y, txt):
 fig, ax = plt.subplots(figsize=(10, 4.5))
 x = np.arange(len(FEATURES))
 width = 0.38
+RULE_LABEL = {"P4_area": "by area (fa >= 1%)",
+              "P2_count": "by count (boulder_count > 50)"}
 for offset, rule, color in [(-width/2, "P4_area", "steelblue"),
                             (+width/2, "P2_count", "darkorange")]:
     sub = pooled_std[pooled_std["partition_rule"] == rule].set_index("feature").reindex(FEATURES)
     bars = ax.bar(x + offset, sub["effect_size"].to_numpy(), width=width,
-                  label=rule, color=color, edgecolor="black", linewidth=0.5)
+                  label=RULE_LABEL[rule], color=color, edgecolor="black", linewidth=0.5)
     for xi, b, p in zip(x + offset, bars, sub["p_value"].to_numpy()):
         marker = "***" if p < 1e-10 else ("**" if p < 1e-3 else ("*" if p < 0.05 else "ns"))
         _annotate(ax, xi, b.get_height() + (0.01 if b.get_height() >= 0 else -0.04),
@@ -197,7 +199,7 @@ ax.axhline(0, color="k", linewidth=0.7)
 ax.set_xticks(x)
 ax.set_xticklabels(FEATURES, rotation=20, ha="right")
 ax.set_ylabel("Cohen's d  (rich - poor, z-scored per image)")
-ax.set_title("Stage 7d -- pooled standardised effect sizes, rich vs poor "
+ax.set_title("Pooled standardised effect sizes, rich vs poor "
              "(*** p<1e-10, ** p<1e-3, * p<0.05)")
 ax.legend(loc="best")
 ax.grid(True, axis="y", linestyle=":", alpha=0.5)

@@ -303,12 +303,14 @@ for ax, rule in zip(axes, ["P4_area", "P2_count"]):
         ax.bar(threshold_labels, heights, bottom=bottoms,
                color=colors[cat], edgecolor="black", linewidth=0.5, label=cat)
         bottoms += np.array(heights)
-    ax.set_title(f"{rule}")
+    rule_label = {"P4_area": "by area (fa >= 1%)",
+                  "P2_count": "by count (boulder_count > 50)"}[rule]
+    ax.set_title(rule_label)
     ax.set_xlabel("shadow_fraction threshold")
     ax.grid(True, axis="y", linestyle=":", alpha=0.5)
 axes[0].set_ylabel("number of eligible images")
 axes[0].legend(loc="upper right", fontsize=8)
-fig.suptitle("Per-image attribution counts (Stage 7d, ratio features only)",
+fig.suptitle("Per-image attribution counts (ratio features only)",
              y=1.02)
 fig.tight_layout()
 fig.savefig(FIG / "stage7d_attribution_bars.png", dpi=140, bbox_inches="tight")
