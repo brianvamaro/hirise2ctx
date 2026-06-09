@@ -293,6 +293,13 @@ inferred upstream source-unit composition.
   ([Atwood-Stone & McEwen, 2013](https://doi.org/10.1029/2013GL058355)
   is the natural refinement) would shift the per-image dust
   attribution by some amount in either direction.
+- **Per-tile aggregation can't isolate boulder material from its
+  surroundings.** Each 320 m tile averages over boulders plus the
+  regolith between them, so the rich-vs-poor color difference could
+  reflect properties of the area around boulders (e.g. wind-shadow
+  dust deposition, disturbed regolith from emplacement, or other
+  surface modification) rather than the boulder material's own
+  spectral signature.
 
 ---
 
