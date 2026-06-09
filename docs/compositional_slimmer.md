@@ -51,8 +51,8 @@ or attributable to differential dust loading?**
   color bands in
   [Delamere et al., 2010](https://doi.org/10.1016/j.icarus.2009.03.012).
 - **Boulder polygons** — the same BoulderNet polygons used in the
-  modeling study, reused here as truth labels for the rich/poor
-  partition.
+  classification study, reused here as truth labels for the
+  rich/poor partition.
 
 
 ![HiRISE 3-band false-color composite for one exemplar image with BoulderNet polygon centroids overlaid](../reports/figures/compositional_slim_polygons_on_color.png)
@@ -169,7 +169,7 @@ eligible images):
 | RED/BG (dust) | -0.252 | 9.3e-33 |
 
 The vanishingly small p-values are a sample-size artefact rather
-than evidence of a large effect — at n ≈ 8,000 even a |d| ≈ 0.1
+than evidence of a large effect — at this n even a |d| ≈ 0.1
 shift comes out as p ≪ 1e-10 from a Mann-Whitney U. The Cohen's d
 column carries the real magnitude information, and those values
 are small in absolute terms (|d| ≈ 0.25 – 0.37).
@@ -246,8 +246,9 @@ filter setting.
 
 The dust narrative
 dominates the raw effect — boulder-rich areas are systematically
-less dust-loaded than the boulder-poor surroundings, consistent with
- younger emplacement age . The composition narrative explains the residual — even
+less dust-loaded than the boulder-poor surroundings, consistent
+with younger emplacement age. The composition narrative explains
+the residual — even
 after dust loading is controlled for, a statistically robust
 difference remains, preferentially in the ferric/ferrous-sensitive
 ratio features and growing under shadow control. **Boulder material
@@ -278,9 +279,24 @@ Both predict the spectral direction observed; the color analysis
 alone cannot disambiguate. The decisive disambiguation would
 require a direct comparison of the composition residual against
 inferred upstream source-unit composition.
+
 ---
 
-## 6. Conclusions
+## 6. Limitations
+
+- **Small effect magnitude.** Pooled standardised partial-dust
+  |d| of 0.07 – 0.18 is small in absolute terms; headline-significant
+  p-values reflect the pooled sample size, not large per-tile
+  separability.
+- **Crude dust proxy.** The `RED/BG` dust index is a placeholder;
+  a literature-validated dust index
+  ([Atwood-Stone & McEwen, 2013](https://doi.org/10.1029/2013GL058355)
+  is the natural refinement) would shift the per-image dust
+  attribution by some amount in either direction.
+
+---
+
+## 7. Conclusions
 
 1. **Boulder-rich tiles are spectrally distinct from boulder-poor
    tiles** of the same image, across the 36-image cohort. Pooled
@@ -307,21 +323,6 @@ The main future direction is as follows:
   source supports the transported interpretation; match against
   local lowland regolith composition supports surface maturity.
 
-
----
-
-## 7. Limitations
-
-- **Small effect magnitude.** Pooled standardised partial-dust
-  |d| of 0.07 – 0.18 is small in absolute terms; headline-significant
-  p-values reflect the pooled sample size, not large per-tile
-  separability.
-- **Crude dust proxy.** The `RED/BG` dust index is a placeholder;
-  a literature-validated dust index
-  ([Atwood-Stone & McEwen, 2013](https://doi.org/10.1029/2013GL058355)
-  is the natural refinement) would shift the per-image dust
-  attribution by some amount in either direction.
-
 ---
 
 ## 8. Reproducibility
@@ -338,7 +339,7 @@ The main future direction is as follows:
 Re-run the pooled test + attribution at the headline shadow filter via:
 
 ```powershell
-& "C:/Users/brian/anaconda3/Scripts/conda.exe" run --no-capture-output -n geospatial `
+ run --no-capture-output -n geospatial `
     python -u scripts/run_stage7d_pooled.py --shadow-threshold 0.10 `
     --out dataset_v2/stage7d_pooled_shadow_0.10.parquet `
     --attribution-out dataset_v2/stage7d_attribution_shadow_0.10.parquet

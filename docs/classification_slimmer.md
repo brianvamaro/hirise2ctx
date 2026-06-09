@@ -4,13 +4,13 @@
 
 ## Motivation
 
-Detecting meter-scale **boulder deposits** — concentrations of
+Detecting meter-scale boulder deposits — concentrations of
 boulders associated with depositional or transport landforms —
-has two near-term applications. The first is **landing-site
-selection**: meter-scale boulders are mission-ending hazards for
+has two near-term applications. The first is landing-site
+selection: meter-scale boulders are mission-ending hazards for
 surface assets, and a CTX-resolution boulder-rich flag would
-complement existing hazard catalogues. The second is **mapping
-boulder deposits across Mars** for process science: boulder fields
+complement existing hazard catalogues. The second is mapping
+boulder deposits across Mars for process science: boulder fields
 encode their emplacement history, and a global boulder-deposit map
 would help test, for example, the late-Hesperian megatsunami
 hypothesis ([Rodriguez et al., 2016](https://doi.org/10.1038/srep25106);
@@ -18,23 +18,22 @@ hypothesis ([Rodriguez et al., 2016](https://doi.org/10.1038/srep25106);
 checking whether predicted boulder-rich regions track the proposed
 deposit zones in the northern lowlands.
 
-What this fills in vs existing maps:
-
+An overview of existing maps and how this project fits inL
 - **THEMIS thermal-IR rock abundance**
   ([Nowicki & Christensen, 2007](https://doi.org/10.1029/2006JE002798))
   covers Mars near-globally but at ~100 m/pixel and indexes *any*
-  exposed rock — bedrock, ejecta, and boulders lump together. The
+  exposed rock — bedrock and boulders lump together. The
   fraction of "rock abundance" that is specifically meter-scale
   loose boulders is not recoverable from thermal alone.
 - **HiRISE-scale boulder mapping**
   ([Golombek et al., 2008](https://doi.org/10.1029/2007JE003065);
-  [Prieur et al., 2023](https://doi.org/10.1029/2023JE008013);
-  [Amaro et al., 2026](https://doi.org/10.1029/2024JE008769))
+  [Prieur et al., 2023](https://doi.org/10.1029/2023JE008013))
   produces meter-resolution boulder catalogues but only within the
-  < 5 % of Mars HiRISE has imaged.
-- **This study bridges the two.** HiRISE-derived boulder polygons
-  supply per-tile truth labels; CTX texture features supply the
-  inputs the model can run on for the rest of Mars at ~5 m/pixel.
+  < 4 % of Mars HiRISE has imaged.
+- This study bridges the two. HiRISE-derived boulder polygons
+  supply per-tile truth labels as HiRISE with its resolution of up to .25 m/pixel can resolve individual boulders; CTX texture features at ~ 5 m/pixel supply the
+  inputs so the model can take advantage of CTX's near global coverage and 
+  run on the rest of Mars.
   The deliverable is a boulder-specific (not bedrock-generic)
   per-tile classification at 320 m, near-globally.
 
@@ -75,7 +74,7 @@ training step.*
   produced by a YOLO-based BoulderNet
   ([Amaro et al., 2026](https://doi.org/10.1029/2024JE008769);
   [Prieur et al., 2023](https://doi.org/10.1029/2023JE008013)).
-  Provides the truth labels.
+  Provide the truth labels.
 - **HiRISE imagery** ([McEwen et al., 2007](https://doi.org/10.1029/2005JE002605))
   — used only as the moving image for HiRISE → CTX co-registration;
   not a model feature.
@@ -158,9 +157,8 @@ than collapsing to a single cohort-aggregate number.
 **Reported metric.** Per-image ROC-AUC at the boulder-rich threshold
 (`fractional area ≥ 1 %`), computed on each fold whose held-out
 image contains both rich and poor tiles. We report the per-image
-distribution (median, min, max, and the fraction crossing the
-"usable" AUC ≥ 0.70 line) rather than a single cohort-aggregate
-number.
+distribution: median, min, max, and the fraction crossing the
+"usable" AUC ≥ 0.70 line.
 
 ---
 
@@ -249,7 +247,9 @@ statistics. Three future directions are listed below:
   characteristics X, Y, Z").
 - **Move beyond hand-engineered features with a CNN.** The
   current features are deliberately physically motivated summary
-  statistics. A convolutional neural network (CNN) may better capture nuance that the current features are not by allowing for more general representations.
+  statistics. A convolutional neural network (CNN) trained on raw
+  CTX patches could learn texture patterns the hand-engineered
+  statistics miss.
 - **Use larger spatial context.** Boulder fields are often part of
   larger geological units (crater ejecta, depositional aprons,
   channel margins) that span many tiles; the current per-tile
@@ -280,7 +280,7 @@ the artefacts on disk are not renamed).
 Re-run via:
 
 ```powershell
-& "C:/Users/brian/anaconda3/Scripts/conda.exe" run --no-capture-output -n geospatial `
+ run --no-capture-output -n geospatial `
     python -u scripts/run_modeling_slim.py
 ```
 
