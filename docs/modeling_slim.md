@@ -1,12 +1,4 @@
-# Modeling (slim) — 5-feature CTX rock-abundance predictor
-
-> A simplified, reportable LightGBM model for predicting per-tile
-> meter-scale boulder abundance from CTX texture features. This document
-> describes the model as it is used in the project writeup; the deeper
-> implementation discussion lives in [`modeling.md`](modeling.md) and
-> [`modeling_results.md`](modeling_results.md).
-
----
+# Modeling — 5-feature CTX rock-abundance predictor
 
 ## Bottom line
 
@@ -17,12 +9,29 @@ a pooled Spearman ρ = **+0.275** between predicted and true per-tile
 boulder counts (~33 000 held-out tiles, p ≪ 1e-50). The signal is
 small but statistically robust, the model is keying on the physically
 expected features, and per-image performance at the "boulder-rich"
-threshold is **bimodal**: about 14 % of held-out images reach AUC
-≥ 0.70 (usable on those images) while a similar fraction sits below
-chance. The overall conclusion: the per-tile CTX texture signal at
+threshold varies widely: about 14 % of held-out images reach
+AUC ≥ 0.70  while ~26 % sit below chance,
+with the rest in the noisy 0.5 – 0.7 band. The overall conclusion: the per-tile CTX texture signal at
 5 m/px supports useful relative ranking of boulder abundance but does
-not support reliable identification of boulder-rich tiles at the
-cohort-aggregate level.
+not yet support generalized reliable identification of boulder-rich tiles.
+
+---
+
+## Motivation
+
+Meter-scale boulder distributions on Mars matter for landing-site
+hazard assessment, for inferring recent surface processes (impact
+gardening, mass wasting, long-range transport), and as ground-truth
+input to thermal-IR rock-abundance products that operate at much
+coarser spatial scales. The data source that resolves individual
+boulders — HiRISE at ~0.25 m/px — covers under 5 % of the Martian
+surface. CTX at ~5 m/px is near-global but cannot resolve individual
+boulders. A model that learns to predict per-tile boulder abundance
+from CTX texture, trained against HiRISE-derived truth on the
+overlapping coverage, would extend HiRISE-quality boulder maps onto
+the rest of the planet at a few-hundred-metre scale — a meaningful
+spatial-resolution improvement over the kilometre-scale thermal-IR
+alternatives.
 
 ---
 
@@ -33,9 +42,7 @@ meter-scale boulder abundance well enough to extend HiRISE-derived
 rock-abundance maps to CTX-only regions of Mars? The deliverable
 constraint is that all model inputs must be derivable from CTX alone
 at inference time — HiRISE coverage is sparse (under 5 % of the
-surface), while CTX is near-global at ~5 m/px. A working predictor
-would let HiRISE-quality boulder-abundance maps be extrapolated
-across the parts of Mars no HiRISE image has covered.
+surface), while CTX is near-global at ~5 m/px.
 
 ---
 
@@ -52,15 +59,11 @@ data:
   [Prieur et al., 2023](https://doi.org/10.1029/2023JE008013)),
   one polygon per detected boulder. The polygons provide the
   **truth labels** the model is trained to predict.
-- **HiRISE imagery** — the same HiRISE panchromatic scenes
+- **HiRISE imagery** — the HiRISE panchromatic scenes
   ([McEwen et al., 2007](https://doi.org/10.1029/2005JE002605))
-  the boulder polygons were detected on, decimated to ~5 m/px and
-  used only as the *moving image* in the HiRISE → CTX
-  co-registration step (next paragraph). Not a model feature: the
-  trained model must run on CTX alone at inference time, where no
-  HiRISE image exists. Listed as a source because the dataset
-  cannot be built without it, even though it does not directly feed
-  the model.
+  the boulder polygons were detected on. Used only as the *moving
+  image* for HiRISE → CTX co-registration; not a model feature,
+  since the trained model must run on CTX alone at inference time.
 - **CTX imagery** — the
   [Murray Lab global CTX mosaic](https://doi.org/10.1029/2024EA003555)
   ([Dickson, 2024](https://doi.org/10.1029/2024EA003555)), a
@@ -68,11 +71,6 @@ data:
   Context Camera ([Malin et al., 2007](https://doi.org/10.1029/2006JE002808))
   source images. The CTX mosaic provides the **inputs** from which
   per-tile texture features are computed.
-
-The end-to-end pipeline that turns these two inputs into a tile-level
-training dataset is documented at higher detail in
-[`methods.md`](methods.md); the next two paragraphs sketch the parts
-relevant to the model.
 
 **HiRISE → CTX co-registration.** The boulder polygons live in
 HiRISE's native coordinate system (0.25 m/px); to use them as per-tile
@@ -111,11 +109,23 @@ images contain many boulders across most of the HiRISE footprint;
 the slim model's task is to recover the spatial distribution of those
 boulders from the CTX-derived per-tile features alone.*
 
-**Cohort.** 36 of 38 HiRISE images from the v2 cohort. The 2 manifest
-images with `unknown` boulder-density label (`ESP_017355_2260` and
-`ESP_076499_1160`) were excluded because they are geographic-diversity
-picks rather than part of the boulder-rich/poor cohort the model is
-trained to predict. The remaining 36 images cluster at ~40 – 46°N on
+![CTX and HiRISE on the same 200 m surface patch, showing the resolution gap](../reports/figures/modeling_slim_resolution_gap.png)
+
+*Figure 2. Resolution gap between the model's input (CTX, 5 m/pixel)
+and the source of the truth labels (HiRISE, ~0.5 m/pixel on this
+image) on the exact same 200 m × 200 m surface patch — a 10×
+linear, 100× areal resolution difference. HiRISE is reprojected
+into the CTX coordinate system at HiRISE native resolution so the
+two panels are pixel-aligned. Cyan scale bars are 50 m. **Left**:
+CTX, with the patch fitting in a 40 × 40 pixel block; individual
+meter-scale boulders are not resolved and the model sees only
+aggregate tile-scale texture. **Right**: HiRISE RED panchromatic on
+the same patch (400 × 400 pixels); boulders appear as discrete
+dark spots with bright shadows. The patch is centred on the
+highest-boulder-count S=64 tile of `ESP_053989_2260` (902 boulders
+in a 320 m tile, fractional area 11 %).*
+
+**Cohort.** 36 images that cluster at ~40 – 46°N on
 the eastern Chryse / western Arabia margins.
 
 **Inputs (per CTX tile, 320 m on a side).** Five features, each a
@@ -167,13 +177,10 @@ satisfies both bounds and is the scale we evaluate.
 
 ## 3. Methods
 
-**Model.** LightGBM with a two-stage hurdle architecture: a binary
-presence head (does this tile contain any boulders?) multiplied by a
-magnitude head (how many, given some are present?). The presence
-head uses class-balanced LightGBM defaults; the magnitude head uses
-log1p + Huber loss on positives only. Default hyperparameters: 500
-boosting rounds, learning rate 0.05, 63 leaves, early stopping after
-50 rounds. No hyperparameter tuning — that is part of "simple."
+**Model.** LightGBM regression on `boulder_count` with default
+hyperparameters: 500 boosting rounds, learning rate 0.05, 63 leaves,
+early stopping after 50 rounds. No hyperparameter tuning — that is
+part of "simple."
 
 **Cross-validation.** Leave-image-out (LOIO). For each of the 36
 held-out images, the model is trained on the other 35 and predicts on
@@ -209,8 +216,8 @@ produces a Spearman rank correlation of:
 > p ≪ 1e-50.
 
 The signal is statistically unambiguous given the sample size but
-modest in absolute terms (Cohen's convention calls |ρ| < 0.3 "small").
-Tiles ranked higher by the model do contain more boulders on average,
+modest in absolute terms. Tiles ranked higher by the model do
+contain more boulders on average,
 which means the model output is usable as a *relative* abundance
 ranking. The model is not a calibrated estimator — predicted counts
 do not match true counts at the magnitude level — and the predicted
@@ -234,7 +241,7 @@ The mean per-image ρ is positive at ~3.6 standard errors above zero —
 the same conclusion as the pooled result, reached on a different
 aggregation. The distribution shows substantial cross-image variance:
 some held-out images reach ρ > +0.5, while a few are at or below
-zero, reflecting the per-image bimodality described next.
+zero, reflecting the wide cross-image performance spread described next.
 
 ### 4.3 Per-image classification at the boulder-rich threshold
 
@@ -246,13 +253,14 @@ rich tiles in this specific image for follow-up?"
 
 ![Per-image AUC at boulder-rich threshold](../reports/figures/modeling_slim_per_image_auc.png)
 
-*Figure 2. Per-image AUC at the boulder-rich threshold
+*Figure 3. Per-image AUC at the boulder-rich threshold
 (`fractional area ≥ 1%`), one bar per held-out image, sorted from
 worst on the left to best on the right. Red = anti-signal (AUC < 0.5);
 grey = chance-band (0.5 ≤ AUC < 0.7); green = usable on that image
-(AUC ≥ 0.7). The distribution is bimodal — a small minority of images
-sit clearly above and below the usable / anti-signal thresholds, with
-the majority in the noisy chance band.*
+(AUC ≥ 0.7). The distribution is broad and centred on the chance
+band — most images sit between 0.5 and 0.7, with a small minority
+clearly above the usable threshold and another small minority below
+the anti-signal line.*
 
 | | per-image AUC at fa ≥ 1 % |
 |---|---:|
@@ -262,17 +270,17 @@ the majority in the noisy chance band.*
 | fraction with AUC ≥ 0.70 ("usable") | 14 % |
 | fraction with AUC < 0.50 ("anti-signal") | 26 % |
 
-The distribution is **bimodal**: on a minority of the cohort the
-model identifies boulder-rich tiles reliably (top performers reach
-AUC 0.88), while on a comparable minority the model is at or below
+The distribution is **wide**: on a minority of the cohort the model
+identifies boulder-rich tiles reliably (top performers reach AUC
+0.88), while on a comparable minority the model is at or below
 chance. The remaining majority sits in a noisy band near 0.5–0.7.
 The cohort-aggregate AUC is therefore not a meaningful single
 number — the model works on some images and not others, and reporting
-only an aggregate would hide the bimodality.
+only an aggregate would hide that spread.
 
 ![Binary boulder-rich tiles highlighted on CTX: truth vs slim model for two exemplar images](../reports/figures/modeling_slim_good_vs_bad.png)
 
-*Figure 3. Boulder-rich tiles highlighted on CTX for two contrasting
+*Figure 4. Boulder-rich tiles highlighted on CTX for two contrasting
 held-out images; boulder-poor tiles are kept transparent so the CTX
 surface context (craters, terrain) shows through. The left panel of
 each row shows truth — green tiles have `fractional area ≥ 1%`. The
@@ -299,12 +307,6 @@ distribution.*
 
 ## 5. Limitations
 
-- **Boulder-rich classification is not tractable at the cohort
-  aggregate.** Per-image AUC is bimodal; reporting a cohort-mean AUC
-  would dishonestly imply uniform performance. The model can be used
-  on the subset of images where it works (the ones with AUC > 0.70)
-  but cannot, from the prediction alone, indicate whether a given
-  image is one where it works.
 - **Geographic concentration.** The 36-image cohort clusters
   geographically at ~40 – 46°N on the eastern Chryse / western Arabia
   margins. Cohort-level generalisation claims apply to dusty
@@ -326,8 +328,8 @@ The expected outcome at project start was a per-tile boulder-abundance
 predictor good enough to extend HiRISE-derived rock-abundance to
 CTX-only regions. The achieved outcome falls short of that as a
 stand-alone boulder-rich classifier — at the operationally meaningful
-threshold the model is bimodal per-image and the cohort-aggregate
-performance is not a usable headline. What works is the *continuous
+threshold per-image performance varies too widely for the cohort-
+aggregate to be a usable headline. What works is the *continuous
 ranking* (pooled Spearman ρ = +0.275): tiles the model ranks higher do
 contain more boulders, useful as an input to downstream science that
 can absorb a small per-tile ranking signal — regional abundance maps,
@@ -355,8 +357,8 @@ imagery.
 | Figure builder | [`scripts/probes/_modeling_slim_figures.py`](../scripts/probes/_modeling_slim_figures.py) |
 | Per-tile predictions | `dataset_v2/modeling_slim_predictions.parquet` (33 102 rows; gitignored) |
 | Per-fold summary | `dataset_v2/modeling_slim_summary.parquet` (37 rows = 36 folds + 1 pooled row; gitignored) |
-| Figures | `reports/figures/modeling_slim_boulders_on_ctx.png`, `reports/figures/modeling_slim_per_image_auc.png`, `reports/figures/modeling_slim_good_vs_bad.png` |
-| Figure builders | [`scripts/probes/_modeling_slim_figures.py`](../scripts/probes/_modeling_slim_figures.py), [`scripts/probes/_modeling_slim_panels.py`](../scripts/probes/_modeling_slim_panels.py), [`scripts/probes/_modeling_slim_boulders_overlay.py`](../scripts/probes/_modeling_slim_boulders_overlay.py) |
+| Figures | `reports/figures/modeling_slim_boulders_on_ctx.png`, `reports/figures/modeling_slim_resolution_gap.png`, `reports/figures/modeling_slim_per_image_auc.png`, `reports/figures/modeling_slim_good_vs_bad.png` |
+| Figure builders | [`scripts/probes/_modeling_slim_figures.py`](../scripts/probes/_modeling_slim_figures.py), [`scripts/probes/_modeling_slim_panels.py`](../scripts/probes/_modeling_slim_panels.py), [`scripts/probes/_modeling_slim_boulders_overlay.py`](../scripts/probes/_modeling_slim_boulders_overlay.py), [`scripts/probes/_modeling_slim_resolution_gap.py`](../scripts/probes/_modeling_slim_resolution_gap.py) |
 
 Re-run via:
 

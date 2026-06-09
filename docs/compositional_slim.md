@@ -1,15 +1,4 @@
-# Compositional analysis (slim)
-
-> A higher-level reportable writeup of the compositional study. Same
-> data and same numbers as the full implementation in
-> [`compositional.md`](compositional.md); written at a level pitched
-> at a general scientific reader rather than someone working in the
-> pipeline. The full doc is the reference for the per-image partition
-> rules, the shadow-threshold sweep, the data-engineering gotchas,
-> and the additional crater-catalog cross-reference; everything here
-> stands on its own.
-
----
+# Compositional analysis 
 
 ## Bottom line
 
@@ -30,6 +19,27 @@ favours the transported interpretation (Fisher's exact p = 0.018),
 but the surface-maturity alternative remains in play and needs a
 follow-up comparison against inferred upstream source-unit
 composition to disambiguate decisively.
+
+---
+
+## Motivation
+
+Where the boulders in a given region came from is a basic open
+question for Mars surface geology — were they eroded in place from
+the local bedrock, ejected by nearby impacts, or transported in
+from somewhere else (most notably by the late-Hesperian megatsunami
+events hypothesised to have delivered highland material into the
+northern lowlands)? Composition is one of the few signals that can
+distinguish these scenarios at orbital scale: locally-sourced
+boulders should match the substrate they sit on, while transported
+boulders should look like their distant parent unit. The main
+obstacle is that Martian dust loading produces its own
+boulder-rich-vs-poor colour difference that mimics a compositional
+signal. This study uses HiRISE three-band colour at the per-tile
+level to test whether a rich-vs-poor spectral signal exists at all,
+and to separate the part attributable to differential dust loading
+from the part that survives as a real compositional residual —
+the prerequisite for any provenance interpretation downstream.
 
 ---
 
@@ -271,13 +281,13 @@ tiles from 30 eligible images):
 features after per-image standardisation. All six are negative
 (boulder-rich tiles are lower than boulder-poor tiles in each
 feature) and statistically unambiguous at the n ≈ 8 000 sample size.
-Effect-size magnitudes are "small" by Cohen's convention (|d| 0.21 –
+Effect-size magnitudes are small in absolute terms (|d| 0.21 –
 0.37) — real, but modest in per-tile separability.*
 
 All six effects are negative, meaning boulder-rich tiles are
 systematically lower than boulder-poor tiles in raw I/F (darker), in
 ratio features (less ferric-altered), and in the dust proxy (less
-dust-loaded). The effect sizes are "small" by Cohen's convention
+dust-loaded). The effect sizes are small in absolute magnitude
 (|d| < 0.4), so this is a real population-level signal rather than a
 strong per-tile classifier.
 
@@ -346,9 +356,7 @@ composition residual is real and independent of dust loading.
 ### 4.4 Terrain context cross-reference
 
 The geological terrain annotations cover 37 of the 39 cohort
-images; we exclude the 2 unannotated images from the test below
-(rather than imputing a transport-indicator value for them, which
-would be a form of data fabrication). Of the remaining images, six
+images; we exclude the 2 unannotated images from the test below. Of the remaining images, six
 to seven (depending on which partition rule defines "boulder-rich")
 carry a `transport_indicator` annotation. Crossing terrain against
 the per-image attribution categories at the headline shadow-filter
@@ -513,7 +521,7 @@ The study was set up to answer three questions:
 ## 7. Limitations
 
 - **Small effect magnitude.** The pooled standardised partial-dust
-  |d| of 0.07 – 0.18 is "tiny" by Cohen's convention. The headline-
+  |d| of 0.07 – 0.18 is small in absolute terms. The headline-
   significant p-values reflect the large pooled sample size, not
   large per-tile separability.
 - **Crude dust proxy.** The `RED/BG` dust index is a placeholder; a

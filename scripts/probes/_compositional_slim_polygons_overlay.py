@@ -73,10 +73,15 @@ def read_color_window(obs_id: str, crop_frac: tuple[float, float] = (0.45, 0.55)
         right = left + W * sf
         bottom = top + H * win_transform.e * DECIMATION
         bounds = (left, right, bottom, top)
+    # Valid-pixel mask computed on the RAW bands, before scaling+offset
+    # (the offset shifts true-zero nodata up into a positive value, which
+    # makes a post-scaling mask useless for distinguishing on- from off-
+    # swath pixels).
+    valid_mask = np.any(bands > 0, axis=0)
     bands = bands.astype(np.float32) * lbl.scaling_factor + lbl.offset
     cos_i = lbl.cos_incidence
     bands = bands / cos_i
-    return bands, bounds, crs, lbl
+    return bands, bounds, crs, lbl, valid_mask
 
 
 def stretch_for_display(bands: np.ndarray) -> np.ndarray:
@@ -103,7 +108,7 @@ def stretch_for_display(bands: np.ndarray) -> np.ndarray:
 
 def main():
     print(f"Loading {OBS_ID} COLOR.JP2 at decimation {DECIMATION}x, middle 10% swath ...")
-    bands, bounds, crs, lbl = read_color_window(OBS_ID, crop_frac=(0.45, 0.55))
+    bands, bounds, crs, lbl, valid_mask = read_color_window(OBS_ID, crop_frac=(0.45, 0.55))
     print(f"  bands shape = {bands.shape}, "
           f"map_scale_native = {lbl.map_scale_mpp} m/px -> "
           f"display ~{lbl.map_scale_mpp * DECIMATION:.2f} m/px")
@@ -115,10 +120,8 @@ def main():
     rgb = stretch_for_display(bands)
     print(f"  display rgb shape = {rgb.shape}")
 
-    # Build an alpha mask: pixels where ALL three input bands were zero or
-    # NaN (nodata padding) become transparent so they don't show as black
-    # margins around the actual colour swath.
-    valid_mask = np.any((bands > 0) & np.isfinite(bands), axis=0)
+    # Use the raw-band valid mask for transparency too, so nodata regions
+    # render transparent rather than black.
     rgba = np.dstack([rgb, valid_mask.astype(np.float32)])
 
     print(f"Loading polygons from {POLYS / (OBS_ID + '.gpkg')} ...")
@@ -136,13 +139,23 @@ def main():
     print(f"  {len(polys):,} polygons; centroid x range {xs.min():.1f} - "
           f"{xs.max():.1f}, y range {ys.min():.1f} - {ys.max():.1f}")
 
-    # Clip to colour-swath bounds (the polygons cover the full HiRISE
-    # footprint, which is wider than the colour swath)
+    # Restrict centroids to pixels with actual colour data. The polygon
+    # GPKG covers the full HiRISE panchromatic footprint, which is wider
+    # than the COLOR.JP2 swath; off-swath polygons land in nodata pixels
+    # that contribute nothing to the analysis, so we drop them here.
     left, right, bottom, top = bounds
-    mask = ((xs >= left) & (xs <= right) & (ys >= bottom) & (ys <= top))
-    xs = xs[mask]
-    ys = ys[mask]
-    print(f"  polygons within colour swath: {mask.sum():,}")
+    H_mask, W_mask = valid_mask.shape
+    cols_idx = ((xs - left) / (right - left) * W_mask).astype(int)
+    rows_idx = ((top - ys) / (top - bottom) * H_mask).astype(int)
+    in_bounds = (
+        (rows_idx >= 0) & (rows_idx < H_mask)
+        & (cols_idx >= 0) & (cols_idx < W_mask)
+    )
+    in_swath = np.zeros_like(in_bounds, dtype=bool)
+    in_swath[in_bounds] = valid_mask[rows_idx[in_bounds], cols_idx[in_bounds]]
+    xs = xs[in_swath]
+    ys = ys[in_swath]
+    print(f"  polygons within colour swath: {in_swath.sum():,}")
 
     # Figure: full colour swath as IRB false colour, polygon centroids
     # scattered on top.
@@ -171,20 +184,12 @@ def main():
 
     fig, ax = plt.subplots(figsize=(fig_w, fig_h))
     ax.imshow(rgba, extent=bounds, origin="upper", interpolation="nearest")
-    ax.scatter(xs, ys, s=3.0, c=BOULDER_COLOR, alpha=0.55, linewidths=0,
-               edgecolors="none", rasterized=True)
+    ax.scatter(xs, ys, s=18, c=BOULDER_COLOR, alpha=0.9,
+               linewidths=0.4, edgecolors="black", rasterized=True)
     ax.set_xlim(x_left, x_right)
     ax.set_ylim(y_bot, y_top)
-    ax.set_title(
-        f"{OBS_ID}: HiRISE 3-band false-colour composite "
-        f"(IR=R, RED=G, BG=B)\n"
-        f"with {mask.sum():,} BoulderNet polygon centroids overlaid "
-        f"(red dots)",
-        fontsize=11)
-    ax.set_xlabel("Eastings (m, source CRS)")
-    ax.set_ylabel("Northings (m, source CRS)")
-    ax.ticklabel_format(style="plain", useOffset=False)
-    ax.tick_params(labelsize=7)
+    ax.set_xticks([])
+    ax.set_yticks([])
     fig.tight_layout()
     out = FIG / "compositional_slim_polygons_on_color.png"
     fig.savefig(out, dpi=140, bbox_inches="tight")
