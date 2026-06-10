@@ -42,6 +42,71 @@ Reading: causes 3 and 5 are cheap to act on now; cause 1 needs tile-level
 mechanism work (W1) and illumination-invariance (W2); cause 4 is what the CNN
 tests; cause 2 is accepted and documented.
 
+**Cause 0 — data-integrity artifacts (Brian directive, 2026-06-10):** before
+any of the above is blamed — and especially before concluding "CTX isn't
+enough" — the mundane failure modes must be excluded per image: misprojected
+labels, bad co-registration, grid/join bugs, BoulderNet false positives.
+None of these has been systematically audited per image. W1 is restructured
+as a differential diagnosis that works from mundane to fundamental; the
+sensor-floor conclusion is reached only by exclusion. Note that **anti-signal
+(AUC < 0.5) is itself evidence for cause 0**: a genuinely uninformative
+sensor yields AUC ≈ 0.5; *systematically inverted* predictions need a
+mechanism, and spatially shifted labels over a coherent boulder field (or a
+garbled tile join) is exactly the kind of mechanism that produces inversion.
+
+### 1.1 Prior art — Serrano et al. (2010), the direct ancestor of this project
+
+[Serrano, McGuire, Mayer, Huertas & Arvidson, "Predicting HiRISE-equivalent
+Rock Density on Mars Using CTX Image Features," AIAA Infotech@Aerospace](https://www-robotics.jpl.nasa.gov/media/documents/Infotech_Paper.pdf)
+([NTRS record](https://ntrs.nasa.gov/citations/20100039411)). Bayesian
+Network inferring HiRISE shadow-detector rock density (rocks > 1.5 m per
+100 m hectare) from CTX GLCM + intensity features, Phoenix landing area,
+10 image pairs (8 train / 2 test). Reviewed 2026-06-10; takeaways:
+
+1. **Geomorphic unit as a mediating variable.** Their BN is
+   `density → geomorphic unit → features`: the texture↔density mapping is
+   *conditional on terrain class*, and their observed failure modes were
+   terrain misclassifications (Ld↔Lb under-prediction, Ce↔Ld
+   over-prediction). This is our per-image heterogeneity problem stated
+   30× smaller. Actionable for us: a **terrain-unit covariate is
+   inference-compatible** — global geologic maps (e.g. USGS Tanaka et al.
+   2014 global geologic map) exist everywhere CTX exists. Add terrain unit
+   per tile to the W1 dossier; if the error atlas shows terrain-conditioned
+   failure, a terrain-categorical feature (or per-unit models) is a
+   legitimate Stage-6-style candidate.
+2. **They used concurrent native HiRISE–CTX pairs, not a mosaic.** HiRISE
+   and CTX acquire simultaneously, so their CTX had identical illumination,
+   season, and atmosphere to the HiRISE ground truth — by construction zero
+   source-heterogeneity (our validated cause 1). A **native-CTX variant of
+   our pipeline** (train on each image's concurrent CTX acquisition; infer
+   on native CTX catalog images rather than the Murray mosaic) would remove
+   cause 1 from training entirely, at the cost of per-image photometric
+   normalization at inference (illumination known from CTX metadata — we
+   already parse this via SeamMap/CUMINDEX). **Candidate pivot, decided
+   after W1**: if the error atlas confirms seam/source-driven failure
+   dominates, this is the structural fix.
+3. **Regional "fill the gaps" deployment framing.** They explicitly
+   disclaim cross-region transfer ("not intended to be trained on one area
+   and tested in an entirely different area") — the product is: train on
+   scattered HiRISE within a region, predict the CTX between them. Our
+   LOIO across geographically scattered images attempts something strictly
+   harder. Tier 1's honest first deployment claim should likely be
+   regional gap-fill (W4 demo should be designed this way), with global
+   transfer as the stretch goal.
+4. **Hazard-class product format.** Their output is a rock-density class
+   map (0–3 / 4–8 / 9–19 / >19 rocks per hectare) plus a continuous
+   expected-safety map (probability-weighted class values). Classes are
+   defined by the *application* (lander safety), not by statistics — and
+   counts-per-area aligns exactly with our `boulder_count` target. Good
+   presentation precedent for Tier 1 (class map) and Tier 2 (expected-value
+   map with calibrated bin probabilities).
+5. **Feature-family validation, and its age.** Their features are
+   literally ours (GLCM contrast/energy/homogeneity/correlation + window
+   mean/std, ~hectare scale) and visibly correlated with rock density —
+   independent confirmation the feature family carries signal. But these
+   are 2010-era hand-crafted features; that they remain our feature set is
+   itself an argument for W2's CNN test.
+
 ---
 
 ## 2. Product definitions (what "done" looks like)
@@ -102,29 +167,65 @@ Establish the true best baseline. Everything later is measured against this.
 baseline (variant, target, features, scale) + per-image metric distribution.
 All later W-items compare against this.
 
-### W1 — Error atlas (~2–3 days)
+### W1 — Error atlas as differential diagnosis (~3–4 days)
 
 Turn "anti-signal" from a label into an actionable mechanism. The per-image
 diagnosis exists (notebook 13); the **per-tile** level was never done.
+**Structure (Brian, 2026-06-10): work the ladder from mundane to
+fundamental, and treat every rung as live until excluded.** "CTX isn't
+enough" is the conclusion of exclusion at the bottom — not a hypothesis to
+reach for when an upper rung looks hard. Remember the cause-0 argument:
+AUC < 0.5 favours artifact explanations, because absent signal gives ≈ 0.5
+while inversion needs a mechanism.
 
-1. **Tile-level error maps**: for each of the 38 images, map LOIO
-   residual / rank-error per tile over the CTX window, with **SeamMap seam
-   polygons overlaid** and per-tile `n_sources` / `dominant_source_fraction`.
-   Direct test: do errors concentrate near seams / in multi-source tiles
-   *within* images (the tile-level version of the validated image-level
-   correlation)?
-2. **Per-image dossier table** (38 rows): banked-baseline metrics, CTX-source
-   stats, terrain class (from the Tier-1 spreadsheet), base rate, label
-   density, dominant failure mode (anti-signal / rare-positive-miss /
-   compression — the notebook 13 taxonomy, recomputed on the W0 recipe).
-3. **Decision memo**: define the Tier 1 **reliability flag** from what the
-   atlas shows (e.g. exclude tiles with `n_sources > k`, or per-region
-   `dominant_source_fraction` cutoff). If seam-local masking explains the
-   anti-signal images, the gate problem changes from "predict bad images"
-   (n=38-bound) to "mask bad tiles" (n≈38k — not small-n-bound).
+**Rung 1 — label geometry (misprojection / co-registration).** Per-image
+audit, prioritizing the anti-signal images: re-render reprojected polygons
+over the decimated HiRISE *and* the CTX window (the notebook-02/03 QA
+visuals, never done for v2's worst images); pull each image's block-median
+co-registration shift + correlation-peak quality and correlate against
+per-image AUC. Scale context: the ~200 m mosaic registration error is
+1.25 tiles at S=32 and 0.6 tiles at S=64 — residual misalignment alone can
+destroy or invert per-tile signal. **Decisive cheap test: re-score a bad
+image with its labels shifted by ±1 tile in each direction; if AUC recovers
+at some offset, it was geometry all along.**
 
-**Deliverable:** notebook 18 + figures + reliability-flag definition with
-measured precision/recall of the flag against known-bad images.
+**Rung 2 — pipeline / join integrity.** (ti, tj) ↔ CTX-pixel-block mapping
+spot-checks; label-parquet ↔ feature-parquet join audit per image (row
+counts, key uniqueness, scale_idx consistency); NaN / nodata fractions;
+duplicated or dropped tiles. A garbled join on one image is indistinguishable
+from "model fails on that image" until checked.
+
+**Rung 3 — label content (BoulderNet quality).** Visual sampling of
+detections on full-res HiRISE for the anti-signal images specifically: are
+"boulders" there actually ripple crests, dune brinks, or crater-wall
+texture? Per-image detection score/size distributions vs the cohort. (v2
+ingest dropped null geometries, but detection *quality* per image was never
+audited against performance.)
+
+**Rung 4 — feature / CTX content.** Per-image feature-distribution drift;
+clipped or saturated CTX windows; **tile-level error maps with SeamMap seam
+polygons overlaid** and per-tile `n_sources` / `dominant_source_fraction` —
+the direct tile-level test of the validated image-level CTX-source
+correlation. Plus terrain unit per tile (global geologic map join, per
+Serrano takeaway 1) to test terrain-conditioned failure.
+
+**Rung 5 — genuine signal limits.** Only what survives rungs 1–4 gets
+attributed to heterogeneity (cause 1, fix = native CTX / invariance) or the
+texture floor (cause 4, fix = CNN or nothing).
+
+**Synthesis outputs:**
+- **Per-image dossier table** (38 rows): banked-baseline metrics, rung-1
+  geometry audit results, CTX-source stats, terrain class, base rate, label
+  density, dominant failure mode (notebook-13 taxonomy recomputed on the W0
+  recipe), and an *attributed cause* per problem image.
+- **Decision memo**: (a) Tier 1 **reliability flag** definition (if
+  seam-local masking explains anti-signal, the gate problem changes from
+  "predict bad images" at n=38 to "mask bad tiles" at n≈38k — not
+  small-n-bound); (b) **go/no-go on the native-CTX pivot** (prior-art
+  takeaway 2) based on how much failure is seam/source-attributed.
+
+**Deliverable:** notebook 18 + figures + dossier + reliability-flag
+definition with measured precision/recall against known-bad images.
 
 ### W2 — CNN on context patches (~1–2 weeks, parallelizable after W0)
 
@@ -176,8 +277,11 @@ What makes any of this "usable" in practice:
    reliability layer** (SeamMap-derived, per W1's definition).
 2. Constraint check at the door: every feature consumed must be CTX-derivable
    (the PROMOTION_QUEUE.md inference-time scope rule).
-3. **Demo region**: a CTX area adjacent to a known good-performing image
-   (prediction continuity sanity check), plus one THEMIS-overlap region.
+3. **Demo region**: design as **regional gap-fill** (prior-art takeaway 3) —
+   a region containing several training HiRISE footprints, predicting the
+   CTX between them (prediction-continuity sanity check at the footprint
+   edges), plus one THEMIS-overlap region. This is the deployment scenario
+   the evidence actually supports; global transfer is the stretch claim.
 4. QA notebook rendering the demo maps.
 
 **Deliverable:** one command that produces a map a third party could look at,
@@ -198,16 +302,20 @@ has almost no true-negative *images*).
 ## 4. Sequencing
 
 ```
-W0 (1 day) ──► W1 (2–3 days) ──► W2 Phase 1 (CNN binary, ~1 wk)
-   │                                   │
-   │                                   ├─► W2 Phase 2 (SSL / regression)
-   │                                   │
-   └────► W4 scaffold (parallel) ◄─────┘
-                                       └─► W3 Tier 2 calibration
+W0 (1 day) ──► W1 (3–4 days) ──► decision point ──► W2 Phase 1 (CNN binary, ~1 wk)
+   │                │                 │                  │
+   │                │                 ├─► native-CTX     ├─► W2 Phase 2 (SSL / regression)
+   │                │                 │   pivot (if      │
+   │                │                 │   seam-driven)   │
+   └────► W4 scaffold (parallel) ◄────┴──────────────────┘
+                                                         └─► W3 Tier 2 calibration
 ```
 
 - W0 first (Brian decision). W1 next — its reliability-flag output is needed
-  by both W4 and the Tier 1 product definition.
+  by both W4 and the Tier 1 product definition, and its **attributed-cause
+  outcome decides what W2 even is**: artifact fixes (rungs 1–3), the
+  native-CTX pivot (seam-driven), terrain conditioning (terrain-driven), or
+  the CNN as planned (feature-driven).
 - W2 and W4 can interleave; W4 doesn't depend on the CNN (it ships with the
   best banked model and upgrades later).
 - W3 starts once Tier 1 is accepted.
