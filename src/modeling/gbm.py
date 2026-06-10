@@ -386,6 +386,7 @@ class LightGBMClassification:
 
     params: LGBMParams = field(default_factory=LGBMParams)
     name: str = "lightgbm_classification"
+    use_scale_pos_weight: bool = True
     _booster: lgb.Booster | None = field(default=None, init=False, repr=False)
     _scale_pos_weight: float | None = field(default=None, init=False, repr=False)
 
@@ -408,7 +409,7 @@ class LightGBMClassification:
         n_neg = int((y_bin == 0).sum())
         # Auto-balance unless degenerate. With zero positives we leave the weight
         # unset and let LightGBM train on the all-negative trivial case.
-        if n_pos > 0 and n_neg > 0:
+        if self.use_scale_pos_weight and n_pos > 0 and n_neg > 0:
             self._scale_pos_weight = float(n_neg) / float(n_pos)
         else:
             self._scale_pos_weight = None
@@ -672,6 +673,18 @@ class LightGBMTwoStageCombined(_TwoStageBase):
     magnitude_loss: str = "gamma"
 
 
+@dataclass
+class LightGBMClassificationBalanced(LightGBMClassification):
+    """P5 calibration fix: mirror of LightGBMTwoStageBalanced on the binary
+    classifier. `scale_pos_weight = neg/pos` shifts the decision boundary and
+    inflates predicted probabilities on negatives (the same mechanism P1 fixed
+    on the two-stage presence head); dropping it lets the booster emit
+    calibrated logits. Ranking metrics should be unchanged; ECE should drop."""
+
+    name: str = "lightgbm_classification_balanced"
+    use_scale_pos_weight: bool = False      # the single change
+
+
 VARIANT_CONSTRUCTORS = {
     "lightgbm_tweedie": LightGBMTweedie,
     "lightgbm_log1p_huber": LightGBMLog1pHuber,
@@ -681,9 +694,13 @@ VARIANT_CONSTRUCTORS = {
     "lightgbm_two_stage_gamma": LightGBMTwoStageGamma,
     "lightgbm_two_stage_combined": LightGBMTwoStageCombined,
     "lightgbm_classification": LightGBMClassification,
+    "lightgbm_classification_balanced": LightGBMClassificationBalanced,
 }
 
-CLASSIFICATION_VARIANTS: frozenset[str] = frozenset({"lightgbm_classification"})
+CLASSIFICATION_VARIANTS: frozenset[str] = frozenset({
+    "lightgbm_classification",
+    "lightgbm_classification_balanced",
+})
 
 
 def make_factory(variant: str, params: LGBMParams | None = None):

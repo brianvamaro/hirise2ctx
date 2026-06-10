@@ -10,6 +10,7 @@ from src.modeling.gbm import (
     CLASSIFICATION_VARIANTS,
     LGBMParams,
     LightGBMClassification,
+    LightGBMClassificationBalanced,
     LightGBMLog1pHuber,
     LightGBMTweedie,
     LightGBMTwoStage,
@@ -37,7 +38,7 @@ def test_variant_constructors_complete():
         "lightgbm_tweedie", "lightgbm_log1p_huber", "lightgbm_two_stage",
         "lightgbm_two_stage_balanced", "lightgbm_two_stage_weighted",
         "lightgbm_two_stage_gamma", "lightgbm_two_stage_combined",
-        "lightgbm_classification",
+        "lightgbm_classification", "lightgbm_classification_balanced",
     }
 
 
@@ -162,6 +163,32 @@ def test_classification_no_scale_pos_weight_when_y_is_all_one_class():
     model = LightGBMClassification(params=LGBMParams(n_estimators=20, early_stopping_rounds=0))
     model.fit(X, y)  # should not raise
     assert model._scale_pos_weight is None
+
+
+def test_classification_balanced_skips_scale_pos_weight():
+    """P5 variant: identical interface, but never sets scale_pos_weight even on
+    imbalanced data, and its mean predicted probability sits near the base rate
+    (calibrated) rather than being inflated by the shifted decision boundary."""
+    X, y = _synth_binary(n=2000, pos_frac=0.05, seed=2)
+    balanced = LightGBMClassificationBalanced(
+        params=LGBMParams(n_estimators=100, early_stopping_rounds=0))
+    balanced.fit(X, y)
+    assert balanced._scale_pos_weight is None
+    weighted = LightGBMClassification(
+        params=LGBMParams(n_estimators=100, early_stopping_rounds=0))
+    weighted.fit(X, y)
+    assert weighted._scale_pos_weight is not None
+    # Calibration direction: the balanced variant's mean prob should be closer
+    # to the true base rate than the weighted variant's (which over-predicts).
+    base_rate = y.mean()
+    err_balanced = abs(balanced.predict(X).mean() - base_rate)
+    err_weighted = abs(weighted.predict(X).mean() - base_rate)
+    assert err_balanced < err_weighted
+
+
+def test_classification_balanced_registered():
+    assert "lightgbm_classification_balanced" in VARIANT_CONSTRUCTORS
+    assert "lightgbm_classification_balanced" in CLASSIFICATION_VARIANTS
 
 
 def test_classification_raises_on_non_binary_y():

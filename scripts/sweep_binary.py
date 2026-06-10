@@ -36,7 +36,12 @@ import pandas as pd
 
 from src.modeling.binary_target import BINARY_TARGETS, BINARY_TARGETS_BY_ID, get_target
 from src.modeling.evaluate import run_loio, write_run_artifacts
-from src.modeling.gbm import LGBMParams, LightGBMClassification, snapshot_params
+from src.modeling.gbm import (
+    CLASSIFICATION_VARIANTS,
+    LGBMParams,
+    VARIANT_CONSTRUCTORS,
+    snapshot_params,
+)
 from src.modeling.loaders import iter_loio_folds
 
 SCALE_TILE_PX = {0: 8, 1: 16, 2: 32, 3: 64, 4: 128}  # 4=S128 (640 m) added for the scale study
@@ -56,14 +61,16 @@ def run_one(
     scale_idx: int,
     params: LGBMParams,
     *,
+    variant: str = "lightgbm_classification",
     scheme: str = DEFAULT_SCHEME,
     dataset_dir: str | None = None,
 ) -> tuple[list[dict], dict, Path]:
     """LOIO eval + per-fold classifier persistence for one (target, scale)."""
     target = get_target(target_id)
+    cls = VARIANT_CONSTRUCTORS[variant]
     tile_size = SCALE_TILE_PX[scale_idx]
     snapshot = {
-        "variant": "lightgbm_classification",
+        "variant": variant,
         "task": "classification",
         "target_id": target.id,
         "target_source_col": target.source_col,
@@ -73,18 +80,18 @@ def run_one(
         "dataset_dir": dataset_dir or "dataset",
         "scale_idx": scale_idx,
         "tile_size_px": tile_size,
-        "model": snapshot_params("lightgbm_classification", params),
+        "model": snapshot_params(variant, params),
     }
     cfg_hash = _config_hash(snapshot)
     snapshot["config_hash"] = cfg_hash
     out_dir = (
-        MODELS_ROOT / "lightgbm_classification" / cfg_hash
+        MODELS_ROOT / variant / cfg_hash
         / f"scale_S{tile_size}_t{target.id}"
     )
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    def factory() -> LightGBMClassification:
-        return LightGBMClassification(params=params)
+    def factory():
+        return cls(params=params)
 
     result = run_loio(
         factory,
@@ -124,6 +131,10 @@ def run_one(
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--targets", nargs="+", default=ALL_TARGET_IDS, choices=ALL_TARGET_IDS)
+    ap.add_argument("--variant", default="lightgbm_classification",
+                    choices=sorted(CLASSIFICATION_VARIANTS),
+                    help="Classifier variant (P5: lightgbm_classification_balanced "
+                         "drops scale_pos_weight for calibrated probabilities).")
     ap.add_argument("--scales", nargs="+", type=int, default=list(DEFAULT_SCALES))
     ap.add_argument("--n-estimators", type=int, default=400)
     ap.add_argument("--learning-rate", type=float, default=0.05)
@@ -148,6 +159,7 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "sweep_meta.json").write_text(json.dumps({
         "kind": "binary",
+        "variant": args.variant,
         "dataset_dir": args.dataset_dir or "dataset",
         "scheme": args.scheme,
         "timestamp": timestamp,
@@ -161,14 +173,15 @@ def main() -> int:
         if not (args.skip_fa_gt_1e_2_s8 and t == "fa_gt_1e-2" and s == 0)
     ]
     print(f"Binary sweep: {len(runs)} runs across {len(args.targets)} targets x {len(args.scales)} scales")
-    print(f"Dataset: {args.dataset_dir or 'dataset'}  scheme: {args.scheme}")
+    print(f"Variant: {args.variant}  Dataset: {args.dataset_dir or 'dataset'}  scheme: {args.scheme}")
     print(f"Output: {out_dir}\n")
 
     for i, (target_id, scale_idx) in enumerate(runs, 1):
         tile_size = SCALE_TILE_PX[scale_idx]
         print(f"[{i:>2d}/{len(runs)}] target={target_id:<11s} scale_idx={scale_idx} (S={tile_size:>2d}) ...", flush=True)
         per_fold, aggregate, artifact_dir = run_one(
-            target_id, scale_idx, params, scheme=args.scheme, dataset_dir=args.dataset_dir,
+            target_id, scale_idx, params, variant=args.variant,
+            scheme=args.scheme, dataset_dir=args.dataset_dir,
         )
         for f in per_fold:
             row = {
