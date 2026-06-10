@@ -1,5 +1,7 @@
 # Compositional analysis
 
+Brian Amaro EPS 245 Project (Part 2)
+
 ## Motivation
 
 Where the boulders in a given region came from is a basic open

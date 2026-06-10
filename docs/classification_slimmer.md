@@ -1,6 +1,6 @@
 # Classification — CTX boulder-rich tile detector
 
----
+Brian Amaro EPS 245 Project (Part 1)
 
 ## Motivation
 

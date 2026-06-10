@@ -26,6 +26,8 @@ dataset_v2_dev/
 build/
 dist/
 *.egg-info/
+# Rendered report PDFs (regenerable from docs/*.md)
+docs/*.pdf
 
 # Downloaded / large geospatial rasters (HiRISE JP2s, CTX tiles)
 *.jp2
