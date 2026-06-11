@@ -2707,3 +2707,63 @@ the ok class is overwhelmingly plains.
    sweep; (b) W2 CNN with photometric augmentation (same mechanism + feature
    ceiling); (c) terrain covariate (global geologic map join). Revisit
    native-CTX only if (a)+(b) fail.
+
+
+## 2026-06-10 -- post-W1 bug-hunt round 2 (Brian-requested): four checks run
+
+Probes: `_w1_check4_presence_and_check1_deadfeat.py`,
+`_w1_shadow_threshold_diag.py`, `_w1_geometry_audit_all38.py`,
+`_w1_latitude_distortion.py`, `_w1_label_autocorr.py`.
+
+1. **Dead shadow features (CONFIRMED -- candidate bug #2).** All four shadow
+   features (`shadow_fraction`, `shadow_fraction_strict`,
+   `lacunarity_shadow_b2/b4`) are identically zero across the entirety of
+   ESP_046328_2180 and ESP_064510_2260 -- exactly two images, both
+   anti-signal. Mechanism: their CTX windows contain large areas
+   bottom-clipped to DN=1; the clip spike is the modal DN, so the shadow cut
+   `max(0, mode-20) = 0` can never fire (`features.py
+   _compute_dn_thresholds`). DN=1 also passes the `arr > 0` validity test, so
+   clipped tiles count as valid while carrying no texture. No other image is
+   affected (next-lowest whole-image shadow fraction is 2.1%). Fix decision
+   pending (Brian): treat DN<=1 as nodata for thresholds + validity, or
+   percentile fallback when the mode sits at the clip floor; then regenerate
+   features for the two images + re-bank.
+2. **All-38 model-free geometry audit (rung 1 closed).** Boulder-raster vs
+   CTX-texture phase correlation on every image: 23/39 achieve lock
+   (peak>=0.15); locked median residual |dy|=0.65 px, |dx|=1.80 px --
+   geometry is clean cohort-wide. Six locked images show 5-66 px residuals
+   at modest peaks (045550, 048688, 068402, 071699, 076565 + borderline);
+   none are anti-signal images, and single-window proxy bias (boulder
+   density vs texture energy on anisotropic terrain) is the likely
+   explanation; low-priority follow-up. ESP_064510_2260 shows peak -0.59:
+   boulder density ANTI-correlates with texture energy there -- independent
+   corroboration of its rung-5 texture_decorrelated class.
+3. **Latitude / Plate Carree distortion (quantified, real for one image).**
+   No cohort-wide trend (cos(lat) vs AUC rho=+0.002) because the cohort
+   clusters at 40-46N, but ESP_076499_1160 (63.7S) is an outlier on every
+   axis: GLCM E-W ground scale 2.22 m/px vs the cohort's 3.4-4.6, true
+   min-size floor 0.94 m vs 1.16-1.36, bc>=50 true-density threshold 2.26x
+   the equatorial value. Concrete mechanism for its distribution_shift
+   class: its features live at a different effective ground resolution and
+   its labels at a different counting regime. Carry as a known systematic;
+   per-image standardization (next-bets #1) is the first treatment.
+4. **presence_auc: coincidence verified, metric RETIRED (Brian decision).**
+   Per-fold presence AUC changed on 23/38 folds between pre-fix and post-fix
+   sweeps (mean |delta| 0.091, max 0.61) yet the means collide at 4 dp
+   (0.614934 vs 0.614904) -- a genuine coincidence, and proof the re-bank
+   consumed the new labels. Independently, the metric is conceptually void
+   (">=1 boulder anywhere in a 320 m tile" is unobservable at 5 m/px) and
+   undefined on ~1/4 of images (single-class). Removed from sweep result.md
+   headline tables (`_sweep_w0.py`); the parquet column remains for
+   back-compat. `meaningful_auc` is the discrimination metric.
+
+**Why the sign-fix only bought ~+0.026 AUC (Brian question, answered with
+data):** boulder fields are spatially smooth at 320 m -- shifting labels one
+full tile leaves them Spearman rho=0.72 (median) correlated with truth and
+89.8% in agreement on the bc>50 binary (`_w1_label_autocorr.py`). The
+pre-fix 1.1-tile offset therefore acted as ~10-28% label noise, not
+scrambling: the model was still learning a mostly-correct mapping. The
+pre-fix rescore surface said the same thing in advance: perfectly undoing
+the shift at scoring time was worth only +0.018 (0.598 -> 0.616); the
+retrain delivered +0.026 (0.624). The numbers are internally consistent --
+nothing suspicious left in the gain size.

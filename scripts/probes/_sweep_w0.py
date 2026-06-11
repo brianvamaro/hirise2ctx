@@ -127,9 +127,11 @@ def run_one(
     return result.per_fold_metrics, result.aggregate, out_dir
 
 
+# presence_auc deliberately omitted: deprecated 2026-06-10 (Brian) -- ">=1 boulder
+# anywhere in a 320 m tile" is unobservable at 5 m/px and undefined (single-class)
+# on ~1/4 of the cohort's images. meaningful_auc is the discrimination metric.
 _MD_ROWS = (
     ("Spearman rho", "spearman_rho_mean"),
-    ("presence AUC (ROC)", "presence_auc_mean"),
     ("meaningful AUC (ROC)", "meaningful_auc_mean"),
     ("PR-AUC", "pr_auc_mean"),
     ("normalised lift @top-K", "normalised_lift_meaningful_mean"),
@@ -232,7 +234,7 @@ def main() -> int:
             "artifact_dir": str(artifact_dir.relative_to(REPO_ROOT)),
         })
         print(f"        rho={aggregate.get('spearman_rho_mean', float('nan')):+.4f}  "
-              f"presence_auc={aggregate.get('presence_auc_mean', float('nan')):.3f}  "
+              f"meaningful_auc={aggregate.get('meaningful_auc_mean', float('nan')):.3f}  "
               f"PR-AUC={aggregate.get('pr_auc_mean', float('nan')):.3f}  "
               f"lift_norm={aggregate.get('normalised_lift_meaningful_mean', float('nan')):.3f}  "
               f"prec@5%={aggregate.get('precision_at_top_5pct_mean', float('nan')):.3f}",
