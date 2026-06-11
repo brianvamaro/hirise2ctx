@@ -116,6 +116,19 @@ One seed for the grid; re-run the winning cell with 3 seeds before any
 promotion claim (seed variance at n=38 folds is the cheap insurance the
 fold-ripple lesson demands).
 
+### 4.2b S=32 replication (Brian, 2026-06-11)
+
+Repeat at the finer scale: 32-px patches on the S=32 grid (160 m tiles,
+~150k tiles cohort-wide). To keep the budget sane, not the full grid —
+**cell A (no-aug) + the winning S=64 cell only**, after the S=64 grid is
+read. Priors to test against: S=32 is where Stage 6a's spatial-context
+features passed strictly on dev (finer tiles leave more recoverable
+neighborhood signal), but absolute tabular performance at S=32 was far
+below S=64 (PR-AUC ~0.29 vs 0.54) — the question is whether raw pixels
+move that, i.e. whether the S=64 operating-scale choice survives the CNN
+era. Patch stacks for both sizes come from the same Stage 4b re-run (S2),
+so this adds no pipeline work, only ~2× fold count at ~4× tiles/fold.
+
 ### 4.3 Budget
 
 GPU fold ≈ 1–3 min (37k patches of 64², ~35k-param net) → 4 cells × 38
@@ -130,8 +143,19 @@ parquet layout so `_w1_pistd_verdict.py`-style paired probes work as-is.
    38 images — the label-free way around n=38.
 2. **Tier 2 regression head** (log1p boulder_count) on the winning recipe;
    compression/high-bin-ratio reporting per W3.
-3. **Multi-scale input** (32+64+128 px pyramids) and capacity scaling —
-   only after the invariance question is settled, never together with it.
+3. **Neighborhood context input** (Brian, 2026-06-11) — predict the center
+   tile from a 3×3-tile field (192 px = 960 m) or a multi-scale pyramid
+   (64 px native + 128/256 px downsampled channels). Rationale: boulder
+   fields are coherent structures and adjacent-tile labels correlate at
+   ρ=0.72; a raw-pixel context test is distinct from Stage 6a's
+   *summary-stat* neighborhoods, which passed at S=32 but bought nothing
+   at S=64. Cautions: confounds the augmentation contrast (hence Phase 2),
+   grows the `-1` edge-margin tile loss (a full tile ring at 192 px), and
+   needs the cheap control: **post-hoc 3×3 smoothing of the output map**,
+   which exploits the same autocorrelation with no retraining — learned
+   context must beat dumb smoothing to be claimed.
+4. **Capacity scaling** — only after the invariance question is settled,
+   never together with it.
 
 ## 6. Reporting discipline
 

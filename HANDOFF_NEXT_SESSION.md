@@ -62,6 +62,9 @@ docs are submitted — erratum decision is Brian's, still open.
    @ S=64, group-aware inner val, gates pre-declared (PR-AUC +0.03 OR
    median mAUC +0.05 on validity-passing images; mechanism check on the
    distribution_shift images). BatchNorm image-leak pitfall documented.
+   Brian additions (2026-06-11): §4.2b S=32 replication (cell A + winning
+   cell only, after the S=64 grid); 3×3-tile context input is Phase 2
+   with a post-hoc-smoothing control. Terrain still on hold.
 3. **Terrain covariate** — ON HOLD per Brian (2026-06-11): stick to image
    features for now.
 
