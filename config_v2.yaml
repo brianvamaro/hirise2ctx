@@ -111,10 +111,11 @@ features:
     n_orientation_bins: 8
     min_tile_size_px: 16
   context_patch:
-    # OFF for v2: the CNN is a documented dead-end (modeling_results.md §3.3) and the
-    # patch stacks are the largest disk consumer (~15 GB at this scale). Flip to true +
-    # re-run Stage 4b only if a CNN experiment is revived.
-    enabled: false
+    # ON for W2 (2026-06-11, PLAN_CNN.md S2): the v1 "CNN dead-end" call predated the
+    # coreg sign fix + DN-clip shadow fix, so it no longer binds. Patches are uint8 raw
+    # DN -- DN<=1 clip pixels pass through; per-patch normalization downstream must be
+    # robust to them. Disk cost ~15 GB at this scale.
+    enabled: true
     sizes_px: [32, 64]
 
 # Splits: n_folds for the LOIO + within_image schemes depends on how many of the 39

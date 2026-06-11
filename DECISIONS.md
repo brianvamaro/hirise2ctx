@@ -2844,3 +2844,72 @@ is real and treatable -> strengthens the case for W2 CNN photometric
 augmentation (learn the invariance instead of imposing it globally);
 (b) if a reliability-stratified deployment ever ships per-stratum models,
 zscore-standardized features are the candidate for the shifted stratum.
+
+
+## 2026-06-11 -- W2 setup S1-S3 complete (PLAN_CNN.md): CUDA torch, v2 context patches, GPU smoke, baselines refreshed
+
+### S1 -- CUDA torch
+
+- `torch 2.12.0+cu130` installed into `geospatial` from
+  `download.pytorch.org/whl/cu130` (replaces `2.12.0+cpu`; same version,
+  CUDA 13.0 build). GPU: **NVIDIA GeForce RTX 5070 Laptop GPU, 8 GB**
+  (Blackwell; driver 592.00 / CUDA 13.1). `torch.cuda.is_available()` True;
+  matmul verified on-device.
+- `CNNParams.device` now defaults via `torch.cuda.is_available()`
+  (cuda when present, cpu otherwise) instead of hardcoded `"cpu"`.
+
+### S2 -- v2 context patches generated (the v1 "CNN dead-end" config flag retired)
+
+- `config_v2.yaml` `features.context_patch.enabled: false -> true` (the OFF
+  comment cited the v1 dead-end verdict, which predates the coreg sign fix +
+  DN-clip shadow fix and no longer binds).
+- Stage 4b `--all`: 38/38 images in 747 s; `dataset_v2/context_patches/`
+  now holds 76 stacks (38 x {S32, S64}), 3,564,767 patches per size,
+  **17.0 GB on disk**. Patches are raw uint8 DN; DN<=1 clip pixels pass
+  through (0.25% of pixels on ESP_046328_2180, spot-checked).
+- Stage 5 `--all` repackaged `loio_nfold` + `within_image_4fold`
+  (X_cols 53 -> 55: `patch_idx_S32`/`patch_idx_S64` join columns).
+  NOTE: the stage-6 side schemes `loio_nfold_ctx_illum` / `loio_nfold_nbr_s5`
+  were NOT refreshed (built by their own repackage scripts; not in the recipe).
+
+### Determinism check -- banked baseline remains valid (Brian-approved)
+
+Re-running Stage 4b regenerates feature parquets in place, which could have
+invalidated paired comparisons against the banked sweep. Re-ran the banked
+cells (`_sweep_w0.py`, two_stage_balanced x {boulder_count, fractional_area}
+@ S=64 -> `models/_sweep_w0/20260611T215447Z`): **per-fold deltas exactly
+0.0 on all 38 folds x 4 metrics** vs `20260611T054855Z`. Feature
+regeneration is bit-identical; `20260611T054855Z` stays the banked baseline.
+
+### S3 -- smoke + Tier 1 refresh
+
+- GPU smoke (`scripts/probes/_smoke_cnn_v2_one_fold.py`): fold 0, S=64
+  classification head, 34,388 train patches, 0 margin rows, **4.6 s/epoch**,
+  finite loss/probs. Projects ~1-3 min/fold at full epochs -> the 4-cell x
+  38-fold grid fits the planned 3-8 h budget.
+- **Tier 1 reference classifier refreshed on post-shadow-fix features**
+  (`models/_sweep_binary/20260611T214042Z`): AUC **0.6557 +/- 0.137**,
+  lift 1.716, ECE 0.266 (was 0.6548 / 1.845 / 0.254 pre-fix at
+  `20260611T042543Z`, now superseded). Mean AUC essentially unchanged, as
+  expected (fix touched 2 images).
+
+### Phase 1 code (ready, grid not yet launched)
+
+- `src/modeling/cnn.py`: `AUG_CELLS` = none / geometric / photometric /
+  photometric_std (A-D per PLAN_CNN.md §4.2); `_PatchDataset` stages split
+  (geometric flips/rots; photometric = brightness/contrast/**gamma
+  [0.8, 1.25] log-uniform, new**/noise); cell D per-patch `(x-mean)/std`
+  with a **1-DN std floor** (DN<=1 clip-patch guard) applied at train AND
+  inference; `aug_cell` on `CNNParams` (default `photometric` = v1 behavior).
+- `scripts/sweep_cnn.py`: cells x 38 folds, **group-aware inner val
+  (4 whole images, deterministic rotation)**, artifacts
+  `models/_sweep_cnn/{timestamp}/` (summary/aggregate parquet, incremental
+  write per cell) + per-cell `models/cnn_bce_S{P}/{hash}/..._aug_{cell}/`
+  with predictions/metrics/snapshot/per-fold state_dicts. Aggregate carries
+  the gate metrics: median per-image AUC, pooled PR-AUC
+  (= `average_precision_score` over concatenated held-out tiles, matching
+  `pooled_global_pr_auc`), pooled precision@top-5%.
+- `scripts/train_cnn.py`: `--aug-cell` pass-through for single runs.
+- Tests: +5 (cell validation, cell-A identity, cell-B pixel-multiset
+  invariance, cell-D eval-time application + clip-patch finiteness, all-cells
+  classifier smoke). **Fast suite 278 pass.**

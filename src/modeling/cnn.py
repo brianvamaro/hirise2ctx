@@ -46,6 +46,23 @@ from src.modeling.loaders import gather_patches
 # ============================================================================
 
 
+def _default_device() -> str:
+    """CUDA when available (W2: cu130 torch installed 2026-06-11), else CPU."""
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
+# W2 Phase 1 augmentation cells (PLAN_CNN.md §4.2). Each cell is a (geometric,
+# photometric, per_patch_std) recipe; "photometric" matches the original v1 pipeline
+# plus gamma jitter. Normalization is part of the cell because cell D's per-patch
+# standardization replaces the plain /255 cast at BOTH train and inference time.
+AUG_CELLS: dict[str, dict[str, bool]] = {
+    "none":            {"geometric": False, "photometric": False, "per_patch_std": False},  # A
+    "geometric":       {"geometric": True,  "photometric": False, "per_patch_std": False},  # B
+    "photometric":     {"geometric": True,  "photometric": True,  "per_patch_std": False},  # C
+    "photometric_std": {"geometric": True,  "photometric": True,  "per_patch_std": True},   # D
+}
+
+
 @dataclass
 class CNNParams:
     patch_size_px: int = 32              # 32 or 64; matches dataset/context_patches/{}_S{}.npy
@@ -58,8 +75,13 @@ class CNNParams:
     early_stopping_patience: int = 8     # epochs without inner-val improvement
     seed: int = 0
     n_workers: int = 0                   # Windows CPU; keep at 0 to avoid multi-process spawn cost
-    device: str = "cpu"                  # explicit -- the geospatial env doesn't ship CUDA
+    device: str = field(default_factory=_default_device)
     dataset_dir: str | None = None       # None = ./dataset (v1); set to dataset_v2[_dev] for the A/B
+    aug_cell: str = "photometric"        # AUG_CELLS key; default = the v1-era pipeline (cell C)
+
+    def __post_init__(self):
+        if self.aug_cell not in AUG_CELLS:
+            raise ValueError(f"unknown aug_cell {self.aug_cell!r}; pick from {sorted(AUG_CELLS)}")
 
 
 # ============================================================================
@@ -114,17 +136,33 @@ class SmallCNN(nn.Module):
 class _PatchDataset(Dataset):
     """Patches as uint8 tensors + the regression label.
 
-    `augment=True` applies the PLAN §4 augmentation pipeline on the uint8 array
-    before the /255 float cast, so augmentation cost is paid in uint8 space
-    (small fast ops); the float conversion happens once at the end.
+    Augmentation stages are applied on the uint8 array before the float cast, so
+    augmentation cost is paid in uint8 space (small fast ops); the float conversion
+    happens once at the end. `augment=True` enables the stages the cell selects
+    (geometric flips/rots; photometric brightness/contrast/gamma/noise); the
+    normalization choice (`per_patch_std`) applies REGARDLESS of `augment`, because
+    inference must see the same input distribution as training.
     """
 
-    def __init__(self, patches: np.ndarray, y_log: np.ndarray, augment: bool, rng_seed: int = 0):
+    def __init__(
+        self,
+        patches: np.ndarray,
+        y_log: np.ndarray,
+        augment: bool,
+        rng_seed: int = 0,
+        *,
+        geometric: bool = True,
+        photometric: bool = True,
+        per_patch_std: bool = False,
+    ):
         assert patches.ndim == 3, "expected (N, S, S) uint8"
         assert patches.shape[0] == y_log.shape[0]
         self.patches = patches
         self.y_log = y_log.astype(np.float32, copy=False)
         self.augment = augment
+        self.geometric = geometric
+        self.photometric = photometric
+        self.per_patch_std = per_patch_std
         self.rng = np.random.default_rng(rng_seed)
 
     def __len__(self) -> int:
@@ -132,35 +170,47 @@ class _PatchDataset(Dataset):
 
     def _augment_one(self, img: np.ndarray) -> np.ndarray:
         # img: (S, S) uint8
-        # 50% horizontal flip
-        if self.rng.random() < 0.5:
-            img = img[:, ::-1]
-        # 50% vertical flip
-        if self.rng.random() < 0.5:
-            img = img[::-1, :]
-        # random 90 deg rotation (0/1/2/3)
-        k = int(self.rng.integers(0, 4))
-        if k:
-            img = np.rot90(img, k)
-        # brightness jitter +-15% of the tile's range
-        img = img.astype(np.int16)
-        rng_brightness = self.rng.uniform(-0.15, 0.15) * 255
-        img = img + int(rng_brightness)
-        # contrast jitter in [0.85, 1.15], around the per-tile mean
-        c = self.rng.uniform(0.85, 1.15)
-        mean = img.mean()
-        img = ((img - mean) * c + mean).astype(np.int16)
-        # additive Gaussian noise sigma=2 on the 0-255 scale
-        noise = self.rng.normal(0, 2.0, size=img.shape)
-        img = img + noise.astype(np.int16)
-        img = np.clip(img, 0, 255).astype(np.uint8)
+        if self.geometric:
+            # 50% horizontal flip
+            if self.rng.random() < 0.5:
+                img = img[:, ::-1]
+            # 50% vertical flip
+            if self.rng.random() < 0.5:
+                img = img[::-1, :]
+            # random 90 deg rotation (0/1/2/3)
+            k = int(self.rng.integers(0, 4))
+            if k:
+                img = np.rot90(img, k)
+        if self.photometric:
+            # gamma jitter in [0.8, 1.25] (log-uniform; PLAN_CNN.md §4.2 cell C) --
+            # applied first, on the 0-1 scale, while the array is still clean uint8
+            g = float(np.exp(self.rng.uniform(np.log(0.8), np.log(1.25))))
+            img = (255.0 * np.power(img.astype(np.float32) / 255.0, g)).astype(np.int16)
+            # brightness jitter +-15% of the tile's range
+            rng_brightness = self.rng.uniform(-0.15, 0.15) * 255
+            img = img + int(rng_brightness)
+            # contrast jitter in [0.85, 1.15], around the per-tile mean
+            c = self.rng.uniform(0.85, 1.15)
+            mean = img.mean()
+            img = ((img - mean) * c + mean).astype(np.int16)
+            # additive Gaussian noise sigma=2 on the 0-255 scale
+            noise = self.rng.normal(0, 2.0, size=img.shape)
+            img = img + noise.astype(np.int16)
+            img = np.clip(img, 0, 255).astype(np.uint8)
         return img
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         img = self.patches[idx]
-        if self.augment:
+        if self.augment and (self.geometric or self.photometric):
             img = self._augment_one(img)
-        x = torch.from_numpy(np.ascontiguousarray(img)).float().unsqueeze(0) / 255.0  # (1, S, S)
+        x = torch.from_numpy(np.ascontiguousarray(img)).float().unsqueeze(0)  # (1, S, S)
+        if self.per_patch_std:
+            # Cell D: (patch - mean) / std, the architecture-level analog of the bet-1
+            # zscore rescue. Std floor of 1 DN guards the DN<=1 clip-pixel patches
+            # (near-constant shadow patches would otherwise divide by ~0).
+            x = (x - x.mean()) / torch.clamp(x.std(), min=1.0)
+        else:
+            x = x / 255.0
         y = torch.tensor(self.y_log[idx], dtype=torch.float32)
         return x, y
 
@@ -230,7 +280,9 @@ class SmallCNNRegressor:
         y_train_valid = self._train_y[train_rows]
         y_train_log = np.log1p(np.clip(y_train_valid, 0.0, None))
 
-        ds_train = _PatchDataset(train_patches, y_train_log, augment=True, rng_seed=self.params.seed)
+        cell = AUG_CELLS[self.params.aug_cell]
+        ds_train = _PatchDataset(train_patches, y_train_log, augment=True, rng_seed=self.params.seed,
+                                 **cell)
         loader_train = DataLoader(
             ds_train, batch_size=self.params.batch_size, shuffle=True,
             num_workers=self.params.n_workers, drop_last=False,
@@ -243,7 +295,8 @@ class SmallCNNRegressor:
             val_patches, val_rows = gather_patches(
                 self._val_keys, self.params.patch_size_px, dataset_dir=self.params.dataset_dir)
             y_val_log = np.log1p(np.clip(self._val_y[val_rows], 0.0, None))
-            ds_val = _PatchDataset(val_patches, y_val_log, augment=False, rng_seed=self.params.seed)
+            ds_val = _PatchDataset(val_patches, y_val_log, augment=False, rng_seed=self.params.seed,
+                                   per_patch_std=cell["per_patch_std"])
             val_loader = DataLoader(
                 ds_val, batch_size=self.params.batch_size, shuffle=False,
                 num_workers=self.params.n_workers,
@@ -328,7 +381,8 @@ class SmallCNNRegressor:
         device = torch.device(self.params.device)
         self._net.eval()
         ds = _PatchDataset(patches, np.zeros(patches.shape[0], dtype=np.float32),
-                           augment=False, rng_seed=0)
+                           augment=False, rng_seed=0,
+                           per_patch_std=AUG_CELLS[self.params.aug_cell]["per_patch_std"])
         loader = DataLoader(ds, batch_size=self.params.batch_size, shuffle=False,
                             num_workers=self.params.n_workers)
         preds_log = np.empty(patches.shape[0], dtype=np.float32)
@@ -415,7 +469,9 @@ class SmallCNNClassifier:
         n_neg = float((y_train == 0).sum())
         pos_weight = torch.tensor([n_neg / n_pos if n_pos > 0 else 1.0], dtype=torch.float32)
 
-        ds_train = _PatchDataset(train_patches, y_train, augment=True, rng_seed=self.params.seed)
+        cell = AUG_CELLS[self.params.aug_cell]
+        ds_train = _PatchDataset(train_patches, y_train, augment=True, rng_seed=self.params.seed,
+                                 **cell)
         loader_train = DataLoader(ds_train, batch_size=self.params.batch_size, shuffle=True,
                                   num_workers=self.params.n_workers, drop_last=False)
 
@@ -424,7 +480,8 @@ class SmallCNNClassifier:
             val_patches, val_rows = gather_patches(
                 self._val_keys, self.params.patch_size_px, dataset_dir=self.params.dataset_dir)
             y_val = (self._val_y[val_rows] > 0.5).astype(np.float32)
-            ds_val = _PatchDataset(val_patches, y_val, augment=False, rng_seed=self.params.seed)
+            ds_val = _PatchDataset(val_patches, y_val, augment=False, rng_seed=self.params.seed,
+                                   per_patch_std=cell["per_patch_std"])
             val_loader = DataLoader(ds_val, batch_size=self.params.batch_size, shuffle=False,
                                     num_workers=self.params.n_workers)
 
@@ -484,7 +541,8 @@ class SmallCNNClassifier:
             return out
         device = torch.device(self.params.device)
         self._net.eval()
-        ds = _PatchDataset(patches, np.zeros(patches.shape[0], dtype=np.float32), augment=False, rng_seed=0)
+        ds = _PatchDataset(patches, np.zeros(patches.shape[0], dtype=np.float32), augment=False, rng_seed=0,
+                           per_patch_std=AUG_CELLS[self.params.aug_cell]["per_patch_std"])
         loader = DataLoader(ds, batch_size=self.params.batch_size, shuffle=False, num_workers=self.params.n_workers)
         probs = np.empty(patches.shape[0], dtype=np.float32)
         cursor = 0

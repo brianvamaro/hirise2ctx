@@ -85,6 +85,9 @@ def main() -> int:
     ap.add_argument("--dropout", type=float, default=0.3)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--target-col", default="fractional_area")
+    ap.add_argument("--aug-cell", default="photometric",
+                    help="W2 augmentation cell (PLAN_CNN.md §4.2): none | geometric | "
+                         "photometric | photometric_std. Default matches the v1 pipeline.")
     args = ap.parse_args()
 
     params = CNNParams(
@@ -96,6 +99,7 @@ def main() -> int:
         early_stopping_patience=args.early_stopping_patience,
         seed=args.seed,
         dataset_dir=args.dataset_dir,
+        aug_cell=args.aug_cell,
     )
 
     is_cls = args.task == "classification"
