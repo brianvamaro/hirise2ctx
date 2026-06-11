@@ -18,11 +18,15 @@ Conda: `C:\Users\brian\anaconda3\Scripts\conda.exe run --no-capture-output -n ge
 
 ## Current banked baseline (compare everything against this)
 
-`lightgbm_two_stage_balanced` × `boulder_count` @ S=64, corrected labels —
-ρ +0.1878, presence AUC 0.6149, meaningful AUC 0.6243, PR-AUC 0.5616,
-prec@top-5% 0.5859; per-image median AUC 0.603, >0.70: 34.2%, <0.50: 21.1%.
-Sweep `models/_sweep_w0/20260611T013810Z`. Tier 1 classifier: AUC 0.655,
-lift 1.845, ECE 0.254 (`models/_sweep_binary/20260611T042543Z`).
+`lightgbm_two_stage_balanced` × `boulder_count` @ S=64, corrected labels +
+DN-clip shadow fix — ρ +0.1767, meaningful AUC 0.6372, PR-AUC 0.5633,
+prec@top-5% 0.5811; per-image median AUC **0.657**, anti-signal 8 (members
+churned; per-image AUC has ±0.1-0.2 fold-ripple error bars — see DECISIONS
+2026-06-10 shadow-fix entry). Sweep `models/_sweep_w0/20260611T054855Z`.
+Tier 1 classifier: AUC 0.655, lift 1.845, ECE 0.254
+(`models/_sweep_binary/20260611T042543Z`, pre-shadow-fix — refresh with the
+next binary sweep). presence_auc is RETIRED (unobservable + undefined on
+1/4 of images); meaningful_auc is the discrimination metric.
 **All pre-fix v2 numbers are stale** (the labels were ~360 m south); slimmer
 docs are submitted — erratum decision is Brian's, still open.
 

@@ -17,12 +17,13 @@ Attribution rules (mundane -> fundamental, evidence in DECISIONS.md):
 Writes dataset_v2/w1_dossier.parquet + scripts/probes/_w1_dossier.md.
 """
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-SWEEP = Path("models/_sweep_w0/20260611T013810Z/summary.parquet")
+SWEEP = Path(sys.argv[1] if len(sys.argv) > 1 else "models/_sweep_w0/20260611T013810Z/summary.parquet")
 PRE_GRID = Path("scripts/probes/_w1_shift_rescore.parquet")        # pre-fix
 POST_GRID = Path("scripts/probes/_w1_shift_rescore_postfix.parquet")
 COREG = Path("cache_v2/coregistration")
@@ -88,6 +89,11 @@ def attribute(r):
     return "distribution_shift"
 
 d["attributed_cause"] = d.apply(attribute, axis=1)
+# The DN-clip shadow fix (DECISIONS.md 2026-06-10 round 2) recovered these two,
+# not the geometry fix -- the generic rule can't distinguish, so override.
+for obs in ("ESP_046328_2180", "ESP_064510_2260"):
+    if obs in d.index and d.loc[obs, "meaningful_auc"] >= 0.5:
+        d.loc[obs, "attributed_cause"] = "ok_shadowfeat_fixed"
 d = d.sort_values("meaningful_auc")
 d.to_parquet("dataset_v2/w1_dossier.parquet")
 

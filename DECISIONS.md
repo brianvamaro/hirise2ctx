@@ -2767,3 +2767,40 @@ pre-fix rescore surface said the same thing in advance: perfectly undoing
 the shift at scoring time was worth only +0.018 (0.598 -> 0.616); the
 retrain delivered +0.026 (0.624). The numbers are internally consistent --
 nothing suspicious left in the gain size.
+
+
+## 2026-06-10 -- DN-clip shadow fix LANDED: both target images exit anti-signal; baseline re-banked again
+
+Fix per the round-2 finding: `_compute_dn_thresholds` excludes DN<=1
+(bottom-clip) pixels from the modal-DN histogram + percentile fallback when
+the cut still lands at the clip floor (`src/features.py`, +2 regression
+tests; features tests 22 pass). By construction bit-identical for every
+image whose mode was not at the floor, so only the two affected images were
+regenerated (modes 1->128 and 1->87; shadow features alive, label
+correlations +0.34 / -0.24). Stage 5 repackaged; banked-variant cells
+re-swept (`models/_sweep_w0/20260611T054855Z`).
+
+**Per-image effect (banked recipe, meaningful AUC):**
+- ESP_046328_2180: 0.396 -> **0.645** (+0.249, exits anti-signal) -- its
+  distribution_shift classification was substantially "the model was blind
+  on the shadow channel"; reattributed `ok_shadowfeat_fixed`.
+- ESP_064510_2260: 0.404 -> **0.531** (+0.127, exits anti-signal) --
+  reattributed `ok_shadowfeat_fixed`; its shadow-label correlation is
+  negative (boulders in the dark smooth unit), consistent with its
+  remaining borderline score.
+
+**Cohort effect:** per-image median AUC 0.603 -> **0.657**; pooled metrics
+~flat (rho 0.1878 -> 0.1767, PR-AUC 0.5616 -> 0.5633, meaningful AUC mean
+0.6243 -> 0.6372). NOTE: every other image's AUC also moved (up to +-0.18)
+because the two fixed images sit in all other folds' training sets --
+fold-level retraining ripple. Lesson recorded: per-image AUC carries wide
+error bars; borderline anti-signal membership (e.g. ESP_055253_2245
+0.571 -> 0.392, ESP_071093_2210 0.737 -> 0.561) churns under feature/
+training perturbations, so the dossier's binary <0.5 cut should be read
+with that variance in mind. Dossier rebuilt on the new sweep
+(`dataset_v2/w1_dossier.parquet`): ok 18 / ok_validity_limited 9 /
+distribution_shift 3 / texture_decorrelated 3 / validity_limited 2 /
+ok_shadowfeat_fixed 2 / ok_geometry_fixed 1.
+
+**Banked baseline numbers are now those of sweep 20260611T054855Z** (same
+recipe identity: two_stage_balanced x boulder_count @ S=64).

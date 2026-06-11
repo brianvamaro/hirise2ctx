@@ -120,14 +120,26 @@ def _load_window_and_mask(ctx_tif: Path, mask_tif: Path) -> tuple[np.ndarray, np
     return arr.astype(np.uint8, copy=False), mask.astype(np.uint8, copy=False)
 
 
+_DN_CLIP_FLOOR = 1  # CTX mosaic bottom-clips very dark terrain to DN=1 (DN=0 is nodata)
+
+
 def _compute_dn_thresholds(arr: np.ndarray, mask: np.ndarray, cfg: dict) -> dict[str, int]:
     """Find the modal DN of HiRISE-mask-covered pixels and derive shadow/bright thresholds.
 
     Returns the four absolute DN cuts plus the mode for provenance. Falls back to image
     percentiles if the masked region is too small to be meaningful (e.g. nominal-footprint
     fallback windows).
+
+    Pixels at or below `_DN_CLIP_FLOOR` are excluded from the histogram: windows
+    containing bottom-clipped dark terrain concentrate it into a DN=1 spike that
+    becomes the modal DN even at a few percent areal fraction, driving the shadow
+    cut to `max(0, 1-20) = 0` and killing every shadow feature image-wide (the
+    W1 round-2 finding on ESP_046328_2180 / ESP_064510_2260, DECISIONS.md
+    2026-06-10). If the cut still lands at or below the clip floor, fall back to
+    the 10th/5th percentiles of the unclipped covered pixels.
     """
     covered = arr[mask == 1]
+    covered = covered[covered > _DN_CLIP_FLOOR]
     if covered.size < 1000:
         # Degenerate window -- empty/near-empty HiRISE coverage; fall back to global pcts.
         # ESP_057469_2215 (the tile-straddle case) hits this; Stage 4b would skip it
@@ -144,6 +156,13 @@ def _compute_dn_thresholds(arr: np.ndarray, mask: np.ndarray, cfg: dict) -> dict
     shadow = max(0, mode - int(cfg["shadow_offset_dn"]))
     shadow_strict = max(0, mode - int(cfg["strict_offset_dn"]))
     bright = min(255, mode + int(cfg["bright_offset_dn"]))
+    if shadow <= _DN_CLIP_FLOOR:
+        # Mode sits so low that the offset cut can never fire on real pixels --
+        # use percentile cuts of the unclipped covered DNs instead.
+        shadow = int(max(_DN_CLIP_FLOOR + 1, np.percentile(covered, 10)))
+        shadow_strict = int(max(_DN_CLIP_FLOOR + 1, np.percentile(covered, 5)))
+        return {"mode": mode, "shadow": shadow, "shadow_strict": shadow_strict,
+                "bright": bright, "method": "percentile_fallback_low_mode"}
     return {"mode": mode, "shadow": shadow, "shadow_strict": shadow_strict,
             "bright": bright, "method": cfg.get("method", "dn_mode_offset")}
 

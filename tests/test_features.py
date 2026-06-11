@@ -256,6 +256,41 @@ def test_dn_mode_threshold_finds_modal_peak():
     assert out["bright"] == min(255, out["mode"] + 30)
 
 
+def test_dn_threshold_survives_clip_spike():
+    """A DN=1 bottom-clip spike must not hijack the modal threshold.
+
+    Regression for the W1 round-2 finding (DECISIONS.md 2026-06-10): windows with
+    a few percent of bottom-clipped DN=1 pixels made mode=1, shadow cut 0, and
+    every shadow feature identically zero image-wide (ESP_046328_2180,
+    ESP_064510_2260 — both anti-signal)."""
+    rng = np.random.default_rng(1)
+    arr = np.clip(rng.normal(120, 10, size=(200, 200)), 0, 255).astype(np.uint8)
+    arr[:30, :] = 1  # 15% bottom-clipped band — a bigger spike than any single DN bin
+    mask = np.ones_like(arr)
+    cfg = {"shadow_offset_dn": 20, "strict_offset_dn": 35, "bright_offset_dn": 30}
+    out = _compute_dn_thresholds(arr, mask, cfg)
+    assert abs(out["mode"] - 120) <= 2, "clip spike must be excluded from the histogram"
+    assert out["shadow"] >= 90, "shadow cut must stay near mode-20, not collapse to 0"
+    # And the cut must actually be able to fire on real (unclipped) dark pixels.
+    covered = arr[(mask == 1) & (arr > 1)]
+    assert (covered < out["shadow"]).any()
+
+
+def test_dn_threshold_percentile_fallback_when_mode_is_dark():
+    """If the (unclipped) mode is itself within shadow_offset of the clip floor,
+    fall back to percentile cuts instead of a dead shadow==0 threshold."""
+    rng = np.random.default_rng(2)
+    arr = np.clip(rng.normal(15, 5, size=(200, 200)), 0, 255).astype(np.uint8)
+    mask = np.ones_like(arr)
+    cfg = {"shadow_offset_dn": 20, "strict_offset_dn": 35, "bright_offset_dn": 30}
+    out = _compute_dn_thresholds(arr, mask, cfg)
+    assert out["method"] == "percentile_fallback_low_mode"
+    assert out["shadow"] > 1
+    covered = arr[(mask == 1) & (arr > 1)]
+    frac = (covered < out["shadow"]).mean()
+    assert 0.0 < frac < 0.25, f"fallback cut should mark a small dark tail, got {frac:.3f}"
+
+
 def test_shadow_fraction_on_synthetic_bimodal_image():
     """Shadow fraction should reflect the fraction of pixels below threshold."""
     # 8x8 tile: 16 dark pixels, 48 bright pixels.
