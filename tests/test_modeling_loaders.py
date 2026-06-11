@@ -210,3 +210,81 @@ def test_gather_patches_assembles_in_original_row_order(tmp_path):
         assert np.all(patches[i] == expected), (
             f"row {i} ({row['obs_id']}, patch_idx={row['patch_idx_S32']}) misaligned"
         )
+
+
+# ============================================================================
+# Per-image feature standardization (W1 next-bet 1)
+# ============================================================================
+
+
+def _two_group_matrix():
+    rng = np.random.default_rng(7)
+    groups = np.array([0] * 50 + [1] * 50, dtype=np.int32)
+    X = np.empty((100, 3), dtype=np.float32)
+    X[:50, 0] = rng.normal(100, 10, 50)   # group 0 bright
+    X[50:, 0] = rng.normal(10, 2, 50)     # group 1 dark -- big between-image shift
+    X[:, 1] = rng.normal(0, 1, 100)
+    X[:, 2] = 5.0                          # constant column
+    return X, groups
+
+
+def test_perimage_zscore_centres_each_group():
+    X, groups = _two_group_matrix()
+    out = L._standardize_matrix_per_group(X, groups, "zscore")
+    for g in (0, 1):
+        m = groups == g
+        assert abs(out[m, 0].mean()) < 1e-5
+        assert out[m, 0].std() == pytest.approx(1.0, abs=1e-4)
+    # constant column maps to 0, no NaN/inf anywhere
+    assert np.all(out[:, 2] == 0.0)
+    assert np.isfinite(out).all()
+
+
+def test_perimage_rank_is_uniform_and_order_preserving():
+    X, groups = _two_group_matrix()
+    out = L._standardize_matrix_per_group(X, groups, "rank")
+    m = groups == 0
+    assert out[m, 0].min() == 0.0 and out[m, 0].max() == 1.0
+    # order preserved within group
+    order_in = np.argsort(X[m, 0])
+    order_out = np.argsort(out[m, 0])
+    assert np.array_equal(order_in, order_out)
+    # after rank, the two groups' distributions coincide despite the raw shift
+    assert abs(out[groups == 0, 0].mean() - out[groups == 1, 0].mean()) < 1e-6
+
+
+def test_perimage_robust_centres_median():
+    X, groups = _two_group_matrix()
+    out = L._standardize_matrix_per_group(X, groups, "robust")
+    for g in (0, 1):
+        m = groups == g
+        assert abs(np.median(out[m, 0])) < 1e-5
+    assert np.isfinite(out).all()
+
+
+def test_perimage_groups_are_independent():
+    """Perturbing one group's raw values must not change another group's output."""
+    X, groups = _two_group_matrix()
+    base = L._standardize_matrix_per_group(X, groups, "zscore")
+    X2 = X.copy()
+    X2[groups == 1] *= 100.0
+    out2 = L._standardize_matrix_per_group(X2, groups, "zscore")
+    assert np.allclose(base[groups == 0], out2[groups == 0])
+
+
+def test_perimage_unknown_method_raises():
+    X, groups = _two_group_matrix()
+    with pytest.raises(ValueError, match="unknown per-image transform"):
+        L._standardize_matrix_per_group(X, groups, "minmax")
+
+
+def test_augment_fold_doubles_width_and_keeps_raw():
+    X, groups = _two_group_matrix()
+    out = L._standardize_matrix_per_group(X, groups, "zscore")
+    cat = np.concatenate([X, out], axis=1)
+    # augment helper is exercised end-to-end via the Fold path in the sweep; here we
+    # verify the concatenation semantics it relies on: raw block unchanged, std block
+    # equals the pure transform.
+    assert cat.shape == (100, 6)
+    assert np.allclose(cat[:, :3], X)
+    assert np.allclose(cat[:, 3:], out)

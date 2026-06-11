@@ -2804,3 +2804,43 @@ ok_shadowfeat_fixed 2 / ok_geometry_fixed 1.
 
 **Banked baseline numbers are now those of sweep 20260611T054855Z** (same
 recipe identity: two_stage_balanced x boulder_count @ S=64).
+
+
+## 2026-06-11 -- Bet 1 (per-image feature standardization): NOT PROMOTED; class-specific effect confirmed and documented
+
+W1 next-bet 1 (PLAN_ModelUsability.md; terrain covariate HELD OFF per Brian
+2026-06-11 -- image features only). Implementation:
+`loaders.standardize_fold_per_image` / `augment_fold_with_per_image`
+(+6 unit tests, fast suite 273); sweep probe
+`scripts/probes/_sweep_perimage_std.py`; verdict probe `_w1_pistd_verdict.py`.
+Cell: two_stage_balanced x boulder_count @ S=64, full-v2 LOIO, vs banked
+baseline `models/_sweep_w0/20260611T054855Z`. Promotion criteria declared in
+advance: paired Wilcoxon median delta(meaningful_auc) > 0 at p < 0.05 AND
+pooled PR-AUC delta >= -0.01.
+
+| method (sweep dir) | rho | mAUC mean | PR-AUC | median dAUC (p) | verdict |
+|---|---|---|---|---|---|
+| raw baseline | +0.1767 | 0.6372 | 0.5633 | -- | banked |
+| rank (164339Z) | +0.2034 | 0.6158 | 0.5650 | -0.013 (0.42) | FAIL |
+| zscore (164630Z) | +0.1873 | 0.6079 | 0.5600 | -0.012 (0.48) | FAIL |
+| robust (164630Z) | +0.0999 | 0.5725 | 0.5343 | -0.071 (0.04, WORSE) | FAIL |
+| aug_zscore raw+std concat (165804Z) | +0.1785 | 0.6304 | 0.5565 | -0.006 (0.55) | FAIL |
+
+**Mechanistic check (the real finding):** zscore rescues ALL THREE
+distribution_shift dossier images out of anti-signal --
+ESP_076499_1160 0.302 -> 0.629, ESP_055253_2245 0.392 -> 0.741,
+ESP_054397_2105 0.489 -> 0.672 -- exactly as the W1 attribution predicted.
+The cost lands on images where absolute feature values carry signal, netting
+~zero-to-negative cohort-wide. The raw+std concatenation does NOT let the
+GBM have both: the rescue dilutes (2 of 3 stay below 0.5) without cohort
+gain. Interpretation: with n=38 a single global recipe cannot serve both
+feature-regimes; per-image standardization is a *class-specific treatment*,
+not a recipe upgrade.
+
+**Disposition:** banked recipe unchanged (raw features). Standardization
+artifacts kept under `models/_sweep_perimage_std/`. Carried forward: (a) the
+zscore result is direct evidence that the distribution_shift failure class
+is real and treatable -> strengthens the case for W2 CNN photometric
+augmentation (learn the invariance instead of imposing it globally);
+(b) if a reliability-stratified deployment ever ships per-stratum models,
+zscore-standardized features are the candidate for the shifted stratum.

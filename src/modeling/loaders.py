@@ -180,6 +180,94 @@ def iter_loio_folds(
 
 
 # ============================================================================
+# Per-image feature standardization (W1 next-bet 1)
+# ============================================================================
+
+PER_IMAGE_TRANSFORMS = ("rank", "zscore", "robust")
+
+
+def _standardize_matrix_per_group(X: np.ndarray, groups: np.ndarray, method: str) -> np.ndarray:
+    """Standardize each feature column WITHIN each group (image) independently.
+
+    Targets the W1 `distribution_shift` failure class (DECISIONS.md 2026-06-10):
+    images whose within-image texture->label relationship is strong and
+    cohort-consistent but whose absolute feature values sit outside the training
+    distribution (photometric/source/latitude shift). Inference-compatible by
+    construction: the test image's own tile population supplies the statistics,
+    exactly as a CTX inference window would.
+
+      rank   -> fractional rank in [0, 1] within the image (average ties)
+      zscore -> (x - mean) / std within the image
+      robust -> (x - median) / IQR within the image
+
+    Constant columns within a group map to 0.0 (rank: 0.5 from tie-averaging is
+    re-centred to 0.5 only for rank -- a constant column carries no ordering
+    information either way).
+    """
+    if method not in PER_IMAGE_TRANSFORMS:
+        raise ValueError(f"unknown per-image transform {method!r}; pick from {PER_IMAGE_TRANSFORMS}")
+    from scipy.stats import rankdata
+
+    out = np.empty_like(X, dtype=np.float32)
+    for g in np.unique(groups):
+        m = groups == g
+        block = X[m].astype(np.float64)
+        if method == "rank":
+            n = block.shape[0]
+            if n == 1:
+                out[m] = 0.5
+                continue
+            ranks = np.apply_along_axis(rankdata, 0, block)
+            out[m] = ((ranks - 1) / (n - 1)).astype(np.float32)
+        elif method == "zscore":
+            mu = block.mean(axis=0)
+            sd = block.std(axis=0)
+            sd[sd == 0] = 1.0
+            out[m] = ((block - mu) / sd).astype(np.float32)
+        else:  # robust
+            med = np.median(block, axis=0)
+            iqr = np.percentile(block, 75, axis=0) - np.percentile(block, 25, axis=0)
+            iqr[iqr == 0] = 1.0
+            out[m] = ((block - med) / iqr).astype(np.float32)
+    return out
+
+
+def standardize_fold_per_image(fold: Fold, method: str) -> Fold:
+    """Return a copy of `fold` with X_train and X_test standardized per image.
+
+    Train images use their own training rows; the held-out image uses its own
+    test rows -- no statistics cross the split boundary.
+    """
+    from dataclasses import replace
+
+    return replace(
+        fold,
+        X_train=_standardize_matrix_per_group(fold.X_train, fold.groups_train, method),
+        X_test=_standardize_matrix_per_group(fold.X_test, fold.groups_test, method),
+    )
+
+
+def augment_fold_with_per_image(fold: Fold, method: str) -> Fold:
+    """Return a copy of `fold` with per-image-standardized copies of every feature
+    CONCATENATED to the raw features (width doubles).
+
+    Rationale (bet-1 sweep, DECISIONS.md 2026-06-11): pure per-image transforms
+    rescue the distribution_shift images but hurt images where absolute feature
+    values carry signal -- giving the GBM both views lets it choose per split.
+    """
+    from dataclasses import replace
+
+    std_train = _standardize_matrix_per_group(fold.X_train, fold.groups_train, method)
+    std_test = _standardize_matrix_per_group(fold.X_test, fold.groups_test, method)
+    return replace(
+        fold,
+        X_train=np.concatenate([fold.X_train, std_train], axis=1),
+        X_test=np.concatenate([fold.X_test, std_test], axis=1),
+        feature_names=list(fold.feature_names) + [f"pistd_{method}_{n}" for n in fold.feature_names],
+    )
+
+
+# ============================================================================
 # Context patches (CNN input)
 # ============================================================================
 

@@ -46,15 +46,20 @@ docs are submitted — erratum decision is Brian's, still open.
 
 ## Next bets (in evidence order)
 
-1. **Per-image feature standardization** (rank or z-score features within
-   each image/window before the GBM): directly targets the
-   distribution_shift class; one sweep; promotion criteria vs the banked
-   baseline declared in advance. Inference-compatible (window stats only).
+1. ~~Per-image feature standardization~~ **DONE 2026-06-11, NOT PROMOTED**
+   (DECISIONS.md 2026-06-11): all 4 variants fail the declared cohort
+   criteria, BUT zscore rescued all 3 distribution_shift images out of
+   anti-signal (+0.18..+0.35) at the cost of raw-feature images; the
+   raw+std concat dilutes both. Class-specific treatment, not a recipe
+   upgrade. Code kept: `loaders.standardize_fold_per_image` /
+   `augment_fold_with_per_image`; sweeps `models/_sweep_perimage_std/`.
 2. **W2 CNN Phase 1 with photometric augmentation** (plan §W2; CUDA torch
    install approved; `context_patch_px` Stage 4 re-run needed for patches).
-3. **Terrain covariate** (failures concentrate in channels/mesas/crater
-   terrain; plains are fine — Serrano mediation; Tanaka map join is
-   inference-compatible).
+   The zscore rescue is direct evidence the shift class is treatable —
+   augmentation is the way to get the invariance without paying the
+   raw-feature cost.
+3. **Terrain covariate** — ON HOLD per Brian (2026-06-11): stick to image
+   features for now.
 
 ## Critical gotchas (carry forward)
 
