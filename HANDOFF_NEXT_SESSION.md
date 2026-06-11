@@ -53,11 +53,15 @@ docs are submitted — erratum decision is Brian's, still open.
    raw+std concat dilutes both. Class-specific treatment, not a recipe
    upgrade. Code kept: `loaders.standardize_fold_per_image` /
    `augment_fold_with_per_image`; sweeps `models/_sweep_perimage_std/`.
-2. **W2 CNN Phase 1 with photometric augmentation** (plan §W2; CUDA torch
-   install approved; `context_patch_px` Stage 4 re-run needed for patches).
-   The zscore rescue is direct evidence the shift class is treatable —
-   augmentation is the way to get the invariance without paying the
-   raw-feature cost.
+2. **W2 CNN Phase 1 — NOW SPECCED in [PLAN_CNN.md](PLAN_CNN.md)**
+   (2026-06-11): setup S1 CUDA torch (driver CUDA 13.1, AskUserQuestion
+   before env mutation) → S2 enable `features.context_patch` in
+   config_v2 + Stage 4b/5 re-run (v2 has NO patches yet) → S3 smoke +
+   refresh Tier 1 classifier baseline → 4-cell augmentation grid
+   (none / geometric / +photometric / +per-patch-std), binary fa_gt_1e-2
+   @ S=64, group-aware inner val, gates pre-declared (PR-AUC +0.03 OR
+   median mAUC +0.05 on validity-passing images; mechanism check on the
+   distribution_shift images). BatchNorm image-leak pitfall documented.
 3. **Terrain covariate** — ON HOLD per Brian (2026-06-11): stick to image
    features for now.
 

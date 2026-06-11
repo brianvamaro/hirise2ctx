@@ -254,6 +254,12 @@ definition with measured precision/recall against known-bad images.
 
 ### W2 — CNN on context patches (~1–2 weeks, parallelizable after W0)
 
+> **Status 2026-06-11: expanded into [PLAN_CNN.md](PLAN_CNN.md)** (executable
+> spec: setup tasks, 4-cell augmentation grid, pre-declared gates, budget).
+> Motivating evidence updated post-W1: the v1 "CNN dead-end" judgment
+> predates the coreg+shadow fixes and the bet-1 zscore result showing the
+> distribution-shift class is treatable. Section below kept for history.
+
 The honest test of cause 4 (feature ceiling) and the natural attack on
 cause 1 (learned illumination invariance).
 
