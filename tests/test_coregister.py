@@ -18,6 +18,7 @@ from src.coregister import (
     find_tracking_features,
     phase_correlate_translation,
     select_fft_window,
+    shift_px_to_world_m,
     stage3_one_image,
 )
 from src.ctx_retrieve import CTX_WINDOWS_SUBDIR
@@ -91,6 +92,35 @@ def test_phase_correlation_recovers_known_shift(true_dy: float, true_dx: float):
 def test_phase_correlation_rejects_mismatched_shapes():
     with pytest.raises(ValueError, match="shape mismatch"):
         phase_correlate_translation(np.zeros((64, 64)), np.zeros((64, 32)))
+
+
+# -------------------------------------------------------------------------
+# Array-space -> world-space shift conversion (the W1 rung-1 sign bug)
+# -------------------------------------------------------------------------
+
+def test_shift_px_to_world_m_flips_row_sign_only():
+    """Rows increase southward on a north-up grid, so the row component must flip
+    sign on conversion to world y; columns map to world x unflipped. Regression
+    test for the inverted y-correction applied to all v2 labels (DECISIONS.md
+    2026-06-10, W1 entry)."""
+    dx_m, dy_m = shift_px_to_world_m(-37.25, 0.6, px_x=5.0, px_y=5.0)
+    assert dx_m == pytest.approx(3.0)
+    assert dy_m == pytest.approx(+186.25)  # negative row shift -> NORTH (+y), not south
+
+
+def test_solved_shift_undoes_a_known_world_georeferencing_error():
+    """End-to-end on synthetic data in world terms: HiRISE georeferenced 50 m north
+    and 30 m east of CTX truth must come back with a (-30, -50) m correction."""
+    px = 5.0  # m/px, north-up grid (transform.e < 0)
+    ctx = _synthetic_texture(256, seed=11)
+    # Terrain placed 50 m north (+y) appears 10 rows UP; 30 m east (+x) appears
+    # 6 cols RIGHT in the array warped onto the CTX grid.
+    hi = nd_shift(ctx, shift=(-50.0 / px, +30.0 / px), order=3, mode="reflect")
+    dy_px, dx_px, peak = phase_correlate_translation(ctx, hi, upsample_factor=20)
+    assert peak > 0.7
+    dx_m, dy_m = shift_px_to_world_m(dy_px, dx_px, px_x=px, px_y=px)
+    assert dy_m == pytest.approx(-50.0, abs=1.0), "y correction must move the labels back south"
+    assert dx_m == pytest.approx(-30.0, abs=1.0), "x correction must move the labels back west"
 
 
 # -------------------------------------------------------------------------

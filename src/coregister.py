@@ -278,6 +278,26 @@ def _robust_shift_from_field(
     return dy, dx, stats
 
 
+def shift_px_to_world_m(
+    dy_px: float,
+    dx_px: float,
+    *,
+    px_x: float,
+    px_y: float,
+) -> tuple[float, float]:
+    """Convert an array-space (row, col) shift to a world-space (dx_m, dy_m) correction.
+
+    `(dy_px, dx_px)` follows the `phase_correlate_translation` convention: the
+    translation to apply to the moving array (HiRISE) to align it with the
+    reference (CTX). Columns increase with world x, but **rows increase as
+    world y decreases** (north-up grid, `transform.e < 0`), so the row
+    component must flip sign on the way to world coordinates. Getting this
+    wrong inverts the y-correction and doubles the misalignment instead of
+    removing it — the W1 rung-1 bug (DECISIONS.md 2026-06-10, W1 entry).
+    """
+    return float(dx_px * px_x), float(-dy_px * px_y)
+
+
 def stage3_one_image(
     obs_id: str,
     *,
@@ -379,8 +399,7 @@ def stage3_one_image(
     # 4. Convert pixel shift to metres on the CTX grid.
     px_x = abs(ctx_transform.a)
     px_y = abs(ctx_transform.e)
-    dx_m = dx_px * px_x
-    dy_m = dy_px * px_y
+    dx_m, dy_m = shift_px_to_world_m(dy_px, dx_px, px_x=px_x, px_y=px_y)
     shift_m = float(math.hypot(dx_m, dy_m))
 
     provenance = {
@@ -402,7 +421,7 @@ def stage3_one_image(
         # against (and reverted to) the original central-FFT solve.
         "single_window": {
             "dy_px": sw_dy, "dx_px": sw_dx, "peak": sw_peak,
-            "dy_m": sw_dy * px_y, "dx_m": sw_dx * px_x,
+            "dy_m": -sw_dy * px_y, "dx_m": sw_dx * px_x,
             "magnitude_m": float(math.hypot(sw_dx * px_x, sw_dy * px_y)),
         },
         "block_field": {"block_px": int(block_px), "block_peak_min": float(block_peak_min),

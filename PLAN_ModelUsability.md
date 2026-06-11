@@ -179,6 +179,14 @@ All later W-items compare against this.
 
 ### W1 — Error atlas as differential diagnosis (~3–4 days)
 
+> **Status 2026-06-10 (session 2): rung 1 DONE and it found the headline
+> bug** — the coreg y-shift was applied with inverted sign to every v2 label
+> (fixed; labels regenerated; baseline re-banked; all W0 verdicts re-verified
+> on corrected labels — see DECISIONS.md 2026-06-10 W1 entry). Banked recipe
+> unchanged in identity, new numbers: ρ +0.1878 / PR-AUC 0.5616 / per-image
+> median AUC 0.603 / anti-signal 8 of 38 (was 11). Rungs 2–5 proceed on the
+> clean predictions, targeting the 8 surviving anti-signal images.
+
 Turn "anti-signal" from a label into an actionable mechanism. The per-image
 diagnosis exists (notebook 13); the **per-tile** level was never done.
 **Structure (Brian, 2026-06-10): work the ladder from mundane to

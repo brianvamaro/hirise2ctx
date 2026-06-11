@@ -2524,3 +2524,114 @@ ECE 0.264 (`models/_sweep_binary/20260529T075754Z`).
   scale) LOIO matrix probe with the flat meaningful-threshold convention
   (fa > 1e-2 / bc >= 50 at every scale, matching `_sweep_stage6a.py`).
 - `tests/test_modeling_gbm.py`: +2 tests (30 in file); full suite 283.
+
+
+## 2026-06-10 -- W1 rung 1: coreg y-shift SIGN ERROR found and fixed; all v2 labels regenerated; baseline re-banked
+
+W1 (error-atlas differential diagnosis, PLAN_ModelUsability.md) opened with
+the rung-1 label-geometry audit and immediately found a cause-0 bug, exactly
+the class of mundane failure the ladder restructure (Brian directive,
+2026-06-10) was designed to catch BEFORE blaming the sensor.
+
+### The bug
+
+`src/coregister.py` converted the phase-correlation row shift to metres as
+`dy_m = dy_px * px_y`, **omitting the row->world-y sign flip** (rows grow
+southward, world y northward: dy_world = -dy_px * px_y since transform.e < 0).
+The array-space solve itself was verified correct (its own post-shift Pearson
+check, peaks 0.58-0.88). `labeling._apply_coreg_shift` translated the
+polygons by the bad `dy_m`, so every v2 label field was pushed SOUTH when it
+needed to go NORTH. All 38 images have HiRISE sitting north of the Murray
+mosaic (dy_px < 0; 6-285 m, median ~180 m), so post-"correction" every label
+field sat **2x|dy| = 12-570 m (median ~360 m = 1.1 tiles at S=64) south** of
+its CTX texture. The x-component was applied correctly throughout.
+
+### How it was caught (the W1 rung-1 probes)
+
+1. **+/-2-tile label-shift rescore** (`scripts/probes/_w1_shift_rescore.py`):
+   re-scored the banked W0 predictions against label grids shifted di,dj in
+   [-2,+2]. Cohort-mean AUC peaked at (di=+1, dj=0) 0.616 vs 0.598 center,
+   monotone along di, symmetric in dj -- a global row-direction misalignment
+   of ~1 tile.
+2. **Direct displacement measurement**
+   (`scripts/probes/_w1_label_ctx_displacement.py`): phase-correlated
+   smoothed boulder-density rasters against CTX texture energy. Nominal-
+   position labels reproduced the cached HiRISE shift exactly
+   (ESP_042964_2160: measured (-36.2, +21.0) px vs cached (-35.9, +21.3));
+   as-applied labels showed **2x dy and ~0 dx** (measured (-72.2, -0.1)).
+   Same pattern on ESP_066634_2210 and ESP_069763_2235.
+3. Coreg solve quality (peak, block MAD, confident fraction) was UNcorrelated
+   with per-image AUC (`_w1_coreg_vs_auc.md`) -- the solves were fine, the
+   application was wrong.
+
+### Fix + migration (Brian approved fix+regenerate+re-bank in session)
+
+- `src/coregister.py`: new `shift_px_to_world_m()` helper does the conversion
+  with the sign flip; `single_window` provenance fixed identically.
+- `tests/test_coregister.py`: +2 regression tests (unit sign test + synthetic
+  end-to-end world-space recovery). Fast suite 265 pass (was 263).
+- `scripts/probes/_w1_migrate_coreg_sign.py`: rewrote the 48 cached
+  coregistration JSONs (cache, cache_v2, cache_v2_dev) from their correct
+  `shift_px` values; marker field `y_sign_fix_applied: 2026-06-10`.
+  Re-solving was unnecessary -- only the metre conversion was bad.
+- Stage 4 re-run, all 38 v2 images (apply_coreg_shift=True, now-correct
+  shifts); Stage 5 repackaged both schemes (loio_nfold, within_image_4fold).
+- **Post-fix validation**: displacement probe residual now sub-pixel
+  (<=0.8 px = 4 m, was 72-89 px); cohort rescore surface on the re-banked
+  predictions peaks at (0,0) (0.624, all neighbours lower)
+  (`_w1_surface_postfix.py`).
+
+### Re-banked W0 baseline (supersedes the 2026-06-10 W0 recipe numbers)
+
+Same 6-cell matrix, corrected labels
+(`models/_sweep_w0/20260611T013810Z`; canonical artifact dirs overwritten in
+place -- config hash unchanged, e.g.
+`models/lightgbm_two_stage_balanced/8c7523615964f5cb/scale_S64_target_boulder_count`).
+Every cell improved:
+
+| metric (banked recipe: two_stage_balanced x boulder_count @ S=64) | pre-fix | post-fix |
+|---|---|---|
+| Spearman rho | +0.1431 | **+0.1878** |
+| presence AUC | 0.6149 | 0.6149 (coincidence, unchanged to 4 dp) |
+| meaningful AUC | 0.5983 | **0.6243** |
+| PR-AUC | 0.5431 | **0.5616** |
+| precision@top-5% | 0.5679 | **0.5859** |
+| per-image meaningful-AUC median | 0.594 | **0.603** |
+| images > 0.70 | 23.7% | **34.2%** |
+| images < 0.50 (anti-signal) | 28.9% (11) | **21.1% (8)** |
+
+fractional_area cells gained even more (vanilla two_stage: rho 0.169 ->
+0.240, meaningful AUC 0.616 -> 0.675) -- geometric noise was diluting the
+continuous target hardest.
+
+**W0 verdicts re-checked on corrected labels (`_w0_paired_deltas.py` on the
+new sweep): all hold.** P2 promotion stands (PR-AUC +0.146 p=1e-4,
+prec@5% +0.147 p=0.001, Spearman -0.041 n.s.); P1 still null (all n.s.);
+hurdle still beats single-stage on boulder_count (log1p_huber Spearman
+-0.028, p=0.063, all other deltas n.s.-negative). The promoted recipe is
+unchanged: **lightgbm_two_stage_balanced x boulder_count @ S=64**.
+
+### Collateral findings for the W1 dossier
+
+- **Per-image meaningful-AUC is statistically meaningless on near-saturated
+  images** (ESP_054622_2240: 4 negatives; ESP_069763_2235: 6; ESP_059686_2235:
+  8; ESP_054134_2265: 28; ESP_063429_2240: 20; ESP_068483_2280: 22;
+  ESP_045550_2180: 27). The dossier and any reliability flag must carry
+  n_pos/n_neg validity columns; rescore surfaces on these images swing
+  0.25<->0.85 between adjacent offsets.
+- **Surviving anti-signal images (8, post-fix)**: ESP_076499_1160 (0.224,
+  rho -0.51 -- WORSE after the fix, strongly inverted, geographic outlier at
+  ~64 S, "unknown" cohort label), ESP_055978_2270 (0.245), ESP_054000_2255,
+  ESP_046328_2180, ESP_064510_2260, ESP_047976_2020, ESP_049242_2115,
+  ESP_059686_2235 (8 neg -- validity-suspect). These are the rung-2..5
+  targets; their inversions still need a mechanism.
+- The historic "anti-signal favours artifact causes" prior is now empirically
+  vindicated: 3 of 11 anti-signal images were pure geometry casualties.
+
+### Tier 1 reference classifier re-banked
+
+`lightgbm_classification` on `fa_gt_1e-2` @ S=64, corrected labels
+(`models/_sweep_binary/20260611T042543Z`): AUC 0.655 +/- 0.129 (was 0.615),
+lift@top-K 1.845 (was 1.430), ECE 0.254 (was 0.264 -- unchanged, consistent
+with the W0 P5 verdict that LOIO miscalibration is between-image base-rate
+shift, not loss weighting).
