@@ -2445,3 +2445,82 @@ with the slim model showing slightly higher per-fold mean ρ due to
 lower overfitting variance on a few folds. Recorded here in case a
 future session wants to revisit the "less is more" framing, but
 removed from the current writeup per user direction above.
+
+## 2026-06-10 -- W0 "bank the wins": P2 promoted; P1/P5 null at LOIO; hurdle retained with evidence; Stage 6a partial carry
+
+First session of the model-usability program (PLAN_ModelUsability.md).
+All numbers: full-v2 LOIO (38 folds), dataset_v2, n_estimators=400 /
+lr=0.05 / early_stopping=40. Sweep artifacts:
+`models/_sweep_w0/20260610T221932Z` (S=64 matrix, 3 variants x 2 targets),
+`models/_sweep_w0/20260610T223114Z` + `20260610T223410Z` (Stage 6a S=32
+pair), `models/_sweep_binary/20260611T002603Z` (P5 classifier).
+Probes: `scripts/probes/_sweep_w0.py`, `_w0_paired_deltas.py`.
+Harness consistency check: vanilla two_stage x fractional_area reproduced
+the documented historical baseline exactly (rho +0.1689 / presence AUC
+0.579); the P1+P2 cell reproduced the Stage 6b sweep baseline exactly
+(rho +0.1431 / PR-AUC 0.5431).
+
+### Promoted regression recipe (the W0 baseline all later work compares against)
+
+**`lightgbm_two_stage_balanced` x `boulder_count` @ S=64, 51 base Stage-4b
+features** -- rho +0.1431, presence AUC 0.6149, PR-AUC 0.5431, normalised
+lift 0.5284, precision@top-5% 0.5679, recall@top-5% 0.0624. Per-image
+meaningful-AUC (bc >= 50): median 0.594 / max 0.979 / 23.7% of images
+> 0.70 / 28.9% < 0.50 (bimodality persists -> W1).
+
+**Tier 1 reference classifier** (unchanged): `lightgbm_classification`
+on `fa_gt_1e-2` @ S=64 -- AUC 0.615 +/- 0.114, lift@top-K 1.430,
+ECE 0.264 (`models/_sweep_binary/20260529T075754Z`).
+
+### Verdicts (paired per-fold Wilcoxon, n=38)
+
+1. **P2 (target = boulder_count): PROMOTED.** vs fractional_area on the
+   same variant: PR-AUC +0.162 (win rate 89%, p < 1e-4), precision@top-5%
+   +0.182 (81%, p < 1e-4). Spearman -0.012 (p = 0.38, noise). The +22%
+   dev win carried and grew. *Caveat recorded*: the operational metrics
+   use the bc >= 50 positive definition vs fa > 1e-2 -- thresholds
+   designed equivalent (50 boulders ~ 1% area at S=64) but not identical
+   positive sets; cross-target comparisons inherit this convention from
+   the dev sweeps.
+2. **P1 (balanced presence head): NULL at LOIO.** vs vanilla two_stage on
+   boulder_count: all paired deltas n.s. (Spearman -0.010 p=0.10, PR-AUC
+   -0.003 p=0.10, meaningful-AUC -0.007 p=0.10). The +0.017 rho dev win
+   did not replicate. Kept as default anyway for the calibrated p_pos
+   mechanism (no measurable cost).
+3. **Single-stage hurdle test: TWO-STAGE RETAINED, now with evidence.**
+   `lightgbm_log1p_huber` ties on pooled PR-AUC / lift / precision@top-5%
+   (all p > 0.4) but loses per-image meaningful-AUC by -0.022 paired
+   (win rate 34%, p = 0.008) and Spearman -0.027 (p = 0.13) on
+   boulder_count. Closes the 2026-06-08 open question (memory
+   `modeling-single-stage-future`): the hurdle is kept on per-image
+   detection evidence, not inertia.
+4. **P5 (classifier without scale_pos_weight): NULL.** AUC -0.007
+   (p=0.46), ECE -0.003 (p=0.25), Brier -0.0006 (p=0.21), lift -0.15
+   (p=0.60). The predicted ECE collapse (0.26 -> ~0.05) did NOT happen:
+   held-out-image miscalibration is dominated by between-image base-rate
+   / distribution shift, not by the loss weighting. Third dev-win-fails-
+   at-LOIO data point tonight (with P1 + the Stage 6c gate history), all
+   consistent with per-image heterogeneity as the binding constraint.
+   Variant `lightgbm_classification_balanced` stays in the registry,
+   documented as tested-null.
+5. **Stage 6a 5x5 @ S=32 full-v2: STRICT FAIL, partial carry.** Baseline
+   S=32: rho +0.0945 / PR-AUC 0.2750 / prec@5% 0.2974. With nbr_s5
+   features (206 cols): rho +0.1665 (delta +0.072 >= +0.05 PASS),
+   meaningful-AUC +0.068, PR-AUC +0.0166 (< +0.03 FAIL), prec@5% +0.020.
+   The dev PASS carries on Spearman but not PR-AUC. Absolute S=32
+   performance (PR-AUC ~0.29) remains far below S=64 (0.543); S=64 stays
+   the operating scale and the S=64 recipe does NOT take nbr features
+   (dev showed S=64 already at the spatial-integration ceiling).
+   Artifacts kept: `dataset_v2/features_nbr_s5/`,
+   `dataset_v2/packaged/loio_nfold_nbr_s5/` (S=32 only).
+
+### Code changes
+
+- `src/modeling/gbm.py`: `use_scale_pos_weight` knob on
+  `LightGBMClassification` + `LightGBMClassificationBalanced` variant
+  (registered in `VARIANT_CONSTRUCTORS` / `CLASSIFICATION_VARIANTS`).
+- `scripts/sweep_binary.py`: `--variant` flag.
+- `scripts/probes/_sweep_w0.py`: generalized (variant x target x scheme x
+  scale) LOIO matrix probe with the flat meaningful-threshold convention
+  (fa > 1e-2 / bc >= 50 at every scale, matching `_sweep_stage6a.py`).
+- `tests/test_modeling_gbm.py`: +2 tests (30 in file); full suite 283.

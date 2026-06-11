@@ -142,7 +142,17 @@ Network inferring HiRISE shadow-detector rock density (rocks > 1.5 m per
 
 ## 3. Workstreams
 
-### W0 — Bank the wins (~1 day) ← START HERE
+### W0 — Bank the wins ✅ DONE 2026-06-10 (see DECISIONS.md 2026-06-10 entry)
+
+**Outcome**: P2 promoted (PR-AUC +0.162, p<1e-4); P1 and P5 null at LOIO
+(dev wins didn't replicate — both consistent with per-image distribution
+shift as the binding constraint); two-stage hurdle retained on per-image
+meaningful-AUC evidence (+0.022, p=0.008); Stage 6a S=32 strict FAIL with
+partial carry (Δρ +0.072 PASS / ΔPR-AUC +0.017 FAIL), S=64 stays the
+operating scale. **Promoted baseline recipe: `lightgbm_two_stage_balanced`
+× `boulder_count` @ S=64** (ρ +0.1431 / PR-AUC 0.5431 / prec@5% 0.5679;
+per-image meaningful-AUC median 0.594 / max 0.979 / 29% < 0.50). Tier 1
+reference classifier unchanged. Original plan below for reference.
 
 Establish the true best baseline. Everything later is measured against this.
 

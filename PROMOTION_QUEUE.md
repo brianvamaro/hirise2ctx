@@ -5,6 +5,33 @@ Forward-looking docket. Each item is a change that **(a)** is dev-validated on t
 full 38-image v2 `dataset_v2/` LOIO scheme, and **(c)** is Brian-gated (full-v2 sweeps are
 the expensive step). Listed in priority order. Once promoted, move to [DECISIONS.md](DECISIONS.md).
 
+## ⚡ Status update 2026-06-10 — W0 "bank the wins" resolved the open Part A items
+
+Full results + recipe table in the DECISIONS.md 2026-06-10 entry; sweep at
+`models/_sweep_w0/20260610T221932Z`. One-line verdicts (paired per-fold
+Wilcoxon, n=38 full-v2 LOIO):
+
+- **P2 (boulder_count target): ✅ PROMOTED** — PR-AUC +0.162 (p<1e-4),
+  precision@top-5% +0.182 (p<1e-4); Spearman dip n.s.
+- **P1 (balanced presence head): ∅ NULL at LOIO** — all deltas n.s.; the
+  dev win did not replicate. Kept as default for the calibrated-p_pos
+  mechanism only.
+- **P5 (classifier calibration fix): ∅ NULL** — ECE unchanged (0.264 →
+  0.262, p=0.25). LOIO miscalibration is between-image distribution shift,
+  not loss weighting. `lightgbm_classification_balanced` stays registered,
+  documented tested-null.
+- **Single-stage swap (2026-06-08 question): ❌ REJECTED** — two-stage
+  retained on per-image meaningful-AUC evidence (+0.022 paired, p=0.008).
+- **Stage 6a 5×5 @ S=32: ◐ STRICT FAIL, partial carry** — Δρ +0.072 PASS,
+  ΔPR-AUC +0.017 FAIL; S=32 absolute PR-AUC ≈ 0.29 ≪ S=64's 0.543. S=64
+  recipe takes no nbr features.
+- **Promoted W0 baseline recipe**: `lightgbm_two_stage_balanced` ×
+  `boulder_count` @ S=64 — ρ +0.1431 / PR-AUC 0.5431 / prec@5% 0.5679;
+  per-image meaningful-AUC median 0.594 / max 0.979. Tier 1 reference
+  classifier unchanged (`lightgbm_classification`, AUC 0.615 / lift 1.43).
+- **P3 + P4 (metric/doc reframes)**: already absorbed into the slim/slimmer
+  writeups; nothing further to promote.
+
 ## Inference-time scope (Brian, 2026-05-29)
 
 The deliverable is **inference on stand-alone CTX images** in regions where HiRISE coverage
