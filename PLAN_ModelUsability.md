@@ -179,13 +179,20 @@ All later W-items compare against this.
 
 ### W1 — Error atlas as differential diagnosis (~3–4 days)
 
-> **Status 2026-06-10 (session 2): rung 1 DONE and it found the headline
-> bug** — the coreg y-shift was applied with inverted sign to every v2 label
-> (fixed; labels regenerated; baseline re-banked; all W0 verdicts re-verified
-> on corrected labels — see DECISIONS.md 2026-06-10 W1 entry). Banked recipe
-> unchanged in identity, new numbers: ρ +0.1878 / PR-AUC 0.5616 / per-image
-> median AUC 0.603 / anti-signal 8 of 38 (was 11). Rungs 2–5 proceed on the
-> clean predictions, targeting the 8 surviving anti-signal images.
+> **Status 2026-06-10: W1 COMPLETE (one session).** Rung 1 found the
+> headline bug — the coreg y-shift was applied with inverted sign to every
+> v2 label (fixed; labels regenerated; baseline re-banked: ρ +0.1878 /
+> PR-AUC 0.5616 / median per-image AUC 0.603 / anti-signal 11→8; all W0
+> verdicts re-verified). Rungs 2–5: join integrity CLEAN; BoulderNet content
+> clean (failures carry small 2–4 m boulders in uniform speckle); seam-tile
+> masking does nothing (source effect is regional, ρ≈0.38 replicated);
+> anti-signal splits into texture_decorrelated (3, sensor floor) +
+> distribution_shift (2, real signal missed — fixable) + validity_limited
+> (3). Deliverables: notebook 18, `dataset_v2/w1_dossier.parquet`,
+> DECISIONS.md two entries. **Decisions: reliability flag = graded
+> region-level confidence (seam masking rejected); native-CTX pivot NO-GO
+> for now; next bets = per-image feature standardization, then W2 CNN with
+> photometric augmentation, then terrain covariate.**
 
 Turn "anti-signal" from a label into an actionable mechanism. The per-image
 diagnosis exists (notebook 13); the **per-tile** level was never done.

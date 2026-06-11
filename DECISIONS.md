@@ -2635,3 +2635,75 @@ unchanged: **lightgbm_two_stage_balanced x boulder_count @ S=64**.
 lift@top-K 1.845 (was 1.430), ECE 0.254 (was 0.264 -- unchanged, consistent
 with the W0 P5 verdict that LOIO miscalibration is between-image base-rate
 shift, not loss weighting).
+
+
+## 2026-06-10 -- W1 rungs 2-5 + synthesis: ladder complete, causes attributed, reliability-flag + native-CTX decisions
+
+Continuation of the same session as the rung-1 entry. All on the re-banked
+recipe (two_stage_balanced x boulder_count @ S=64, corrected labels).
+Deliverables: notebook 18 (`notebooks/18_w1_error_atlas.ipynb`, runs
+top-to-bottom), 38-row dossier (`dataset_v2/w1_dossier.parquet` +
+`scripts/probes/_w1_dossier.md`), probes `_w1_rung2_join_audit.py`,
+`_w1_rung3_detection_stats.py`, `_w1_rung3_fullres_visual.py`,
+`_w1_rung4_seam_error.py`, `_w1_rung5_feature_sign.py`,
+`_w1_reliability_proxy.py`, `_w1_build_dossier.py`.
+
+### Ladder verdicts
+
+- **Rung 2 (join/pipeline): CLEAN, excluded.** All 38 images: unique keys,
+  zero labels<->features join loss, zero NaN features at S=64, exact
+  S=32->S=64 nested-count consistency.
+- **Rung 3 (BoulderNet content): no false-positive epidemic.** Anti-signal
+  vs cohort indistinguishable on count/density/score/size/edge stats (all
+  MWU p>0.35). Full-res sampling (10 images, `w1_rung3_*.png`): detections
+  look like real boulders everywhere; the visual difference is that
+  anti-signal images carry SMALL (2-4 m, near CTX-invisible) boulders in
+  uniformly speckled terrain, controls carry large resolved boulders in
+  spatially coherent fields. ESP_055978_2270 is the cohort's sparsest +
+  lowest-score detection set (72/km^2, median score 0.42).
+- **Rung 4 (CTX content): image-level source correlation REPLICATES post-fix
+  (mean_n_sources rho=-0.378 p=0.019; dom_frac +0.376; seam_frac -0.364) but
+  seam-tile masking does NOTHING** (single-source-only AUC delta median
+  +0.000, improved 29% of images; within-image seam fractions only 0-12%).
+  The mechanism is regional/between-image, not within-image seam damage.
+- **Rung 5 (mechanism): anti-signal splits into two classes.**
+  *texture_decorrelated* (ESP_054000_2255, ESP_064510_2260,
+  ESP_049242_2115): within-image texture<->label Spearman ~0 or negative
+  while the healthy cohort median is strongly positive (+0.29 to +0.46
+  across shadow/gradient/contrast/edge) -- at 5 m/px these images' boulder
+  populations genuinely do not modulate CTX texture; a cohort-trained model
+  must fail there. *distribution_shift* (ESP_076499_1160, ESP_046328_2180):
+  within-image signal is STRONG and cohort-consistent (076499:
+  shadow_fraction rho +0.73, would alone give a high within-image AUC) yet
+  LOIO AUC is 0.22-0.40 -- the model misses real signal because the
+  feature distributions sit outside the training cohort (076499 is the
+  ~64degS geographic outlier). This class is fixable in principle
+  (per-image normalization / photometric invariance).
+- **Validity class:** ESP_055978_2270 (34 pos), ESP_047976_2020 (33 pos),
+  ESP_059686_2235 (8 neg) -- their per-image AUCs are too fragile to
+  diagnose; reported but not attributed.
+
+### Dossier cause counts (38 images)
+
+ok 20 / ok_validity_limited 8 / validity_limited 3 / texture_decorrelated 3
+/ distribution_shift 2 / ok_geometry_fixed 2. Terrain pattern (Serrano
+mediation): the attributed failures sit in channels/mesas/crater terrain;
+the ok class is overwhelmingly plains.
+
+### Decisions
+
+1. **Tier 1 reliability flag: graded region-level confidence, not a binary
+   anti-signal detector.** Seam-tile masking rejected (rung 4). Dispersion
+   and feature-shift proxies null (rho -0.15/-0.03); only SeamMap source
+   stats predict AUC (rho ~0.38) and they do not separate cleanly (class-C
+   failures include single-source images). Ship `mean_n_sources` +
+   `dominant_source_fraction` as confidence covariates + per-tile validity
+   reporting, and state honestly that ~13% of images (5/38) fail without an
+   inference-time warning signal under current features.
+2. **Native-CTX pivot: NO-GO for now.** The surviving failure classes are
+   not what the pivot fixes (sensor floor for small boulders; per-image
+   distribution shift). Next bets in order: (a) per-image feature
+   standardization (rank/z within window) -- directly targets class C, one
+   sweep; (b) W2 CNN with photometric augmentation (same mechanism + feature
+   ceiling); (c) terrain covariate (global geologic map join). Revisit
+   native-CTX only if (a)+(b) fail.
