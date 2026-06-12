@@ -75,9 +75,11 @@ crops; Zenodo 18180801) frozen GeM embeddings → LightGBM columns:**
    are Brian's side). Gates should be declared BEFORE any new-image
    numbers are seen; reuse the standard pair (pooled +0.03 / per-image
    +0.05 p<0.05) unless Brian wants stricter.
-3. **Notebook 19 (or new 20) Fang section**: verdict tables, per-image
-   dAUC bars by failure class, the alignment + azimuth figures, example
-   tiles where emb_only wins big (ESP_076499_1160).
+3. ~~Notebook Fang section~~ **DONE same session**:
+   `notebooks/20_fang_vit_probe.ipynb` (+ `_build_20.py`), executed;
+   figures `reports/figures/20_fang_*.png` (verdict bars, per-image dAUC
+   by failure class, top-8 tiles FM vs Tier-1 on ESP_076499_1160 — FM 8/8
+   true positives vs Tier-1 1/8). PLAN_CNN.md §5.1 annotated with outcome.
 4. Optional cheap reads: emb_only @ S=32 overnight (~6 h CPU); MOMO
    disjoint-corpus cross-check (weights public, arXiv:2604.02719);
    ViT fine-tune decision EXPLICITLY deferred until after confirmation.

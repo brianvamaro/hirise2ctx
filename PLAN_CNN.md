@@ -213,6 +213,18 @@ LOIO harness** (~1 h total). Fine-tune only if the probe shows signal.
 Caveats the paper itself flags: MAE subdues sub-pixel roughness (our
 signal); embeddings carry illumination geometry (our disease). MOMO
 (arXiv:2604.02719, weights public) is the multi-sensor alternative.
+*Outcome (2026-06-12): **LANDED — both gates passed at both scales by the
+program's largest margin.** t1_gem192 pooled PR-AUC 0.7637 (Tier-1 0.5651)
+/ prec@5% 0.977; S=32 t1_gem96 0.7639 (Tier-1 collapse 0.4840 fixed);
+emb_only ≈ fused (feature-set floor settled); GeM > mean > cls; combined
+64+192 = best per-image (dAUC +0.0918, win 0.93). Illumination caveat
+present (sin-azimuth LOO-recoverable r=0.59) but harmless — benefit
+geometry-agnostic, azimuth outlier ESP_076499_1160 is the biggest winner
+(+0.458). MAE roughness caveat did not bind. Transductive-pretraining
+disclosure + deployment-matching argument in DECISIONS.md 2026-06-12.
+Next: productize + pre-declared cohort-expansion confirmation; fine-tune
+still deferred. Probe-tier scripts: `scripts/probes/_w2_fang_{embed,probe,
+patch_visual,azimuth}.py`.*
 
 ### 5.2 Augmentation refinements (post-mortem of cells B–D)
 
