@@ -1,5 +1,13 @@
 # PLAN — W2: CNN on context patches (expanded)
 
+> **CLOSED 2026-06-12 — superseded by [PLAN_FM.md](PLAN_FM.md).** The §5.1
+> foundation-model probe passed both gates at both scales by the program's
+> largest margin (pooled PR-AUC 0.5651 → 0.7637; see the §5.1 outcome note
+> and DECISIONS.md 2026-06-12 ×2). The SmallCNN line and its support
+> machinery (§5.0 fusion, §5.2 augmentation, §5.3 AdaBN, §5.4 capacity)
+> are retired — dispositions recorded in PLAN_FM.md §4. This file stays as
+> the W2 record; do not extend it.
+
 **Status:** planned 2026-06-11; **Phase 1 grid EXECUTED + READ same day**
 (DECISIONS.md 2026-06-11 Phase-1 entry; sweep `models/_sweep_cnn/20260611T220815Z`).
 Outcome in brief: **H-B (photometric augmentation) REFUTED cohort-level** —

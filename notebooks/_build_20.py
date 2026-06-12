@@ -92,6 +92,25 @@ print("probe runs on disk:", sorted(p.name for p in PROBE.iterdir() if p.is_dir(
 cells.append(md(
     """## 1. Verdict tables — every probe variant vs its Tier-1 reference
 
+**Variant naming.** Every variant is the same LightGBM binary classifier
+(`fa_gt_1e-2`, standard LOIO) — only the **feature matrix** differs.
+Building blocks: `t1` = the 52 handcrafted Tier-1 features
+(intensity/GLCM/gradient/shadow); `gem{px}` = 768 frozen Fang-ViT embedding
+columns, GeM(p=3)-pooled, computed from a {px}-px CTX input centered on the
+tile (`cls`/`mean` = alternative poolings of the same tokens). At S=64
+tiles the own-tile input is 64 px and the 3×3-context input is 192 px; at
+S=32 tiles they are 32 px and 96 px.
+
+| variant | feature matrix | n cols | tile scale |
+|---|---|---|---|
+| `t1_gem64` | Tier-1 + GeM embeddings of the tile itself (64 px) | 52+768 | S=64 |
+| `t1_gem192` | Tier-1 + GeM embeddings of the 3×3 context (192 px) | 52+768 | S=64 |
+| `t1_gem64_gem192` | Tier-1 + both embedding sets | 52+1536 | S=64 |
+| `emb_only` | both embedding sets, **no** handcrafted features | 1536 | S=64 |
+| `t1_cls192` / `t1_mean192` | pool ablation: CLS-token / mean-token instead of GeM | 52+768 | S=64 |
+| `t1_gem32` | Tier-1 + GeM of the tile itself (32 px) | 52+768 | S=32 |
+| `t1_gem96` | Tier-1 + GeM of the 3×3 context (96 px) | 52+768 | S=32 |
+
 Gates (reference bars, not promotion): pooled ΔPR-AUC ≥ +0.03 vs Tier-1;
 per-image ΔAUC median ≥ +0.05 with Wilcoxon p < 0.05 on dossier
 validity-passing images.""",
