@@ -58,20 +58,32 @@ SCALE_IDX, T1_PREDS_REL, T1_SUMMARY_REL = SCALE_CONFIG[TILE_PX]
 
 @dataclass
 class _StandardizedHead:
-    """Shared per-fold standardization: fit mean/std on the training fold only."""
+    """Shared per-fold preprocessing, fit on the training fold only:
+    median-impute NaN columns (the t1 matrix has scale-dependent NaN GLCM
+    columns; the embedding matrix has none), then standardize."""
 
     name: str = "std_head"
     _mu: np.ndarray | None = field(default=None, init=False, repr=False)
     _sd: np.ndarray | None = field(default=None, init=False, repr=False)
+    _med: np.ndarray | None = field(default=None, init=False, repr=False)
 
     def _fit_scaler(self, X: np.ndarray) -> np.ndarray:
-        self._mu = X.mean(axis=0)
-        self._sd = X.std(axis=0)
+        self._med = np.nanmedian(X, axis=0)
+        self._med[~np.isfinite(self._med)] = 0.0  # all-NaN column -> constant 0
+        Xi = self._impute(X)
+        self._mu = Xi.mean(axis=0)
+        self._sd = Xi.std(axis=0)
         self._sd[self._sd == 0] = 1.0
-        return self._apply(X)
+        return (Xi - self._mu) / self._sd
+
+    def _impute(self, X: np.ndarray) -> np.ndarray:
+        X = np.array(X, dtype=np.float64, copy=True)
+        nan_r, nan_c = np.where(~np.isfinite(X))
+        X[nan_r, nan_c] = self._med[nan_c]
+        return X
 
     def _apply(self, X: np.ndarray) -> np.ndarray:
-        return (X - self._mu) / self._sd
+        return (self._impute(X) - self._mu) / self._sd
 
     def predict_presence_prob(self, X):
         return self.predict(X)
@@ -223,24 +235,30 @@ class MLPHead(_StandardizedHead):
 # ============================================================================
 
 
-def run_head(label: str, factory, bank: EmbeddingBank) -> pd.DataFrame:
+MATRIX_SOURCES = {"emb": ("ctx",), "t1ctx": ("t1", "ctx")}
+
+
+def run_head(label: str, factory, bank: EmbeddingBank, matrix: str = "emb") -> pd.DataFrame:
     target = get_target(TARGET_ID)
+    sources = MATRIX_SOURCES[matrix]
+    full_label = label if matrix == "emb" else f"{label}_{matrix}"
     snapshot = {
-        "variant": f"fang_heads_{label}", "task": "classification",
+        "variant": f"fang_heads_{full_label}", "task": "classification",
         "target_id": TARGET_ID, "scheme": SCHEME, "dataset_dir": "dataset_v2",
         "scale_idx": SCALE_IDX, "tile_size_px": TILE_PX,
-        "pool": "gem", "sources": ["ctx"], "head": label,
+        "pool": "gem", "sources": list(sources), "head": label,
     }
     cfg_hash = hashlib.sha256(
         json.dumps(snapshot, sort_keys=True, default=str).encode()).hexdigest()[:16]
     snapshot["config_hash"] = cfg_hash
-    out_dir = OUT_ROOT / f"heads_{label}" / cfg_hash
+    out_dir = OUT_ROOT / f"heads_{full_label}" / cfg_hash
+    label = full_label
 
     t0 = time.monotonic()
-    print(f"=== head: {label} (gem192-only matrix) ===", flush=True)
+    print(f"=== head: {label} (matrix={matrix}) ===", flush=True)
     result = run_loio(
         factory, binarize=target.binarize, task="classification",
-        fold_iter=make_fold_iter(bank, ("ctx",), SCALE_IDX, {"own": 64, "ctx": 192}),
+        fold_iter=make_fold_iter(bank, sources, SCALE_IDX, {"own": 64, "ctx": 192}),
         snapshot=snapshot, verbose=True,
     )
     write_run_artifacts(result, out_dir)
@@ -256,39 +274,54 @@ def run_head(label: str, factory, bank: EmbeddingBank) -> pd.DataFrame:
     return result.predictions
 
 
+ALL_HEADS = ("lgbm", "logreg", "knn50", "mlp")
+
+
 def main() -> int:
+    import argparse
+
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--matrix", default="emb", choices=sorted(MATRIX_SOURCES))
+    ap.add_argument("--heads", nargs="+", default=list(ALL_HEADS),
+                    choices=ALL_HEADS, help="mlp expands to 3 seeds + ensemble")
+    args = ap.parse_args()
+
     bank = EmbeddingBank("gem", pxs=(64, 192))
     params = LGBMParams(n_estimators=400, learning_rate=0.05, early_stopping_rounds=40)
 
-    heads = [
-        ("lgbm", lambda: LightGBMClassification(params=params)),
-        ("logreg", LogRegHead),
-        ("knn50", KNNHead),
-        ("mlp_seed0", lambda: MLPHead(seed=0)),
-        ("mlp_seed1", lambda: MLPHead(seed=1)),
-        ("mlp_seed2", lambda: MLPHead(seed=2)),
-    ]
+    factories = {
+        "lgbm": lambda: LightGBMClassification(params=params),
+        "logreg": LogRegHead,
+        "knn50": KNNHead,
+    }
     preds_by_head: dict[str, pd.DataFrame] = {}
-    for label, factory in heads:
-        preds_by_head[label] = run_head(label, factory, bank)
+    for label in args.heads:
+        if label == "mlp":
+            for s in (0, 1, 2):
+                preds_by_head[f"mlp_seed{s}"] = run_head(
+                    f"mlp_seed{s}", lambda s=s: MLPHead(seed=s), bank, args.matrix)
+        else:
+            preds_by_head[label] = run_head(label, factories[label], bank, args.matrix)
 
-    # MLP 3-seed mean-prob ensemble (the stochastic cell's promotable form).
-    base = None
-    for s in (0, 1, 2):
-        p = preds_by_head[f"mlp_seed{s}"][["obs_id", "ti", "tj", "y_true", "y_pred"]]
-        p = p.rename(columns={"y_pred": f"p{s}"})
-        base = p if base is None else base.merge(
-            p.drop(columns="y_true"), on=["obs_id", "ti", "tj"], validate="one_to_one")
-    base["y_pred"] = base[["p0", "p1", "p2"]].mean(axis=1)
-    v = verdict("mlp_ens3", base, REPO_ROOT / T1_PREDS_REL, REPO_ROOT / T1_SUMMARY_REL)
-    out_dir = OUT_ROOT / "heads_mlp_ens3"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "verdict.json").write_text(json.dumps(v, indent=2), encoding="utf-8")
-    print("=== mlp_ens3 (mean of 3 seeds) ===")
-    for lbl, row in v.items():
-        slim = {k: (round(val, 4) if isinstance(val, float) else val)
-                for k, val in row.items() if k not in ("per_image_dauc", "dauc_by_cause")}
-        print(f"  {lbl}: {json.dumps(slim, default=str)}")
+    if "mlp" in args.heads:
+        # MLP 3-seed mean-prob ensemble (the stochastic cell's promotable form).
+        base = None
+        for s in (0, 1, 2):
+            p = preds_by_head[f"mlp_seed{s}"][["obs_id", "ti", "tj", "y_true", "y_pred"]]
+            p = p.rename(columns={"y_pred": f"p{s}"})
+            base = p if base is None else base.merge(
+                p.drop(columns="y_true"), on=["obs_id", "ti", "tj"], validate="one_to_one")
+        base["y_pred"] = base[["p0", "p1", "p2"]].mean(axis=1)
+        ens_label = "mlp_ens3" if args.matrix == "emb" else f"mlp_ens3_{args.matrix}"
+        v = verdict(ens_label, base, REPO_ROOT / T1_PREDS_REL, REPO_ROOT / T1_SUMMARY_REL)
+        out_dir = OUT_ROOT / f"heads_{ens_label}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "verdict.json").write_text(json.dumps(v, indent=2), encoding="utf-8")
+        print(f"=== {ens_label} (mean of 3 seeds) ===")
+        for lbl, row in v.items():
+            slim = {k: (round(val, 4) if isinstance(val, float) else val)
+                    for k, val in row.items() if k not in ("per_image_dauc", "dauc_by_cause")}
+            print(f"  {lbl}: {json.dumps(slim, default=str)}")
     return 0
 
 

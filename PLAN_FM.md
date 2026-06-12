@@ -39,27 +39,59 @@ smoothing control).
 
 ## 2. Queue (evidence order)
 
-1. **Head bake-off** (probe-tier, current 38 images, cached embeddings —
-   `scripts/probes/_w2_fang_heads.py`): logistic probe / small MLP (3
-   seeds) / kNN (cosine, k=50) / LightGBM, all on the identical gem192
-   matrix in the identical LOIO harness. Fixed hyperparameters (C=1.0,
-   one MLP arch) — this is a head-class read, not a tuning exercise.
-   If a non-tree head wins, re-run it on t1+gem192 (median-impute the
-   T1 columns). Output: one winner-or-tie verdict → freezes the recipe.
-   1b. **Target-definition re-read** (Brian, 2026-06-12): re-test
-   count-based vs area-based targets on the new features, inside the same
-   freeze window. The W0 finding "boulder_count beats fractional_area"
-   was established under handcrafted features whose area signal is
-   dominated by large-polygon/shadow-merge noise; FM embeddings may shift
-   that balance. Protocol honesty: cross-target metrics are NOT directly
-   comparable (different positive sets — standing gotcha), so each target
-   (`bc_ge_1`, `fa_gt_1e-3`, `fa_gt_1e-2`) is compared against its OWN
-   Tier-1 baseline; the claim tested is "the FM advantage transfers
-   across target definitions", and the map's target choice remains a
-   scientific decision (Brian's) that these numbers inform. Tier-2's
-   regression-target version of the same question (log1p count vs
-   fractional_area) lives in item 4, where it interacts with the
-   single-stage-vs-hurdle retest.
+1. **Freeze-window evidence runs** (all probe-tier, all on the current 38
+   images, cached embeddings; ends with ONE frozen recipe — head, pool,
+   matrix, scale, target). Sub-items, evidence order:
+   - **1a. Head bake-off — DONE 2026-06-12**
+     (`scripts/probes/_w2_fang_heads.py`): on the identical gem192-only
+     matrix / identical LOIO harness, every non-tree head beat LightGBM:
+     MLP-ens3 0.7852 pooled / med AUC 0.8035 / dAUC +0.1374; kNN(cos,50)
+     0.7709; logreg 0.7385; LightGBM 0.7146. Class question settled:
+     trees are the wrong reader of dense embeddings. MLP pooled
+     calibration is seed-wobbly (0.745–0.787; per-image skill stable) —
+     the 3-seed ensemble is the promotable form, exactly the SmallCNN
+     lesson.
+   - **1b. Target-definition re-read** (Brian, 2026-06-12): count-based
+     vs area-based targets on the new features. The W0 "boulder_count
+     beats fractional_area" finding was established under handcrafted
+     features whose area signal is dominated by large-polygon/
+     shadow-merge noise. Cross-target metrics are NOT directly comparable
+     (different positive sets — standing gotcha): each target (`bc_ge_1`,
+     `fa_gt_1e-3`, `fa_gt_1e-2`) is compared against its OWN Tier-1
+     baseline; the claim tested is "the FM advantage transfers across
+     target definitions"; the map's target choice remains Brian's
+     scientific decision. (Tier-2's regression version — log1p count vs
+     fractional_area — lives in item 4 with the hurdle retest.)
+   - **1c. Head-vs-head paired statistics**: paired per-image ΔAUC tests
+     BETWEEN the top heads (predictions already on disk) — the pooled
+     gaps (0.74–0.79) are within fold-ripple, so pick the winner
+     honestly or declare a tie and choose by simplicity/determinism.
+   - **1d. Pool × head interaction**: GeM was chosen under LightGBM;
+     retest mean/cls under the winning head (~5 min each, cached).
+   - **1e. Winner micro-sweep + ensembling + calibration**: one coarse
+     sanity grid on the winning head class only (e.g. 3 widths × 2
+     dropouts if MLP); cross-head ensemble (MLP+kNN+logreg average,
+     nearly free); a per-image quantile / inner-val temperature
+     calibration layer to stabilize pooled PR-AUC (the MLP wobble is a
+     calibration problem, not a ranking one). No deeper tuning — n=38
+     cannot resolve it and forking-paths discipline applies.
+   - **1f. Handcrafted-feature elimination check** (Brian: *ideally
+     eliminate*): winner heads on t1+gem192 vs gem192-only (run
+     in flight). If the 52 handcrafted columns add nothing, drop them —
+     inference simplifies to embed-and-predict (no GLCM/gradient/shadow
+     computation at map time), a major productization win.
+   - **1g. Operating-scale decision** (Brian, 2026-06-12: a finer map at
+     equal skill materially strengthens the "improves on what's out
+     there" motivation): S=64 was chosen because handcrafted features
+     collapsed at S=32 — that reason is void (FM: 0.7639 ≈ 0.7637).
+     Re-run the winning recipe at S=32 (=160 m tiles, 4× resolution,
+     embeddings cached) and pick the operating scale on the evidence;
+     optional one-rung S=16 probe (80 m; needs a new 16/48-px extraction
+     pass and sits furthest from the FM's pretraining scale).
+   - **1h. (optional) 320-px (5×5) context probe**: 192 px was a 3×3
+     grid convention; context-beats-own-tile at both scales plus the
+     512-px+ pretraining crops motivate one rung up. One extraction pass
+     + one LOIO run.
 2. **Productize extraction into `src/`** (e.g. `src/fm_embeddings.py`):
    embed arbitrary CTX windows (inference path), wire `fang_*` columns as
    an optional feature source for the packaged-dataset loaders; pytest
@@ -113,7 +145,11 @@ smoothing control).
    transductive caveat; candidate ensemble partner); emb_only @ S=32
    overnight completeness read; ViT fine-tune go/no-go EXPLICITLY decided
    after §3 lands (LoRA/last-block on the 8 GB card; costs determinism,
-   risks 38-image overfit; head bake-off may capture the headroom free).
+   risks 38-image overfit; head bake-off may capture the headroom free);
+   per-image-standardized embeddings (Brian, 2026-06-12: explicitly
+   deferred / low priority — the FM already rescued the shift class;
+   revisit only if the confirmation read surfaces residual shift
+   failures).
 
 ## 3. Discipline
 
