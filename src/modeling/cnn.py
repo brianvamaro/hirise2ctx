@@ -56,10 +56,14 @@ def _default_device() -> str:
 # plus gamma jitter. Normalization is part of the cell because cell D's per-patch
 # standardization replaces the plain /255 cast at BOTH train and inference time.
 AUG_CELLS: dict[str, dict[str, bool]] = {
-    "none":            {"geometric": False, "photometric": False, "per_patch_std": False},  # A
-    "geometric":       {"geometric": True,  "photometric": False, "per_patch_std": False},  # B
-    "photometric":     {"geometric": True,  "photometric": True,  "per_patch_std": False},  # C
-    "photometric_std": {"geometric": True,  "photometric": True,  "per_patch_std": True},   # D
+    "none":             {"geometric": False, "photometric": False, "per_patch_std": False},  # A
+    "geometric":        {"geometric": True,  "photometric": False, "per_patch_std": False},  # B
+    "photometric":      {"geometric": True,  "photometric": True,  "per_patch_std": False},  # C
+    "photometric_std":  {"geometric": True,  "photometric": True,  "per_patch_std": True},   # D
+    # E (post-grid, 2026-06-11): photometric WITHOUT geometric -- cell B showed
+    # flips/rots destroy the cohort-constant sun-azimuth shadow prior, so cell C's
+    # photometric benefit was confounded by the geometric handicap.
+    "photometric_only": {"geometric": False, "photometric": True,  "per_patch_std": False},
 }
 
 

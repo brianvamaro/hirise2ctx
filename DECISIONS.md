@@ -2913,3 +2913,147 @@ regeneration is bit-identical; `20260611T054855Z` stays the banked baseline.
 - Tests: +5 (cell validation, cell-A identity, cell-B pixel-multiset
   invariance, cell-D eval-time application + clip-patch finiteness, all-cells
   classifier smoke). **Fast suite 278 pass.**
+
+
+## 2026-06-11 -- W2 Phase 1 grid READ: H-B (photometric augmentation) REFUTED cohort-level; no-aug CNN beats Tier 1 per-image (single seed); pooled deficit diagnosed as cross-image miscalibration
+
+Grid: `models/_sweep_cnn/20260611T220815Z` (4 cells x 38 LOIO folds, binary
+fa_gt_1e-2 @ S=64, 64-px patches, seed 0, 4-image group-aware inner val,
+GPU ~25 s/fold for A/B, 1-3 min/fold for C/D -- photometric augmentation is
+CPU-bound in the loader; one 31-min throughput stall on C fold 29, training
+itself clean). Probes: `_w2_cnn_verdict.py` (gates), `_w2_midgrid_diag.py`
+(structure), `_w2_azimuth_spread.py` (illumination). Baselines: Tier 1
+refresh (AUC 0.6557, pooled PR-AUC **0.5651**, `_sweep_binary/20260611T214042Z`),
+banked GBM (`_sweep_w0/20260611T054855Z`).
+
+### Aggregate (single seed -- the fold-ripple/seed caveat applies everywhere)
+
+| cell | per-image AUC mean | median | pooled PR-AUC | pooled prec@5% |
+|---|---|---|---|---|
+| A none | **0.6889** | **0.6938** | 0.5095 | **0.5786** |
+| B geometric | 0.6423 | 0.6868 | 0.4522 | 0.4365 |
+| C geo+photometric | 0.6647 | 0.6661 | 0.5070 | 0.5646 |
+| D C+per-patch-std | 0.6061 | 0.6486 | **0.5325** | 0.4885 |
+
+### Verdicts
+
+1. **H-B REFUTED at cohort level.** Every augmented cell is <= cell A on
+   per-image AUC (paired vs A: B -0.047 n.s., C -0.024 n.s., D -0.083
+   p=0.003) and no augmented cell passes either gate vs Tier 1. Mechanism
+   check: the rescue exists ONLY for ESP_076499_1160 (the 64S geographic +
+   illumination outlier, subsolar az 228.6 vs cohort 142-186): +0.141/+0.211/
+   +0.128 across B/C/D -- consistent, image-specific. ESP_055253_2245 is
+   consistently DAMAGED by augmentation (-0.36/-0.29/-0.25); ESP_054397_2105
+   mixed. Photometric invariance is not a cohort recipe on n=38.
+2. **Geometric augmentation is actively harmful and the mechanism is
+   physical**: cohort CTX-source subsolar azimuth is 142-186 deg for 36/38
+   images (SeamMap data, `_w2_azimuth_spread.py`) -- the shadow direction is
+   a *stable, learnable prior* and flips/rots destroy it. Cell B: pooled
+   PR-AUC 0.452, degraded 19/37 images (worst -0.58). Contrast with Bickel
+   et al. 2021 (rotation-augmented rockfall *object* detection): rotation
+   invariance suits resolved-shape cues, not illumination-locked
+   sub-resolution texture. Outliers recorded: ESP_076499_1160 (az 228.6),
+   ESP_068483_2280 (az 1.7, incidence 4.3 = near-shadowless; also a top
+   cell-A loss vs Tier 1).
+3. **H-A partially supported (single-seed, gate-reading caveat).** Cell A vs
+   Tier 1 per-image AUC on validity-passing images (n=27): median paired
+   delta **+0.066, win 67%, p=0.016**. GATE AMBIGUITY FLAGGED: the
+   pre-declared text "median per-image mAUC +0.05" passes under
+   median-of-paired-deltas (+0.066) but FAILS under difference-of-medians
+   (0.671 -> 0.675 = +0.004; the cohort median barely moves while most
+   per-image deltas are positive because wins/losses land on different
+   images). **Brian ruling (2026-06-11): median-of-paired-deltas is the
+   binding reading** -- cell A passes the gate vs Tier 1, pending only the
+   3-seed replication required by PLAN_CNN.md §4.2.
+4. **Pooled PR-AUC: all cells fail** (best = cell D 0.5325, -0.033 vs
+   Tier 1). Diagnosis (`_w2_midgrid_diag.py`): the CNN's per-image mean
+   score tracks the image's true base rate at rank-corr +0.22 (cell A) vs
+   Tier 1's +0.41 -- good within-image ranking, mis-leveled across images,
+   so the pooled ranking interleaves images badly. Cell D demonstrates the
+   trade *within* the CNN family: per-patch standardization gives the best
+   pooled PR-AUC and the worst per-image AUC.
+5. **texture_decorrelated reattribution candidate**: under cell A the trio
+   scores 0.622/0.738/0.594 (ESP_045983_2270 / ESP_049242_2115 /
+   ESP_054000_2255) vs GBM 0.449/0.461/0.408. If this survives seeds, the W1
+   "no signal at 5 m/px" attribution was really "no signal in the
+   handcrafted feature set" for these images. CNN-vs-baseline per-image AUC
+   correlation is only rho 0.42-0.49 -- the CNN is a complementary model,
+   not a re-ranked GBM.
+
+### Literature review (Brian-requested, docs/w2_litreview.md)
+
+Bickel et al. 2021 multi-domain (PDF read in full: diversity > scale-mixing;
+10%-home-labels economics), canopy-height cross-resolution supervision
+(Lang et al. -- the structural twin; probabilistic ensemble heads), sub-GSD
+density estimation (Rodriguez & Wegner), test-time adaptation (AdaBN /
+prediction-time BN / TENT -- our 1k-patch-per-image deployment is the
+best case), FDA/RHM cross-image radiometric augmentation, and Mars
+foundation models (MOMO HiRISE+CTX+THEMIS weights-public; Fang et al. 2026
+CTX-specific ViT on ~4M images; Mars-Bench 20-task benchmark incl. boulder
+tasks). Ranked follow-up queue in the doc; Phase 2 SSL re-specced to
+"fine-tune public CTX-pretrained backbones first".
+
+### Disposition (pending Brian)
+
+Phase 1 as declared does NOT promote an augmented CNN; W2 does not close as
+"sensor-bound" either, because the no-aug CNN's per-image edge + the
+diagnosed calibration mechanism point to specific cheap follow-ups:
+(a) 3-seed cell A replication (required insurance), (b) AdaBN post-hoc on
+the saved cell-A state_dicts (free, the bet-1-zscore analog), (c) "CNN
+ranks / GBM scales" score fusion (free arithmetic), (d) photometric-only
+cell (de-confounds C, targets the 076499-style outliers), (e) S=32
+replication per §4.2b (winner = cell A, so cell A only).
+
+## 2026-06-11 -- W2 3-seed verdict: single-seed gate pass does NOT replicate; 3-seed ensemble + Tier-1 fusion passes both gates (held-out S=32 confirmation pending)
+
+**Seed replication (cell A, S=64, seeds 0/1/2; `sweep_cnn.py` runs
+20260611T220815Z / 20260612T014231Z / 20260612T042859Z):**
+
+| seed | per-img AUC median | dAUC median (validity, vs Tier 1) | Wilcoxon p | pooled PR-AUC |
+|---|---|---|---|---|
+| 0 | 0.6938 | +0.0661 | 0.0162 | 0.5095 |
+| 1 | 0.6913 | +0.0383 | 0.0585 | 0.5595 |
+| 2 | 0.7088 | +0.0054 | 0.6617 | 0.4913 |
+
+The per-image *skill* is seed-stable (median 0.69-0.71 every seed); the
+*score calibration* is not (pooled PR-AUC swings 0.49-0.56; paired deltas
+vs Tier 1 shrink to nothing on seed 2). **Under the pre-declared gate +
+Brian's median-of-paired-deltas ruling, the single-seed cell-A pass is NOT
+confirmed.** Per-seed fusion tracks the same instability (beats Tier 1
+pooled on seeds 0/1, misses on 2).
+
+**3-seed ensemble (`scripts/probes/_w2_seed_ensemble.py`):** mean of the 3
+seeds' probabilities, then the fusion arithmetic on the ensembled score.
+n=37,315 pooled tiles, validity-passing n=27 images, Tier 1 refs 0.5651
+pooled / 0.6806 median AUC:
+
+| variant | pooled PR-AUC | prec@5% | med per-img AUC | dAUC med (v) | win | p |
+|---|---|---|---|---|---|---|
+| ens_mean | 0.5327 | 0.675 | 0.7109 | +0.0521 | 0.70 | 0.0065 |
+| F1(ens) = within-img quantile x t1 image mean | **0.5955** | **0.887** | 0.7109 | +0.0521 | 0.70 | 0.0065 |
+| F3(ens) = pooled-rank average | 0.5856 | 0.812 | **0.7137** | **+0.0578** | **0.85** | **0.0001** |
+
+F1(ens) passes BOTH pre-declared gates (pooled +0.0304 >= +0.03; per-image
++0.052 >= +0.05 at p=0.0065). F3(ens) passes the per-image gate with the
+strongest stats on every per-image measure. **Candidate W2 recipe: 3x
+SmallCNN seed ensemble for within-image ranking x Tier-1 LightGBM for
+image-level scale.**
+
+**Honesty caveat / ruling:** the ensemble+fusion combination was assembled
+after seeing the per-seed S=64 results (seed-ensembling and the fusion were
+each independently pre-motivated, but their conjunction as "the recipe" is
+post-hoc). Therefore the S=32 replication (PLAN_CNN.md 4.2b) is promoted to
+**held-out confirmation**: 3 seeds of cell A at S=32, read ONLY via the
+ensemble+fusion recipe against an S=32 Tier-1 baseline (to be trained
+first), gates unchanged. F1-vs-F3 choice declared before that read:
+**F1 if pooled PR-AUC is binding, F3 if per-image AUC is** (per the W1
+graded-reliability framing, per-image is the deployment-relevant one).
+
+**Rodriguez & Wegner 2018 read in full** (PDF from Brian; litreview section 3
+updated): their GT pipeline (high-res detector -> Gaussian sigma=K/pi ->
+K-pool) is exactly the BoulderNet->tile construction; headline finding =
+stride-1 no-downsampling shallow ResNet beats DeepLab v2/v3 for sub-pixel
+objects ("any down-sampling inside the network risks losing precious
+details") -> new queue item: stride-1/no-pool SmallCNN capacity variant;
+their high-density-pocket underestimation is the literature echo of our W0
+compression finding; single-band texture-only regime shown workable (cars).
