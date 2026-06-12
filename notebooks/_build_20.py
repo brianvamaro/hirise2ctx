@@ -276,7 +276,71 @@ print("FM top-8 precision:", fm.nlargest(8, 'y_pred').y_true.mean(),
 ))
 
 cells.append(md(
-    """## 6. Disposition
+    """## 6. Truth vs model maps — slimmer-doc style
+
+Same presentation (and the same two exemplar images) as Figure 5 of
+[docs/classification_slimmer.md](../docs/classification_slimmer.md): per
+image, LEFT = truth (tiles with `fractional_area ≥ 1e-2` highlighted),
+RIGHT = the model's rich calls at **matched budget** (top-N tiles by
+held-out `t1_gem192` score, N = the true rich count) — so the question is
+purely *whether it picks the same tiles*. Under the 5-feature slim model
+these two images scored AUC 0.880 (good) and **0.344 (anti-signal — worse
+than chance)**; the FM recipe's numbers are in the panel titles.""",
+    cell_id="s6_md",
+))
+
+cells.append(code(
+    """import rasterio
+from sklearn.metrics import roc_auc_score
+
+EXEMPLARS = ["ESP_053989_2260", "ESP_046328_2180"]  # slimmer-doc Fig 5 pair
+fm_all = pd.read_parquet(sorted(PROBE.glob("t1_gem192/*/predictions.parquet"))[0])
+
+fig, axes = plt.subplots(2, 2, figsize=(12, 12.5))
+for r, obs in enumerate(EXEMPLARS):
+    side = json.loads((REPO / f"dataset_v2/labels/{obs}.json").read_text(encoding="utf-8"))
+    with rasterio.open(side["ctx_window_tif"]) as src:
+        win = src.read(1).astype(np.uint8)
+        b = src.bounds
+    extent = (b.left, b.right, b.bottom, b.top)
+    row0, col0 = int(side["mosaic_row_origin"]), int(side["mosaic_col_origin"])
+
+    df = fm_all[fm_all.obs_id == obs]
+    n_rich = int(df.y_true.sum())
+    auc = roc_auc_score(df.y_true, df.y_pred)
+    called = set(df.nlargest(n_rich, "y_pred")[["ti", "tj"]].itertuples(index=False, name=None))
+    truth = set(df[df.y_true == 1][["ti", "tj"]].itertuples(index=False, name=None))
+    agree = len(called & truth)
+
+    lo, hi = np.percentile(win[win > 0], [2, 98])
+    for c, (tiles, kind) in enumerate(((truth, "truth: fractional_area >= 1e-2"),
+                                       (called, f"model: top {n_rich} tiles by score"))):
+        mask = np.zeros(win.shape, dtype=np.uint8)
+        for ti, tj in tiles:
+            rw, cw = int(ti) * 64 - row0, int(tj) * 64 - col0
+            mask[rw: rw + 64, cw: cw + 64] = 1
+        ax = axes[r, c]
+        ax.imshow(win, cmap="gray", vmin=lo, vmax=hi, extent=extent, interpolation="nearest")
+        overlay = np.ma.masked_where(mask == 0, mask)
+        ax.imshow(overlay, cmap=plt.matplotlib.colors.ListedColormap(["#2ca89a"]),
+                  alpha=0.55, extent=extent, interpolation="nearest")
+        ax.set_title(f"{obs}\\n{kind}\\nAUC={auc:.3f}  n_rich={n_rich}/{len(df)}  agree={agree}",
+                     fontsize=9)
+        ax.tick_params(labelsize=6)
+        ax.set_xlabel("Eastings (m)", fontsize=7)
+        if c == 0:
+            ax.set_ylabel("Northings (m)", fontsize=7)
+fig.suptitle("Per-image truth vs t1_gem192 rich calls at S=64, matched budget\\n"
+             "(same exemplars as docs/classification_slimmer.md Fig 5: slim-model "
+             "AUC was 0.880 / 0.344)", fontsize=11)
+fig.tight_layout()
+fig.savefig(FIG / "20_fang_truth_vs_model.png", dpi=150, bbox_inches="tight")
+plt.show()""",
+    cell_id="s6_code",
+))
+
+cells.append(md(
+    """## 7. Disposition
 
 The probe phase is **closed**. The candidate Tier-1 replacement at both
 scales is *Tier-1 features + GeM context-input Fang-ViT embeddings →
@@ -289,7 +353,7 @@ new-image numbers, then rebuild the Tier-2 calibrated head on the new
 feature set. The conditional-leveler fusion recipe is likely obsolete and
 is retired formally after the confirmation read. Fine-tuning the ViT stays
 deferred.""",
-    cell_id="s6_md",
+    cell_id="s7_md",
 ))
 
 nb = {
