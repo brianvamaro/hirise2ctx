@@ -16,8 +16,16 @@ pass does NOT replicate** (median paired ΔAUC +0.066/+0.038/+0.005, p=0.016/
 seed-unstable), **but the 3-seed ensemble + Tier-1 fusion passes both gates**
 (F1(ens): pooled PR-AUC 0.5955 = +0.030, prec@5% 0.887; ensemble per-image
 Δ median +0.052, p=0.0065; F3(ens) per-image Δ +0.058, p=0.0001). Recipe was
-assembled post-hoc → **S=32 replication (§4.2b) is its held-out
-confirmation**. Photometric-only cell still running. Literature
+assembled post-hoc → S=32 replication (§4.2b) ran as its held-out
+confirmation. **S=32 verdict (2026-06-12): formally NOT confirmed — the
+per-image gate missed by 0.0002 (Δ median +0.0498 vs the +0.05 bar,
+p=0.0009, win 0.81); the per-image core claim replicated in direction and
+significance, but the FUSION half INVERTS at S=32** (CNN ensemble is the
+better pooled model there, 0.5454 vs Tier-1 0.4840; fusing with the weaker
+leveler hurts). Recipe is conditional: fuse with whichever model levels
+better at the operating scale (Tier-1 at S=64; the CNN itself at S=32).
+S=64 stays the operating scale. Full table: DECISIONS.md 2026-06-12.
+Photometric-only cell read separately (cell E entry). Literature
 review: [docs/w2_litreview.md](docs/w2_litreview.md).
 Expands [PLAN_ModelUsability.md](PLAN_ModelUsability.md) §W2 into an
 executable spec. Scope guard: **image features / imagery only** (terrain
@@ -183,10 +191,16 @@ PR-AUC 0.5955 (+0.030) / prec@5% 0.887 / per-image Δ median +0.052 p=0.0065;
 F3(ens) = pooled-rank average is the per-image-strongest (Δ +0.058, win
 0.85, p=0.0001, median AUC 0.714). The Tier 1 map recipe candidate is
 therefore: **3×SmallCNN seed ensemble for within-image ranking × Tier-1
-LightGBM for image-level scale**. Needs: S=32 held-out confirmation
-(§4.2b), a clean implementation (not a probe), choice of F1 vs F3 declared
-before the S=32 read (F1 if pooled PR-AUC is the binding metric, F3 if
-per-image AUC is), and W3-style calibration reporting.
+LightGBM for image-level scale**. *S=32 held-out outcome (2026-06-12):
+formally NOT confirmed (per-image gate missed by 0.0002 at p=0.0009) and
+the fusion direction INVERTS at S=32 — Tier-1 is the weaker leveler there
+and fusing hurts pooled PR-AUC. Productization must therefore encode the
+**conditional-leveler form**: ensemble CNN for within-image ranking, fused
+with whichever model levels images better at the operating scale (Tier-1
+at S=64), with the leveler chosen by inner validation, never assumed.
+Promotion needs a fresh pre-declared confirmation (new cohort images or a
+pre-declared fresh-seed S=64 re-run).* Still needs: a clean implementation
+(not a probe) and W3-style calibration reporting.
 
 ### 5.1 CTX foundation-model embedding probe (REPLACES "SSL from scratch")
 

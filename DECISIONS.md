@@ -3092,3 +3092,56 @@ fa_gt_1e-2 @ scale_idx=2 baseline (CPU) + 3-seed cell-A chain at 32 px
 (GPU). Pre-declared read per the 2026-06-11 3-seed entry: ensemble passes
 the per-image gate vs S=32 Tier 1 AND fusion recovers pooled PR-AUC >=
 baseline; F1 if pooled is binding, F3 if per-image is.
+
+## 2026-06-12 -- W2 S=32 held-out read: recipe formally NOT confirmed (gate missed by 0.0002); per-image effect REPLICATES; fusion direction INVERTS at S=32
+
+3-seed cell-A chain at S=32 (32-px patches, scale_idx=2, ~161k pooled
+tiles) vs the S=32 Tier-1 LightGBM baseline (AUC 0.660,
+`models/_sweep_binary/20260612T062412Z`). Read by the pre-declared rule
+ONLY (`scripts/probes/_w2_s32_confirm.py`, gates committed before the runs
+finished):
+
+| variant | pooled_pr | prec@5% | med_auc | dAUC_med(v) | win | p |
+|---|---|---|---|---|---|---|
+| p0 / p1 / p2 | 0.5318 / 0.5535 / 0.5035 | | 0.70 / 0.67 / 0.67 | +0.030 / +0.047 / +0.045 | | 0.055 / 0.019 / 0.129 |
+| ens_mean | 0.5454 | 0.710 | 0.6948 | **+0.0498** | 0.81 | **0.0009** |
+| F1(ens) | 0.5160 | 0.685 | 0.6948 | +0.0498 | 0.81 | 0.0009 |
+| F3(ens) | 0.5250 | 0.533 | 0.6697 | +0.0533 | 0.89 | 0.0000 |
+| Tier-1 (ref) | 0.4840 | 0.607 | 0.6631 | -- | -- | -- |
+
+**Formal verdict:** gate (a) median paired dAUC >= +0.05 -> **FAIL at
++0.0498** (p=0.0009 passes easily; the magnitude missed by 0.0002);
+gate (b) fusion pooled >= Tier-1 -> PASS. Compound rule -> **recipe NOT
+confirmed at S=32**. Recorded as declared; no post-hoc re-reading.
+
+**What actually replicated and what didn't:**
+
+1. **The per-image core claim replicated almost exactly**: ensemble
+   beats Tier-1 per-image at S=32 with d median +0.0498 (S=64: +0.052),
+   win 0.81, p=0.0009. Direction + significance identical; magnitude at
+   the gate edge. The honest summary is "replicates in direction and
+   significance; landed a rounding error under the pre-declared magnitude
+   bar."
+2. **The fusion HALF of the recipe does NOT transfer -- it inverts.** At
+   S=32 the raw CNN ensemble is ALSO the better pooled model (0.5454 vs
+   Tier-1 0.4840, +0.061), and fusing drags pooled DOWN (F1 0.5160,
+   F3 0.5250 < ens 0.5454): F1 replaces the CNN's leveling with Tier-1's,
+   which is the WEAKER leveler at this scale. "CNN ranks / Tier-1 scales"
+   is therefore a conditional recipe: use the better leveler per scale,
+   not Tier-1 unconditionally. At S=64 that is Tier-1; at S=32 it is the
+   CNN itself.
+3. **Scale comparison:** handcrafted features degrade badly at S=32
+   (Tier-1 pooled 0.5651 -> 0.4840) while the CNN ensemble holds
+   (0.5327 -> 0.5454). The CNN's relative advantage GROWS at the finer
+   scale, but S=64 absolute numbers remain higher across the board ->
+   **S=64 stays the operating scale**; S=32 is where the feature-set
+   ceiling shows first (consistent with the texture_decorrelated
+   reattribution hypothesis).
+
+**Disposition:** the S=64 fusion recipe keeps its "passed both gates at
+S=64, post-hoc assembly, held-out magnitude miss at S=32 by 0.0002"
+status -- promotable only with a fresh pre-declared confirmation (options:
+new images per cohort_expansion_candidates.csv, or a pre-declared
+fresh-seed S=64 re-run). Phase 2 5.0 productization should encode the
+conditional-leveler form. Notebook 19 6 re-executed with the verdict;
+figures refreshed.

@@ -1,29 +1,27 @@
 # Handoff prompt — next session
 
-**Last updated 2026-06-12 ~00:30 local — W2 Phase 1 + follow-ups COMPLETE in
-one session**; the only thing still running is the **S=32 held-out
-confirmation chain** (3 seeds of cell A at 32 px, GPU, ~30 min/seed;
-seed 0 done, seed 1 was mid-run at handoff time). The active program is
-[PLAN_ModelUsability.md](PLAN_ModelUsability.md) → [PLAN_CNN.md](PLAN_CNN.md).
+**Last updated 2026-06-12 morning — W2 COMPLETE including the S=32
+held-out read.** Nothing is running. The active program is
+[PLAN_ModelUsability.md](PLAN_ModelUsability.md) → [PLAN_CNN.md](PLAN_CNN.md);
+next session starts Phase 2 (queue below).
 
 Working dir: `c:\Users\brian\Documents\PhD\HiRiseToCTXBoulders\hirise2ctx`.
 Conda: `C:\Users\brian\anaconda3\Scripts\conda.exe run --no-capture-output -n geospatial python -u ...`
 
-## FIRST TASK next session (everything is staged for it)
+## S=32 held-out verdict (2026-06-12, DECISIONS.md has the full table)
 
-1. Check the S=32 chain finished: 3 dirs matching
-   `models/cnn_bce_S32/*/scale_S32_tfa_gt_1e-2_aug_none` (seeds 0/1/2 in
-   snapshot.json). If a seed is missing, re-run:
-   `python scripts/sweep_cnn.py --dataset-dir dataset_v2 --scheme loio_nfold --patch-size-px 32 --scale-idx 2 --cells none --seed {N}`
-2. Run the **pre-declared held-out read** (gates were committed BEFORE the
-   S=32 results existed — do not improvise a different reading):
-   `python scripts/probes/_w2_s32_confirm.py`
-   CONFIRMED iff (a) 3-seed ensemble passes the per-image gate vs the S=32
-   Tier-1 baseline (median paired dAUC >= +0.05, p < 0.05, validity images)
-   AND (b) F1/F3 fusion pooled PR-AUC >= that baseline.
-3. Re-execute notebook 19 (its §6 auto-fills from the artifacts):
-   `jupyter nbconvert --to notebook --execute --inplace notebooks/19_w2_cnn.ipynb`
-4. DECISIONS.md entry with the verdict table; commit; update memory + this file.
+**Recipe formally NOT confirmed — per-image gate missed by 0.0002**
+(ensemble Δ median +0.0498 vs +0.05 bar, p=0.0009, win 0.81). The
+per-image core claim *replicated in direction and significance*; the
+magnitude landed a rounding error under the pre-declared bar — recorded
+as declared, no re-reading. **Bigger finding: the fusion half INVERTS at
+S=32** — the CNN ensemble is the better pooled model there (0.5454 vs
+Tier-1 0.4840, +0.061; handcrafted features degrade at fine tiles, CNN
+holds), so fusing with Tier-1 *hurts* pooled. "CNN ranks / X scales" is a
+**conditional-leveler recipe**: Tier-1 levels at S=64, the CNN itself at
+S=32. S=64 stays the operating scale. Promotion of the S=64 fusion now
+needs a fresh pre-declared confirmation (new cohort images, or a
+pre-declared fresh-seed S=64 re-run).
 
 ## W2 state (what happened 2026-06-11 → early 06-12)
 
@@ -75,12 +73,17 @@ Conda: `C:\Users\brian\anaconda3\Scripts\conda.exe run --no-capture-output -n ge
 - DECISIONS.md has FOUR 2026-06-11 W2 entries (setup, grid read, 3-seed +
   ensemble, cell E). Commits: ab2029d, 57ee93f, b1c2dee, 5eb194e, 7cbbb49.
 
-## After the S=32 read — Phase 2 queue (PLAN_CNN.md §5, evidence order)
+## Phase 2 queue (PLAN_CNN.md §5, evidence order, post-S=32)
 
-1. **Fusion productization** (§5.0) if S=32 confirms: real implementation,
-   W3-style calibration, deployment "image unit" decision.
-2. **Fang-ViT frozen-embedding probe** (§5.1): GeM-pooled embeddings at
-   64 px + 192 px → LightGBM columns, standard LOIO (~1 h).
+1. **Fang-ViT frozen-embedding probe** (§5.1) — now the lead bet:
+   GeM-pooled embeddings at 64 px + 192 px → LightGBM columns, standard
+   LOIO (~1 h). Weights: Zenodo 18180801, pretrained on our exact mosaic.
+2. **Fusion productization in conditional-leveler form** (§5.0):
+   ensemble-CNN ranking × inner-validation-chosen leveler; needs a fresh
+   pre-declared confirmation before promotion (cohort expansion images
+   are the clean option — `cohort_expansion_candidates.csv` has 23
+   verified literature-anchored ObsIds incl. 4 ground-truthed lander
+   sites; BoulderNet runs are Brian's side).
 3. Augmentation refinements (§5.2): FDA/RHM cell, azimuth-canonical
    orientation, illumination conditioning.
 4. AdaBN-disagreement reliability flag (§5.3); TENT only if it works.
@@ -88,7 +91,8 @@ Conda: `C:\Users\brian\anaconda3\Scripts\conda.exe run --no-capture-output -n ge
    smoothing control; stride-1/no-pool capacity variant (Rodriguez &
    Wegner); min_confidence filter.
 6. texture_decorrelated dossier reattribution check (CNN 0.59–0.74 vs GBM
-   0.41–0.46 — "feature-set floor" not "sensor floor") once seeds settle.
+   0.41–0.46; S=32 Tier-1 collapse 0.5651→0.4840 while CNN holds is
+   further evidence for "feature-set floor" not "sensor floor").
 
 ## Critical gotchas (carry forward)
 
