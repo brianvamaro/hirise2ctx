@@ -3145,3 +3145,96 @@ new images per cohort_expansion_candidates.csv, or a pre-declared
 fresh-seed S=64 re-run). Phase 2 5.0 productization should encode the
 conditional-leveler form. Notebook 19 6 re-executed with the verdict;
 figures refreshed.
+
+## 2026-06-12 -- W2 Phase 2 lead bet: Fang-ViT frozen-embedding probe PASSES both gates by the largest margin of the program (pooled PR-AUC 0.5651 -> 0.7637)
+
+PLAN_CNN.md 5.1, first contact with the Fang et al. 2026 CTX foundation
+model ([doi:10.1029/2025JH000827](https://doi.org/10.1029/2025JH000827)),
+ViT-B/16 MAE+DINO pretrained on 3.9M Murray-mosaic crops -- the identical
+product our pipeline windows.
+
+**Setup (all probe-tier, no env mutation):**
+- Weights: `models/pretrained/mars-mae-dino-vit-base-v1.pth` (341.7 MB,
+  [Zenodo 18180801](https://doi.org/10.5281/zenodo.18180801), CC-BY-4.0).
+  Checkpoint metadata self-identifies as timm `vit_base_patch16_224`,
+  `in_chans=1`, 224 px, standard timm key layout (150 tensors, no head).
+- **No timm/torchvision installed**: the encoder forward is hand-rolled in
+  plain torch (`scripts/probes/_w2_fang_embed.py`), strict state-dict load.
+- Inputs per S=64 tile (37,315 tiles, 38 images): the tile's own cached
+  64-px patch, and a 192-px (3x3-tile) box sliced directly from the cached
+  Stage 2 CTX window (NOT stitched from neighbor patches -- only 71% of
+  tiles have all 8 neighbors emitted; the window buffer gives **100%
+  192-px coverage on every image**). Both bicubic-resized to 224,
+  normalized (x/255-0.5)/0.5 per the model card.
+- Alignment verified two ways: bit-exact assert that the center 64x64 of
+  every sampled 192-px slice equals the tile's cached S64 patch (all 38
+  images), plus visual figures
+  `reports/figures/19_w2_fang_patch_alignment_{ESP_042964_2160,ESP_076499_1160}.png`.
+- Pooled embeddings banked per tile: cls / mean / **GeM(p=3)** (probe uses
+  GeM per plan) at both input scales -> `dataset_v2/fang_embeddings/`
+  (~680 MB). Extraction: 178 s on the 5070.
+- Probe (`scripts/probes/_w2_fang_probe.py`): standard LOIO harness
+  (loio_nfold, scale_idx 3, fa_gt_1e-2, `lightgbm_classification` with the
+  Tier-1 refresh hyperparameters), embeddings appended as feature columns;
+  join on (obs_id, ti, tj) validated one-to-one.
+
+**Verdict table (gates: pooled dPR-AUC >= +0.03; per-image dAUC median
+>= +0.05 with Wilcoxon p < 0.05 on validity-passing images):**
+
+| variant | pooled_pr | prec@5% | med_auc | dAUC_med(v) | win | p | gates |
+|---|---|---|---|---|---|---|---|
+| t1_gem64 (52+768) | 0.7531 | 0.941 | 0.7173 | +0.0661 | 0.78 | ~0 | **both PASS** |
+| **t1_gem192 (52+768)** | **0.7637** | **0.977** | **0.7700** | +0.0746 | **0.89** | ~0 | **both PASS** |
+| emb_only (1536) | 0.7424 | 0.876 | 0.7519 | **+0.0831** | 0.78 | 0.0009 | **both PASS** |
+| Tier-1 (ref) | 0.5651 | 0.771 | 0.6806 | -- | -- | -- | -- |
+| F1(ens) W2 best, ref | 0.5955 | 0.887 | 0.711 | +0.052 | 0.81 | 0.0065 | (both) |
+
+Artifacts: `models/fang_probe/{t1_gem64,t1_gem192,emb_only}/{hash}/`
+(predictions.parquet, metrics.json, verdict.json). Runtime: 5 min per
+t1_gem variant, 85 min for emb_only (1536 cols).
+
+**Findings:**
+
+1. **The FM representation carries large signal beyond handcrafted +
+   SmallCNN.** +0.199 pooled PR-AUC over Tier-1 (vs +0.030 for the W2
+   ensemble-fusion winner); prec@5% 0.977 means the top-5% map tiles are
+   essentially all true positives. 192-px input > 64-px input on every
+   metric, as the lit review predicted (closer to pretraining scale).
+2. **The W1 failure classes are differentially rescued** (t1_gem192 dAUC
+   by cause): distribution_shift **+0.228**, ok_geometry_fixed +0.302,
+   ok_shadowfeat_fixed +0.196, texture_decorrelated **+0.176**, ok +0.054;
+   only validity_limited negative (-0.034). The per-image shift problem
+   that killed every W0-W2 dev win at LOIO is exactly where the FM helps.
+3. **emb_only nearly matches the fused variants** (0.7424 pooled, best
+   per-image dAUC median +0.0831, texture_decorrelated +0.213) -> the
+   queue-item-6 reattribution check is effectively answered: the
+   texture_decorrelated floor was a **feature-set floor, not a sensor
+   floor**. CTX pixels at 5 m/px contain the signal; our 52 handcrafted
+   features (and the 30k-param SmallCNN) could not extract it.
+4. MAE's "subdued sub-pixel roughness" caveat did not bind at this task
+   ceiling; the illumination-geometry caveat remains untested (no
+   azimuth-conditioned read yet; ESP_076499_1160 dAUC +0.087 under
+   t1_gem192, so the azimuth outlier is not failing).
+
+**Caveats (recorded with the claim):**
+- The FM pretrained self-supervised on the full Murray mosaic, which
+  includes our test images' terrain. Label-leak-free and standard FM
+  practice, but held-out *pixels* are not unseen by the backbone; the
+  clean confirmation is the cohort-expansion images (also Murray-covered,
+  so the caveat applies cohort-wide and permanently -- note it in any
+  writeup rather than trying to remove it).
+- Recipe assembled post-hoc like the fusion recipe; same standing rule
+  applies -- promotion needs a fresh pre-declared confirmation on new
+  cohort images. Unlike the CNN, there is no seed instability: extraction
+  is deterministic and LightGBM is config-deterministic.
+- Single (pool=GeM, LightGBM-config) cell; cls/mean poolings banked but
+  unread.
+
+**Disposition:** Fang-ViT embeddings are the new Tier-1-candidate feature
+set at S=64. Queue reshuffle proposed: (a) S=32 embedding read (does the
+FM also fix the S=32 Tier-1 collapse?), (b) t1_gem64_gem192 combined cell
++ pool ablation (cheap, cached), (c) fold the embedding columns into the
+conditional-leveler productization (5.0) and the cohort-expansion
+confirmation as the promotion vehicle. Fine-tuning stays gated on the
+probe (now clearly warranted by signal, but inference cost/calibration
+first).
