@@ -3238,3 +3238,71 @@ conditional-leveler productization (5.0) and the cohort-expansion
 confirmation as the promotion vehicle. Fine-tuning stays gated on the
 probe (now clearly warranted by signal, but inference cost/calibration
 first).
+
+## 2026-06-12 -- Fang-ViT follow-ups: S=32 collapse FIXED (scale-robust), GeM pooling confirmed, combined cell = best per-image profile, illumination caveat present-but-harmless
+
+Brian-approved follow-up set (all three picks), run as one chain plus the
+azimuth read (~40 min chain + 1-min read). S=32 embeddings extracted first
+(`_w2_fang_embed.py --tile-px 32`: 161,005 tiles, P32+P96 inputs, 100%
+context coverage again, 834 s GPU; `dataset_v2/fang_embeddings/` now
+3.5 GB total).
+
+**1. S=32 read** (vs the S=32 Tier-1 bank: pooled 0.4840 / prec@5% 0.607 /
+med AUC 0.6631; 38 real folds -- ESP_047976_2020 has positives at S=32):
+
+| variant | pooled_pr | prec@5% | med_auc | dAUC_med(v) | win | p | gates |
+|---|---|---|---|---|---|---|---|
+| t1_gem32 (52+768) | 0.6627 | 0.930 | 0.6844 | +0.0481 | 0.70 | 0.0112 | pooled PASS; per-image **FAIL by 0.0019** |
+| **t1_gem96 (52+768)** | **0.7639** | **0.966** | **0.729** | **+0.0818** | 0.74 | 0.0025 | **both PASS** |
+
+The S=32 Tier-1 collapse (0.5651 -> 0.4840) is **fixed**: t1_gem96 pooled
+0.7639 is statistically identical to the S=64 t1_gem192 number (0.7637).
+The FM result is scale-robust, and the 3x3-context input is the carrier at
+both scales (96 >> 32 mirrors 192 > 64). Own-tile-only at S=32 again
+misses the per-image magnitude bar by a rounding error -- the recurring
+"own-scale input is marginal, context input is decisive" pattern.
+
+**2. Pool ablation** (S=64, ctx input, vs GeM 0.7637): mean 0.7071 /
+cls 0.6961 pooled (med AUC 0.7331 / 0.7583; both still pass both gates).
+**GeM(p=3) confirmed** -- worth +0.06 pooled over either alternative.
+
+**3. Combined cell t1_gem64_gem192** (52+1536): pooled 0.7549 -- slightly
+BELOW t1_gem192 alone (0.7637), so the two scales do not add pooled
+signal. But it has the **best per-image profile of the program**: med AUC
+0.7777, dAUC median +0.0918, win 0.93, p~0; distribution_shift +0.306.
+Same pooled-vs-per-image tension as the W2 F1/F3 fusion pair, same
+declared resolution: **t1_gem192 if pooled is binding, t1_gem64_gem192 if
+per-image is.**
+
+**4. Azimuth-conditioned read** (`_w2_fang_azimuth.py`, Fang et al.'s
+CBIR caveat -- shadow-dominated embeddings match by illumination):
+- Benefit is geometry-agnostic: per-image dAUC vs incidence rho=-0.058
+  (p=0.73), vs circular azimuth-distance rho=+0.16 (p=0.34).
+- **ESP_076499_1160 (azimuth outlier, 228.6 deg) is the cohort's biggest
+  winner: dAUC +0.458** -- the image that rotation aug, AdaBN, and zscore
+  each only partially rescued across W1-W2 is simply solved by the FM.
+  ESP_068483_2280 (near-shadowless, incidence 4.3 deg, the CNN-specific
+  failure): dAUC +0.026, absolute AUC 0.899.
+- The caveat is *present*: LOO ridge on image-mean embeddings recovers
+  sin(azimuth) at held-out r=+0.588 (p=1e-4); incidence and cos(az) not
+  recoverable. Illumination direction IS in the embeddings; the LightGBM
+  head is not harmed by it.
+- Figure: `reports/figures/19_w2_fang_azimuth_read.png`; JSON beside the
+  t1_gem192 verdict.
+
+Artifacts: `models/fang_probe/{t1_gem32,t1_gem96,t1_cls192,t1_mean192,
+t1_gem64_gem192}/{hash}/`. Probe script now parametrized
+(`--tile-px {64,32}`, `--pool {gem,mean,cls}`).
+
+**Not run (deliberate):** emb_only at S=32 (161k x 1536 cols, ~6 h CPU --
+optional overnight; the S=64 emb_only already answered the feature-floor
+question). MOMO disjoint-corpus cross-check remains the optional bound on
+the transductive-pretraining caveat.
+
+**Disposition: the probe phase is closed.** The Fang-ViT frozen-embedding
+recipe (Tier-1 features + GeM context-input embeddings -> LightGBM) is the
+candidate Tier-1 replacement at BOTH scales, pending the standing
+pre-declared confirmation on cohort-expansion images. Next-session queue:
+productize extraction out of probe-tier into src/ (inference must embed
+arbitrary CTX windows), pre-declare the confirmation gates, then the
+W3-style calibration/Tier-2 work on top of the new feature set.

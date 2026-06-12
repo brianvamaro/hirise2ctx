@@ -24,9 +24,15 @@ Output: dataset_v2/fang_embeddings/{obs_id}_P{px}.npz with
 
 Usage:
     conda run --no-capture-output -n geospatial python -u scripts/probes/_w2_fang_embed.py
+    ... [--tile-px 32]   # S=32 read: 32-px own tile + 96-px 3x3 context (scale_idx 2)
+
+npz naming encodes the INPUT size only ({obs}_P{px}.npz): P64/P192 are the S=64 tile
+inputs, P32/P96 the S=32 ones -- unambiguous because each tile scale only ever gets its
+own-tile and 3x3 input sizes.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 import time
@@ -47,8 +53,9 @@ import torch.nn.functional as F
 CKPT = REPO_ROOT / "models/pretrained/mars-mae-dino-vit-base-v1.pth"
 DATASET_DIR = REPO_ROOT / "dataset_v2"
 OUT_DIR = DATASET_DIR / "fang_embeddings"
-TILE_PX = 64           # S=64 tiles (scale_idx 3)
-CONTEXT_PX = 192       # 3x3-tile context input
+TILE_PX = 64           # set from --tile-px in main(); 64 (scale_idx 3) or 32 (scale_idx 2)
+CONTEXT_PX = 192       # always 3 * TILE_PX
+SCALE_IDX_BY_TILE = {64: 3, 32: 2}
 MODEL_INPUT = 224
 BATCH = 96
 GEM_P = 3.0
@@ -230,6 +237,14 @@ def extract_one(model: ViTB16, obs_id: str, keys: pd.DataFrame, device: torch.de
 def main() -> int:
     from src.modeling.loaders import load_fold
 
+    global TILE_PX, CONTEXT_PX
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--tile-px", type=int, default=64, choices=sorted(SCALE_IDX_BY_TILE))
+    args = ap.parse_args()
+    TILE_PX = args.tile_px
+    CONTEXT_PX = 3 * TILE_PX
+    scale_idx = SCALE_IDX_BY_TILE[TILE_PX]
+
     t_start = time.monotonic()
     obj = torch.load(CKPT, map_location="cpu", weights_only=False)
     print(f"checkpoint meta: timm_name={obj.get('timm_name')} arch={obj.get('arch')} "
@@ -239,10 +254,10 @@ def main() -> int:
     model.load_timm_state_dict(obj["state_dict"])
     print(f"ViT-B/16 loaded strict OK on {device}")
 
-    # Fold 0 train+test covers all 38 images' S=64 rows exactly once.
-    fold = load_fold("loio_nfold", 0, scale_idx=3, dataset_dir=DATASET_DIR)
+    # Fold 0 train+test covers all 38 images' rows at this scale exactly once.
+    fold = load_fold("loio_nfold", 0, scale_idx=scale_idx, dataset_dir=DATASET_DIR)
     keys_all = pd.concat([fold.keys_train, fold.keys_test], ignore_index=True)
-    print(f"S=64 tiles: {len(keys_all)} across {keys_all['obs_id'].nunique()} images\n")
+    print(f"S={TILE_PX} tiles: {len(keys_all)} across {keys_all['obs_id'].nunique()} images\n")
 
     for obs_id, g in keys_all.groupby("obs_id", sort=True):
         done = OUT_DIR / f"{obs_id}_P{CONTEXT_PX}.npz"

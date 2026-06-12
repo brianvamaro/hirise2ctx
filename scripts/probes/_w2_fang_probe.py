@@ -51,19 +51,26 @@ DATASET_DIR = REPO_ROOT / "dataset_v2"
 EMB_DIR = DATASET_DIR / "fang_embeddings"
 OUT_ROOT = REPO_ROOT / "models" / "fang_probe"
 SCHEME = "loio_nfold"
-SCALE_IDX = 3  # S=64
 TARGET_ID = "fa_gt_1e-2"
-
-T1_PREDS = REPO_ROOT / ("models/lightgbm_classification/99de85c1ad2a72e6/"
-                        "scale_S64_tfa_gt_1e-2/predictions.parquet")
-T1_SUMMARY = REPO_ROOT / "models/_sweep_binary/20260611T214042Z/summary.parquet"
 DOSSIER = DATASET_DIR / "w1_dossier.parquet"
 
+# Per tile scale: (scale_idx, Tier-1 reference predictions, Tier-1 per-image summary).
+# S=64 = the 2026-06-11 Tier-1 refresh; S=32 = the 2026-06-12 baseline bank.
+SCALE_CONFIG = {
+    64: (3,
+         "models/lightgbm_classification/99de85c1ad2a72e6/scale_S64_tfa_gt_1e-2/predictions.parquet",
+         "models/_sweep_binary/20260611T214042Z/summary.parquet"),
+    32: (2,
+         "models/lightgbm_classification/2d046f48c722f0a5/scale_S32_tfa_gt_1e-2/predictions.parquet",
+         "models/_sweep_binary/20260612T062412Z/summary.parquet"),
+}
+
+# `own` = the tile's own-size input, `ctx` = the 3x3 context input (px = 3 * tile px).
 VARIANT_SOURCES = {
-    "t1_gem64": ("t1", "64"),
-    "t1_gem192": ("t1", "192"),
-    "t1_gem64_gem192": ("t1", "64", "192"),
-    "emb_only": ("64", "192"),
+    "t1_own": ("t1", "own"),
+    "t1_ctx": ("t1", "ctx"),
+    "t1_own_ctx": ("t1", "own", "ctx"),
+    "emb_only": ("own", "ctx"),
 }
 
 
@@ -107,11 +114,12 @@ class EmbeddingBank:
         return self.mats[px][rows.astype(np.int64)]
 
 
-def make_fold_iter(bank: EmbeddingBank, sources: tuple[str, ...]):
+def make_fold_iter(bank: EmbeddingBank, sources: tuple[str, ...],
+                   scale_idx: int, px_by_role: dict[str, int]):
     """Wrap the default LOIO iterator, rebuilding X from the requested sources."""
 
     def _it():
-        for fold in iter_loio_folds(SCHEME, scale_idx=SCALE_IDX, dataset_dir=DATASET_DIR):
+        for fold in iter_loio_folds(SCHEME, scale_idx=scale_idx, dataset_dir=DATASET_DIR):
             tr_parts, te_parts, names = [], [], []
             for src in sources:
                 if src == "t1":
@@ -119,7 +127,7 @@ def make_fold_iter(bank: EmbeddingBank, sources: tuple[str, ...]):
                     te_parts.append(fold.X_test)
                     names.extend(fold.feature_names)
                 else:
-                    px = int(src)
+                    px = px_by_role[src]
                     tr_parts.append(bank.lookup(fold.keys_train, px))
                     te_parts.append(bank.lookup(fold.keys_test, px))
                     names.extend(f"fang_{bank.pool}{px}_{i:03d}" for i in range(768))
@@ -146,8 +154,8 @@ def per_image_auc(df: pd.DataFrame, col: str) -> pd.Series:
     return pd.Series(out)
 
 
-def verdict(variant: str, preds: pd.DataFrame) -> dict:
-    t1 = pd.read_parquet(T1_PREDS, columns=["obs_id", "ti", "tj", "y_true", "y_pred"])
+def verdict(variant: str, preds: pd.DataFrame, t1_preds: Path, t1_summary: Path) -> dict:
+    t1 = pd.read_parquet(t1_preds, columns=["obs_id", "ti", "tj", "y_true", "y_pred"])
     t1 = t1.rename(columns={"y_pred": "t1_prob"})
     df = preds[["obs_id", "ti", "tj", "y_true", "y_pred"]].merge(
         t1.drop(columns="y_true"), on=["obs_id", "ti", "tj"], validate="one_to_one")
@@ -157,7 +165,7 @@ def verdict(variant: str, preds: pd.DataFrame) -> dict:
 
     dossier = pd.read_parquet(DOSSIER)
     vok = set(dossier[dossier.validity_ok].index)
-    t1_auc = pd.read_parquet(T1_SUMMARY).set_index("held_out_obs_id")["auc"]
+    t1_auc = pd.read_parquet(t1_summary).set_index("held_out_obs_id")["auc"]
 
     out = {}
     for col, label in (("t1_prob", "tier1_ref"), ("y_pred", variant)):
@@ -189,23 +197,30 @@ def verdict(variant: str, preds: pd.DataFrame) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--variants", nargs="+", default=["t1_gem64", "t1_gem192", "emb_only"],
+    ap.add_argument("--variants", nargs="+", default=["t1_own", "t1_ctx", "emb_only"],
                     choices=sorted(VARIANT_SOURCES))
     ap.add_argument("--pool", default="gem", choices=["cls", "mean", "gem"])
+    ap.add_argument("--tile-px", type=int, default=64, choices=sorted(SCALE_CONFIG))
     args = ap.parse_args()
 
+    scale_idx, t1_preds_rel, t1_summary_rel = SCALE_CONFIG[args.tile_px]
+    px_by_role = {"own": args.tile_px, "ctx": 3 * args.tile_px}
     target = get_target(TARGET_ID)
     params = LGBMParams(n_estimators=400, learning_rate=0.05, early_stopping_rounds=40)
-    bank = EmbeddingBank(args.pool)
-    print(f"embedding bank: {len(bank.index)} tiles, pools={args.pool}, "
-          f"P192 NaN rows: {int(np.isnan(bank.mats[192][:, 0]).sum())}\n", flush=True)
+    bank = EmbeddingBank(args.pool, pxs=tuple(px_by_role.values()))
+    ctx_px = px_by_role["ctx"]
+    print(f"embedding bank: {len(bank.index)} tiles (S={args.tile_px}), pool={args.pool}, "
+          f"P{ctx_px} NaN rows: {int(np.isnan(bank.mats[ctx_px][:, 0]).sum())}\n", flush=True)
 
     for variant in args.variants:
         sources = VARIANT_SOURCES[variant]
+        # Human-readable label: t1_ctx @ S=64/gem -> t1_gem192 (matches the first-run dirs)
+        label = variant.replace("own", f"{args.pool}{px_by_role['own']}").replace(
+            "ctx", f"{args.pool}{px_by_role['ctx']}")
         snapshot = {
-            "variant": f"fang_probe_{variant}", "task": "classification",
+            "variant": f"fang_probe_{label}", "task": "classification",
             "target_id": TARGET_ID, "scheme": SCHEME, "dataset_dir": "dataset_v2",
-            "scale_idx": SCALE_IDX, "tile_size_px": 64,
+            "scale_idx": scale_idx, "tile_size_px": args.tile_px,
             "pool": args.pool, "sources": list(sources),
             "checkpoint": "models/pretrained/mars-mae-dino-vit-base-v1.pth (Zenodo 18180801)",
             "model": snapshot_params("lightgbm_classification", params),
@@ -213,24 +228,25 @@ def main() -> int:
         cfg_hash = hashlib.sha256(
             json.dumps(snapshot, sort_keys=True, default=str).encode()).hexdigest()[:16]
         snapshot["config_hash"] = cfg_hash
-        out_dir = OUT_ROOT / variant / cfg_hash
+        out_dir = OUT_ROOT / (label if variant != "emb_only" else f"emb_only_S{args.tile_px}") / cfg_hash
 
         t0 = time.monotonic()
-        print(f"=== {variant} (pool={args.pool}, sources={sources}) ===", flush=True)
+        print(f"=== {label} (S={args.tile_px}, pool={args.pool}, sources={sources}) ===", flush=True)
         result = run_loio(
             lambda: LightGBMClassification(params=params),
             binarize=target.binarize, task="classification",
-            fold_iter=make_fold_iter(bank, sources),
+            fold_iter=make_fold_iter(bank, sources, scale_idx, px_by_role),
             snapshot=snapshot, verbose=True,
         )
         write_run_artifacts(result, out_dir)
-        v = verdict(variant, result.predictions)
+        v = verdict(label, result.predictions,
+                    REPO_ROOT / t1_preds_rel, REPO_ROOT / t1_summary_rel)
         (out_dir / "verdict.json").write_text(json.dumps(v, indent=2), encoding="utf-8")
-        print(f"\n  [{variant}] {time.monotonic() - t0:.0f} s -> {out_dir.relative_to(REPO_ROOT)}")
-        for label, row in v.items():
+        print(f"\n  [{label}] {time.monotonic() - t0:.0f} s -> {out_dir.relative_to(REPO_ROOT)}")
+        for lbl, row in v.items():
             slim = {k: (round(val, 4) if isinstance(val, float) else val)
                     for k, val in row.items() if k not in ("per_image_dauc",)}
-            print(f"  {label}: {json.dumps(slim, default=str)}")
+            print(f"  {lbl}: {json.dumps(slim, default=str)}")
         print(flush=True)
     return 0
 

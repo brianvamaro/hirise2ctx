@@ -1,120 +1,111 @@
 # Handoff prompt — next session
 
-**Last updated 2026-06-12 morning — W2 COMPLETE including the S=32
-held-out read.** Nothing is running. The active program is
-[PLAN_ModelUsability.md](PLAN_ModelUsability.md) → [PLAN_CNN.md](PLAN_CNN.md);
-next session starts Phase 2 (queue below).
+**Last updated 2026-06-12 afternoon — W2 Phase 2 lead bet LANDED.** The
+Fang-ViT frozen-embedding probe passed both gates by the largest margin of
+the program, at both scales. Nothing is running. Active program:
+[PLAN_ModelUsability.md](PLAN_ModelUsability.md) → [PLAN_CNN.md](PLAN_CNN.md)
+§5.1 (now the centerpiece); next session starts productization +
+pre-declared confirmation (queue below).
 
 Working dir: `c:\Users\brian\Documents\PhD\HiRiseToCTXBoulders\hirise2ctx`.
 Conda: `C:\Users\brian\anaconda3\Scripts\conda.exe run --no-capture-output -n geospatial python -u ...`
 
-## S=32 held-out verdict (2026-06-12, DECISIONS.md has the full table)
+## The result (2026-06-12, two DECISIONS.md entries with full tables)
 
-**Recipe formally NOT confirmed — per-image gate missed by 0.0002**
-(ensemble Δ median +0.0498 vs +0.05 bar, p=0.0009, win 0.81). The
-per-image core claim *replicated in direction and significance*; the
-magnitude landed a rounding error under the pre-declared bar — recorded
-as declared, no re-reading. **Bigger finding: the fusion half INVERTS at
-S=32** — the CNN ensemble is the better pooled model there (0.5454 vs
-Tier-1 0.4840, +0.061; handcrafted features degrade at fine tiles, CNN
-holds), so fusing with Tier-1 *hurts* pooled. "CNN ranks / X scales" is a
-**conditional-leveler recipe**: Tier-1 levels at S=64, the CNN itself at
-S=32. S=64 stays the operating scale. Promotion of the S=64 fusion now
-needs a fresh pre-declared confirmation (new cohort images, or a
-pre-declared fresh-seed S=64 re-run).
+**Fang et al. 2026 ViT-B/16 (MAE+DINO, pretrained on 3.9M Murray-mosaic
+crops; Zenodo 18180801) frozen GeM embeddings → LightGBM columns:**
 
-## W2 state (what happened 2026-06-11 → early 06-12)
+| variant (S=64) | pooled PR-AUC | prec@5% | med AUC | dAUC med (v) | gates |
+|---|---|---|---|---|---|
+| **t1_gem192** | **0.7637** | **0.977** | 0.770 | +0.0746 | both PASS |
+| t1_gem64_gem192 | 0.7549 | 0.884 | **0.7777** | **+0.0918** (win 0.93) | both PASS |
+| emb_only (no T1 feats) | 0.7424 | 0.876 | 0.752 | +0.0831 | both PASS |
+| Tier-1 (ref) | 0.5651 | 0.771 | 0.681 | — | — |
+| F1(ens) W2 best (ref) | 0.5955 | 0.887 | 0.711 | +0.052 | — |
 
-- **Setup S1–S3 done**: CUDA torch installed; v2 context patches generated
-  (17 GB, S32+S64 stacks in `dataset_v2/context_patches/`); Tier-1
-  classifier refreshed @ S=64 (`models/_sweep_binary/20260611T214042Z`):
-  **pooled PR-AUC 0.5651, per-image median AUC 0.6806, prec@5% 0.771**.
-- **Phase 1 grid (cells A–D, seed 0)**: every augmented cell ≤ no-aug floor;
-  geometric augmentation actively harmful (destroys the cohort-constant
-  142–186° sun-azimuth shadow prior). H-B refuted cohort-level.
-- **Cell E (photometric_only)**: cohort-equal to A → the harm was the
-  geometric half. All 3 distribution_shift images improve under E
-  (+0.06/+0.17/+0.06) — H-B mechanism real but weak. ESP_076499_1160
-  (228.6° azimuth outlier) instead prefers rotation → azimuth-canonical
-  orientation moved up the Phase 2 queue.
-- **3-seed replication of cell A**: the seed-0 gate pass does NOT replicate
-  (dAUC median +0.066 p=0.016 / +0.038 p=0.059 / +0.005 p=0.66). Per-image
-  skill seed-stable (median 0.69–0.71); score calibration is not (pooled
-  PR-AUC 0.51/0.56/0.49).
-- **THE RESULT — seed-ensemble + Tier-1 fusion passes BOTH gates at S=64**
-  (`scripts/probes/_w2_seed_ensemble.py`):
-  | variant | pooled PR-AUC | prec@5% | med AUC | dAUC med (v) | p |
-  |---|---|---|---|---|---|
-  | ens_mean (3 seeds) | 0.5327 | 0.675 | 0.711 | +0.052 | 0.0065 |
-  | **F1(ens)** = within-img quantile × T1 image mean | **0.5955** | **0.887** | 0.711 | +0.052 | 0.0065 |
-  | F3(ens) = pooled-rank avg | 0.5856 | 0.812 | **0.714** | +0.058 | 0.0001 |
-  | Tier 1 (ref) | 0.5651 | 0.771 | 0.681 | — | — |
-  **Recipe assembled post-hoc → S=32 is its held-out confirmation** (steps
-  1–4 above). F1 if pooled is binding, F3 if per-image is (declared).
-- **AdaBN probe**: cohort null (Δ median −0.017 p=0.40) but third
-  independent rescue of ESP_076499_1160 (+0.315); base-vs-AdaBN
-  *disagreement as a label-free reliability flag* queued (§5.3).
-- **S=32 baseline banked**: Tier-1 LightGBM fa_gt_1e-2 @ scale_idx 2:
-  AUC 0.660 ± 0.101 (`models/_sweep_binary/20260612T062412Z`; preds under
-  `models/lightgbm_classification/2d046f48c722f0a5/`).
-- **Notebook 19** (`notebooks/19_w2_cnn.ipynb` + `_build_19.py`) built,
-  executed, committed; 5 figures in `reports/figures/19_w2_*.png`; §6
-  reports PENDING until re-executed after the chain.
-- **Lit review** `docs/w2_litreview.md` (7 sections + ranked queue):
-  Bickel (diversity > scale-mixing), canopy-height twin (probabilistic
-  ensemble heads), Rodriguez & Wegner read in full (stride-1/no-downsample
-  finding → new capacity direction; σ=K/π smoothing recipe), TTA, FDA/RHM,
-  Mars FMs (**Fang et al. ViT-B pretrained on OUR Murray mosaic, weights
-  Zenodo 18180801** — Phase 2 §5.1 frozen-embedding probe), thermal RA.
-- **Cohort expansion**: `cohort_expansion_candidates.csv` — 12 verified
-  ObsIds (InSight, VL1, Phoenix-program, southern 64–71°S, N high-lat) + 3
-  to-vet rows. NOTE corrections: the two PSP_*_2025 are Viking Lander 1
-  (22°N), not Phoenix; ESP_017776_2435 is 2×2-binned (62 cm/px).
-- DECISIONS.md has FOUR 2026-06-11 W2 entries (setup, grid read, 3-seed +
-  ensemble, cell E). Commits: ab2029d, 57ee93f, b1c2dee, 5eb194e, 7cbbb49.
+- **S=32: the Tier-1 collapse is FIXED** — t1_gem96 pooled 0.7639 vs
+  Tier-1 0.4840, both gates pass; scale-robust (0.7639 ≈ 0.7637). The
+  3×3-context input is the carrier at both scales; own-tile-only misses
+  the per-image bar by a rounding error at both scales.
+- **Failure classes rescued**: distribution_shift +0.23 to +0.31,
+  texture_decorrelated +0.17 to +0.21, ok_geometry_fixed +0.27 to +0.30.
+  emb_only ≈ fused ⇒ queue-item-6 answered: texture_decorrelated was a
+  **feature-set floor, not a sensor floor**.
+- **ESP_076499_1160 (azimuth outlier) = biggest winner, dAUC +0.458** —
+  the image every W1–W2 adaptation only partially rescued. Azimuth read:
+  benefit geometry-agnostic (ρ ns vs incidence/azimuth); caveat *present*
+  (sin(az) recoverable from embeddings, LOO r=0.588) but harmless.
+- **Pool ablation**: GeM(p=3) 0.7637 > mean 0.7071 > cls 0.6961. Declared
+  pick logic: t1_gem192 if pooled is binding, t1_gem64_gem192 if per-image.
+- **Caveats recorded**: (a) transductive pretraining — the FM saw test
+  *pixels* (never labels) during SSL; deployment-matching argument in
+  DECISIONS (estimand = Murray-mosaic inference, which is in-corpus
+  everywhere, so LOIO is unbiased for it); MOMO disjoint-corpus probe is
+  the optional empirical bound. (b) Post-hoc assembly — promotion needs
+  the standing pre-declared confirmation on cohort-expansion images.
+  Unlike the CNN there is NO seed instability (deterministic end to end).
 
-## Phase 2 queue (PLAN_CNN.md §5, evidence order, post-S=32)
+## What was built (commit c481671 + uncommitted follow-ups)
 
-1. **Fang-ViT frozen-embedding probe** (§5.1) — now the lead bet:
-   GeM-pooled embeddings at 64 px + 192 px → LightGBM columns, standard
-   LOIO (~1 h). Weights: Zenodo 18180801, pretrained on our exact mosaic.
-2. **Fusion productization in conditional-leveler form** (§5.0):
-   ensemble-CNN ranking × inner-validation-chosen leveler; needs a fresh
-   pre-declared confirmation before promotion (cohort expansion images
-   are the clean option — `cohort_expansion_candidates.csv` has 23
-   verified literature-anchored ObsIds incl. 4 ground-truthed lander
-   sites; BoulderNet runs are Brian's side).
-3. Augmentation refinements (§5.2): FDA/RHM cell, azimuth-canonical
-   orientation, illumination conditioning.
-4. AdaBN-disagreement reliability flag (§5.3); TENT only if it works.
-5. Carried (§5.4): Tier-2 probabilistic head + ensemble; 3×3 context vs
-   smoothing control; stride-1/no-pool capacity variant (Rodriguez &
-   Wegner); min_confidence filter.
-6. texture_decorrelated dossier reattribution check (CNN 0.59–0.74 vs GBM
-   0.41–0.46; S=32 Tier-1 collapse 0.5651→0.4840 while CNN holds is
-   further evidence for "feature-set floor" not "sensor floor").
+- `scripts/probes/_w2_fang_embed.py` — extraction; **hand-rolled plain-torch
+  ViT-B/16** (timm key layout, strict load; NO timm/torchvision installed).
+  `--tile-px {64,32}`; own-tile + 3×3-context inputs, bicubic→224,
+  (x/255−0.5)/0.5; cls/mean/gem banked; bit-exact center-vs-cached-patch
+  geometry assert. 178 s (S=64) / 834 s (S=32) on the 5070.
+- `dataset_v2/fang_embeddings/{obs}_P{32,64,96,192}.npz` — 3.5 GB, 100%
+  context coverage everywhere (window buffer covers the ring; do NOT
+  stitch neighbor patches — only 71% would have full 3×3).
+- `scripts/probes/_w2_fang_probe.py` — LOIO probe, `--tile-px`, `--pool`,
+  variants {t1_own, t1_ctx, t1_own_ctx, emb_only}; verdict.json per run
+  under `models/fang_probe/{label}/{hash}/`.
+- `scripts/probes/_w2_fang_patch_visual.py` + 2 alignment figures;
+  `scripts/probes/_w2_fang_azimuth.py` + figure (all 19_w2_fang_*).
+- Weights: `models/pretrained/mars-mae-dino-vit-base-v1.pth` (341.7 MB,
+  untracked; re-download from Zenodo 18180801 if lost).
+
+## Next-session queue (evidence order)
+
+1. **Productize embedding extraction out of probe-tier** (src/ module):
+   inference must embed arbitrary CTX windows (not just cached tiles);
+   wire as optional feature source in the Stage-4b/loaders path so the
+   sweep/notebook tooling sees `fang_*` columns natively.
+2. **Pre-declare the confirmation protocol** for the embedding recipe on
+   the cohort-expansion images (`cohort_expansion_candidates.csv`, 23
+   verified ObsIds incl. 4 ground-truthed lander sites; BoulderNet runs
+   are Brian's side). Gates should be declared BEFORE any new-image
+   numbers are seen; reuse the standard pair (pooled +0.03 / per-image
+   +0.05 p<0.05) unless Brian wants stricter.
+3. **Notebook 19 (or new 20) Fang section**: verdict tables, per-image
+   dAUC bars by failure class, the alignment + azimuth figures, example
+   tiles where emb_only wins big (ESP_076499_1160).
+4. Optional cheap reads: emb_only @ S=32 overnight (~6 h CPU); MOMO
+   disjoint-corpus cross-check (weights public, arXiv:2604.02719);
+   ViT fine-tune decision EXPLICITLY deferred until after confirmation.
+5. Carried (PLAN_CNN.md §5.4): Tier-2 probabilistic head on the new
+   feature set; min_confidence=0.5 label filter; conditional-leveler
+   fusion productization is now LIKELY OBSOLETE (embeddings beat it on
+   both axes) — retire formally after the confirmation read.
 
 ## Critical gotchas (carry forward)
 
 - `conda run` needs `--no-capture-output` + `python -u`; multi-line
   `python -c` fails on Windows — write a probe script.
-- `import src.modeling` BEFORE numpy/pandas in torch-adjacent scripts.
-- **Each (variant,seed) gets its own config_hash dir** — glob
-  `models/cnn_bce_S{P}/*/scale_*` and read seed from snapshot.json
-  (`model.params.seed`), never assume one dir.
-- **Single-seed claims are unreliable at n=38** — 3-seed protocol for any
-  promotion claim (now in PLAN_CNN.md §4.2).
-- CNN sweeps don't persist per-epoch history (console only) — add
-  history.json if training curves are ever needed.
-- Group-aware LOIO always; inference features must be CTX-derivable.
+- `import src.modeling` BEFORE numpy/pandas in torch-adjacent scripts;
+  set `KMP_DUPLICATE_LIB_OK=TRUE` for bare `python -c` torch one-liners.
+- npz naming encodes INPUT px only: P64/P192 = S=64 tiles, P32/P96 = S=32.
+- Embedding join is on (obs_id, ti, tj) with validate="one_to_one" — keep
+  it keyed, never positional.
+- LightGBM handles NaN embedding cols natively (not that any exist: 100%
+  coverage).
+- Group-aware LOIO always; inference features must be CTX-derivable
+  (embeddings are: mosaic-global).
 - Per-image AUC ±0.1–0.2 fold-ripple error bars; carry n_pos/n_neg.
-- bc≥50 vs fa>1e-2 positive-definition caveat on cross-target deltas.
 - AskUserQuestion before: expensive sweeps, env mutation, commits.
-- Fast pytest baseline 265 (full 285) + 8 new CNN-cell tests pass.
+- Fast pytest baseline 265 (full 285) + 8 CNN-cell tests; no tests added
+  for probe-tier Fang scripts (add them during productization).
 
 ## Reporting protocol
 
-1. DECISIONS.md — one entry per item with numbers.
-2. Memory — supersede `project_state_2026-06-11-w2.md` when the S=32
-   verdict lands.
+1. DECISIONS.md — one entry per item with numbers (two Fang entries exist).
+2. Memory — `project_state_2026-06-12-fang.md` is CURRENT.
 3. This file — rewrite based on what actually lands.
