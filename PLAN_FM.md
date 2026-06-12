@@ -74,8 +74,13 @@ smoothing control).
      dropouts if MLP); cross-head ensemble (MLP+kNN+logreg average,
      nearly free); a per-image quantile / inner-val temperature
      calibration layer to stabilize pooled PR-AUC (the MLP wobble is a
-     calibration problem, not a ranking one). No deeper tuning — n=38
-     cannot resolve it and forking-paths discipline applies.
+     calibration problem, not a ranking one). No deeper tuning now —
+     n=38 cannot resolve it and forking-paths discipline applies.
+     **(Brian, 2026-06-12: a more exhaustive architecture search/tuning
+     becomes worth it once the cohort expands** — more images = the
+     statistical power to resolve finer head differences; revisit as a
+     declared dev phase after the §3 confirmation images are absorbed
+     into the training set.)
    - **1f. Handcrafted-feature elimination check — RUN 2026-06-12,
      decision pending** (Brian: *ideally eliminate*): mlp_ens3 on
      t1+gem192 = pooled 0.8040 / med AUC 0.8284 / win 0.96 vs 0.7852 /
