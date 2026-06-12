@@ -46,6 +46,20 @@ smoothing control).
    one MLP arch) — this is a head-class read, not a tuning exercise.
    If a non-tree head wins, re-run it on t1+gem192 (median-impute the
    T1 columns). Output: one winner-or-tie verdict → freezes the recipe.
+   1b. **Target-definition re-read** (Brian, 2026-06-12): re-test
+   count-based vs area-based targets on the new features, inside the same
+   freeze window. The W0 finding "boulder_count beats fractional_area"
+   was established under handcrafted features whose area signal is
+   dominated by large-polygon/shadow-merge noise; FM embeddings may shift
+   that balance. Protocol honesty: cross-target metrics are NOT directly
+   comparable (different positive sets — standing gotcha), so each target
+   (`bc_ge_1`, `fa_gt_1e-3`, `fa_gt_1e-2`) is compared against its OWN
+   Tier-1 baseline; the claim tested is "the FM advantage transfers
+   across target definitions", and the map's target choice remains a
+   scientific decision (Brian's) that these numbers inform. Tier-2's
+   regression-target version of the same question (log1p count vs
+   fractional_area) lives in item 4, where it interacts with the
+   single-stage-vs-hurdle retest.
 2. **Productize extraction into `src/`** (e.g. `src/fm_embeddings.py`):
    embed arbitrary CTX windows (inference path), wire `fang_*` columns as
    an optional feature source for the packaged-dataset loaders; pytest
@@ -66,15 +80,36 @@ smoothing control).
    compression/high-bin metrics); retest single-stage vs hurdle
    ([[modeling_single_stage_future]] — the hurdle may be unnecessary with
    stronger features).
-5. **Map pilot**: one Murray tile beyond HiRISE coverage, end-to-end
+5. **Model-evidence report** (Brian, 2026-06-12; must land BEFORE the map
+   pilot): a standalone persuasion-grade document (docs/, slimmer-doc
+   register) whose explicit job is to convince a skeptical reader
+   (advisor / committee member) that **the model works and the project is
+   worth pursuing to completion**. Required contents:
+   - example-prediction galleries — truth-vs-model CTX maps and top-k
+     tile strips, covering good images AND the formerly-failing classes
+     (the old anti-signal exemplar ESP_046328_2180: slim 0.344 → FM ~0.79;
+     the azimuth outlier ESP_076499_1160);
+   - a plain-language **metric interpretation guide**: what pooled PR-AUC
+     means against the base rate, what prec@5% buys operationally (top
+     map tiles are ~98% correct), per-image AUC with its ±0.1–0.2
+     fold-ripple error bars, why group-aware LOIO is the honest protocol
+     and dev-set numbers are not;
+   - the improvement trajectory (slim 5-feature model → Tier-1 → CNN/
+     fusion → FM recipe) with what each step ruled out;
+   - the honest-caveats section (transductive disclosure, confirmation
+     status, label-noise limits) — credibility comes from stating them;
+   - "what a map user gets": the operational framing for the Tier-1 map.
+   Written after §3 confirmation so the headline numbers carry the
+   held-out stamp.
+6. **Map pilot**: one Murray tile beyond HiRISE coverage, end-to-end
    (window → embed → predict → map PNG + reliability overlay). The
    usability demo PLAN_ModelUsability exists for; also the first real
    exercise of the §2-productized inference path.
-6. **Reliability via embedding-space novelty**: per-tile/per-image
+7. **Reliability via embedding-space novelty**: per-tile/per-image
    Mahalanobis or kNN distance to the training distribution in embedding
    space as the label-free warning signal (replaces the AdaBN-disagreement
    idea). Evaluate against the W1 failure taxonomy.
-7. **Optional / gated**: MOMO disjoint-corpus probe (bounds the
+8. **Optional / gated**: MOMO disjoint-corpus probe (bounds the
    transductive caveat; candidate ensemble partner); emb_only @ S=32
    overnight completeness read; ViT fine-tune go/no-go EXPLICITLY decided
    after §3 lands (LoRA/last-block on the 8 GB card; costs determinism,
@@ -103,7 +138,7 @@ smoothing control).
 - §5.2 augmentation refinements (FDA/RHM, azimuth-canonical, illumination
   conditioning) — built to protect SmallCNN; the protected images are now
   the biggest FM winners (ESP_076499_1160 +0.458).
-- §5.3 AdaBN-disagreement flag — superseded by §2.6 embedding-space
+- §5.3 AdaBN-disagreement flag — superseded by §2.7 embedding-space
   novelty.
 - §5.4 capacity scaling / stride-1 no-pool variant — SmallCNN line closed.
 - SmallCNN itself remains in `src/modeling/cnn.py` as the W2 record; not
