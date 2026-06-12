@@ -1,27 +1,39 @@
 # Handoff prompt — next session
 
-**Last updated 2026-06-12 afternoon — W2 Phase 2 lead bet LANDED.** The
-Fang-ViT frozen-embedding probe passed both gates by the largest margin of
-the program, at both scales. Nothing is running. Active program:
-[PLAN_ModelUsability.md](PLAN_ModelUsability.md) → [PLAN_CNN.md](PLAN_CNN.md)
-§5.1 (now the centerpiece); next session starts productization +
-pre-declared confirmation (queue below).
+**Last updated 2026-06-12 night — FM probe LANDED + head bake-off DONE;
+[PLAN_FM.md](PLAN_FM.md) is now the active plan** (PLAN_CNN.md closed).
+Nothing is running. Next session continues the PLAN_FM §2.1 freeze window
+(remaining: 1b target re-read, 1d pool×head, 1e micro-sweep+calibration,
+1g operating-scale decision, 1h optional 320-px probe), then productization
+(§2.2) + pre-declared confirmation (§2.3).
 
 Working dir: `c:\Users\brian\Documents\PhD\HiRiseToCTXBoulders\hirise2ctx`.
 Conda: `C:\Users\brian\anaconda3\Scripts\conda.exe run --no-capture-output -n geospatial python -u ...`
 
-## The result (2026-06-12, two DECISIONS.md entries with full tables)
+## Program bests (2026-06-12 night; THREE DECISIONS.md entries with tables)
 
-**Fang et al. 2026 ViT-B/16 (MAE+DINO, pretrained on 3.9M Murray-mosaic
-crops; Zenodo 18180801) frozen GeM embeddings → LightGBM columns:**
+**mlp_ens3 on t1+gem192: pooled PR-AUC 0.8040 / med per-image AUC 0.8284 /
+win 0.96 vs Tier-1** (five days ago: 0.5651 / 0.6806). Key reads:
 
-| variant (S=64) | pooled PR-AUC | prec@5% | med AUC | dAUC med (v) | gates |
+| recipe (S=64) | pooled PR-AUC | prec@5% | med AUC | dAUC med (v) | win |
 |---|---|---|---|---|---|
-| **t1_gem192** | **0.7637** | **0.977** | 0.770 | +0.0746 | both PASS |
-| t1_gem64_gem192 | 0.7549 | 0.884 | **0.7777** | **+0.0918** (win 0.93) | both PASS |
-| emb_only (no T1 feats) | 0.7424 | 0.876 | 0.752 | +0.0831 | both PASS |
+| **mlp_ens3 × t1+gem192** | **0.8040** | 0.916 | **0.8284** | +0.1465 | **0.96** |
+| mlp_ens3 × gem192-only | 0.7852 | **0.936** | 0.8035 | +0.1374 | 0.85 |
+| LightGBM t1_gem192 (first probe) | 0.7637 | 0.977 | 0.770 | +0.0746 | 0.89 |
 | Tier-1 (ref) | 0.5651 | 0.771 | 0.681 | — | — |
-| F1(ens) W2 best (ref) | 0.5955 | 0.887 | 0.711 | +0.052 | — |
+
+- **Head bake-off (PLAN_FM 1a/1c)**: on the identical gem192-only matrix,
+  every non-tree head beat LightGBM (mlp_ens3 0.7852 / kNN 0.7709 /
+  logreg 0.7385 / lgbm 0.7146); paired per-image stats make **MLP 3-seed
+  ensemble the decisive winner** (vs all others p≤0.003); the other three
+  are tied. MLP pooled calibration is seed-wobbly → ensemble is the
+  promotable form; exhaustive head tuning deferred until cohort expansion
+  (Brian).
+- **Feature elimination (1f)**: handcrafted features still add ~+0.02
+  pooled/med-AUC under the MLP — NOT free to drop; both variants stay
+  candidates to the freeze (simplicity-vs-points = Brian's call; interacts
+  with the scale decision: simpler inference matters more at S=32's 4×
+  tile count).
 
 - **S=32: the Tier-1 collapse is FIXED** — t1_gem96 pooled 0.7639 vs
   Tier-1 0.4840, both gates pass; scale-robust (0.7639 ≈ 0.7637). The
@@ -45,7 +57,7 @@ crops; Zenodo 18180801) frozen GeM embeddings → LightGBM columns:**
   the standing pre-declared confirmation on cohort-expansion images.
   Unlike the CNN there is NO seed instability (deterministic end to end).
 
-## What was built (commit c481671 + uncommitted follow-ups)
+## What was built (commits c481671 … 66b3493, all pushed to main)
 
 - `scripts/probes/_w2_fang_embed.py` — extraction; **hand-rolled plain-torch
   ViT-B/16** (timm key layout, strict load; NO timm/torchvision installed).
@@ -62,31 +74,36 @@ crops; Zenodo 18180801) frozen GeM embeddings → LightGBM columns:**
   `scripts/probes/_w2_fang_azimuth.py` + figure (all 19_w2_fang_*).
 - Weights: `models/pretrained/mars-mae-dino-vit-base-v1.pth` (341.7 MB,
   untracked; re-download from Zenodo 18180801 if lost).
+- `scripts/probes/_w2_fang_heads.py` — head bake-off (`--matrix
+  {emb,t1ctx}`, `--heads`, median imputation for t1 columns) +
+  `_w2_fang_head_pairs.py` (paired head-vs-head stats →
+  `models/fang_probe/head_pairs.json`).
+- **PLAN_FM.md** — the active plan (queue + freeze discipline + retired
+  list); PLAN_CNN.md closed with a pointer header.
+- `notebooks/20_fang_vit_probe.ipynb` (+ `_build_20.py`), executed: variant
+  glossary, verdict tables, per-image dAUC by failure class, alignment +
+  azimuth figures, top-8 tiles (FM 8/8 vs Tier-1 1/8 on ESP_076499_1160),
+  truth-vs-model maps in the classification_slimmer.md style (old
+  anti-signal exemplar ESP_046328_2180: slim 0.344 → FM 0.789).
 
-## Next-session queue (evidence order)
+## Next-session queue — PLAN_FM.md §2 is authoritative; summary:
 
-1. **Productize embedding extraction out of probe-tier** (src/ module):
-   inference must embed arbitrary CTX windows (not just cached tiles);
-   wire as optional feature source in the Stage-4b/loaders path so the
-   sweep/notebook tooling sees `fang_*` columns natively.
-2. **Pre-declare the confirmation protocol** for the embedding recipe on
-   the cohort-expansion images (`cohort_expansion_candidates.csv`, 23
-   verified ObsIds incl. 4 ground-truthed lander sites; BoulderNet runs
-   are Brian's side). Gates should be declared BEFORE any new-image
-   numbers are seen; reuse the standard pair (pooled +0.03 / per-image
-   +0.05 p<0.05) unless Brian wants stricter.
-3. ~~Notebook Fang section~~ **DONE same session**:
-   `notebooks/20_fang_vit_probe.ipynb` (+ `_build_20.py`), executed;
-   figures `reports/figures/20_fang_*.png` (verdict bars, per-image dAUC
-   by failure class, top-8 tiles FM vs Tier-1 on ESP_076499_1160 — FM 8/8
-   true positives vs Tier-1 1/8). PLAN_CNN.md §5.1 annotated with outcome.
-4. Optional cheap reads: emb_only @ S=32 overnight (~6 h CPU); MOMO
-   disjoint-corpus cross-check (weights public, arXiv:2604.02719);
-   ViT fine-tune decision EXPLICITLY deferred until after confirmation.
-5. Carried (PLAN_CNN.md §5.4): Tier-2 probabilistic head on the new
-   feature set; min_confidence=0.5 label filter; conditional-leveler
-   fusion productization is now LIKELY OBSOLETE (embeddings beat it on
-   both axes) — retire formally after the confirmation read.
+1. **Finish the freeze window (§2.1)**: 1b target re-read (count vs area,
+   each vs its OWN Tier-1 baseline); 1d pool×head under the MLP; 1e winner
+   micro-sweep + cross-head ensemble + calibration layer (pooled wobble is
+   a calibration problem); 1g **operating-scale decision** (re-run winner
+   at S=32 — Brian wants the finer map if skill holds); 1h optional 320-px
+   probe. Then **freeze ONE recipe** (head, pool, matrix, scale, target —
+   feature-elimination call is Brian's).
+2. **Productize extraction into src/** (embed arbitrary CTX windows,
+   `fang_*` columns as a loader feature source, pytest).
+3. **Pre-declare the confirmation protocol** (gates BEFORE any
+   expansion-image numbers; `cohort_expansion_candidates.csv`, 23 ObsIds;
+   BoulderNet runs are Brian's side).
+4. Then per PLAN_FM: Tier-2 on embeddings → **model-evidence report
+   (§2.5, Brian: persuasion-grade, BEFORE the map pilot)** → map pilot →
+   embedding-space reliability. Optional/gated: MOMO, emb_only@S=32
+   overnight, fine-tune go/no-go, per-image-std embeddings (deferred).
 
 ## Critical gotchas (carry forward)
 
