@@ -3306,3 +3306,57 @@ pre-declared confirmation on cohort-expansion images. Next-session queue:
 productize extraction out of probe-tier into src/ (inference must embed
 arbitrary CTX windows), pre-declare the confirmation gates, then the
 W3-style calibration/Tier-2 work on top of the new feature set.
+
+## 2026-06-12 -- Head bake-off (PLAN_FM 2.1a/1c/1f): trees are the wrong reader; MLP 3-seed ensemble decisive; handcrafted features still add ~+0.02
+
+Context: PLAN_FM.md created today (Brian-approved) -- the binding
+constraint moved from representation to the head/labels/task; queue 2.1
+is the freeze-window evidence block. Scripts:
+`scripts/probes/_w2_fang_heads.py` (+ `_w2_fang_head_pairs.py`).
+
+**1a. Head classes on the IDENTICAL gem192-only matrix** (768 cols, S=64,
+no handcrafted features; identical LOIO harness; fixed hyperparameters --
+head-CLASS read, not tuning):
+
+| head | pooled_pr | prec@5% | med_auc | dAUC_med(v) | win | runtime |
+|---|---|---|---|---|---|---|
+| LightGBM | 0.7146 | 0.856 | 0.7571 | +0.0581 | 0.59 | 878 s |
+| logreg (C=1, std.) | 0.7385 | 0.890 | 0.7678 | +0.1006 | 0.78 | 130 s |
+| kNN (cosine, k=50) | 0.7709 | 0.913 | 0.7641 | +0.0926 | 0.85 | 80 s |
+| mlp seeds 0/1/2 | .787/.745/.765 | .96/.83/.94 | .79/.82/.78 | +0.12..0.14 | 0.89 | ~130 s |
+| **mlp_ens3** | **0.7852** | 0.936 | **0.8035** | **+0.1374** | 0.85 | -- |
+
+Every non-tree head beats LightGBM on embeddings (Brian's hypothesis,
+confirmed). MLP pooled calibration is seed-wobbly (0.745-0.787; per-image
+skill stable) -- the 3-seed ensemble is the promotable form (the SmallCNN
+lesson recurs).
+
+**1c. Head-vs-head paired per-image stats** (validity-passing n=27,
+`models/fang_probe/head_pairs.json`): mlp_ens3 beats EVERY other head with
+clean significance -- vs lgbm +0.0595 (p~0), vs logreg +0.0292 (p=0.0006,
+win 0.85), vs knn50 +0.0499 (p=0.0032); lgbm/logreg/knn50 statistically
+tied among themselves. Winner is NOT ambiguous: **MLP 3-seed ensemble.**
+
+**1f. Handcrafted-feature elimination check** (winner heads on t1+gem192,
+median-imputed T1 columns):
+
+| head | matrix | pooled_pr | prec@5% | med_auc | dAUC_med(v) | win |
+|---|---|---|---|---|---|---|
+| logreg | t1+gem192 | 0.7639 | 0.897 | 0.7930 | +0.1457 | 0.81 |
+| **mlp_ens3** | **t1+gem192** | **0.8040** | 0.916 | **0.8284** | +0.1465 | **0.96** |
+| (mlp_ens3 | gem192-only | 0.7852 | 0.936 | 0.8035 | +0.1374 | 0.85) |
+
+The 52 handcrafted columns still add ~+0.019 pooled / +0.025 med AUC under
+the MLP (seed spread also narrows: 0.788-0.816; seed-2 win rate 1.00).
+**Elimination is NOT free**: dropping them costs ~2 points but removes all
+GLCM/gradient/shadow computation from map-time inference (prec@5% is
+actually slightly better emb-only, 0.936 vs 0.916). Simplicity-vs-points
+is Brian's freeze-time product call; both variants stay candidates.
+
+**New program bests: pooled PR-AUC 0.8040, median per-image AUC 0.8284,
+win rate 0.96 vs Tier-1** (was 0.5651 / 0.6806 / -- five days ago).
+
+Still open in the freeze window: 1b target re-read, 1d pool x head,
+1e winner micro-sweep + cross-head ensemble + calibration layer,
+1g operating-scale decision (S=32 rerun of winner), 1h optional 320-px
+probe. Then freeze.

@@ -62,10 +62,11 @@ smoothing control).
      target definitions"; the map's target choice remains Brian's
      scientific decision. (Tier-2's regression version — log1p count vs
      fractional_area — lives in item 4 with the hurdle retest.)
-   - **1c. Head-vs-head paired statistics**: paired per-image ΔAUC tests
-     BETWEEN the top heads (predictions already on disk) — the pooled
-     gaps (0.74–0.79) are within fold-ripple, so pick the winner
-     honestly or declare a tie and choose by simplicity/determinism.
+   - **1c. Head-vs-head paired statistics — DONE 2026-06-12**: mlp_ens3
+     beats every other head with clean paired significance (vs lgbm
+     +0.0595 p~0; vs logreg +0.0292 p=0.0006; vs knn50 +0.0499 p=0.0032);
+     the other three are tied among themselves. Winner: **MLP 3-seed
+     ensemble** (`models/fang_probe/head_pairs.json`).
    - **1d. Pool × head interaction**: GeM was chosen under LightGBM;
      retest mean/cls under the winning head (~5 min each, cached).
    - **1e. Winner micro-sweep + ensembling + calibration**: one coarse
@@ -75,11 +76,15 @@ smoothing control).
      calibration layer to stabilize pooled PR-AUC (the MLP wobble is a
      calibration problem, not a ranking one). No deeper tuning — n=38
      cannot resolve it and forking-paths discipline applies.
-   - **1f. Handcrafted-feature elimination check** (Brian: *ideally
-     eliminate*): winner heads on t1+gem192 vs gem192-only (run
-     in flight). If the 52 handcrafted columns add nothing, drop them —
-     inference simplifies to embed-and-predict (no GLCM/gradient/shadow
-     computation at map time), a major productization win.
+   - **1f. Handcrafted-feature elimination check — RUN 2026-06-12,
+     decision pending** (Brian: *ideally eliminate*): mlp_ens3 on
+     t1+gem192 = pooled 0.8040 / med AUC 0.8284 / win 0.96 vs 0.7852 /
+     0.8035 / 0.85 on gem192-only — the 52 handcrafted columns still add
+     ~+0.02 (and narrow the MLP seed spread), so elimination is NOT free.
+     Dropping them buys embed-and-predict inference (no GLCM/gradient/
+     shadow at map time; prec@5% slightly better emb-only). Simplicity
+     vs ~2 points = Brian's freeze-time call; both variants stay
+     candidates until then.
    - **1g. Operating-scale decision** (Brian, 2026-06-12: a finer map at
      equal skill materially strengthens the "improves on what's out
      there" motivation): S=64 was chosen because handcrafted features
