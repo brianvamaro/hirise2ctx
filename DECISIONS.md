@@ -3057,3 +3057,38 @@ objects ("any down-sampling inside the network risks losing precious
 details") -> new queue item: stride-1/no-pool SmallCNN capacity variant;
 their high-density-pocket underestimation is the literature echo of our W0
 compression finding; single-band texture-only regime shown workable (cars).
+
+## 2026-06-11 -- W2 cell E (photometric_only) read: geometric aug confirmed as the harmful ingredient; shift class responds to photometric aug 3/3; S=32 confirmation launched
+
+Cell E = photometric jitter only, no flips/rotations (added to AUG_CELLS
+post-grid to de-confound cell C). Seed 0, S=64; sweep
+`models/_sweep_cnn/20260612T045007Z`; read via
+`scripts/probes/_w2_photonly_read.py`.
+
+1. **E vs A (no-aug): cohort-equal** (paired dAUC median +0.024, p=0.64;
+   median AUC 0.694 -> 0.698, pooled PR-AUC 0.4919 ~ cell A's seed band).
+   Cells B/C/D all lost to A; removing the geometric half removes the harm.
+   **The Phase-1 "augmentation hurts" verdict is now attributable to the
+   geometric component specifically** -- consistent with the azimuth-prior
+   physics (cohort sun azimuth 142-186 deg).
+2. **Mechanism (H-B, narrowed): all 3 distribution_shift images improve
+   under E vs A**: ESP_054397_2105 +0.055, ESP_055253_2245 +0.172 (0.583 ->
+   0.755), ESP_076499_1160 +0.058. Sign-consistent with the pre-declared
+   H-B class; too weak to move the cohort gate (p=0.09 vs Tier 1).
+   Single-seed caveat applies.
+3. **Subtype split within the shift class:** ESP_076499_1160 (the 228.6-deg
+   azimuth outlier) does BETTER under full cell C (0.636) than under E
+   (0.484) -- rotation is what exposes the net to its anomalous sun
+   direction, while the other two shift images are radiometric cases that
+   rotation hurts. Matched treatments exist for both subtypes but each
+   costs the other; **azimuth-canonical orientation (litreview queue item
+   4) is the principled reconciliation** and gains priority.
+4. Cell E does not displace cell A as the recipe ingredient (cohort-equal,
+   worse pooled prec@5%). The candidate recipe is unchanged; E's value is
+   causal attribution + queue re-ranking.
+
+**S=32 held-out confirmation launched** (same session): Tier-1 LightGBM
+fa_gt_1e-2 @ scale_idx=2 baseline (CPU) + 3-seed cell-A chain at 32 px
+(GPU). Pre-declared read per the 2026-06-11 3-seed entry: ensemble passes
+the per-image gate vs S=32 Tier 1 AND fusion recovers pooled PR-AUC >=
+baseline; F1 if pooled is binding, F3 if per-image is.
