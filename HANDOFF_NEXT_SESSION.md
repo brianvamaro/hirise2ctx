@@ -75,11 +75,21 @@ Banked: `models/fang_probe/fw_emb_mlp_ens3_gem96_S32_fa_gt_1e-2/`.
    gates, baseline, protocol — BEFORE any expansion-image number exists. New
    images = pure held-out. Inputs: `cohort_expansion_candidates.csv` (23
    ObsIds incl. 4 lander sites); BoulderNet runs are Brian's side.
-3. Then per PLAN_FM: Tier-2 regression on embeddings (§2.4, retest
-   single-stage vs hurdle) → **model-evidence report (§2.5, Brian:
-   persuasion-grade, BEFORE the map pilot)** → map pilot (§2.6) →
-   embedding-space reliability (§2.7). Optional/gated: MOMO, ViT fine-tune
-   (decide after §3), per-image-std embeddings (deferred).
+3. **§2.4 Tier-2 regression — RUNNER BUILT, NOT run** (Brian: design now,
+   compute later). `scripts/probes/_fm_tier2_regression.py` (smoke-tested):
+   heads `mlp_reg` (3-seed MLP regressor, NEW) / `lightgbm_tweedie` /
+   `lightgbm_two_stage_balanced`, `--features {emb,t1}`, `--target
+   {fractional_area,boulder_count}`. **When run, do BOTH targets.** Run:
+   `... _fm_tier2_regression.py --variant mlp_reg --target fractional_area --features emb`
+   (loop variant×target×features; t1 = the lift baseline). Compute = the 2 MLP
+   cells per target; LightGBM is fast. Question: single-stage vs hurdle with
+   stronger features; watch compression via per-bin RMSE.
+4. Then per PLAN_FM: **model-evidence report (§2.5, Brian: persuasion-grade,
+   BEFORE the map pilot)** → map pilot (§2.6) → embedding-space reliability
+   (§2.7). Optional/gated: MOMO, ViT fine-tune (decide after §3),
+   per-image-std embeddings (deferred). Note: the deployable **head** (train
+   frozen mlp_ens3 on all 38, save/load/predict) is still un-productized and
+   is a prerequisite for the map pilot.
 
 ## Discipline now binding (PLAN_FM §3)
 

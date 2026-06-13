@@ -123,21 +123,51 @@ smoothing control).
    the frozen 0.7832 was measured on (`scripts/probes/_fm_parity_check.py`). The
    MLP *head* is not yet productized (still `_w2_fang_heads.py`) — fold into
    item 4 / map pilot.
-3. **Pre-declared confirmation** (the promotion vehicle): freeze ONE
-   recipe (from 1), then write a dedicated DECISIONS.md declaration —
-   gates, baseline, test protocol — **before any expansion-image number
-   exists**. Shape: new images are pure held-out (train on the 38, predict
-   each new image; Tier-1 trained identically as the paired baseline);
-   gates to be finalized at declaration time (default: the standard pair,
-   pooled ΔPR-AUC ≥ +0.03 / per-image ΔAUC median ≥ +0.05, Wilcoxon
-   p < 0.05). Inputs: `cohort_expansion_candidates.csv` (23 verified
-   ObsIds incl. 4 ground-truthed lander sites); BoulderNet runs are
-   Brian's side.
-4. **Tier-2 on the new feature set**: regression head (log1p
-   boulder_count / fractional_area) + calibration reporting (W3-style
-   compression/high-bin metrics); retest single-stage vs hurdle
-   ([[modeling_single_stage_future]] — the hurdle may be unnecessary with
-   stronger features).
+3. **Pre-declared confirmation** (the promotion vehicle): write a dedicated
+   DECISIONS.md declaration — gates, baseline, test protocol — **before any
+   expansion-image number exists**. Recipe is frozen (from 1). Inputs:
+   `cohort_expansion_candidates.csv` (23 verified ObsIds incl. 4 ground-truthed
+   lander sites); BoulderNet runs are Brian's side.
+   - **Protocol = confirm-then-absorb (TENTATIVE, Brian 2026-06-12; RE-CHECK
+     when the expanded cohort actually lands)**: (a) train the frozen recipe on
+     the current 38, predict each expansion image as pure held-out, record the
+     gate verdict; (b) THEN fold all expansion images into training — the
+     deployed model + the next (cohort-expanded) dev phase train on all ~61.
+     The confirmation certifies the *recipe* generalizes (selection-bias-free);
+     the deployed all-data model inherits that as a CONSERVATIVE estimate (more
+     data ≥ less). **Open decision deferred to execution time**: keep a SUBSET
+     as a permanent holdout (e.g. the 4 ground-truthed lander sites, which carry
+     external truth) vs full absorb — decide on cohort size/composition BEFORE
+     computing any predictions (so it stays pre-registered). Discussed
+     alternatives: permanent holdout (costly in small data), rolling LOIO over
+     the growing cohort (the living estimate; keep it as a complement). The
+     deployment-time generalization safeguard is the §2.7 embedding-novelty
+     reliability overlay (per-tile "trust here?"), not a held-out number for the
+     all-data model (which cannot exist by construction).
+   - **Baseline (proposed)**: `mlp_ens3` on the 52 handcrafted features — same
+     head/scale/target, only features differ → isolates the FM contribution as a
+     clean causal claim (NOT the old LightGBM Tier-1, which collapses at S=32).
+   - **Gates (proposed, standard pair, at the rich/poor threshold `fa_gt_1e-2`
+     — NOT presence, [[feedback_no_presence_auc]])**: pooled ΔPR-AUC ≥ +0.03 /
+     per-image ΔAUC median ≥ +0.05 / Wilcoxon p < 0.05; win-rate reported.
+     Finalize at declaration time. Misses recorded as declared (house rule).
+4. **Tier-2 on the new feature set — RUNNER BUILT 2026-06-12, NOT yet run**
+   (Brian: design now, compute later): calibrated-abundance regression on the
+   frozen emb-only S=32 features. `scripts/probes/_fm_tier2_regression.py`
+   (smoke-tested) wires three heads into the regression harness — `mlp_reg`
+   (NEW: 3-seed MLP regressor, the frozen mlp_ens3's regression analog,
+   single-stage), `lightgbm_tweedie` (single-stage), `lightgbm_two_stage_balanced`
+   (incumbent hurdle) — each vs the matching Tier-1 handcrafted baseline
+   (`--features t1`). Central question: does the hurdle still earn its
+   complexity with stronger features, or is single-stage now sufficient
+   ([[modeling_single_stage_future]])? Watch dynamic-range COMPRESSION
+   (notebook 12) via per-bin RMSE + calibration. **When run, use BOTH targets**
+   (`fractional_area` + `boulder_count`/log1p — Brian). Metrics already emitted
+   by the harness: Spearman ρ, per-bin RMSE, and the OPERATIONALLY MEANINGFUL
+   rich/poor metrics (`meaningful_auc`/`pr_auc`@1e-2/precision@5%). **NOT
+   presence AUC** — detecting one boulder is degenerate at S=32 and
+   scientifically uninteresting (Brian; [[feedback_no_presence_auc]], same trap
+   as bc_ge_1). ~5–6 LOIO cells (2 MLP = the only real compute).
 5. **Model-evidence report** (Brian, 2026-06-12; must land BEFORE the map
    pilot): a standalone persuasion-grade document (docs/, slimmer-doc
    register) whose explicit job is to convince a skeptical reader
