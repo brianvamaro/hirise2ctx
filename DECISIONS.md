@@ -3360,3 +3360,113 @@ Still open in the freeze window: 1b target re-read, 1d pool x head,
 1e winner micro-sweep + cross-head ensemble + calibration layer,
 1g operating-scale decision (S=32 rerun of winner), 1h optional 320-px
 probe. Then freeze.
+
+## 2026-06-12 -- Freeze window CLOSED (PLAN_FM 1b/1d/1e/1g): recipe FROZEN with Brian sign-off = mlp_ens3 / GeM / emb-only / S=32 / fa_gt_1e-2
+
+Runner: `scripts/probes/_fm_freeze_window.py` (subcommands run/eval/pair;
+generalizes the bake-off across scale/pool/target/MLP-arch with per-target
+Tier-1 baselines in the identical LOIO harness). Chains:
+`_fm_fw_chain{1,2_count,3_s32}.sh`. All cells banked under
+`models/fang_probe/fw_*`. Every cross-target metric reads against its OWN
+Tier-1 baseline (positive sets differ -- never compared directly).
+
+**1b. Target-definition re-read.** The FM advantage transfers to EVERY
+non-degenerate target (each vs its own Tier-1, S=64, mlp_ens3 t1ctx):
+
+| target | pos_rate | Tier-1 pooled | FM pooled | med_auc | dAUC(v) | p | gates |
+|---|---|---|---|---|---|---|---|
+| fa_gt_1e-2 (area, incumbent) | 0.35 | 0.5651 | **0.8040** | 0.8284 | +0.147 | ~0 | PASS/PASS |
+| fa_gt_1e-3 (area) | 0.70 | 0.7442 | 0.9183 | 0.7576 | +0.112 | 5e-4 | PASS/PASS |
+| bc_ge_50 (count) | 0.48 | 0.6729 | 0.8260 | 0.8053 | +0.195 | 1e-4 | PASS/PASS |
+| bc_ge_100 (count) | 0.35 | 0.4219 | 0.7312 | 0.8213 | +0.153 | 1e-4 | PASS/PASS |
+| bc_ge_1 (presence) | 0.93 | 0.9459 | 0.9432 | 0.6501 | +0.065 | 0.50 | fail/fail |
+
+bc_ge_1 was the WRONG operationalization of a count target (Brian, this
+session): at S=64 ">=1 boulder" is saturated (0.93 positive, PR-AUC floor
+already 0.93) -- it is presence, not a rich/poor split. Replaced with real
+count thresholds grounded in the per-tile boulder_count distribution
+(`scripts/probes/_fm_count_dist.py`): bc_ge_50 -> 0.48 (near-median),
+bc_ge_100 -> 0.35 (base-rate-matched to fa_gt_1e-2). Both pass both gates
+decisively, reversing the bc_ge_1 null. New targets registered in
+`src/modeling/binary_target.py`. At matched base rate (bc_ge_100 vs
+fa_gt_1e-2): area edges pooled (0.804 vs 0.731) but per-image AUC is
+near-identical (0.828 vs 0.821) -> the advantage is target-definition-robust;
+the count-vs-area choice stays a scientific decision, not a forced one. This
+reverses the W0 "count beats area" finding, which held only under handcrafted
+features (area signal dominated by large-polygon/shadow-merge noise there).
+
+**1d. Pool x head** (mlp_ens3, t1ctx, S=64, fa_gt_1e-2): GeM(p=3) **0.8040**
+> mean 0.8015 > cls 0.7900 pooled (GeM also best win-rate 0.96). GeM
+confirmed under the MLP, matching the lgbm-era ablation.
+
+**1e. Winner micro-sweep + ensembling + calibration** -- all three add-ons
+REJECTED; the plain mlp_ens3 is the simplest and best form:
+- *Arch sweep* (gem192, S=64, vs incumbent 256x64/d0.2 = 0.8040/0.8284):
+  128x32/d0.2 0.7992; 512x128/d0.2 0.8108; 256x64/d0.4 0.8028; 128x32/d0.4
+  0.8039; 512x128/d0.4 0.8075. Spread 0.799-0.811, incumbent mid-pack, all 7
+  cells pass both gates (dAUC ~+0.14-0.15, win ~0.96), none separable at
+  n=38. 512x128 edges +0.007 but selecting it = forking-paths overfit ->
+  **default 256x64/d0.2 kept** (deeper tuning deferred to cohort expansion).
+- *Calibration layer* (post-hoc on incumbent): per-image rank -> pooled
+  0.5056 (COLLAPSE); 50/50 blend -> 0.7352; both leave med_auc 0.8284
+  unchanged (rank is monotone within image). Per-image quantile transforms
+  destroy the cross-image abundance level pooled PR-AUC rewards. The MLP
+  wobble that motivated calibration was already solved by the 3-seed mean
+  (incumbent stable 0.8040). **Rejected -- the ensemble mean IS the fix.**
+- *Cross-head ensemble* (mlp 3-seed + logreg rank-mean, t1ctx): 0.7995 /
+  med 0.8168 -- below mlp_ens3 alone; logreg dilutes. (Aside: kNN cannot
+  join on t1ctx -- KNNHead L2-normalizes but does not standardize/impute, so
+  the 52 mixed-scale handcrafted cols swamp cosine; t1ctx kNN collapses to
+  0.5600 vs 0.7709 gem-only. Documented, not used.) **Rejected.**
+
+**1g. Operating-scale decision** (mlp_ens3, GeM, fa_gt_1e-2; S=32 P96 input
+vs S=64 P192; each vs its own-scale Tier-1):
+
+| scale | matrix | tile | pooled | prec@5% | med_auc | dAUC(v) | win | gates |
+|---|---|---|---|---|---|---|---|---|
+| S=64 | t1+emb | 320 m | 0.8040 | 0.916 | 0.8284 | +0.147 | 0.96 | PASS/PASS |
+| S=64 | emb-only | 320 m | 0.7852 | 0.936 | 0.8035 | +0.137 | 0.85 | PASS/PASS |
+| S=32 | t1+emb | 160 m | 0.7764 | 0.932 | 0.7884 | +0.120 | 0.96 | PASS/PASS |
+| **S=32** | **emb-only** | **160 m** | **0.7832** | **0.948** | **0.7865** | **+0.120** | **0.96** | **PASS/PASS** |
+
+Two findings: (i) **S=32 holds skill** -- both matrices pass both gates
+(dAUC +0.12, win 0.96); cost vs S=64 is modest (~-0.03 pooled / -0.04 med)
+and prec@5% is actually HIGHER at S=32 (top map tiles more reliable). The
+S=32 Tier-1 floor is weaker (0.484) so the absolute FM lift is larger at
+S=32 (+0.292 pooled vs +0.239). (ii) **Feature elimination is FREE at S=32**
+-- handcrafted features add +2 pts at S=64 (1f) but ~0 at S=32 (emb-only
+0.7832 ties/edges t1ctx 0.7764). The 1f simplicity-vs-points tension
+dissolves at the finer scale.
+
+**FROZEN RECIPE (Brian sign-off, this session):**
+- **Scale S=32** (160 m tiles, 4x finer map than S=64) -- Brian: a finer map
+  at held skill materially strengthens the "improves on what's out there"
+  motivation.
+- **Input / embedding**: the 96-px (3x3-context) CTX window -> frozen
+  Fang-ViT ViT-B/16 (MAE+DINO, Zenodo 18180801) -> **GeM(p=3) -> single
+  768-dim vector per tile**. emb-only = the `emb` matrix = ctx input ONLY
+  (no own-tile P32, no handcrafted features). Inference path is literally
+  one embedding vector -> MLP; no GLCM/gradient/shadow at map time.
+- **Head**: `mlp_ens3` -- 3-seed MLP (768-256-64-1, dropout 0.2, BCE
+  pos_weight, AdamW lr1e-3 wd1e-4, early-stop patience 8 on the rotated
+  inner-val image), mean of 3 seed probabilities. Per-fold standardize on
+  train (median-impute is a no-op: 100% embedding coverage).
+- **Target**: `fa_gt_1e-2` (fractional_area > 0.01; Brian's scientific
+  choice -- continuity + highest matched-base-rate pooled; count targets
+  remain equally valid per 1b).
+- **Numbers**: pooled PR-AUC **0.7832** / prec@5% **0.948** / median
+  per-image AUC **0.7865** / dAUC(v) +0.120 / win 0.96; both gates PASS.
+- Banked: `models/fang_probe/fw_emb_mlp_ens3_gem96_S32_fa_gt_1e-2/`.
+
+Standing caveats carried with every claim: transductive pretraining
+(disclosure + deployment-matching argument) and post-hoc assembly (the
+freeze precedes the §3 pre-declared confirmation on cohort-expansion
+images). The frozen path is deterministic modulo the 3 named seeds.
+
+Skipped: 1h (320-px / 5x5 probe) -- not needed; the S=32 finer-map decision
+made the larger-context question moot for the operating recipe (revisit only
+if cohort expansion reopens scale/context tuning).
+
+NOTE: stricter freeze discipline now applies (PLAN_FM 3) -- no further recipe
+shopping on the 38 images; the next number that touches this recipe is the
+§3 pre-declared confirmation on held-out expansion images.

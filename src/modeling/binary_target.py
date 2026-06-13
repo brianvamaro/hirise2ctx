@@ -58,6 +58,27 @@ BINARY_TARGETS: tuple[BinaryTarget, ...] = (
         comparison=">=",
         label="boulder_count ≥ 1",
     ),
+    # PLAN_FM 1b count-target re-read (Brian, 2026-06-12): bc_ge_1 is presence
+    # (saturated 0.93 positive at S=64), the wrong operationalization of a
+    # count-defined rich/poor split. These thresholds are grounded in the S=64
+    # per-tile boulder_count distribution (scripts/probes/_fm_count_dist.py):
+    # bc_ge_50 -> pos_rate 0.483 (near-median split, real PR-AUC headroom);
+    # bc_ge_100 -> pos_rate 0.352, base-rate-matched to fa_gt_1e-2 (0.354) for
+    # an apples-to-apples "same selectivity, different definition" comparison.
+    BinaryTarget(
+        id="bc_ge_50",
+        source_col="boulder_count",
+        threshold=50.0,
+        comparison=">=",
+        label="boulder_count ≥ 50",
+    ),
+    BinaryTarget(
+        id="bc_ge_100",
+        source_col="boulder_count",
+        threshold=100.0,
+        comparison=">=",
+        label="boulder_count ≥ 100",
+    ),
     BinaryTarget(
         id="fa_gt_1e-3",
         source_col="fractional_area",

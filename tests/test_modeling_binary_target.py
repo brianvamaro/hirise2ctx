@@ -13,17 +13,20 @@ from src.modeling.binary_target import (
 )
 
 
-def test_three_targets_registered():
-    """Stage 5b §3 pins exactly three thresholds; guard against accidental dedupe."""
-    assert len(BINARY_TARGETS) == 3
-    assert set(BINARY_TARGETS_BY_ID) == {"bc_ge_1", "fa_gt_1e-3", "fa_gt_1e-2"}
+def test_targets_registered():
+    """Stage 5b §3 pinned three thresholds; PLAN_FM 1b added two real count
+    thresholds (bc_ge_50/100) after bc_ge_1 proved saturated (presence) at S=64.
+    Guard against accidental dedupe / loss."""
+    assert set(BINARY_TARGETS_BY_ID) == {
+        "bc_ge_1", "bc_ge_50", "bc_ge_100", "fa_gt_1e-3", "fa_gt_1e-2"}
+    assert len(BINARY_TARGETS) == len(BINARY_TARGETS_BY_ID)
 
 
 def test_each_target_has_distinct_definition():
-    """The three thresholds must be distinct (id, source_col, threshold, comparison)
-    tuples; otherwise the sweep collapses two cells into one."""
+    """Every target must be a distinct (source_col, threshold, comparison)
+    tuple; otherwise the sweep collapses two cells into one."""
     keys = {(t.source_col, t.threshold, t.comparison) for t in BINARY_TARGETS}
-    assert len(keys) == 3
+    assert len(keys) == len(BINARY_TARGETS)
 
 
 def test_get_target_returns_registered_target():
