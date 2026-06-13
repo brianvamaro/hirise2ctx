@@ -355,6 +355,36 @@ idx = int(df.iloc[i]["patch_idx_S64"])
 patch = patches[idx]  # (64, 64) uint8 view; copy if you'll mutate
 ```
 
+## PLAN_FM — `dataset_v2/fang_embeddings/`
+
+Frozen Fang-ViT embeddings, one bundled `.npz` per (ObsId, input size). Written by
+`scripts/probes/_w2_fang_embed.py`; the productized extraction/inference path that
+*reproduces* them bit-for-bit is `src/fm_embeddings.py` (parity asserted by
+`scripts/probes/_fm_parity_check.py`). These are the feature source of the frozen
+recipe (DECISIONS.md 2026-06-12): `mlp_ens3` on the S=32 96-px 3×3-context
+GeM(p=3) embedding, emb-only, `fa_gt_1e-2`.
+
+### `{ObsId}_P{px}.npz`
+`px` encodes the **input** size, not the tile size: `P96` = the S=32 3×3-context input
+(the frozen one), `P32` = the S=32 own-tile input, `P192`/`P64` = the S=64 3×3-context/
+own-tile inputs. Each tile's box is bicubic-resized to 224 and normalized `(x/255−0.5)/0.5`
+before the ViT. Arrays, all row-parallel to that image's tile keys at the matching scale:
+
+| array | dtype | shape | meaning |
+|---|---|---|---|
+| `ti`, `tj` | int32 | `(n,)` | mosaic-anchored tile indices (join key with `obs_id`) |
+| `valid` | bool | `(n,)` | False where the context box spilled past the CTX-window edge |
+| `cls` | float32 | `(n, 768)` | ViT [CLS]-token embedding |
+| `mean` | float32 | `(n, 768)` | mean-pooled patch tokens |
+| `gem` | float32 | `(n, 768)` | **GeM(p=3)** patch tokens — the frozen pooling |
+
+Invalid rows carry the raw ViT output in the npz but are set to **NaN** on load
+(`src.modeling.loaders.load_fang_store`) so the head imputes them; at S=32/P96 coverage
+is 100% (the 96-px ring fits inside the window buffer for every tile). Join onto packaged
+folds with `augment_fold_with_fang(fold, px=96, replace=True)` (emb-only) — the lookup is
+keyed one-to-one on `(obs_id, ti, tj)`, never positional. Loader column names are
+`fang_{pool}{px}_{000..767}` (e.g. `fang_gem96_000`).
+
 ## Stage 5 — `dataset/splits/`
 
 Group-aware leave-image-out split metadata. One JSON file per named scheme; multiple

@@ -194,6 +194,40 @@ diagnostic over all four tile scales and write per-fold + aggregate artifacts un
 The `scheme` + `dataset_dir` enter each run's `config_hash`, so v1 and v2 artifacts land
 in distinct `models/<variant>/<hash>/` dirs and never clobber each other.
 
+## Foundation-model embeddings (PLAN_FM)
+
+The frozen recipe (DECISIONS.md 2026-06-12 "Freeze window CLOSED") replaces the
+handcrafted features with **frozen Fang-ViT embeddings**: `mlp_ens3` (3-seed MLP) on
+the **S=32 96-px 3×3-context GeM(p=3)** 768-dim embedding, emb-only, target
+`fa_gt_1e-2`. `src/fm_embeddings.py` is the productized extraction + inference path
+(the torch half); `src/modeling/loaders.py` carries the numpy-only cached-store join.
+
+The model is the Fang et al. 2026 ViT-B/16 (MAE+DINO on the Murray Lab CTX mosaic,
+[Zenodo 18180801](https://doi.org/10.5281/zenodo.18180801)); the checkpoint
+`models/pretrained/mars-mae-dino-vit-base-v1.pth` (341 MB) is **untracked** —
+re-download from Zenodo if absent.
+
+```python
+import numpy as np
+from src.fm_embeddings import FangEmbedder, tile_grid_for_window
+
+# --- inference on an arbitrary CTX window (the map-pilot path) ---
+emb = FangEmbedder.load()                       # strict checkpoint load; GPU if present
+ti, tj = tile_grid_for_window(window.shape, row0, col0, tile_px=32)
+vecs, valid = emb.embed_window(window, ti, tj, tile_px=32, row0=row0, col0=col0)
+# vecs: (n_tiles, 768) GeM, NaN rows where the 96-px context spilled past the edge
+
+# --- training join: rebuild a packaged fold's X from the cached store ---
+from src.modeling.loaders import load_fold, augment_fold_with_fang
+fold = load_fold("loio_nfold", 0, scale_idx=2, dataset_dir="dataset_v2")  # S=32
+fold = augment_fold_with_fang(fold, px=96, dataset_dir="dataset_v2", replace=True)  # emb-only
+```
+
+The probe-tier extraction over the 38 v2 images (writes
+`dataset_v2/fang_embeddings/{obs}_P{32,96}.npz`) still lives at
+`scripts/probes/_w2_fang_embed.py --tile-px 32`; `scripts/probes/_fm_parity_check.py`
+asserts the productized `src/` path reproduces that cached store bit-for-bit.
+
 ## Layout
 
 ```
@@ -218,6 +252,8 @@ src/
                      # canny_edges) + bundled context patches per (ObsId, patch_size)
   dataset.py         # Stage 5: leave-image-out split construction + in-memory
                      # package_split + streaming iter_train_batches/iter_test_batches
+  fm_embeddings.py   # PLAN_FM: frozen Fang-ViT extraction + CTX-window inference path
+                     # (ViT-B/16 encoder, GeM(p=3) pool, 3x3-context slicing) -- torch half
   qa.py              # shared sanity-check helpers
 scripts/
   run_stage2.py        # headless per-ObsId Stage 2 driver

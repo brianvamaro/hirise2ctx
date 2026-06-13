@@ -268,6 +268,119 @@ def augment_fold_with_per_image(fold: Fold, method: str) -> Fold:
 
 
 # ============================================================================
+# Fang-ViT embeddings as an optional feature source (PLAN_FM §2.2)
+# ============================================================================
+#
+# The frozen recipe (DECISIONS.md 2026-06-12) is emb-only: the LOIO harness
+# rebuilds X from the cached embedding store rather than from the packaged X
+# matrix. This is the numpy-only join half (the torch extraction that *writes*
+# the store lives in `src.fm_embeddings`). Store layout, written per image:
+#   {dataset_dir}/fang_embeddings/{obs_id}_P{px}.npz  with arrays
+#   ti, tj (int32), valid (bool), cls/mean/gem (n, 768) float32.
+# px encodes the INPUT size: P96 = the S=32 3×3-context input (the frozen one),
+# P192 = S=64 3×3-context, P32/P64 = the own-tile inputs.
+
+EMBED_DIM = 768
+
+
+def _fang_dir(dataset_dir: Path | str | None = None) -> Path:
+    base = Path(dataset_dir) if dataset_dir is not None else DEFAULT_DATASET_DIR
+    return base / "fang_embeddings"
+
+
+def load_fang_store(
+    px: int,
+    *,
+    pool: str = "gem",
+    dataset_dir: Path | str | None = None,
+) -> tuple[pd.DataFrame, np.ndarray]:
+    """Load the cached embedding store for one input size into a keyed matrix.
+
+    Returns ``(index, matrix)``: `index` is a DataFrame with columns
+    `obs_id, ti, tj, row` (row = position into `matrix`), `matrix` is
+    (n_total, 768) float32 with NaN rows where `valid` is False (window-margin
+    tiles whose context box was incomplete). Concatenates every
+    `*_P{px}.npz` under the store, sorted by filename for a stable row order.
+    """
+    if pool not in ("cls", "mean", "gem"):
+        raise ValueError(f"unknown pool {pool!r}; pick from cls/mean/gem")
+    fdir = _fang_dir(dataset_dir)
+    files = sorted(fdir.glob(f"*_P{px}.npz"))
+    if not files:
+        raise FileNotFoundError(f"no Fang embedding store *_P{px}.npz under {fdir}")
+    blocks, rows = [], []
+    for f in files:
+        z = np.load(f)
+        obs = f.name[: -len(f"_P{px}.npz")]
+        emb = z[pool].astype(np.float32, copy=True)
+        emb[~z["valid"].astype(bool)] = np.nan
+        blocks.append(emb)
+        rows.append(pd.DataFrame({"obs_id": obs, "ti": z["ti"], "tj": z["tj"]}))
+    matrix = np.concatenate(blocks, axis=0)
+    index = pd.concat(rows, ignore_index=True)
+    index["row"] = np.arange(len(index), dtype=np.int64)
+    return index, matrix
+
+
+def fang_columns_for_keys(
+    keys: pd.DataFrame,
+    px: int,
+    *,
+    pool: str = "gem",
+    dataset_dir: Path | str | None = None,
+    store: tuple[pd.DataFrame, np.ndarray] | None = None,
+) -> tuple[np.ndarray, list[str]]:
+    """Look up the (n_keys, 768) embedding block + column names for `keys`.
+
+    `keys` must carry `obs_id, ti, tj`; the join is one-to-one and asserts no
+    miss (every requested tile must exist in the store). Pass a prebuilt `store`
+    (from `load_fang_store`) to avoid re-reading the npz across many folds.
+    """
+    index, matrix = store if store is not None else load_fang_store(px, pool=pool, dataset_dir=dataset_dir)
+    j = keys[["obs_id", "ti", "tj"]].merge(index, on=["obs_id", "ti", "tj"],
+                                           how="left", validate="one_to_one")
+    r = j["row"].to_numpy()
+    assert not np.isnan(r).any(), "Fang store is missing tiles present in the keys"
+    names = [f"fang_{pool}{px}_{i:03d}" for i in range(EMBED_DIM)]
+    return matrix[r.astype(np.int64)], names
+
+
+def augment_fold_with_fang(
+    fold: Fold,
+    *,
+    px: int,
+    pool: str = "gem",
+    dataset_dir: Path | str | None = None,
+    replace: bool = False,
+    store: tuple[pd.DataFrame, np.ndarray] | None = None,
+) -> Fold:
+    """Return a copy of `fold` with Fang embedding columns joined onto X.
+
+    `replace=False` concatenates the 768 embedding columns after the existing
+    features (the t1+emb matrix); `replace=True` swaps X for the embeddings alone
+    (the frozen emb-only recipe). Train/test are looked up from their own keys, so
+    no statistics cross the split boundary. NaN margin rows are preserved for the
+    head to impute (the bake-off MLP/LightGBM both handle NaN).
+    """
+    from dataclasses import replace as dc_replace
+
+    if store is None:
+        store = load_fang_store(px, pool=pool, dataset_dir=dataset_dir)
+    emb_train, names = fang_columns_for_keys(fold.keys_train, px, pool=pool,
+                                             dataset_dir=dataset_dir, store=store)
+    emb_test, _ = fang_columns_for_keys(fold.keys_test, px, pool=pool,
+                                        dataset_dir=dataset_dir, store=store)
+    if replace:
+        return dc_replace(fold, X_train=emb_train, X_test=emb_test, feature_names=names)
+    return dc_replace(
+        fold,
+        X_train=np.concatenate([fold.X_train, emb_train], axis=1),
+        X_test=np.concatenate([fold.X_test, emb_test], axis=1),
+        feature_names=list(fold.feature_names) + names,
+    )
+
+
+# ============================================================================
 # Context patches (CNN input)
 # ============================================================================
 
