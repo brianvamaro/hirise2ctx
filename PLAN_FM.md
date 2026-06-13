@@ -113,11 +113,16 @@ smoothing control).
      finer-map decision made the larger-context question moot for the
      operating recipe; revisit only if cohort expansion reopens
      scale/context tuning.
-2. **Productize extraction into `src/`** (e.g. `src/fm_embeddings.py`):
-   embed arbitrary CTX windows (inference path), wire `fang_*` columns as
-   an optional feature source for the packaged-dataset loaders; pytest
-   coverage (probe-tier currently has none); README/DATA_DICTIONARY
-   entries.
+2. **Productize extraction into `src/` — DONE 2026-06-12 (commit 032fa75)**:
+   `src/fm_embeddings.py` = ViT-B/16 encoder + GeM(p=3) + 3×3-context slicing +
+   `FangEmbedder.embed_window` (arbitrary-CTX-window inference path for the map
+   pilot). `src/modeling/loaders.py` cached-store join
+   (`load_fang_store`/`fang_columns_for_keys`/`augment_fold_with_fang`,
+   torch-free; `replace=True` = emb-only). 15 pytest (full fast suite 292
+   green); README + DATA_DICTIONARY. **Bit-exact parity** with the cached store
+   the frozen 0.7832 was measured on (`scripts/probes/_fm_parity_check.py`). The
+   MLP *head* is not yet productized (still `_w2_fang_heads.py`) — fold into
+   item 4 / map pilot.
 3. **Pre-declared confirmation** (the promotion vehicle): freeze ONE
    recipe (from 1), then write a dedicated DECISIONS.md declaration —
    gates, baseline, test protocol — **before any expansion-image number

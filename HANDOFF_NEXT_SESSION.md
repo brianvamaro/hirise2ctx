@@ -1,10 +1,18 @@
 # Handoff prompt — next session
 
-**Last updated 2026-06-12 (later session) — PLAN_FM freeze window CLOSED;
-ONE recipe FROZEN with Brian sign-off.** [PLAN_FM.md](PLAN_FM.md) is the
-active plan. Next session starts at **§2.2 productization** (the user
-deferred it this session — do NOT start it without reading this first).
-Nothing is running.
+**Last updated 2026-06-12 (later session) — freeze window CLOSED + §2.2
+productization DONE.** [PLAN_FM.md](PLAN_FM.md) is the active plan. Next
+session starts at **§2.3 pre-declared confirmation** (write the gates BEFORE
+any expansion-image number exists). Nothing is running.
+
+**§2.2 productization landed (commit 032fa75):** `src/fm_embeddings.py` (ViT
+encoder + GeM + 3×3-context slicing + `FangEmbedder.embed_window` inference
+path), `src/modeling/loaders.py` cached-store join
+(`load_fang_store`/`fang_columns_for_keys`/`augment_fold_with_fang`, torch-free),
+`tests/test_fm_embeddings.py` (15 tests; full fast suite 292 green),
+README + DATA_DICTIONARY entries. **Bit-exact parity** between the productized
+`src/` path and the cached store the frozen 0.7832 was measured on
+(`scripts/probes/_fm_parity_check.py`: max abs diff 0.0).
 
 Working dir: `c:\Users\brian\Documents\PhD\HiRiseToCTXBoulders\hirise2ctx`.
 Conda: `C:\Users\brian\anaconda3\Scripts\conda.exe run --no-capture-output -n geospatial python -u ...`
@@ -58,13 +66,12 @@ Banked: `models/fang_probe/fw_emb_mlp_ens3_gem96_S32_fa_gt_1e-2/`.
 
 ## Next-session queue — PLAN_FM.md §2 is authoritative
 
-1. **§2.2 productize extraction into `src/`** (e.g. `src/fm_embeddings.py`):
-   embed arbitrary CTX windows (inference path = window → ViT → GeM → 768-dim;
-   emb-only, no handcrafted features needed for the frozen recipe), wire
-   `fang_*` as an optional loader feature source, **pytest** (probe tier has
-   none), README/DATA_DICTIONARY entries. The frozen emb-only/S=32 path keeps
-   this simple.
-2. **§2.3 pre-declared confirmation**: write the DECISIONS.md declaration —
+1. **§2.2 productize extraction into `src/` — DONE (commit 032fa75)**:
+   `src/fm_embeddings.py` (inference path + ViT/GeM/slicing), loader cached-store
+   join, 15 pytest, docs; bit-exact parity vs the cached store. The MLP *head*
+   is NOT yet productized (still in `_w2_fang_heads.py`) — fold it in with §2.4
+   Tier-2 or the map pilot.
+2. **§2.3 pre-declared confirmation** (START HERE): write the DECISIONS.md declaration —
    gates, baseline, protocol — BEFORE any expansion-image number exists. New
    images = pure held-out. Inputs: `cohort_expansion_candidates.csv` (23
    ObsIds incl. 4 lander sites); BoulderNet runs are Brian's side.
