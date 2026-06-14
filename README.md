@@ -149,7 +149,16 @@ $conda = "C:\Users\brian\anaconda3\Scripts\conda.exe"
     notebooks/12_compression_diagnostic.ipynb     # compression diagnosis + 4 hurdle variants + boulder_count target
 & $conda run -n geospatial jupyter nbconvert --to notebook --execute --inplace `
     notebooks/13_per_image_heterogeneity.ipynb    # H3 deep dive + top-K confusion overlay
+
+# ---- Foundation-model notebooks (20 = Fang-ViT probe, 21 = deployable head + map pilot) ----
+& $conda run -n geospatial jupyter nbconvert --to notebook --execute --inplace `
+    notebooks/20_fang_vit_probe.ipynb             # frozen-embedding probe verdicts + per-image dAUC
+& $conda run -n geospatial jupyter nbconvert --to notebook --execute --inplace `
+    notebooks/21_map_pilot.ipynb                  # deployable head + off-HiRISE map (rebuild via notebooks/_build_21.py)
 ```
+
+QA notebooks are generated from `notebooks/_build_NN.py` (re-run the builder to
+regenerate the `.ipynb`, then `nbconvert --execute` to render figures).
 
 **Don't run two `nbconvert --execute` against the same notebook concurrently** — caused
 ~14 min hangs in earlier sessions when overlapping kernels contended for caches.
@@ -227,6 +236,39 @@ The probe-tier extraction over the 38 v2 images (writes
 `dataset_v2/fang_embeddings/{obs}_P{32,96}.npz`) still lives at
 `scripts/probes/_w2_fang_embed.py --tile-px 32`; `scripts/probes/_fm_parity_check.py`
 asserts the productized `src/` path reproduces that cached store bit-for-bit.
+
+### Deployable head + off-HiRISE map (PLAN_FM §2.6)
+
+The frozen recipe is validated under LOIO (a fresh head per fold); a *map* needs ONE
+head trained on all images. `src/modeling/mlp_head.py` productizes it: `DeployableHead`
+(the 3-seed `mlp_ens3`) trains on the full cohort, persists 3 seed state-dicts + feature
+scalers + a recipe card, and exposes `load`/`predict(emb)→prob`. `src/mapping.py` carries
+the off-HiRISE inference glue (windowed CTX read → tile grid → predict → 160 m GeoTIFF).
+
+```powershell
+# Train the deployable head on ALL images -> models/deployable/<recipe_hash>/
+& $conda run -n geospatial python scripts/train_deployable_head.py
+
+# Map pilot: predict rich/poor on a CTX region BEYOND HiRISE coverage. Windows a cohort
+# tile away from its footprint (reuses a cached tile zip; no download). Writes a GeoTIFF
+# (160 m, Mars CRS) + a 3-panel PNG to reports/.
+& $conda run -n geospatial python scripts/map_pilot.py --obs-id ESP_055253_2245 --win-px 3000
+```
+
+```python
+from src.fm_embeddings import FangEmbedder
+from src.mapping import predict_window, read_tile_window
+from src.modeling.mlp_head import DeployableHead
+
+head = DeployableHead.load("models/deployable/<recipe_hash>")   # recipe card self-describes
+window = read_tile_window(zip_path, inner_tif, row_off, col_off, size=3000)
+pred = predict_window(window, FangEmbedder.load(), head, tile_px=32)  # .raster, .transform
+```
+
+Grid note: tiles are anchored to the **parent Murray-tile** pixel origin, so `(ti, tj)`
+are unique within a tile; `tile_origin_transform` rebuilds that origin for georeferencing
+(passing the window affine directly double-counts the read offset). Cross-tile scale-out
+additionally keys placement on the Murray-tile id.
 
 ## Layout
 

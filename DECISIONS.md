@@ -3567,3 +3567,81 @@ Not yet frozen/productized -- Tier-2 freeze + the deployable head come with the
 map pilot (PLAN_FM 2.6). A calibration layer for the tail-compression is future
 work. Standing caveats unchanged (transductive pretraining; LOIO carries the
 selection caveat until the 2.3 confirmation).
+
+## 2026-06-14 -- Deployable head + map pilot (PLAN_FM 2.6 A-E): frozen recipe productized to a single all-data model; first off-HiRISE map rendered
+
+**2.6.A deployable head (NEW `src/modeling/mlp_head.py`).** The frozen `mlp_ens3`
+classifier lived only inside the LOIO probe harness (re-trained per fold). A map
+needs ONE model trained on ALL images, so the head is now productized:
+
+- `FeatureScaler` (median-impute + z-score, frozen-recipe parity), `build_mlp`,
+  `MLPClassifierHead` (one 768-256-64-1 BCE MLP, **Model-protocol compliant** so it
+  can also drop into the LOIO harness), and `DeployableHead` (the 3-seed ensemble).
+- `DeployableHead.fit(X, y, groups)` rotates one inner-val image PER SEED for early
+  stopping (seed s holds out `sorted(unique(groups))[s % n]`), so every image is
+  in-training for >= n_seeds-1 seeds and none is permanently excluded; `predict` =
+  mean of the seed sigmoid probs. This is each LOIO fold's exact procedure minus the
+  test fold -> same recipe, all data. `save`/`load` persist 3 seed state-dicts +
+  scalers + a self-describing recipe card (`recipe.json`, carries the frozen cell id
+  + LOIO numbers + a config-only `recipe_hash`).
+- **Perf fix applied** (handoff / `_fm_tier2_regression.py` PERF NOTE): batch 4096 +
+  full train tensor pinned to the device once. Batch size is NOT on the frozen recipe
+  card (which names arch/dropout/optimizer/target), so this is an implementation
+  choice, not a recipe change; the LOIO 0.7832 stands as the recipe's generalization
+  estimate. Trainer `scripts/train_deployable_head.py` assembles the all-38 emb-only
+  S=32 matrix by unioning the `loio_nfold` per-fold TEST slices (each image appears
+  once -> identical embeddings/labels/groups to the harness, no re-derivation).
+- **Trained & banked**: `models/deployable/86c51a5dca220f63/` (38 images,
+  pos_rate 0.36, 161,005 tiles, **76 s** for 3 seeds). In-sample sanity (NOT a
+  validation number) AUC 0.966, p|pos 0.85 vs p|neg 0.15; save/load round-trip
+  max |dp| = 2e-7.
+
+**2.6 B-E map pilot (NEW `src/mapping.py` + `scripts/map_pilot.py`).** First real
+exercise of the off-HiRISE inference path. A Murray tile is 4x4 deg (~237 km) vs a
+~6 km HiRISE footprint, so almost all of any cohort tile is beyond coverage -- and
+the tile zips are already cached, **so no download was needed** (the original plan
+budgeted one). The pilot windows a cohort tile adjacent to (not overlapping) one
+image's footprint, then runs `read_tile_window -> FangEmbedder.embed_window ->
+DeployableHead.predict -> tiles_to_raster -> GeoTIFF/PNG`.
+
+- Result (E4_N44, east of ESP_055253_2245, 3000-px window = 15 km): **8281 tiles,
+  all valid, embed+predict in 21 s**; mean P(rich)=0.117, >=0.5 share 0.001, max
+  0.78. Overwhelmingly poor -- the honest read for smooth plains beyond a rich
+  image's footprint -- but the P(rich) heatmap shows spatially-coherent elevated
+  patches that visibly track rougher CTX texture (the model responds to terrain,
+  not saturated). `reports/figures/map_pilot_E4_N44_ESP_055253_2245_east.png`,
+  GeoTIFF + JSON sidecar in `reports/map_pilot/`.
+- **Georef bug found by a post-render check + fixed** (regression-tested): the
+  per-tile `(ti, tj)` are anchored to the PARENT TILE pixel origin (CLAUDE.md Stage
+  4), but `predict_window` first passed the WINDOW affine (already offset to the
+  window corner) into `coarsened_transform`, which then re-added `tj_min*tile_px` ->
+  the read offset was double-counted (output xmin landed ~21,700 px / ~108 km too
+  far east). Fix: `tile_origin_transform` reconstructs the tile origin from the
+  window affine + read offset before coarsening. After the fix the output raster's
+  top-left sits 50-52 px (one context margin) inside the window edge, as expected;
+  CRS = Mars 2015 Equirectangular, pixel 160 m. Tests in `tests/test_mapping.py`
+  (`test_window_placement_not_double_counted`, `test_tile_origin_transform_*`).
+
+**Combine pattern (2.6.C) is unchanged-by-design**: `(ti, tj)` are unique within a
+tile; cross-tile scale-out additionally keys on the Murray-tile id (the §2.6 note's
+"global mosaic origin" assumption doesn't hold in the current code -- the grid is
+tile-anchored -- but for placement within one tile it's exact, and combine is just
+raster placement once the Murray-tile id is carried). Not built (pilot is one tile).
+
+Tests: +18 (11 `test_deployable_head.py`, 7 `test_mapping.py`); full fast suite
+**312 passed**. Caveats unchanged (transductive pretraining; the deployable model
+inherits the LOIO estimate as a conservative bound; §2.3 confirmation still pending
+the expansion-cohort BoulderNet runs). The §2.7 reliability overlay is the next
+buildable piece (the map currently has no trust layer).
+
+**QA notebooks (CLAUDE.md §7).** Added two, both built via `notebooks/_build_NN.py`
+and executed clean (0 error cells): **`21_map_pilot.ipynb`** (deployable recipe card
++ reload check; HONEST held-out truth-vs-model at S=32 from the banked LOIO
+predictions — anti-signal ESP_046328_2180 redeemed slim 0.344 → FM 0.748; the
+beyond-coverage map) and **`22_freeze_and_tier2.ipynb`** (the recipe-selection arc:
+head bake-off "trees are the wrong reader" + paired stats, the freeze + target
+transfer, Tier-2 single-stage `mlp_reg`, and the compression curve top-bin pred/true
+FM 0.71 vs handcrafted 0.55). A notebook audit vs §7 found target-distribution
+already covered (08/09/10/11/12); these two close the FM-program gaps. README +
+HANDOFF updated. Figures: `reports/figures/21_deployable_truth_vs_model.png`,
+`22_{head_bakeoff,tier2_skill,tier2_compression}.png`.

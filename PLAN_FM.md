@@ -121,8 +121,8 @@ smoothing control).
    torch-free; `replace=True` = emb-only). 15 pytest (full fast suite 292
    green); README + DATA_DICTIONARY. **Bit-exact parity** with the cached store
    the frozen 0.7832 was measured on (`scripts/probes/_fm_parity_check.py`). The
-   MLP *head* is not yet productized (still `_w2_fang_heads.py`) — fold into
-   item 4 / map pilot.
+   MLP *head* is now productized too — DONE 2026-06-14 in
+   `src/modeling/mlp_head.py` (item 6.A).
 3. **Pre-declared confirmation** (the promotion vehicle): write a dedicated
    DECISIONS.md declaration — gates, baseline, test protocol — **before any
    expansion-image number exists**. Recipe is frozen (from 1). Inputs:
@@ -191,9 +191,17 @@ smoothing control).
    - "what a map user gets": the operational framing for the Tier-1 map.
    Written after §3 confirmation so the headline numbers carry the
    held-out stamp.
-6. **Deployable head + map pilot** (spec'd 2026-06-12): the usability demo
-   PLAN_ModelUsability exists for; first real exercise of the §2-productized
-   inference path.
+6. **Deployable head + map pilot — DONE 2026-06-14** (DECISIONS.md
+   "Deployable head + map pilot"): `src/modeling/mlp_head.py`
+   (`DeployableHead`, banked `models/deployable/86c51a5dca220f63/`, 38 imgs,
+   in-sample sanity AUC 0.966, save/load round-trips) + `src/mapping.py` +
+   `scripts/{train_deployable_head,map_pilot}.py`. First off-HiRISE map rendered
+   (E4_N44 beyond ESP_055253_2245's footprint, no download — tile zips cached;
+   8281 tiles, 21 s; `reports/figures/map_pilot_E4_N44_*.png` + GeoTIFF). A
+   parent-tile-anchor georef double-count was found by a post-render check and
+   fixed (`tile_origin_transform`, regression-tested). +18 tests, fast suite 312.
+   The usability demo PLAN_ModelUsability exists for; first real exercise of the
+   §2-productized inference path. Original spec (kept for the scale-out TODO):
    - **A. Deployable head (PREREQUISITE, not yet built)**: today the frozen
      `mlp_ens3` exists only INSIDE the LOIO harness (re-trained per fold). A map
      needs ONE model trained on ALL 38. Productize the MLP head into `src/`

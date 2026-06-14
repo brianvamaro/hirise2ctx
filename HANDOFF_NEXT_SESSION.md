@@ -1,152 +1,142 @@
 # Handoff prompt — next session
 
-**Last updated 2026-06-13 — freeze (§2.1) + productization (§2.2) + Tier-2
-regression (§2.4) all DONE; §2.3/2.5/2.6/2.7 DESIGNED.** [PLAN_FM.md](PLAN_FM.md)
-is the active plan. Nothing is running; tree clean.
+**Last updated 2026-06-14 — §2.6 deployable head + map pilot DONE (A-E);
+§2.1 freeze + §2.2 productization + §2.4 Tier-2 already done; §2.3/2.5/2.7
+DESIGNED.** [PLAN_FM.md](PLAN_FM.md) is the active plan. Nothing is running;
+work is UNCOMMITTED (Brian sign-off before committing).
 
-**The critical-path bottleneck is on Brian's side:** any "confirmed" claim
-(§2.3) needs the expansion cohort run through BoulderNet (23 ObsIds in
-`cohort_expansion_candidates.csv`) — not yet done. Independent of that, the next
-BUILDABLE pieces (no expansion data needed) are:
-- **§2.6 deployable head + map pilot** — the recommended next build. Productize
-  the frozen `mlp_ens3` head into `src/` (train-on-all-38, save/load/predict —
-  it currently exists only inside the LOIO harness), then a map-pilot dry run on
-  one Murray tile beyond HiRISE coverage. Spec is in PLAN_FM §2.6 (incl. the
-  trivial multi-tile combine + the slice-streaming efficiency note). The visual
-  "it works" payoff.
-- **§2.7 reliability prototype** — CPU-only on the cached embeddings (Mahalanobis
-  / kNN novelty vs the frozen recipe's per-image AUC). Design fleshed in PLAN_FM
-  §2.7. Run it when the GPU is free; do NOT launch while a GPU chain is
-  overhead-bound (it makes the box CPU-bound).
-- **§2.3 declaration** can be WRITTEN any time (pre-data, that's the point) — the
-  confirm-then-absorb design + proposed gates are in PLAN_FM §2.3.
+**The critical-path bottleneck is still on Brian's side:** any "confirmed" claim
+(§2.3) needs the 23 expansion ObsIds (`cohort_expansion_candidates.csv`) run
+through BoulderNet — not yet done. Independent of that, the next BUILDABLE piece
+(no expansion data) is:
+- **§2.7 reliability overlay — the recommended next build.** The map pilot
+  (below) currently has NO trust layer. Prototype the embedding-novelty score
+  (Mahalanobis / kNN to the training embedding cloud), CPU-only on the cached
+  embeddings, validated by rank-correlating per-image novelty against the
+  **frozen recipe's own** per-image AUC (does novelty flag where the FM
+  underperforms?). Design fleshed in PLAN_FM §2.7. LOIO-honest by construction.
+  Then add it as the map's reliability overlay (`predict_window` already returns
+  per-tile keys to attach it to).
+- **§2.5 report prose** — skeleton in `docs/model_evidence.md`; the map pilot
+  now gives it a real example-prediction figure. Headline numbers get the
+  held-out stamp only AFTER §2.3.
+- **§2.3 declaration** can be WRITTEN any time (pre-data) — confirm-then-absorb
+  design + proposed gates in PLAN_FM §2.3.
 
-Done since the last handoff (commits 9619510, 61184fd, a3a125c): §2.3
-confirm-then-absorb design, §2.5 report skeleton (`docs/model_evidence.md`),
-§2.6/§2.7 specs, and the §2.4 Tier-2 run (below).
+## What landed THIS session (2026-06-14; DECISIONS.md 2026-06-14)
 
-**§2.2 productization (commit 032fa75):** `src/fm_embeddings.py` (ViT + GeM +
-3×3-context slicing + `FangEmbedder.embed_window` inference path),
-`src/modeling/loaders.py` cached-store join, `tests/test_fm_embeddings.py`.
-**Bit-exact parity** vs the cached store (`scripts/probes/_fm_parity_check.py`).
+**§2.6.A deployable head — `src/modeling/mlp_head.py` (NEW).** The frozen
+`mlp_ens3` classifier was only inside the LOIO probe harness; now productized:
+`FeatureScaler` (median-impute+zscore parity), `MLPClassifierHead`
+(Model-protocol — also drops into the LOIO harness), `DeployableHead` (3-seed
+ensemble, train-on-all). `fit(X,y,groups)` rotates one inner-val image PER SEED
+for early stopping (every image in-training for ≥2 of 3 seeds); `predict` = mean
+seed sigmoid; `save`/`load` persist 3 state-dicts + scalers + `recipe.json`
+(frozen cell id, LOIO numbers, config-only `recipe_hash`). **Perf fix applied**
+(batch 4096 + train tensor on device once; batch is NOT on the frozen recipe
+card → impl-only, LOIO 0.7832 stands). Trainer `scripts/train_deployable_head.py`
+builds the all-38 emb-only S=32 matrix by unioning the `loio_nfold` per-fold TEST
+slices. **Banked `models/deployable/86c51a5dca220f63/`** (38 imgs, 161k tiles,
+76 s; in-sample sanity AUC 0.966 — NOT validation; round-trip 2e-7).
 
-**§2.4 Tier-2 regression (commit a3a125c; DECISIONS.md 2026-06-13):** single-stage
-`mlp_reg` (3-seed MLP regressor) wins (Spearman 0.431 fa / 0.386 count, ~2× the
-handcrafted baseline); the two-stage hurdle is DROPPED; regression matches the
-classifier on rich/poor (meaningful_auc 0.78). Ceiling tested — zero-inflation
-is NOT the limiter; compression quantified (~30% tail under-prediction, less than
-handcrafted) → a calibration layer is future work. `_fm_tier2_regression.py` +
-`_fm_tier2_ceiling.py`. A code review caught + fixed a metrics bug (count was
-scored as presence; fix commit 61184fd, [[feedback_no_presence_auc]]).
+**§2.6 B-E map pilot — `src/mapping.py` + `scripts/map_pilot.py` (NEW).** First
+off-HiRISE inference. Murray tiles are 4°×4° (~237 km) vs ~6 km footprints and
+the tile zips are STILL cached in `cache_v2/ctx_tiles/`, **so NO download was
+needed**. Pilot windows a cohort tile beyond its footprint → `read_tile_window`
+→ `FangEmbedder.embed_window` → `DeployableHead.predict` → `tiles_to_raster` →
+GeoTIFF+PNG. Result E4_N44 east of ESP_055253_2245 (15 km, 8281 tiles, 21 s):
+mean P(rich) 0.117, ≥0.5 share 0.001 (honest "mostly poor plains"), heatmap
+patches track CTX texture. Outputs:
+`reports/figures/map_pilot_E4_N44_ESP_055253_2245_east.png` + GeoTIFF/JSON in
+`reports/map_pilot/`. **Georef bug found by a post-render check + fixed**: `(ti,
+tj)` are PARENT-TILE-anchored, but `predict_window` passed the WINDOW affine
+(already offset) into `coarsened_transform` → offset double-counted (~108 km off);
+fix = `tile_origin_transform` rebuilds the tile origin first; regression-tested.
+
+**Tests +18** (11 `test_deployable_head.py`, 7 `test_mapping.py`); **full fast
+suite 312 passed**.
+
+**QA notebooks (+2, executed clean).** `notebooks/21_map_pilot.ipynb` (deployable
+card + honest held-out truth-vs-model at S=32 + the beyond-coverage map) and
+`notebooks/22_freeze_and_tier2.ipynb` (head bake-off → freeze → Tier-2 +
+compression curve) — both built via `_build_{21,22}.py`. A §7 notebook audit found
+target-distribution already covered (08/09/10/11/12); these close the FM-program
+gaps. README updated with the new commands + notebook list.
+
+## Earlier-session context (still true)
+
+**FROZEN RECIPE (Brian sign-off; DECISIONS.md "Freeze window CLOSED"):**
+`mlp_ens3` (3-seed MLP 768-256-64-1, dropout 0.2, BCE pos_weight, AdamW
+lr1e-3/wd1e-4, ES patience 8 on rotated inner-val, mean of 3) on the **S=32 96-px
+3×3-context GeM(p=3) 768-dim emb-only** matrix, target `fa_gt_1e-2`. Banked LOIO
+`models/fang_probe/fw_emb_mlp_ens3_gem96_S32_fa_gt_1e-2/`: pooled PR-AUC
+**0.7832** / prec@5% **0.948** / med per-image AUC **0.7865** / dAUC(v) +0.120 /
+win 0.96, both gates PASS. npz naming: **P96 = S=32 3×3 context** (the frozen one).
+
+**§2.4 Tier-2 (DONE):** single-stage `mlp_reg` wins (Spearman 0.431 fa); hurdle
+DROPPED; meaningful_auc 0.78 ≈ classifier. Tier-2 freeze/productize + a
+tail-compression calibration layer remain future work (fold into the deployable
+path when needed).
 
 Working dir: `c:\Users\brian\Documents\PhD\HiRiseToCTXBoulders\hirise2ctx`.
 Conda: `C:\Users\brian\anaconda3\Scripts\conda.exe run --no-capture-output -n geospatial python -u ...`
 
-## FROZEN RECIPE (Brian sign-off; DECISIONS.md "Freeze window CLOSED")
+## Key tooling (all on disk; UNCOMMITTED this session's additions)
 
-Banked: `models/fang_probe/fw_emb_mlp_ens3_gem96_S32_fa_gt_1e-2/`.
-
-- **Scale S=32** (160 m tiles, 4× finer than S=64).
-- **Embedding**: the **96-px (3×3-context)** CTX window → frozen Fang-ViT
-  ViT-B/16 (MAE+DINO, Zenodo 18180801) → **GeM(p=3) → one 768-dim vector**.
-  **emb-only** — NO own-tile P32, NO handcrafted features. Inference path =
-  one embedding vector → MLP (no GLCM/gradient/shadow at map time).
-- **Head `mlp_ens3`**: 3-seed MLP 768-256-64-1, dropout 0.2, BCE pos_weight,
-  AdamW lr1e-3 wd1e-4, early-stop patience 8 on rotated inner-val; mean of 3
-  seed probabilities. Per-fold standardize on train.
-- **Target `fa_gt_1e-2`** (fractional_area > 0.01).
-- **Numbers**: pooled PR-AUC **0.7832** / prec@5% **0.948** / median
-  per-image AUC **0.7865** / dAUC(v) +0.120 / win 0.96; both gates PASS.
-
-## Freeze-window evidence (PLAN_FM §2.1, all DONE; DECISIONS.md has tables)
-
-- **1b target re-read**: FM advantage transfers to EVERY non-degenerate
-  target (each vs its OWN Tier-1): fa_gt_1e-2 0.804 / fa_gt_1e-3 0.918 /
-  bc_ge_50 0.826 / bc_ge_100 0.731 — all pass both gates. **`bc_ge_1` was
-  the wrong count target** (Brian, this session): saturated at S=64 (0.93
-  positive = presence), gates fail. Replaced with data-grounded
-  bc_ge_50/bc_ge_100 (`scripts/probes/_fm_count_dist.py`; both registered in
-  `src/modeling/binary_target.py`). Reverses the W0 "count beats area"
-  finding (held only under handcrafted features). Target = Brian's scientific
-  call; frozen on fa_gt_1e-2 for continuity.
-- **1d pool×head**: GeM 0.8040 > mean 0.8015 > cls 0.7900 under the MLP.
-- **1e** (all three add-ons REJECTED): arch sweep mid-pack/none separable →
-  default 256×64/d0.2 kept; calibration layer net-harmful (per-image rank →
-  pooled 0.5056; the 3-seed mean already fixes the wobble); cross-head
-  ensemble dilutes. Plain mlp_ens3 wins.
-- **1g operating-scale**: S=32 holds skill (both gates) AND feature
-  elimination is FREE at S=32 (emb-only ties t1ctx; the 1f +2-pt gap
-  dissolves). S=64 t1ctx is the higher headline (0.8040/0.8284) but Brian
-  chose the 4× finer map. 1h (320-px) skipped as moot.
-
-## Key tooling (all committed)
-
-- `scripts/probes/_fm_freeze_window.py` — freeze-window runner (run/eval/pair).
-- `scripts/probes/_fm_tier2_regression.py` — Tier-2 regression runner (mlp_reg +
-  LGBM single/two-stage); `_fm_tier2_ceiling.py` — ceiling/compression analysis.
-- `scripts/probes/_fm_count_dist.py` — per-tile boulder_count distribution.
-- `src/fm_embeddings.py` — productized inference path; `src/modeling/loaders.py`
-  fang cached-store join; `src/modeling/binary_target.py` has `bc_ge_50/100`.
-- (AskUserQuestion before commits / expensive sweeps / env mutation.)
+- `src/modeling/mlp_head.py` — productized head + `DeployableHead` (save/load).
+- `scripts/train_deployable_head.py` — train-on-all; banks `models/deployable/`.
+- `src/mapping.py` — windowed read, own-tile nodata, (ti,tj)→raster,
+  `tile_origin_transform`/`coarsened_transform`, `predict_window`, `write_geotiff`.
+- `scripts/map_pilot.py` — one-tile off-HiRISE map (auto-places window beyond a
+  footprint; nodata-aware candidate search; renders 3-panel PNG + GeoTIFF).
+- `src/fm_embeddings.py` (§2.2) — ViT + GeM + `embed_window`; `src/modeling/loaders.py`
+  fang cached-store join; `scripts/probes/_fm_freeze_window.py` (freeze runner).
 
 ## Next-session queue — PLAN_FM.md §2 is authoritative
 
-DONE: §2.1 freeze, §2.2 productization (032fa75), §2.4 Tier-2 regression
-(a3a125c) + the metrics fix (61184fd). DESIGNED: §2.3/2.5/2.6/2.7 (PLAN_FM).
-Remaining, in suggested order:
+DONE: §2.1 freeze, §2.2 productization, §2.4 Tier-2, **§2.6 deployable head +
+map pilot**. DESIGNED: §2.3/2.5/2.7. Remaining, suggested order:
 
-1. **§2.6 deployable head + map pilot — RECOMMENDED next build** (no expansion
-   data needed). (a) Productize the frozen `mlp_ens3` head into `src/`:
-   train-on-all-38, save/load/predict — it's currently only inside the LOIO
-   harness (`_w2_fang_heads.py`). Apply the MLP perf fix (batch 4096 +
-   tensors-on-device-once; see `_fm_tier2_regression.py` PERF NOTE). (b) Map-pilot
-   dry run on one Murray tile beyond HiRISE coverage. Full spec (incl. the trivial
-   multi-tile combine + slice-streaming) in PLAN_FM §2.6.
-2. **§2.7 reliability prototype** — CPU-only on cached embeddings
-   (Mahalanobis/kNN novelty vs the frozen recipe's per-image AUC). Design in
-   PLAN_FM §2.7. Run when GPU is free.
-3. **§2.3 pre-declared confirmation** — the *declaration* (gates/baseline/protocol)
-   can be WRITTEN any time before data; the *execution* waits on Brian running
-   BoulderNet on the 23 expansion ObsIds (`cohort_expansion_candidates.csv`).
-   Protocol = confirm-then-absorb (tentative; permanent-holdout re-check flagged).
-4. **§2.5 model-evidence report** — skeleton done (`docs/model_evidence.md`); fill
-   the prose; headline numbers get the held-out stamp AFTER §2.3 confirmation.
-5. Optional/gated: a Tier-2 calibration layer for the tail compression; MOMO
-   disjoint-corpus probe; ViT fine-tune (decide after §2.3); per-image-std
-   embeddings (deferred).
+1. **§2.7 reliability overlay — RECOMMENDED next build** (no expansion data,
+   CPU-only). Mahalanobis/kNN embedding-novelty vs the frozen recipe's per-image
+   AUC; attach per-tile to the map. PLAN_FM §2.7.
+2. **§2.5 model-evidence report** — fill `docs/model_evidence.md` prose; the map
+   pilot supplies a real "predict beyond coverage" figure. Headline numbers get
+   the held-out stamp after §2.3.
+3. **§2.3 pre-declared confirmation** — write the declaration now; execution waits
+   on Brian's BoulderNet runs on the 23 expansion ObsIds. Confirm-then-absorb.
+4. Optional/gated: Tier-2 freeze + tail-compression calibration; full-Murray-tile
+   map scale-out (the combine pattern needs the Murray-tile id carried alongside
+   `(ti,tj)` — see DECISIONS.md 2026-06-14); MOMO disjoint-corpus probe; ViT
+   fine-tune (decide after §2.3).
 
 ## Discipline now binding (PLAN_FM §3)
 
 **No more recipe shopping on the 38 images.** The recipe is frozen; the next
 number that touches it is the §2.3 pre-declared confirmation on held-out
-expansion images. Misses recorded as declared.
+expansion images. Misses recorded as declared. The deployable head trains the
+SAME recipe on all data — not a new dev cell.
 
 ## Critical gotchas (carry forward)
 
-- `conda run` needs `--no-capture-output` + `python -u`; multi-line
-  `python -c` FAILS on Windows ("arguments contain newlines") — write a probe
-  script. Bare `python` is NOT on PATH (only inside the env).
+- **Don't `cd` in the Bash tool** — it persists and poisons subsequent relative
+  paths (cost ~20 min this session chasing phantom "missing data"). Use absolute
+  paths; the data in `cache_v2/` is all present (24 tile zips, 39 windows).
+- `conda run` needs `--no-capture-output` + `python -u`; multi-line `python -c`
+  FAILS on Windows. Bare `python` not on PATH (only inside the env).
 - `import src.modeling` BEFORE numpy/pandas in torch-adjacent scripts.
-- npz naming encodes INPUT px: P64/P192 = S=64 tiles, P32/P96 = S=32. The
-  frozen recipe uses **P96** (S=32 3×3 context).
-- `EmbeddingBank`/join keyed on (obs_id, ti, tj), validate="one_to_one".
-- `KNNHead` does NOT standardize/impute → collapses on the mixed-scale t1ctx
-  matrix (0.56 vs 0.77 gem-only). Irrelevant to the frozen recipe (emb-only,
-  MLP) but don't reuse KNNHead on mixed features.
-- Group-aware LOIO always; inference features must be CTX-derivable
-  (embeddings are, mosaic-global).
-- Per-image AUC ±0.1–0.2 fold-ripple error bars; carry n_pos/n_neg.
-- AskUserQuestion before: expensive sweeps, env mutation, commits.
-- Run only ONE GPU job at a time (chains here were sequenced via watchers).
-- MLP cells at S=32 are SLOW (~15 min ea) but only because the tiny net is
-  overhead-bound (GPU ~15% util) over 147k rows × 3 seeds × 38 folds — NOT a
-  stall. Speed up ~3–5× next time: batch 4096 + pin full Xt/yt on the device
-  once (see `_fm_tier2_regression.py` MLPRegressorEnsemble PERF NOTE).
-- Fast pytest baseline 265 (full 285) + 8 CNN tests; no tests for the
-  probe-tier Fang/freeze scripts (add during productization).
+- Map grid is **PARENT-TILE-anchored** (not global-mosaic), so georef must go
+  through `tile_origin_transform`; cross-tile combine needs the Murray-tile id.
+- `EmbeddingBank`/store join keyed on (obs_id, ti, tj), validate="one_to_one".
+- Group-aware LOIO always; inference features must be CTX-derivable (embeddings
+  are, mosaic-global). Per-image AUC ±0.1-0.2 fold-ripple error bars.
+- **AskUserQuestion before: commits, expensive sweeps, env mutation.**
+- Run only ONE GPU job at a time. The deployable train is ONE run (~76 s); the
+  map pilot is ONE GPU run (~21 s) — neither is a sweep.
+- Fast pytest 312 (was 265 pre-FM) + slow CNN/checkpoint tests deselected.
 
 ## Reporting protocol
 
-1. DECISIONS.md — one entry per item with numbers (freeze entry exists).
-2. Memory — `project_state_2026-06-12-freeze.md` is CURRENT.
+1. DECISIONS.md — entry per item with numbers (2026-06-14 entry exists).
+2. Memory — `project_state_2026-06-14.md` is CURRENT.
 3. This file — rewrite based on what actually lands.
