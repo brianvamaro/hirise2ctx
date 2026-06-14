@@ -564,6 +564,7 @@ def run_loio(
     fold_iter: FoldIterator | None = None,
     snapshot: dict | None = None,
     verbose: bool = True,
+    meaningful_threshold: float = 1e-2,
 ) -> RunResult:
     """Run LOIO CV. Returns predictions + per-fold + aggregated metrics.
 
@@ -573,6 +574,15 @@ def run_loio(
 
     `scale_idx=None` uses all scales concatenated; pass an int to train per-scale
     models (PLAN_modeling.md §6 Option A).
+
+    `meaningful_threshold` (regression task only) is the rich/poor cut applied to
+    `y_true` for the operational ranking metrics (`meaningful_auc`, `pr_auc`,
+    precision@k). It is TARGET-DEPENDENT and must be set by the caller for any
+    target other than `fractional_area`: the default `1e-2` is the fractional-area
+    boulder-rich cut (1% areal coverage), but applied to a `boulder_count` target
+    it would collapse to `count > 0.01` == presence (count >= 1), which is
+    degenerate and not the scientific question. E.g. pass `meaningful_threshold=50`
+    for a count target.
 
     Stage 5b classification mode: pass `task="classification"` plus a `binarize`
     callable mapping a y dataframe to a 0/1 int8 array (typically
@@ -634,7 +644,8 @@ def run_loio(
                 held_out_obs_ids=fold.held_out_obs_ids,
             )
         else:
-            m = per_fold_metrics(y_test, y_pred, held_out_obs_ids=fold.held_out_obs_ids)
+            m = per_fold_metrics(y_test, y_pred, held_out_obs_ids=fold.held_out_obs_ids,
+                                 meaningful_threshold=meaningful_threshold)
         m["fold_idx"] = fold.fold_idx
         m["scale_idx"] = fold.scale_idx if fold.scale_idx is not None else -1
         m["model_name"] = getattr(model, "name", type(model).__name__)
