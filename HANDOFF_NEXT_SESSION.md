@@ -1,29 +1,44 @@
 # Handoff prompt — next session
 
-**Last updated 2026-06-14 — §2.6 deployable head + map pilot DONE (A-E);
-§2.1 freeze + §2.2 productization + §2.4 Tier-2 already done; §2.3/2.5/2.7
-DESIGNED.** [PLAN_FM.md](PLAN_FM.md) is the active plan. Nothing is running;
-work is UNCOMMITTED (Brian sign-off before committing).
+**Last updated 2026-06-14b — §2.7 reliability overlay BUILT + LOIO-validated,
+result NEGATIVE at n=38 → overlay DEFERRED; §2.6 deployable head + map pilot DONE
+(committed baf65ef); §2.1 freeze + §2.2 productization + §2.4 Tier-2 done;
+§2.3/2.5 DESIGNED.** [PLAN_FM.md](PLAN_FM.md) is the active plan. This session's
+§2.7 work is UNCOMMITTED (Brian sign-off before committing).
 
 **The critical-path bottleneck is still on Brian's side:** any "confirmed" claim
 (§2.3) needs the 23 expansion ObsIds (`cohort_expansion_candidates.csv`) run
-through BoulderNet — not yet done. Independent of that, the next BUILDABLE piece
-(no expansion data) is:
-- **§2.7 reliability overlay — the recommended next build.** The map pilot
-  (below) currently has NO trust layer. Prototype the embedding-novelty score
-  (Mahalanobis / kNN to the training embedding cloud), CPU-only on the cached
-  embeddings, validated by rank-correlating per-image novelty against the
-  **frozen recipe's own** per-image AUC (does novelty flag where the FM
-  underperforms?). Design fleshed in PLAN_FM §2.7. LOIO-honest by construction.
-  Then add it as the map's reliability overlay (`predict_window` already returns
-  per-tile keys to attach it to).
-- **§2.5 report prose** — skeleton in `docs/model_evidence.md`; the map pilot
-  now gives it a real example-prediction figure. Headline numbers get the
-  held-out stamp only AFTER §2.3.
+through BoulderNet — not yet done. The next BUILDABLE pieces (no expansion data):
+- **§2.5 report prose — the recommended next build.** Skeleton in
+  `docs/model_evidence.md`; the map pilot gives it a real predict-beyond-coverage
+  figure. Headline numbers get the held-out stamp only AFTER §2.3.
 - **§2.3 declaration** can be WRITTEN any time (pre-data) — confirm-then-absorb
   design + proposed gates in PLAN_FM §2.3.
+- **§2.7 reliability overlay — DONE (validation) + DEFERRED (wiring).** Built
+  `src/reliability.py` (Mahalanobis + kNN, +10 tests) and validated per-image
+  novelty against the frozen recipe's OWN per-image AUC. **Bar NOT cleared at
+  n=38** (Maha rho −0.108 p0.52 / kNN −0.141 p0.40; bottom-5 flag prec 0.00):
+  the FM already absorbed the covariate-shift class, so novelty and skill are
+  decoupled (most-novel image ESP_076499_1160 is a FM *winner*, AUC 0.868; the
+  weakest image is texturally ordinary). Novelty is a valid OOD flag but NOT an
+  accuracy predictor → Brian DEFERRED wiring it into the map; re-run the SAME
+  validation (`scripts/probes/_fm_reliability_validation.py`) when the expansion
+  cohort lands. Map stays trust-layer-less. DECISIONS.md "2026-06-14b".
 
-## What landed THIS session (2026-06-14; DECISIONS.md 2026-06-14)
+## What landed in the §2.7 session (2026-06-14b; DECISIONS.md 2026-06-14b)
+
+- `src/reliability.py` — `MahalanobisNovelty` (PCA-whitened top-256) + `KNNNovelty`
+  (cosine k=50, subsampled ref); NaN-safe, deterministic; `aggregate_per_image`.
+- `scripts/probes/_fm_reliability_validation.py` (LOIO novelty vs frozen per-image
+  AUC, writes `reports/figures/27_reliability_validation.png` +
+  `reports/reliability/per_image_novelty.csv`); `_fm_reliability_inspect.py`
+  (confound diagnosis); `_fm_reliability_smoke.py`.
+- `tests/test_reliability.py` (+10, all pass).
+- Verdict: NEGATIVE at n=38 → overlay deferred (see top summary + DECISIONS).
+- Store-location gotcha confirmed: P96 embeddings live in
+  `dataset_v2/fang_embeddings`, pass `dataset_dir=REPO/"dataset_v2"`.
+
+## What landed earlier (§2.6; 2026-06-14; DECISIONS.md 2026-06-14)
 
 **§2.6.A deployable head — `src/modeling/mlp_head.py` (NEW).** The frozen
 `mlp_ens3` classifier was only inside the LOIO probe harness; now productized:
@@ -95,16 +110,19 @@ Conda: `C:\Users\brian\anaconda3\Scripts\conda.exe run --no-capture-output -n ge
 ## Next-session queue — PLAN_FM.md §2 is authoritative
 
 DONE: §2.1 freeze, §2.2 productization, §2.4 Tier-2, **§2.6 deployable head +
-map pilot**. DESIGNED: §2.3/2.5/2.7. Remaining, suggested order:
+map pilot**, **§2.7 reliability validation (negative → overlay deferred)**.
+DESIGNED: §2.3/2.5. Remaining, suggested order:
 
-1. **§2.7 reliability overlay — RECOMMENDED next build** (no expansion data,
-   CPU-only). Mahalanobis/kNN embedding-novelty vs the frozen recipe's per-image
-   AUC; attach per-tile to the map. PLAN_FM §2.7.
-2. **§2.5 model-evidence report** — fill `docs/model_evidence.md` prose; the map
-   pilot supplies a real "predict beyond coverage" figure. Headline numbers get
-   the held-out stamp after §2.3.
-3. **§2.3 pre-declared confirmation** — write the declaration now; execution waits
+1. **§2.5 model-evidence report — RECOMMENDED next build** (no expansion data).
+   Fill `docs/model_evidence.md` prose; the map pilot supplies a real "predict
+   beyond coverage" figure. Headline numbers get the held-out stamp after §2.3.
+2. **§2.3 pre-declared confirmation** — write the declaration now; execution waits
    on Brian's BoulderNet runs on the 23 expansion ObsIds. Confirm-then-absorb.
+3. **§2.7 reliability overlay re-run (post-expansion)** — `src/reliability.py` +
+   `scripts/probes/_fm_reliability_validation.py` are built and tested; the n=38
+   validation came back negative (FM decoupled novelty from skill). Re-run the
+   SAME validation once the cohort expands; only wire the per-tile overlay into
+   `predict_window` if it clears the bar then. PLAN_FM §2.7 / DECISIONS 2026-06-14b.
 4. Optional/gated: Tier-2 freeze + tail-compression calibration; full-Murray-tile
    map scale-out (the combine pattern needs the Murray-tile id carried alongside
    `(ti,tj)` — see DECISIONS.md 2026-06-14); MOMO disjoint-corpus probe; ViT

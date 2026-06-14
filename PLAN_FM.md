@@ -229,8 +229,22 @@ smoothing control).
      PNG rich/poor (or abundance) map at 160 m + reliability overlay.
    - **E. Pilot scope**: ONE Murray tile beyond HiRISE coverage end-to-end —
      proves the inference path AND the combine pattern before any scale-out.
-7. **Reliability via embedding-space novelty** (design fleshed 2026-06-12;
-   CPU-prototypable on cached embeddings, no GPU): a label-free per-tile
+7. **Reliability via embedding-space novelty — VALIDATED 2026-06-14; overlay
+   DEFERRED to post-expansion** (DECISIONS.md "2026-06-14b"). Built
+   `src/reliability.py` (Mahalanobis + kNN, +10 tests) and the LOIO validation
+   (`scripts/probes/_fm_reliability_validation.py`). **Pre-registered bar NOT
+   cleared at n=38**: per-image novelty vs the frozen recipe's OWN per-image AUC
+   = Mahalanobis rho −0.108 (p=0.52) / kNN-cos50 rho −0.141 (p=0.40), bottom-5
+   flag prec 0.00. Right direction, insignificant. **Cause = the FM decoupled
+   novelty from skill**: it already absorbed the covariate-shift class, so the
+   most-novel image (ESP_076499_1160, rank 1/38) is a FM *winner* (AUC 0.868)
+   while the weakest (ESP_045983_2270, AUC 0.564) is texturally ordinary
+   (intrinsic difficulty, invisible to a novelty detector). Novelty IS a valid
+   OOD/extrapolation flag but NOT an accuracy predictor → **deferred** rather
+   than ship a weakly-justified trust layer; re-run this same validation when the
+   §3 expansion images land (n=38 underpowered). Map stays trust-layer-less.
+   Original design (kept for the rerun):
+   a label-free per-tile
    "is this CTX texture like what I trained on?" score — the deployment-time
    answer to *where* on the map to trust the prediction (the confirmation says
    it generalizes on average; this says where). Replaces the retired

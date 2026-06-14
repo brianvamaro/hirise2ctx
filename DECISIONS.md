@@ -3645,3 +3645,46 @@ FM 0.71 vs handcrafted 0.55). A notebook audit vs §7 found target-distribution
 already covered (08/09/10/11/12); these two close the FM-program gaps. README +
 HANDOFF updated. Figures: `reports/figures/21_deployable_truth_vs_model.png`,
 `22_{head_bakeoff,tier2_skill,tier2_compression}.png`.
+
+## 2026-06-14b -- Reliability overlay (PLAN_FM 2.7): novelty VALIDATED as an OOD detector but NOT as a per-image skill predictor at n=38 -> overlay DEFERRED to post-expansion
+
+**Built (CPU-only, no GPU, no expansion data):** `src/reliability.py` -- two
+label-free per-tile embedding-novelty scorers over the frozen 768-d GeM cloud:
+`MahalanobisNovelty` (distance to the training mean in a PCA-whitened top-256
+subspace; truncation = shrinkage) and `KNNNovelty` (mean cosine distance to the
+k=50 nearest training tiles, reference subsampled to 20k). Both NaN-safe (margin
+tiles score NaN) and deterministic. +10 tests (`tests/test_reliability.py`).
+
+**Validation (`scripts/probes/_fm_reliability_validation.py`), LOIO-honest by
+construction:** for each held-out image, fit novelty on the other 37's tiles,
+score the held-out tiles (capped 3000/image for a stable median), aggregate to a
+per-image median novelty, then **Spearman vs the FROZEN RECIPE's OWN per-image
+AUC** (read from the banked `fw_emb_mlp_ens3_gem96_S32_fa_gt_1e-2/predictions.parquet`;
+38 images both-class, AUC range 0.564-0.919, median 0.787). Pre-registered bar
+(PLAN_FM 2.7): novelty must predict where the FM ITSELF underperforms.
+
+**Verdict -- bar NOT cleared:** Mahalanobis rho=-0.108 (p=0.52), kNN-cos50
+rho=-0.141 (p=0.40); bottom-5-AUC flag precision 0.00 for both. Direction is
+correct (more novel -> lower AUC) but insignificant at n=38.
+
+**Why (structural, and a good-news FM story):** the FM already absorbed the
+covariate-shift failure mode (W1 `distribution_shift` class, +0.18-0.22 dAUC), so
+on the 38 images **novelty and skill are decoupled**. Evidence:
+- The single most-novel image is a FM *winner*: ESP_076499_1160 (the azimuth
+  outlier) is novelty rank **1/38** (Maha 37.1 vs ~14-20 for the rest) yet has
+  **AUC 0.868** -- genuinely OOD terrain the FM handles well. Dropping it only
+  moves rho to -0.174 (p=0.30) / -0.210 (p=0.21): still insignificant.
+- The weakest image, ESP_045983_2270 (AUC 0.564), has one of the LOWEST novelty
+  scores (13.9) -- intrinsic (texture/sensor-floor) difficulty, not OOD, which a
+  novelty detector cannot see.
+
+**Decision (Brian, 2026-06-14): DEFER the overlay until the cohort expands.**
+Novelty IS a valid OOD/extrapolation flag (correctly ranks the known outlier #1)
+but must NOT be sold as an accuracy predictor; rather than ship a weakly-justified
+trust layer on the map, bank the negative result and re-run this same validation
+when the §2.3 expansion images land (n=38 is underpowered -- direction right, CI
+wide). The map stays trust-layer-less for now. The module + validation + figure
+(`reports/figures/27_reliability_validation.png`,
+`reports/reliability/per_image_novelty.csv`) are kept as the ready-to-rerun
+record. `predict_window` already returns per-tile `(ti,tj)` keys, so wiring is a
+small follow-up if the post-expansion validation passes.
