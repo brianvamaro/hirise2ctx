@@ -151,23 +151,25 @@ smoothing control).
      — NOT presence, [[feedback_no_presence_auc]])**: pooled ΔPR-AUC ≥ +0.03 /
      per-image ΔAUC median ≥ +0.05 / Wilcoxon p < 0.05; win-rate reported.
      Finalize at declaration time. Misses recorded as declared (house rule).
-4. **Tier-2 on the new feature set — RUNNER BUILT 2026-06-12, NOT yet run**
-   (Brian: design now, compute later): calibrated-abundance regression on the
-   frozen emb-only S=32 features. `scripts/probes/_fm_tier2_regression.py`
-   (smoke-tested) wires three heads into the regression harness — `mlp_reg`
-   (NEW: 3-seed MLP regressor, the frozen mlp_ens3's regression analog,
-   single-stage), `lightgbm_tweedie` (single-stage), `lightgbm_two_stage_balanced`
-   (incumbent hurdle) — each vs the matching Tier-1 handcrafted baseline
-   (`--features t1`). Central question: does the hurdle still earn its
-   complexity with stronger features, or is single-stage now sufficient
-   ([[modeling_single_stage_future]])? Watch dynamic-range COMPRESSION
-   (notebook 12) via per-bin RMSE + calibration. **When run, use BOTH targets**
-   (`fractional_area` + `boulder_count`/log1p — Brian). Metrics already emitted
-   by the harness: Spearman ρ, per-bin RMSE, and the OPERATIONALLY MEANINGFUL
-   rich/poor metrics (`meaningful_auc`/`pr_auc`@1e-2/precision@5%). **NOT
-   presence AUC** — detecting one boulder is degenerate at S=32 and
-   scientifically uninteresting (Brian; [[feedback_no_presence_auc]], same trap
-   as bc_ge_1). ~5–6 LOIO cells (2 MLP = the only real compute).
+4. **Tier-2 on the new feature set — DONE 2026-06-13** (DECISIONS.md
+   "Tier-2 regression"): calibrated-abundance regression on the frozen emb-only
+   S=32 features, 3 heads × 2 targets × {emb, t1}.
+   `scripts/probes/_fm_tier2_regression.py` (+ `_fm_tier2_ceiling.py`).
+   **Verdicts**: (a) `mlp_reg` (NEW 3-seed MLP regressor) wins regression too
+   (Spearman 0.431 fa / 0.386 count); (b) FM ~2× the handcrafted baseline
+   (mlp fa 0.431 vs t1 0.223); (c) **single-stage beats the hurdle** — `mlp_reg`
+   ≫ two-stage (0.431 vs 0.329); hurdle DROPPED ([[modeling_single_stage_future]]
+   confirmed); (d) regression matches the classifier on rich/poor
+   (meaningful_auc 0.78 ≈ classifier 0.7865) — calibrated magnitude ~free.
+   **Ceiling tested** (Brian): zero-inflation is NOT the limiter (16% exact-zeros
+   at S=32; removing them moves ρ by ~0.01) — the wall is intrinsic
+   magnitude-ranking difficulty; NDCG@5% 0.50 vs t1 0.35. **Compression
+   quantified**: under-predicts the high tail ~30% (top-bin pred/true 0.71; FM
+   compresses less than handcrafted 0.55) → a calibration layer is future work.
+   Metrics bug found+fixed in review (count `meaningful_threshold` was presence;
+   threaded through `run_loio`, [[feedback_no_presence_auc]]). The single-stage
+   `mlp_reg` is the Tier-2 candidate; freeze/productize + the calibration layer
+   come with the map pilot (2.6).
 5. **Model-evidence report** (Brian, 2026-06-12; must land BEFORE the map
    pilot): a standalone persuasion-grade document (docs/, slimmer-doc
    register) whose explicit job is to convince a skeptical reader
@@ -189,14 +191,62 @@ smoothing control).
    - "what a map user gets": the operational framing for the Tier-1 map.
    Written after §3 confirmation so the headline numbers carry the
    held-out stamp.
-6. **Map pilot**: one Murray tile beyond HiRISE coverage, end-to-end
-   (window → embed → predict → map PNG + reliability overlay). The
-   usability demo PLAN_ModelUsability exists for; also the first real
-   exercise of the §2-productized inference path.
-7. **Reliability via embedding-space novelty**: per-tile/per-image
-   Mahalanobis or kNN distance to the training distribution in embedding
-   space as the label-free warning signal (replaces the AdaBN-disagreement
-   idea). Evaluate against the W1 failure taxonomy.
+6. **Deployable head + map pilot** (spec'd 2026-06-12): the usability demo
+   PLAN_ModelUsability exists for; first real exercise of the §2-productized
+   inference path.
+   - **A. Deployable head (PREREQUISITE, not yet built)**: today the frozen
+     `mlp_ens3` exists only INSIDE the LOIO harness (re-trained per fold). A map
+     needs ONE model trained on ALL 38. Productize the MLP head into `src/`
+     (currently probe-tier `_w2_fang_heads`/`_fm_freeze_window`): `fit` on the
+     full emb-only S=32 matrix, persist the 3 seed state-dicts + feature scaler
+     + recipe hash, `load`/`predict(emb)→prob`. (Apply the MLP perf fix here:
+     batch 4096 + tensors-on-device-once.)
+   - **B. Per-tile inference (one Murray tile)**: window+buffer (reuse
+     `ctx_retrieve`) → `tile_grid_for_window` (owned tiles) →
+     `FangEmbedder.embed_window` → `DeployableHead.predict` → §2.7 reliability
+     score → rows keyed by GLOBAL `(ti,tj)` + geo-bounds.
+   - **C. Combine across Murray tiles is TRIVIAL by design**: Murray tiles
+     partition the globe (4°×4°, abut, NO overlap), and the tile grid is
+     anchored to the GLOBAL mosaic pixel origin (CLAUDE.md Stage 4) → `(ti,tj) =
+     (mosaic_row//32, mosaic_col//32)` is globally unique regardless of which
+     window computed it. Combine = PLACEMENT into the global raster, no blending.
+     Each map tile produced exactly once. The ONLY cross-tile care: the 3×3
+     context at a tile's edge needs neighbor pixels → read each Murray tile with
+     a ≥96 px BUFFER and OWN-BY-CENTER (tile T predicts global tiles whose center
+     falls in T's box; buffer guarantees full context; discard buffer-region
+     predictions). VERIFY-AT-RUNTIME: Murray-tile pixel dims (a 32-px tile may
+     straddle a boundary — center-ownership + buffer handle it) and the buffer
+     size, on the first real tile.
+   - **D. Render**: place by `(ti,tj)` into the mosaic-CRS raster → GeoTIFF +
+     PNG rich/poor (or abundance) map at 160 m + reliability overlay.
+   - **E. Pilot scope**: ONE Murray tile beyond HiRISE coverage end-to-end —
+     proves the inference path AND the combine pattern before any scale-out.
+7. **Reliability via embedding-space novelty** (design fleshed 2026-06-12;
+   CPU-prototypable on cached embeddings, no GPU): a label-free per-tile
+   "is this CTX texture like what I trained on?" score — the deployment-time
+   answer to *where* on the map to trust the prediction (the confirmation says
+   it generalizes on average; this says where). Replaces the retired
+   AdaBN-disagreement idea (no BatchNorm in the frozen-embedding path).
+   - **Methods (compare two)**: (a) Mahalanobis distance to the training
+     embedding cloud — μ, shrinkage/PCA-whitened Σ on training tiles (tame the
+     768² covariance); (b) kNN distance — mean cosine/euclidean distance to the
+     k nearest *training* tiles (non-parametric, handles a multimodal training
+     distribution; 147k×768 trivial for sklearn/faiss).
+   - **Granularity**: per-tile for the map overlay; aggregated (median per-tile
+     or image-mean-embedding distance) per-image for taxonomy validation.
+   - **Validation subtlety (important)**: the W1 failure taxonomy was defined on
+     *Tier-1* failures, and the FM RESCUED most of those (distribution_shift
+     +0.23–0.31). So validate novelty against where the **frozen recipe ITSELF**
+     underperforms — does per-image novelty rank-correlate with the frozen
+     recipe's per-image AUC (the freeze-window numbers)? Does it flag the
+     low-AUC images? If novelty predicts the FM's *own* weak spots, it's a valid
+     trust signal.
+   - **LOIO-honest by construction**: for each held-out image, fit the novelty
+     model on the other 37, score the held-out one — exactly the deployment case.
+   - **Deliverable**: per-tile `reliability` column banked beside predictions +
+     per-image aggregate + a novelty-vs-frozen-AUC validation figure + the map
+     overlay. Prototype is CPU-only — defer launch when GPU chains are CPU-bound
+     (overhead-bound MLP cells consume CPU), otherwise free to run.
 8. **Optional / gated**: MOMO disjoint-corpus probe (bounds the
    transductive caveat; candidate ensemble partner); emb_only @ S=32
    overnight completeness read; ViT fine-tune go/no-go EXPLICITLY decided

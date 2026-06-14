@@ -3470,3 +3470,100 @@ if cohort expansion reopens scale/context tuning).
 NOTE: stricter freeze discipline now applies (PLAN_FM 3) -- no further recipe
 shopping on the 38 images; the next number that touches this recipe is the
 §3 pre-declared confirmation on held-out expansion images.
+
+## 2026-06-13 -- Tier-2 regression (PLAN_FM 2.4): MLP wins regression too, FM ~2x lift, single-stage beats the hurdle; zero-inflation ceiling TESTED and set aside, compression quantified
+
+Calibrated-abundance regression on the FROZEN emb-only S=32 features (the
+regression sibling of the frozen binary recipe). LOIO over the 38 v2 images,
+3 heads x 2 targets x {emb, t1 handcrafted baseline}, runner
+`scripts/probes/_fm_tier2_regression.py`. Heads: `mlp_reg` (NEW 3-seed MLP
+regressor, single-stage), `lightgbm_tweedie` (single-stage), and
+`lightgbm_two_stage_balanced` (the incumbent hurdle). Primary metric Spearman
+rho (per-image mean); rich/poor `meaningful_auc` at the operational cut
+(fa>1e-2 / count>=50, NOT presence -- see the metrics-bug note below).
+
+**Spearman rho (per-image mean, n=38; threshold-free):**
+
+| head | emb.fa | emb.count | t1.fa | t1.count |
+|---|---|---|---|---|
+| lightgbm_tweedie (1-stage) | 0.313 | 0.286 | 0.228 | 0.213 |
+| lightgbm_two_stage (hurdle) | 0.329 | 0.308 | 0.247 | 0.196 |
+| **mlp_reg (1-stage)** | **0.431** | **0.386** | 0.223 | 0.202 |
+
+**Rich/poor meaningful_auc (fa>1e-2 / count>=50):**
+
+| head | emb.fa | emb.count | t1.fa | t1.count |
+|---|---|---|---|---|
+| lightgbm_tweedie | 0.706 | 0.692 | 0.658 | 0.659 |
+| lightgbm_two_stage | 0.722 | 0.707 | 0.664 | 0.649 |
+| **mlp_reg** | **0.784** | **0.785** | 0.647 | 0.630 |
+
+Verdicts:
+1. **MLP wins regression too**: `mlp_reg` is the best head on the embeddings
+   (fa 0.431, count 0.386), the same "MLP is the right reader of dense
+   embeddings" result as the classification bake-off.
+2. **FM ~2x lift**: emb roughly doubles handcrafted rank-skill (mlp fa 0.431 vs
+   t1 0.223; mlp count 0.386 vs 0.202). The FM helps regression at least as much
+   as classification.
+3. **Single-stage beats the hurdle**: `mlp_reg` (single-stage) 0.431 >> the
+   two-stage hurdle 0.329; the hurdle only marginally helps the weaker tree head
+   (0.329 vs tweedie 0.313). **The hurdle is not earning its complexity with
+   strong features** ([[modeling_single_stage_future]] confirmed directionally).
+4. **Regression matches the classifier on rich/poor**: `mlp_reg` emb
+   meaningful_auc 0.784 (fa) / 0.785 (count) ~= the frozen Tier-1 classifier's
+   per-image AUC 0.7865. Calibrated magnitude comes essentially free -- the
+   regression head detects rich/poor at classifier level AND gives a continuous
+   value. fa marginally edges count (Spearman 0.431 vs 0.386), consistent with
+   the frozen target choice.
+
+**Zero-inflation ceiling -- TESTED and set aside** (Brian asked to quantify it;
+`scripts/probes/_fm_tier2_ceiling.py`, post-hoc on banked predictions):
+
+| mlp_reg | emb.fa | t1.fa | emb.count | t1.count |
+|---|---|---|---|---|
+| mean zero-fraction | 0.163 | 0.163 | 0.166 | 0.166 |
+| rho_overall | 0.431 | 0.223 | 0.386 | 0.202 |
+| rho_among_positives (y>0) | 0.420 | 0.213 | 0.373 | 0.185 |
+| zero "drag" (among_pos - overall) | -0.011 | -0.010 | -0.013 | -0.017 |
+| NDCG@5% (ceiling-normalized) | 0.502 | 0.348 | 0.484 | 0.337 |
+| NDCG full | 0.851 | 0.801 | 0.855 | 0.809 |
+
+At S=32 only ~16% of tiles are EXACTLY zero, and removing the zeros LOWERS
+Spearman by ~0.01 -- i.e. the zeros are the easy part (rank them at the bottom),
+not a ceiling. The earlier "0.43 is capped by zero-inflation" framing is
+**empirically refuted**. The real limiter is the intrinsic difficulty of ranking
+magnitude AMONG boulder-bearing tiles (label noise + meter-scale signal at
+5 m/px): rho_among_positives (0.42) ~= rho_overall (0.43). NDCG@5% (0.50 emb vs
+0.35 t1) is the ceiling-normalized top-tile-ranking number; read with the
+classifier's prec@5%=0.95, the top map tiles are almost all genuinely rich, just
+not always the very-most-rich.
+
+**Dynamic-range COMPRESSION quantified** (mlp_reg emb.fa calibration, per true
+abundance bin): the model hedges to the mean -- under-predicts the high tail
+(top bin 1e-2..max: true 0.0373 -> pred 0.0266, **pred/true=0.71**) and
+over-predicts the lows. The FM compresses LESS than handcrafted (top-bin
+retention 0.71 vs t1 0.55), so the embeddings recover more of the dynamic range,
+but a ~30% tail under-prediction remains -- a candidate for a later calibration
+layer (isotonic / quantile mapping). Ranking is fine; absolute high-end values
+are squashed.
+
+**Metrics bug found + fixed during a code review (regression test)**:
+`run_loio` called `per_fold_metrics` with the hardcoded default
+`meaningful_threshold=1e-2`. Correct for the fractional-area target (1% areal
+coverage = the rich/poor cut) but for the **boulder_count** target it collapses
+to `count > 0.01` == presence (count>=1) -- the degenerate metric we rejected
+(the bc_ge_1 trap). Fix: threaded `meaningful_threshold` through `run_loio`
+(default 1e-2 preserves all existing callers); the Tier-2 runner sets it
+per target (fa 1e-2, count 50 = the bc_ge_50 cut). `per_bin_rmse` still uses
+fa bin edges, so for count read Spearman + meaningful_auc(@50), not the per-bin
+table. Test: `tests/test_evaluate_meaningful_threshold.py`. The 3 emb-count
+cells that ran before the fix were re-run with `--force` (predictions
+deterministic -> identical; only the metric changed). Spearman was never
+affected (rank-only).
+
+Disposition: the Tier-2 candidate is the **single-stage `mlp_reg` regressor on
+emb-only S=32**, target fa (or count -- both transfer). The hurdle is dropped.
+Not yet frozen/productized -- Tier-2 freeze + the deployable head come with the
+map pilot (PLAN_FM 2.6). A calibration layer for the tail-compression is future
+work. Standing caveats unchanged (transductive pretraining; LOIO carries the
+selection caveat until the 2.3 confirmation).

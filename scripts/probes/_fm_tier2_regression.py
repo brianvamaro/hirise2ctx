@@ -61,10 +61,15 @@ TILE_PX = 32           # frozen operating scale
 SCALE_IDX = 2          # S=32
 CTX_PX = 3 * TILE_PX   # 96-px 3x3-context input = the frozen embedding
 
-# target name -> (y dataframe column, transform for the MLP regressor)
+# target name -> (y dataframe column, MLP target transform, rich/poor meaningful
+# threshold for the ranking metrics). The count threshold is a REAL rich/poor cut
+# (bc_ge_50, the 1b read) -- NOT presence: run_loio's default 1e-2 applied to raw
+# counts means count > 0.01 == count >= 1 == presence (degenerate; the bc_ge_1
+# trap). per_bin_rmse still uses fractional_area bin edges, so for the count target
+# read Spearman + meaningful_auc(@50), not the per-bin table.
 TARGETS = {
-    "fractional_area": ("fractional_area", "identity"),
-    "boulder_count": ("boulder_count", "log1p"),
+    "fractional_area": ("fractional_area", "identity", 1e-2),
+    "boulder_count": ("boulder_count", "log1p", 50.0),
 }
 
 
@@ -91,6 +96,15 @@ class MLPRegressorEnsemble:
     back-transforms to the original target scale (Model protocol contract) and
     clips to the valid range. Predictions are the mean across seeds in original
     space (the deterministic-promotable form, per the 3-seed rule).
+
+    PERF NOTE (2026-06-12): at S=32 (~147k train rows/fold x 3 seeds x 38 folds)
+    these cells take ~15 min each and run the GPU at only ~15% util -- the tiny
+    net is OVERHEAD-bound (per-batch CPU->GPU copy + kernel launch dominate the
+    trivial matmul), not compute-bound. NEXT TIME, ~3-5x faster with no material
+    effect on the numbers: raise `batch` to 4096 (8x fewer steps) and move the
+    full Xt/yt to the device ONCE before the epoch loop (147k x 768 f32 ~= 450 MB,
+    fits the 8 GB card) instead of copying each minibatch. LightGBM avoids this
+    entirely (multithreaded C++ over the whole matrix) -- hence its cells fly.
     """
 
     name = "mlp_reg_ens3"
@@ -245,20 +259,22 @@ def model_factory(variant: str, target_transform: str, clip_max: float | None):
     return make_factory(variant, params)
 
 
-def _print_summary(agg: dict) -> None:
-    """Report ranking + the OPERATIONALLY MEANINGFUL (rich/poor, fa>1e-2) metrics.
+def _print_summary(agg: dict, meaningful_threshold: float) -> None:
+    """Report ranking + the OPERATIONALLY MEANINGFUL (rich/poor) metrics.
 
-    Deliberately NOT presence AUC (y_true > 0): detecting a single boulder is a
-    near-degenerate task at S=32 and scientifically uninteresting (Brian,
-    2026-06-12) -- the same trap as the bc_ge_1 binary target. The meaningful
-    threshold is the rich/poor cut the map is actually about.
+    The rich/poor cut is `y_true > meaningful_threshold` -- per target
+    (fractional_area > 1e-2, boulder_count >= 50). Deliberately NOT presence
+    (y_true > 0): detecting a single boulder is near-degenerate at S=32 and
+    scientifically uninteresting (Brian, 2026-06-12) -- the same trap as the
+    bc_ge_1 binary target.
     """
     def g(k):
         return agg.get(k, float("nan"))
 
     print(f"  spearman_rho   = {g('spearman_rho_mean'):.4f} +/- {g('spearman_rho_std'):.4f} "
           f"(n={agg.get('spearman_n')})", flush=True)
-    print(f"  meaningful_auc = {g('meaningful_auc_mean'):.4f}   pr_auc(@1e-2) = {g('pr_auc_mean'):.4f}")
+    print(f"  meaningful_auc = {g('meaningful_auc_mean'):.4f}   "
+          f"pr_auc(@{meaningful_threshold:g}) = {g('pr_auc_mean'):.4f}")
     print(f"  precision@5%   = {g('precision_at_top_5pct_mean'):.4f}   "
           f"rmse_log1p = {g('rmse_log1p_mean'):.4f}")
 
@@ -273,7 +289,7 @@ def main() -> int:
     ap.add_argument("--force", action="store_true", help="recompute even if cached")
     args = ap.parse_args()
 
-    target_col, transform = TARGETS[args.target]
+    target_col, transform, meaningful_threshold = TARGETS[args.target]
     clip_max = 1.0 if args.target == "fractional_area" else None
     store = load_fang_store(CTX_PX, pool="gem", dataset_dir=DATASET_DIR) if args.features == "emb" else None
 
@@ -291,20 +307,22 @@ def main() -> int:
     if (out_dir / "metrics.json").exists() and not args.force:
         agg = json.loads((out_dir / "metrics.json").read_text(encoding="utf-8"))["aggregate"]
         print(f"=== {label}: cached (--force to rerun) ===")
-        _print_summary(agg)
+        _print_summary(agg, meaningful_threshold)
         return 0
 
     t0 = time.monotonic()
-    print(f"=== {label} (target_col={target_col}, transform={transform}) ===", flush=True)
+    print(f"=== {label} (target_col={target_col}, transform={transform}, "
+          f"meaningful>={meaningful_threshold:g}) ===", flush=True)
     result = run_loio(
         model_factory(args.variant, transform, clip_max),
         target_col=target_col, task="regression",
         fold_iter=make_fold_iter(args.features, store),
         snapshot=snapshot, verbose=True,
+        meaningful_threshold=meaningful_threshold,
     )
     write_run_artifacts(result, out_dir)
     print(f"\n  [{label}] {time.monotonic() - t0:.0f} s -> {out_dir.relative_to(REPO_ROOT)}")
-    _print_summary(result.aggregate)
+    _print_summary(result.aggregate, meaningful_threshold)
     print(f"  (per-bin RMSE + calibration in {out_dir.relative_to(REPO_ROOT)}/metrics.json)")
     return 0
 

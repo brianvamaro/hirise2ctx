@@ -1,6 +1,5 @@
 # Model Evidence — CTX boulder-abundance from foundation-model embeddings
 
-Brian Amaro EPS 245 Project (Part 2)
 
 > **DRAFT SKELETON.** Structure + figure list locked; prose and final numbers to
 > be filled. Headline numbers marked `[held-out: pending]` await the §2.3
@@ -105,8 +104,33 @@ _The visual proof — truth vs model, reusing [notebook 20](../notebooks/20_fang
 
 ## 7. Calibrated abundance (Tier-2)
 
-_Placeholder — populated if the regression head (continuous abundance) promotes:
-Spearman ρ, per-bin RMSE / calibration, single-stage vs hurdle outcome._
+Beyond rich/poor, can we predict *how much*? A single-stage 3-seed MLP regressor
+on the same frozen emb-only S=32 features (no hurdle/two-stage needed — it was
+tested and dropped) gives, LOIO over the 38 images (DECISIONS.md 2026-06-13):
+
+- **Rank skill** — per-image Spearman ρ ≈ **0.43** (fractional area), **~2× the
+  handcrafted-feature baseline** (0.22). Magnitude ranking from 5 m/px imagery is
+  intrinsically hard (label noise + meter-scale signal), so this is moderate in
+  absolute terms but a large relative gain.
+- **Rich/poor for free** — the regressor's rich/poor `meaningful_auc` is **0.78**,
+  matching the dedicated classifier (§0). So you get a continuous abundance value
+  *and* classifier-level rich/poor detection from one model.
+- **Top-tile ranking** — NDCG@5% (ranking quality normalized against the ideal
+  ordering, so the label-distribution ceiling is built in) is **0.50** vs 0.35 for
+  handcrafted.
+
+**Honest limit (tested, not assumed):** we checked whether zero-inflation caps the
+Spearman — it does not (only ~16% of tiles are exactly zero at this scale, and
+removing them changes ρ by ~0.01). The wall is the intrinsic difficulty of ranking
+magnitude among boulder-bearing tiles. The one real caveat is **dynamic-range
+compression**: the model under-predicts the high-abundance tail by ~30% (and the
+FM compresses *less* than handcrafted), so the map's *ordering* is reliable but its
+absolute high-end *values* are squashed — a calibration layer is future work.
+
+<!-- figure: calibration curve (mean_pred vs mean_true per abundance bin) -->
+
+_Status: Tier-2 candidate identified, not yet frozen/productized — the deployable
+head + calibration come with the map pilot._
 
 ---
 

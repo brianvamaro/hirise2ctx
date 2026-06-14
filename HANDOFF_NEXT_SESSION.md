@@ -114,6 +114,10 @@ expansion images. Misses recorded as declared.
 - Per-image AUC ±0.1–0.2 fold-ripple error bars; carry n_pos/n_neg.
 - AskUserQuestion before: expensive sweeps, env mutation, commits.
 - Run only ONE GPU job at a time (chains here were sequenced via watchers).
+- MLP cells at S=32 are SLOW (~15 min ea) but only because the tiny net is
+  overhead-bound (GPU ~15% util) over 147k rows × 3 seeds × 38 folds — NOT a
+  stall. Speed up ~3–5× next time: batch 4096 + pin full Xt/yt on the device
+  once (see `_fm_tier2_regression.py` MLPRegressorEnsemble PERF NOTE).
 - Fast pytest baseline 265 (full 285) + 8 CNN tests; no tests for the
   probe-tier Fang/freeze scripts (add during productization).
 
