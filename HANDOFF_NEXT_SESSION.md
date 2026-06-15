@@ -9,11 +9,19 @@ result NEGATIVE at n=38 → overlay DEFERRED; §2.6 deployable head + map pilot 
 **The critical-path bottleneck is still on Brian's side:** any "confirmed" claim
 (§2.3) needs the 23 expansion ObsIds (`cohort_expansion_candidates.csv`) run
 through BoulderNet — not yet done. The next BUILDABLE pieces (no expansion data):
-- **§2.5 report prose — the recommended next build.** Skeleton in
-  `docs/model_evidence.md`; the map pilot gives it a real predict-beyond-coverage
-  figure. Headline numbers get the held-out stamp only AFTER §2.3.
-- **§2.3 declaration** can be WRITTEN any time (pre-data) — confirm-then-absorb
-  design + proposed gates in PLAN_FM §2.3.
+- **§2.3 declaration — the recommended next build.** Can be WRITTEN any time
+  (pre-data) — confirm-then-absorb design + proposed gates in PLAN_FM §2.3. Writing
+  it now (gates/baseline/protocol) is what lets the expansion numbers, when they
+  land, carry a pre-registered stamp.
+- **§2.5 report — DRAFTED + figure-rich 2026-06-14b** (`docs/model_evidence.md`,
+  9 figures / 9 sections). Prose complete; **4 NEW bespoke figures** rendered from
+  cached data (basis HiRISE↔CTX rich/poor; 6-image terrain+regime prediction
+  gallery; headline **regional gap-fill map** = 1 GPU run over E12_N44 around
+  ESP_045139_2270's footprint, replaced a confounded validated|deployed two-panel;
+  Tier-2 true-vs-predicted abundance map) via `scripts/probes/_evidence_*.py`.
+  **§8 is now a Tier-2 status/reach/use deep-dive**
+  (Brian ask). Honest §6 reliability deferral kept. Remaining: the §4 ViT→GeM→MLP
+  schematic figure and the `[held-out: pending]` headline row (gated on §2.3).
 - **§2.7 reliability overlay — DONE (validation) + DEFERRED (wiring).** Built
   `src/reliability.py` (Mahalanobis + kNN, +10 tests) and validated per-image
   novelty against the frozen recipe's OWN per-image AUC. **Bar NOT cleared at
@@ -110,14 +118,15 @@ Conda: `C:\Users\brian\anaconda3\Scripts\conda.exe run --no-capture-output -n ge
 ## Next-session queue — PLAN_FM.md §2 is authoritative
 
 DONE: §2.1 freeze, §2.2 productization, §2.4 Tier-2, **§2.6 deployable head +
-map pilot**, **§2.7 reliability validation (negative → overlay deferred)**.
-DESIGNED: §2.3/2.5. Remaining, suggested order:
+map pilot**, **§2.7 reliability validation (negative → overlay deferred)**,
+**§2.5 model-evidence report (DRAFTED — prose complete, held-out row + schematic
+pending)**. Remaining, suggested order:
 
-1. **§2.5 model-evidence report — RECOMMENDED next build** (no expansion data).
-   Fill `docs/model_evidence.md` prose; the map pilot supplies a real "predict
-   beyond coverage" figure. Headline numbers get the held-out stamp after §2.3.
-2. **§2.3 pre-declared confirmation** — write the declaration now; execution waits
-   on Brian's BoulderNet runs on the 23 expansion ObsIds. Confirm-then-absorb.
+1. **§2.3 pre-declared confirmation — RECOMMENDED next build** — write the
+   declaration now (gates/baseline/protocol, pre-data); execution waits on Brian's
+   BoulderNet runs on the 23 expansion ObsIds. Confirm-then-absorb.
+2. **§2.5 finish** — add the §3 ViT→GeM→MLP schematic figure and fill the
+   `[held-out: pending]` headline row once §2.3 lands.
 3. **§2.7 reliability overlay re-run (post-expansion)** — `src/reliability.py` +
    `scripts/probes/_fm_reliability_validation.py` are built and tested; the n=38
    validation came back negative (FM decoupled novelty from skill). Re-run the

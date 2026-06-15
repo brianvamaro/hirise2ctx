@@ -3688,3 +3688,88 @@ wide). The map stays trust-layer-less for now. The module + validation + figure
 `reports/reliability/per_image_novelty.csv`) are kept as the ready-to-rerun
 record. `predict_window` already returns per-tile `(ti,tj)` keys, so wiring is a
 small follow-up if the post-expansion validation passes.
+
+## 2026-06-14b -- Model-evidence report (PLAN_FM 2.5) DRAFTED: prose complete; held-out row + schematic figure pending
+
+Filled `docs/model_evidence.md` from skeleton to full prose (slimmer-doc register,
+persuasion-grade; companion to `classification_slimmer.md`). All headline numbers
+are group-aware LOIO on the 38 v2 images; the `[held-out: pending]` confirmation
+row awaits §2.3. Real figures wired in: §0 `21_deployable_truth_vs_model.png`, §4
+`20_fang_perimage_dauc.png` + `20_fang_topk_ESP_076499_1160.png`, §5
+`map_pilot_E4_N44_*.png` + `27_reliability_validation.png`, §7
+`22_tier2_compression.png`. Two substantive edits vs the skeleton: (a) **§5
+reliability rewritten honestly** -- the map ships with NO per-tile accuracy
+overlay; novelty is retained only as an OOD/extrapolation warning, with the n=38
+decoupling result (Fig 5) stated plainly (per the 2026-06-14b deferral above);
+(b) **corrected ESP_046328_2180 to FM AUC 0.748** (skeleton said ~0.79; 0.748 is
+the banked LOIO value). prec@5% interpretation fixed to ~95% (skeleton text once
+said 98%). Remaining to finish the doc: the §3 ViT->GeM->MLP schematic figure and
+the held-out confirmation numbers (both gated on other work). Notebook/figure
+inventory confirmed all six referenced PNGs exist on disk.
+
+**Revision (same session, Brian feedback): more visual evidence + a Tier-2
+deep-dive.** The doc was restructured around four NEW bespoke figures rendered from
+cached data (`scripts/probes/_evidence_{select_exemplars,basis_figure,prediction_gallery,product_figure,tier2_map}.py`):
+- **Basis figure** (`model_evidence_basis_hirise_ctx.png`, new §2 "can 5 m/px CTX
+  see boulders?"): one image's boulder-RICH vs boulder-POOR 160 m tile, each HiRISE
+  (0.5 m/px, BoulderNet polygons outlined) beside co-located CTX (5 m/px) — the
+  rich CTX is visibly rougher. **Subtlety handled**: the label grid carries the
+  coreg shift, so the figure counts/outlines the RAW reprojected detections
+  (centroid-in-tile) and reselects a raw-empty poor tile, so annotations match what
+  is drawn (rich 198 boulders/10% vs poor 0/0%).
+- **Prediction gallery** (`model_evidence_prediction_gallery.png`, §5): 6 held-out
+  images spanning terrain+regime (plains/mesas/crater/channels + rescued
+  anti-signal + far-south outlier), per-tile P(rich) heatmap + true-rich white
+  contour + per-image AUC/base-rate. Hybrid axis (Brian).
+- **Headline gap-fill map** (`model_evidence_gapfill_map.png`, §0): the first
+  product-figure attempt (`model_evidence_product.png`, a validated|deployed
+  two-panel) **confounded validated-vs-deployed with rich-vs-poor** (left scene 80%
+  rich/red, right 0.1%/blue) — Brian flagged it. REPLACED (Brian chose "unify into
+  one regional gap-fill map") with ONE continuous 24 km scene over a tile containing
+  a training footprint: `_evidence_gapfill_map.py` centres a 5000-px window on
+  ESP_045139_2270's footprint in cached E12_N44, the deployable head predicts all
+  23,409 tiles (**1 GPU run, 37 s**), the HiRISE-confirmed rich tiles are outlined
+  inside the footprint box, the rest is gap-fill. Prediction flows seamlessly across
+  the footprint boundary and is NOT saturated (reads crater interiors as poor). No
+  rich/poor confound — same terrain throughout. Honest caption: footprint tiles were
+  in the all-data model's training; generalisation evidence is the held-out §3–§5.
+  Script has a `--force`-gated render-only path (reuses the banked GeoTIFF). The old
+  product figure+script were removed.
+- **Tier-2 map** (`model_evidence_tier2_map.png`, §8): held-out true vs CTX-only
+  predicted area-fraction, same log scale (per-image rho 0.74) — ordering faithful,
+  magnitude compressed. From banked `tier2_mlp_reg_emb_fractional_area_S32` preds.
+
+**§8 rewritten into a Tier-2 status/reach/use section** (Brian ask): where it
+stands (winning single-stage `mlp_reg`, NOT yet frozen/productised), what's
+achievable now (rank-reliable abundance, rho~0.43 med / 2x handcrafted; rich/poor +
+NDCG free) vs not (tail compression ~30%), 3 graded use-cases (process science +
+hazard classes now; THEMIS-comparable absolutes after calibration), and the to-do
+(freeze+productise regressor head, calibration layer, THEMIS validation). Doc now
+9 figures (Fig 1-9 consistent), 9 sections; schematic + held-out row still pending.
+
+**Figure-1 iteration (Brian feedback, several rounds) → final 3-panel form**:
+`model_evidence_gapfill_map.png` is now **plain CTX | HiRISE ground-truth rock
+abundance | model P(boulder-rich)**, all three equal-sized (colourbar slot appended
+to every panel via `make_axes_locatable`; panel-0's is hidden so panels 1-2 don't
+shrink). Both data panels share the **inferno** colourmap ("brighter = more
+boulders") — kept distinct colourbars since truth is log area-fraction and the model
+is a 0-1 probability. **Footprint outline fixes**: started as the axis-aligned bbox
+(included rotated-strip nodata corners) → minimum-rotated-rectangle (overshot the
+acute parallelogram corners) → final = **convex hull of the labelled tiles,
+simplified** (follows the true sheared strip). **Truth-panel "missing tiles"
+explained + handled**: the strict `coverage==1.0` labeling rule (src/labeling.py:18,
+DECISIONS 2026-05-23 — partial coverage low-biases fractional_area) leaves ~5.2% of
+footprint cells (343/6565 for ESP_045139_2270) unlabelled along internal HiRISE
+CCD-seam / SP1 gaps; filled by nearest-neighbour inside the footprint for a clean
+display (`_diag_missing_label_tiles.py` quantified it). White rich-truth contour
+dropped from the model panel (redundant with the truth panel).
+
+**Tier-2 compression CORRECTED to two-sided** (Brian spotted Fig-8 map missing the
+low/purple end; `_diag_tier2_compression_direction.py`): it is regression-to-the-mean,
+NOT just the high tail. Low end OVER-predicted (floors ~0.005, 1.8% of preds
+near-zero vs 18% of tiles truly zero — the "missing purple"); high end under-predicted
+(top fixed bin pred/true 0.71, top decile 0.53); crossover ≈ rich/poor threshold
+0.015. Ranking unaffected (not capped by zeros); fix = ranking-preserving remap that
+stretches BOTH ends. §8 prose + Figs 8/9 captions corrected;
+[[tier2_compression_calibration_future]] updated. Earlier "high tail ~30%" framing
+was incomplete.

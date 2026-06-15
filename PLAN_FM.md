@@ -170,11 +170,14 @@ smoothing control).
    threaded through `run_loio`, [[feedback_no_presence_auc]]). The single-stage
    `mlp_reg` is the Tier-2 candidate; freeze/productize + the calibration layer
    come with the map pilot (2.6).
-5. **Model-evidence report** (Brian, 2026-06-12; must land BEFORE the map
-   pilot): a standalone persuasion-grade document (docs/, slimmer-doc
+5. **Model-evidence report — DRAFTED 2026-06-14b** (`docs/model_evidence.md`
+   prose complete; held-out headline row + the §3 schematic figure pending):
+   a standalone persuasion-grade document (docs/, slimmer-doc
    register) whose explicit job is to convince a skeptical reader
    (advisor / committee member) that **the model works and the project is
-   worth pursuing to completion**. Required contents:
+   worth pursuing to completion**. Uses the §2.6 map-pilot figure as its
+   predict-beyond-coverage example and honestly reports the §2.7 reliability
+   deferral (novelty = OOD flag, not accuracy predictor). Required contents:
    - example-prediction galleries — truth-vs-model CTX maps and top-k
      tile strips, covering good images AND the formerly-failing classes
      (the old anti-signal exemplar ESP_046328_2180: slim 0.344 → FM ~0.79;

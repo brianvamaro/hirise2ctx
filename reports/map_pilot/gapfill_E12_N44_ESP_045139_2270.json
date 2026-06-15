@@ -1,0 +1,12 @@
+{
+  "obs_id": "ESP_045139_2270",
+  "murray_tile": "E12_N44",
+  "win_px": 5000,
+  "window_offset_rowcol": [
+    15970,
+    13713
+  ],
+  "n_predicted": 23409,
+  "mean_p": 0.7466807961463928,
+  "rich_share_at_0p5": 0.7961894997650476
+}
