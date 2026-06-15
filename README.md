@@ -155,6 +155,10 @@ $conda = "C:\Users\brian\anaconda3\Scripts\conda.exe"
     notebooks/20_fang_vit_probe.ipynb             # frozen-embedding probe verdicts + per-image dAUC
 & $conda run -n geospatial jupyter nbconvert --to notebook --execute --inplace `
     notebooks/21_map_pilot.ipynb                  # deployable head + off-HiRISE map (rebuild via notebooks/_build_21.py)
+& $conda run -n geospatial jupyter nbconvert --to notebook --execute --inplace `
+    notebooks/22_freeze_and_tier2.ipynb           # head bake-off -> freeze -> Tier-2 (rebuild via notebooks/_build_22.py)
+& $conda run -n geospatial jupyter nbconvert --to notebook --execute --inplace `
+    notebooks/23_calibration_diagnostic.ipynb     # compression diagnosis + de-compression preview (rebuild via notebooks/_build_23.py; see PLAN_Calibration.md)
 ```
 
 QA notebooks are generated from `notebooks/_build_NN.py` (re-run the builder to

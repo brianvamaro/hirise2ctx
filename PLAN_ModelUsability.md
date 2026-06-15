@@ -289,6 +289,17 @@ cause 1 (learned illumination invariance).
 
 ### W3 — Tier 2 calibration path (after Tier 1 is solid)
 
+> **Operationalized 2026-06-14 as [PLAN_Calibration.md](PLAN_Calibration.md).**
+> The compression Brian flagged on the model-evidence figures is now measured and
+> Stage 0 (diagnose + preview) is DONE (`src/calibration.py`, notebook 23). Key
+> finding that refines W3: **Tier-1 is already well-calibrated** (ECE 0.06); the
+> compression is essentially **Tier-2**, and it is *two-sided*
+> (regression-to-the-mean). **Quantile-matching** (not the per-image isotonic
+> guessed below — isotonic fits the compressed mean and does NOT help) recovers the
+> true value distribution while preserving ranking. See that plan for the staged
+> approach; W3's THEMIS validation (item 3) consumes its calibrated output. Original
+> sketch kept:
+
 1. Attack compression directly: **Stage 6f Zero-Inflated Tweedie**
    (docketed, untested; [Chen et al. 2024](https://arxiv.org/abs/2406.16206)),
    quantile heads, or single-stage + post-hoc per-image isotonic — pick based

@@ -69,8 +69,8 @@ def main():
     print(f"window zero_frac={zero_frac:.3f}", flush=True)
 
     OUT.mkdir(parents=True, exist_ok=True)
-    stem = f"gapfill_{murray}_{OBS}"
-    tif_path = OUT / f"{stem}.tif"
+    tile_stem = f"gapfill_{murray}_{OBS}"      # inference identity: GeoTIFF + sidecar
+    tif_path = OUT / f"{tile_stem}.tif"
 
     import rasterio
     if "--force" not in sys.argv and tif_path.exists():
@@ -136,6 +136,27 @@ def main():
     def draw_footprint(ax):
         ax.plot(qx, qy, color="cyan", lw=1.8)
 
+    # optional: apply the Tier-1 calibrator (PLAN_Calibration L3) to the off-HiRISE
+    # P(rich) -- a DRAFT preview. Fit on the 38 labelled images (deployment-honest:
+    # the calibrator learns "what P=x means" from labelled data, applied where there
+    # is none), write a separate _calibrated file, leave the original untouched.
+    fig_stem, suffix = "model_evidence_gapfill_map", ""   # figure output name (per variant)
+    if "--calibrate" in sys.argv:
+        from src.calibration import IsotonicCalibrator
+        clf = pd.read_parquet(REPO / "models/fang_probe"
+                              / "fw_emb_mlp_ens3_gem96_S32_fa_gt_1e-2/predictions.parquet")
+        calr = IsotonicCalibrator().fit(clf.y_pred.to_numpy(), clf.y_true.to_numpy())
+        fin = np.isfinite(raster)
+        raster = raster.copy()
+        raster[fin] = calr.predict(raster[fin])
+        fig_stem += "_calibrated"
+        suffix += "  [DRAFT: P(rich) isotonic-calibrated on the 38 labelled images]"
+        print(f"calibrated: mean P {float(np.nanmean(raster[fin])):.3f}  "
+              f">=0.5 share {float(np.mean(raster[fin] >= 0.5)):.3f}", flush=True)
+    use_inferno = "--inferno" in sys.argv   # right (model) panel: inferno vs turbo
+    if use_inferno:
+        fig_stem += "_inferno"
+
     # --- render: plain CTX | HiRISE ground truth | model prediction ---
     import matplotlib
     matplotlib.use("Agg")
@@ -182,8 +203,8 @@ def main():
     # (3) model prediction: P(rich) over the whole scene. Turbo (blue->red) gives
     # honest variation across the 0-1 range; inferno made the high-but-uniform P
     # look over-saturated and overstated the compression.
-    im = axes[2].imshow(np.ma.masked_invalid(raster), cmap=turbo, vmin=0, vmax=1,
-                        extent=pred_extent, origin="upper", interpolation="nearest")
+    im = axes[2].imshow(np.ma.masked_invalid(raster), cmap=(inferno if use_inferno else turbo),
+                        vmin=0, vmax=1, extent=pred_extent, origin="upper", interpolation="nearest")
     draw_footprint(axes[2])
     axes[2].set_title("Model P(boulder-rich) @ 160 m", fontsize=11)
     axes[2].text(0.015, 0.985, "cyan = HiRISE footprint (truth available, in training)",
@@ -210,10 +231,10 @@ def main():
     fig.suptitle(f"Regional gap-fill — one continuous CTX scene, {km:.0f} km across "
                  f"({murray}). HiRISE truth exists only inside the cyan footprint; the model "
                  "predicts boulder-rich\nprobability everywhere from CTX alone — reproducing the "
-                 "truth inside the footprint and filling the gap outside.", fontsize=11.5)
-    out = FIG / "model_evidence_gapfill_map.png"
+                 f"truth inside the footprint and filling the gap outside.{suffix}", fontsize=11.5)
+    out = FIG / f"{fig_stem}.png"
     fig.savefig(out, dpi=140, bbox_inches="tight")
-    (OUT / f"{stem}.json").write_text(json.dumps({
+    (OUT / f"{tile_stem}.json").write_text(json.dumps({
         "obs_id": OBS, "murray_tile": murray, "win_px": WIN,
         "window_offset_rowcol": [window.row_off, window.col_off],
         "n_predicted": int(pcells.size), "mean_p": float(pcells.mean()),

@@ -169,7 +169,13 @@ smoothing control).
    Metrics bug found+fixed in review (count `meaningful_threshold` was presence;
    threaded through `run_loio`, [[feedback_no_presence_auc]]). The single-stage
    `mlp_reg` is the Tier-2 candidate; freeze/productize + the calibration layer
-   come with the map pilot (2.6).
+   come with the map pilot (2.6). **The "calibration layer is future work" is now a
+   plan: [PLAN_Calibration.md](PLAN_Calibration.md) (2026-06-14).** Compression
+   re-measured as TWO-SIDED regression-to-the-mean (over-predicts lows / under-predicts
+   the ~30% high tail); Stage-0 done (`src/calibration.py`, notebook 23) and
+   **quantile-matching** de-compresses the Tier-2 marginal LOIO (top-bin 0.71→0.87,
+   near-zero 1.8%→18.6%, ranking preserved). Tier-1 found already well-calibrated
+   (ECE 0.06). Post-hoc → does NOT reopen the freeze.
 5. **Model-evidence report — DRAFTED 2026-06-14b** (`docs/model_evidence.md`
    prose complete; held-out headline row + the §3 schematic figure pending):
    a standalone persuasion-grade document (docs/, slimmer-doc

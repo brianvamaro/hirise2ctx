@@ -3773,3 +3773,63 @@ near-zero vs 18% of tiles truly zero — the "missing purple"); high end under-p
 stretches BOTH ends. §8 prose + Figs 8/9 captions corrected;
 [[tier2_compression_calibration_future]] updated. Earlier "high tail ~30%" framing
 was incomplete.
+
+## 2026-06-14c -- Calibration / de-compression: PLAN_Calibration.md + Stage 0 (diagnose + post-hoc) done
+
+Brian: the compression is a big, important problem (visible in both the Tier-1
+P(rich) and the Tier-2 abundance map); wants a full plan including new training
+ideas. Created **PLAN_Calibration.md** (standalone; operationalizes
+PLAN_ModelUsability W3 + PLAN_FM item 4) and did Stage 0:
+
+- **`src/calibration.py`** (NEW): `reliability_curve`/`expected_calibration_error`,
+  `TemperatureScaler` (1-param, AUC-exact), `IsotonicCalibrator`, `quantile_match`
+  (histogram/quantile transfer), `compression_metrics`, `loio_calibrate` (fit on
+  other 37 / apply to held-out). +8 tests (`tests/test_calibration.py`); **fast
+  suite 330**. **`notebooks/23_calibration_diagnostic.ipynb`** (built via `_build_23.py`,
+  executed clean) + figs `23_{tier1_calibration,tier2_compression,tier2_decompression}.png`.
+
+- **Findings (LOIO, banked preds)**: **Tier-1 is already well-calibrated** — ECE
+  **0.060**, std 0.36, AUC 0.848; temp scaling (T≈1.70) → ECE 0.049, AUC flat. So
+  Tier-1 is NOT the problem; the "mostly rich" maps over rich regions are correct.
+  **Tier-2 quantile-matching is the post-hoc win**: top-bin ratio 0.71→**0.87**,
+  near-zero pred 1.8%→**18.6%** (= truth), marginal-L1 0.0057→**0.000**, Spearman
+  0.651→0.644 (preserved). **Isotonic does NOT help** (fits the compressed mean).
+
+- **Plan framing (Brian's "full consideration")**: compression = the Bayes-optimal
+  behaviour of any mean-seeking estimator under aleatoric uncertainty on a skewed
+  target → FOUR exhaustive levers: L1 stop predicting the mean (HL-Gauss / quantile
+  / distributional / ordinal — `Imani&White 2018`, `Farebrother 2024 "Stop
+  Regressing"`, `Koenker 1978`, `Kendall&Gal 2017`, `Cao 2020`), L2 shrink p(y|x)
+  (coarser scale, count+Poisson target, min_confidence, multi-scale/fine-tune, more
+  data), L3 post-hoc marginal-match (DONE), L4 report the distribution/interval.
+  Imbalanced-regression machinery (LDS/FDS `Yang 2021`, density weighting
+  `Steininger 2021`) re-weights any objective. Staged execution table + declared
+  metrics in the plan. **Discipline: post-hoc calibration does NOT reopen the Tier-1
+  freeze; Tier-2 mlp_reg not yet frozen so L1/L2 retraining allowed there.** PLAN_FM
+  item 4 + PLAN_ModelUsability W3 cross-referenced; README notebook list updated.
+  `fractional_area` currently uses identity+MSE (log1p untried for it -- an L1/L2
+  quick win). Diagnostics: `scripts/probes/_diag_{tier2_variant_compression,calibration_preview}.py`.
+
+- **Tier-1 calibrator follow-up (Brian spotted temp scaling trades the ends).**
+  `_diag_tier1_isotonic.py`: temperature is ONE global knob, so it fixes the
+  over-confident high end at the COST of the low end (split-ECE low 0.043→0.063, high
+  0.096→0.021). A FLEXIBLE monotone calibrator does both: **isotonic** → ECE
+  0.060→**0.014** (low/high both 0.014) but flat-step ties cost ranking (AUC
+  0.848→0.833). Recommendation = a smooth strictly-monotone calibrator (beta /
+  monotonic spline) for both-ends fix with minimal ranking loss; gate ECE≤0.05 AND
+  AUC±0.005 (isotonic alone breaches the AUC gate). Notebook 23 Tier-1 cell updated to
+  show all three. Clarified in the plan: **target transforms (log1p/sqrt/Box-Cox) and
+  loss-function changes are both L1** ("what functional of p(y|x) the loss targets").
+- **DRAFT calibrated figures (preview only, NOT wired into model_evidence.md; originals
+  untouched).** Two:
+  - `_evidence_tier2_map_calibrated.py` → `model_evidence_tier2_map_calibrated.png`:
+    the §8 Tier-2 abundance map with quantile-matching (LOIO), 3-panel TRUE | raw |
+    de-compressed for ESP_053989_2260 — per-image top-bin 0.84→**1.05**, Spearman 0.74
+    unchanged; the dark low-abundance feature + crater ring visibly recover.
+  - `_evidence_gapfill_map.py --calibrate` → `model_evidence_gapfill_map_calibrated.png`:
+    the §0 headline gap-fill map with the **Tier-1 isotonic calibrator** applied to the
+    off-HiRISE P(rich) (fit on the 38 labelled images = deployment-honest). Effect
+    modest (Tier-1 already ECE 0.06): mean P 0.747→0.666 (over-confident highs corrected
+    red→amber), ≥0.5 share 0.79 unchanged (ranking-invariant).
+  Confirms the Tier-1 "flexible monotone calibrator" insight transfers to Tier-2 via
+  quantile-matching — bounded by ranking (texture floor), not calibration.
