@@ -3902,3 +3902,31 @@ median-of-medians glance is misleading — both "wins" below shrank under pairin
   marginal; the per-tile ceiling is the data. Next greenlit (Brian): `min_confidence`
   label-noise sweep + Stage 2c density/LDS reweighting. PLAN_Calibration §3/§5 + notebook
   23 updated.
+
+## 2026-06-16 -- Calibration Stage 2b/2c CLOSED: reweighting dominated, label-noise harmful -> ceiling is the data
+
+The last two greenlit Tier-2 levers, same emb-only S=32 LOIO + paired per-image
+Wilcoxon. Both NEGATIVE -> the expensive de-compression investigation is complete.
+
+- **LDS reweighting** (`_diag_tier2_reweight.py`, Stage 2c): inverse smoothed-density
+  sample weights on mlp_reg. De-compresses the RAW marginal more as weighting sharpens
+  (top_ratio 0.67 none -> 0.77 lds_sqrt -> 0.88 lds_inv) but at a **significant paired
+  ranking cost** (sqrt Δ −0.014 p=0.018; inv Δ −0.032 p=0.015). qmatch recovers the same
+  marginal for free with zero ranking cost -> reweighting is **DOMINATED, ruled out**.
+- **min_confidence label-noise** (`_diag_tier2_minconf_sweep.py`, Stage 2b): regenerate
+  S=32 labels keeping detections with `score >= t` (Stage-4 regen from cached Stage-1/2/3,
+  `min_size_m=1.4105` held; swap fa into the folds by (obs_id,ti,tj) since the grid is
+  detection-independent). **Validated:** regen(none) reproduces dataset_v2 EXACTLY (0.00
+  diff, 0 key-misses). Result **HARMFUL, ruled out**: filtering monotonically degrades
+  BOTH ranking and dynamic range -- conf>=0.5 paired Δ −0.021 (p=0.010); conf>=0.7
+  collapses rich share 36%->11%, top_ratio 0.66->0.31, paired Δ −0.070 (p<0.001).
+  Low-confidence detections are REAL boulders, not removable noise. (Built with
+  config_v2.yaml / hirise_40_vclaire.csv -- NOT the v1 config.yaml/priority10 manifest;
+  the regen is CPU-only and was run concurrently with the GPU reweight via `--regen-only`.)
+- **STAGE 2 COMPLETE -- the whole levers table:** L1 cheap swaps = wash; L1 distributional
+  heads = wash; L1+L2 reweighting = dominated; L2 label-noise = harmful; L2 coarser scale
+  = directional only (p=0.19). **No in-cohort retraining lever beats mlp_reg+qmatch on
+  ranking.** The ~0.43 per-image ceiling is the 5 m/px CTX magnitude floor, confirmed five
+  ways. **Path forward is NOT a better model:** ship Stage 1 (productize qmatch + isotonic
+  into the map) + §2.3 expansion cohort (the only thing that can raise the ranking ceiling).
+  PLAN §3/§5 + notebook 23 (§8 + §9 verdict, +figure) updated.

@@ -6,7 +6,7 @@ LOIO-honest, calling `src.calibration`. Reads banked predictions, recomputes not
 heavy.
 
 Figures: reports/figures/23_{tier1_calibration,tier2_compression,tier2_decompression,
-tier2_l1_bakeoff,tier2_scale_sweep,prich_vs_abundance,prich_qmatch_confirm}.png
+tier2_l1_bakeoff,tier2_scale_sweep,prich_vs_abundance,prich_qmatch_confirm,tier2_label_reweight}.png
 To regenerate: `python notebooks/_build_23.py` then nbconvert --execute.
 
 §§5-8 (Stage 2) read the banked probe artifacts under models/fang_tier2/l1_bakeoff/
@@ -47,10 +47,11 @@ Headlines (computed below):
 - **Tier-1** is already well-calibrated (ECE ≈ 0.06); **isotonic** is the calibrator.
 - **Tier-2 quantile-matching** recovers the true value distribution (high tail +
   true-zero mass) with ranking intact; isotonic does not.
-- **Stage 2:** the L1 distributional heads (HL-Gauss, pinball, ZILN) are a **wash on
-  ranking**; coarser scale (L2) helps only directionally; a Tier-1 *classifier* ranks
-  abundance as well as the dedicated regressor ⇒ **the per-tile ceiling is the data**,
-  not the head.
+- **Stage 2:** *every* retraining lever — L1 distributional heads (HL-Gauss/pinball/
+  ZILN), LDS reweighting, `min_confidence` label-cleaning, coarser scale — is a **wash,
+  dominated, or harmful** on ranking; a Tier-1 *classifier* ranks abundance as well as
+  the dedicated regressor ⇒ **the per-tile ceiling is the data**, not the head.
+  Quantile-match (L3) stays the product win.
 """, "intro"))
 
 cells.append(code(
@@ -500,28 +501,95 @@ fig.tight_layout(); fig.savefig(FIG / "23_prich_qmatch_confirm.png", dpi=130)
 """, "prich_qm_code"))
 
 cells.append(md(
-    """## 8. Stage 2 verdict — the per-tile ceiling is the data
+    """## 8. Stage 2b/2c — label-noise & reweighting (both negative)
+
+Two more levers, same LOIO + paired-Wilcoxon discipline:
+- **LDS reweighting (Stage 2c, L1+L2):** up-weight the rare high tail by inverse
+  smoothed label density. It *does* de-compress the **raw** marginal (top_ratio
+  0.67→0.88 as the weighting sharpens) — but buys it with a **significant ranking
+  loss** (paired p ≈ 0.015–0.018). Since quantile-match fixes the marginal for free,
+  reweighting is **strictly dominated**.
+- **min_confidence label-noise (Stage 2b, L2):** regenerate the Stage-4 labels keeping
+  only detections with BoulderNet `score ≥ t` (cached Stage-1/2/3 inputs; tile grid is
+  detection-independent so the embeddings still join). Filtering **monotonically harms**
+  both ranking and dynamic range — `conf≥0.7` collapses the rich share 36 %→11 %,
+  top_ratio 0.66→0.31, paired p < 0.001. Low-confidence detections are **real boulders**,
+  not removable noise.
+""", "label_rw_md"))
+
+cells.append(code(
+    """from scipy.stats import spearmanr, wilcoxon
+BO = REPO / "models/fang_tier2/l1_bakeoff"
+
+def paired_vs(base_df, df):
+    def pim(d):
+        return {o: spearmanr(g.y_true, g.y_pred).correlation for o, g in d.groupby("obs_id")
+                if g.y_true.nunique() > 1}
+    a, b = pim(df), pim(base_df)
+    k = [x for x in b if x in a and np.isfinite(a[x]) and np.isfinite(b[x])]
+    aa = np.array([a[x] for x in k]); bb = np.array([b[x] for x in k])
+    return np.median(aa - bb), int((aa > bb).sum()), len(k), wilcoxon(aa, bb).pvalue
+
+rw = pd.read_csv(BO / "reweight_scorecard.csv"); mc = pd.read_csv(BO / "minconf_scorecard.csv")
+print("LDS reweighting (vs unweighted):")
+print(rw.round(3).to_string(index=False))
+rwb = pd.read_parquet(BO / "preds_reweight_none.parquet")
+for s in ["lds_sqrt", "lds_inv"]:
+    d, w, n, p = paired_vs(rwb, pd.read_parquet(BO / f"preds_reweight_{s}.parquet"))
+    print(f"   {s}: paired d={d:+.3f}  wins {w}/{n}  p={p:.3f}")
+
+print("\\nmin_confidence label-noise (vs unfiltered):")
+print(mc.round(3).to_string(index=False))
+mcb = pd.read_parquet(BO / "preds_minconf_none.parquet")
+for s in ["conf050", "conf070"]:
+    d, w, n, p = paired_vs(mcb, pd.read_parquet(BO / f"preds_minconf_{s}.parquet"))
+    print(f"   {s}: paired d={d:+.3f}  wins {w}/{n}  p={p:.3f}")
+
+fig, ax = plt.subplots(1, 2, figsize=(11, 4.4))
+ax[0].plot(rw.scheme, rw.raw_top, "o-", color="tab:red", label="raw top_ratio")
+ax[0].plot(rw.scheme, rw.raw_perimg_rho, "s-", color="tab:blue", label="per-img rho")
+ax[0].axhline(1.0, ls=":", c="grey"); ax[0].set_ylim(0, 1.1)
+ax[0].set_title("LDS reweighting: de-compress bought with ranking"); ax[0].legend(fontsize=8)
+ax[1].plot(mc.label, mc.raw_top, "o-", color="tab:red", label="raw top_ratio")
+ax[1].plot(mc.label, mc.raw_perimg_rho, "s-", color="tab:blue", label="per-img rho")
+ax[1].plot(mc.label, mc.rich_share, "^--", color="tab:green", label="rich share")
+ax[1].set_ylim(0, 1.0); ax[1].set_title("min_confidence: filtering harms both"); ax[1].legend(fontsize=8)
+fig.tight_layout(); fig.savefig(FIG / "23_tier2_label_reweight.png", dpi=130)
+""", "label_rw_code"))
+
+cells.append(md(
+    """## 9. Stage 2 verdict — the per-tile ceiling is the data
 
 - **L1 is ruled out as a ranking lever.** The heavy distributional heads
   (HL-Gauss, pinball, neural-ZILN) join the cheap swaps (log1p, count-Poisson) in
   washing out vs `mlp_reg` per-image (best p=0.48) — exactly what "compression = the
   intrinsic aleatoric floor, not a loss-shape artefact" predicts. Changing the
   targeted functional moves the *value* (de-compresses), never the *rank*.
-- **L2 (coarser scale) is the only remaining lever, and even it is unconfirmed
-  in-cohort:** S=32→64 lifts the marginal (raw top_ratio 0.66→0.72, pooled rho up)
-  but the per-image ranking gain is only directional (paired +0.025, **p=0.19**) and
-  partly an easier-target artefact. A confident gain needs the §2.3 expansion cohort.
+- **Every L2/2c lever is now exhausted, none beats `mlp_reg`:** coarser scale (S=64)
+  is directional-only (paired +0.025, p=0.19); LDS reweighting is **dominated** (de-
+  compresses raw, costs ranking p≈0.015); `min_confidence` filtering is **harmful**
+  (monotonically worse, conf≥0.7 paired p<0.001). The ~0.43 per-image ceiling is the
+  **5 m/px CTX magnitude floor**, confirmed five independent ways.
 - **Independent proof the wall is the data:** Tier-1 `P(rich)` — a classifier — ranks
   abundance as well as the dedicated regressor (0.437 vs 0.433). The one-model
   simplification (qmatch the `P(rich)` instead of running a Tier-2 head) is **viable but
   not free** — §7b: identical marginal, regressor keeps a ~0.02 / paired p≈0.05 ranking
   edge.
 - **So the product story holds:** quantile-match (L3) is the marginal win; the per-tile
-  residual is the texture floor, reported honestly via L4 — whose intervals still need
-  recalibration (58 % vs 80 % coverage). Next: `min_confidence` label-noise + LDS
-  reweighting (L2/2c).
+  residual is the texture floor, reported honestly via L4 (intervals need recalibration,
+  58 % vs 80 % coverage). **The path forward is not a better model** — it is shipping
+  Stage 1 (productize qmatch + isotonic into the map) and the §2.3 expansion cohort
+  (the only thing that can raise the *ranking* ceiling).
 
-Figures: `reports/figures/23_{tier2_l1_bakeoff,tier2_scale_sweep,prich_vs_abundance,prich_qmatch_confirm}.png`.
+| lever | result |
+|---|---|
+| L1 cheap swaps (log1p, count) | wash |
+| L1 distributional heads (HL-Gauss/pinball/ZILN) | wash |
+| L1+L2 reweighting (LDS) | dominated |
+| L2 label-noise (min_confidence) | harmful |
+| L2 coarser scale (S=64) | directional only (p=0.19) |
+
+Figures: `reports/figures/23_{tier2_l1_bakeoff,tier2_scale_sweep,prich_vs_abundance,prich_qmatch_confirm,tier2_label_reweight}.png`.
 """, "stage2_synth"))
 
 nb = {"cells": cells,

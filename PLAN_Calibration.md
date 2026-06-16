@@ -175,9 +175,15 @@ strategically important even though each item is more work.
   size information that area-fraction needs, so area can't be recovered from counts
   alone. Count-Poisson would only make sense **if the product itself is count-density**
   (Serrano hazard classes), not area-fraction.
-- **Reduce label noise.** The untested `min_confidence` BoulderNet filter
-  ([CLAUDE.md §11]) — sweep it; cleaner labels shrink the aleatoric floor. Also
-  consider modelling label noise explicitly (noise-robust losses).
+- **Reduce label noise.** The `min_confidence` BoulderNet `score` filter
+  ([CLAUDE.md §11]). **TESTED 2026-06-16 (`_diag_tier2_minconf_sweep.py`): HARMFUL,
+  ruled out.** Regenerating S=32 labels at `score ≥ {0.5, 0.7}` (Stage-4 regen,
+  cached inputs; baseline reproduced exactly, 0 key-misses) **monotonically degrades**
+  both ranking and dynamic range: conf≥0.5 paired Δ −0.021 (p=0.010); conf≥0.7
+  collapses the rich share 36 %→11 %, top_ratio 0.66→0.31, paired Δ −0.070 (p<0.001).
+  Low-confidence detections are **real boulders**, not removable noise — filtering
+  thins the target rather than cleaning it. (Noise-robust losses untried but
+  unmotivated given this.)
 - **Better representation.** (a) Multi-scale embedding fusion (S=16/32/64) for more
   context to disambiguate high tiles; (b) a small **spatial head** over the 3×3
   embedding field (already partly present); (c) **ViT fine-tune** (LoRA/last block)
@@ -192,7 +198,13 @@ strategically important even though each item is more work.
   imbalanced-regression method ([Yang et al. 2021, "Delving into Deep Imbalanced
   Regression"](https://arxiv.org/abs/2102.09554)): smooth the empirical label density
   and re-weight the loss by its inverse, and smooth features across neighbouring
-  target values. Designed for exactly our zero-inflated, heavy-tailed target.
+  target values. **TESTED 2026-06-16 (`_diag_tier2_reweight.py`, LDS label-density
+  weights on mlp_reg): DOMINATED, ruled out.** It de-compresses the *raw* marginal
+  (top_ratio 0.67→0.77 sqrt → 0.88 inv) but at a **significant paired ranking cost**
+  (Δ −0.014 p=0.018 sqrt; −0.032 p=0.015 inv). Quantile-match (L3) recovers the same
+  marginal for free with **zero** ranking cost, so reweighting is strictly worse for
+  our goal. (FDS feature-smoothing untried; unmotivated given the label-weighting
+  result.)
 - **Density-based / cost-sensitive weighting** ([Steininger et al. 2021](https://doi.org/10.1007/s10994-021-06023-5)),
   tail oversampling, and SMOTER-style synthesis. Cheaper than LDS, same intent
   (don't let the 18 % zeros + bulk drown the rare tail). A `sample_weight ∝
@@ -259,8 +271,8 @@ behind HL-Gauss and the L2 items unless they stall.
 | **0 DONE** | diagnose | `src/calibration.py`, notebook 23, scorecard | — |
 | **1** | L3 (+Tier-1) | bank a `CalibrationLayer` (quantile-match Tier-2, **isotonic** Tier-1), wire into `predict_window`/map; pick global vs conditioned | low, no GPU |
 | **2 DONE** | L1 | **HL-Gauss + pinball + neural-ZILN bake-off** (`_diag_tier2_l1_bakeoff.py`): all a **WASH on ranking** vs `mlp_reg` (best = pinball.median, paired p=0.48). Keepers: pinball.P90 = raw tail-calibrated point (top_ratio 0.98); intervals under-dispersed (58 % vs 80 %). **L1 ruled out as a ranking lever.** | head re-train, ~10 min/head GPU |
-| **2b** | L2 | scale sweep **DONE for S=32→64** (`_diag_tier2_scale_sweep.py`): per-image rho directional-up (paired Δmed **+0.025**, 25/38 images, **Wilcoxon p=0.19 — NOT significant at n=38**); pooled rho 0.648→0.695 + raw top_ratio 0.66→0.72 also up. Partly confounded (zero-inflation 18 %→6.9 % is an easier target). Best L2 *direction* but unconfirmed in-cohort → needs §2.3 expansion. Remaining: `min_confidence` label-noise sweep; S=128 (needs P384 embed pass + 128-px label grid) | cheap re-runs |
-| **2c** | L1+L2 | LDS/FDS or density weighting on the winning head | small |
+| **2b DONE** | L2 | **scale sweep** (`_diag_tier2_scale_sweep.py`) S=32→64: directional-up (paired +0.025, **p=0.19 n.s.**), partly easier-target. **`min_confidence` sweep** (`_diag_tier2_minconf_sweep.py`): **HARMFUL** — monotonically worse (conf≥0.7 paired Δ −0.070, p<0.001; rich share 36 %→11 %). S=128 still untested (needs P384 embed + 128-px grid). | cheap re-runs |
+| **2c DONE** | L1+L2 | **LDS density reweighting** (`_diag_tier2_reweight.py`): **DOMINATED** — de-compresses raw (top 0.67→0.88) but costs ranking (paired p≈0.015); qmatch gives the marginal free. | small |
 | **3** | L4 | uncertainty product: intervals + coverage validation + map overlay | small |
 | **4** | — | freeze the Tier-2 head + calibrator into the deployable path; re-render docs §8; hand to THEMIS (W3) | — |
 
@@ -270,14 +282,18 @@ distributional heads (HL-Gauss, pinball, neural-ZILN) all wash out vs `mlp_reg`,
 because compression is the intrinsic aleatoric floor, not a loss-shape artefact. A
 second, independent proof: **Tier-1 `P(rich)` ranks `fractional_area` as well as the
 dedicated Tier-2 regressor** (per-image 0.437 vs 0.433; within-rich only 0.34) — a
-*classifier* hits the same ~0.43 wall, so the wall is the data, not the head. That
-leaves **L2 (coarser scale / cleaner labels) as the only remaining lever** — S=32→64
-points the right way (paired Δmed +0.025 per-image, pooled +0.047) but is **not
-significant at n=38** (Wilcoxon p=0.19) and is partly an easier-target artefact, so
-the ranking ceiling is *sticky* even here and likely needs the §2.3 expansion cohort
-to move confidently. L3 remains the immediate product win (Tier-1 = isotonic, Tier-2
-= quantile-match); L4 is the honest endpoint but its intervals need recalibration
-(58 % coverage).
+*classifier* hits the same ~0.43 wall, so the wall is the data, not the head. **The L2/2c levers are now also exhausted (2026-06-16) and none beats `mlp_reg`:**
+coarser scale (S=64) is directional-only (paired +0.025, p=0.19); LDS reweighting is
+**dominated** (de-compresses raw, costs ranking p≈0.015); `min_confidence` filtering is
+**harmful** (monotonically worse, conf≥0.7 p<0.001). So **no in-cohort retraining lever
+moves the per-image ranking ceiling** — it is the 5 m/px CTX magnitude floor, confirmed
+five ways. **The path forward is not a better model:** ship **Stage 1** (productize
+qmatch + isotonic into the map — the marginal *is* fixable, the visible win) and pursue
+the **§2.3 expansion cohort** (the only thing that can raise the ranking ceiling — more
+data, more tail). L3 stays the product win (Tier-1 = isotonic, Tier-2 = quantile-match);
+L4 is the honest endpoint (intervals need recalibration, 58 % coverage); the one-model
+simplification (qmatch `P(rich)`) is viable at a small cost (§3 ceiling diagnostic).
+Only S=128 (needs a fresh embedding pass + label grid) remains untested.
 
 ## 6. Metrics (declared)
 
