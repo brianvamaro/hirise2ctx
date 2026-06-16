@@ -269,7 +269,7 @@ behind HL-Gauss and the L2 items unless they stall.
 | stage | lever(s) | content | cost |
 |---|---|---|---|
 | **0 DONE** | diagnose | `src/calibration.py`, notebook 23, scorecard | — |
-| **1** | L3 (+Tier-1) | bank a `CalibrationLayer` (quantile-match Tier-2, **isotonic** Tier-1), wire into `predict_window`/map; pick global vs conditioned | low, no GPU |
+| **1 (next)** | L3 (+Tier-1) | bank a `CalibrationLayer` (isotonic Tier-1 + **global** quantile-match Tier-2), wire into `predict_window`/map as an **optional** step (raw toggle); ship for the **regional map**. Design resolved 2026-06-16 — see below. | low, no GPU |
 | **2 DONE** | L1 | **HL-Gauss + pinball + neural-ZILN bake-off** (`_diag_tier2_l1_bakeoff.py`): all a **WASH on ranking** vs `mlp_reg` (best = pinball.median, paired p=0.48). Keepers: pinball.P90 = raw tail-calibrated point (top_ratio 0.98); intervals under-dispersed (58 % vs 80 %). **L1 ruled out as a ranking lever.** | head re-train, ~10 min/head GPU |
 | **2b DONE** | L2 | **scale sweep** (`_diag_tier2_scale_sweep.py`) S=32→64: directional-up (paired +0.025, **p=0.19 n.s.**), partly easier-target. **`min_confidence` sweep** (`_diag_tier2_minconf_sweep.py`): **HARMFUL** — monotonically worse (conf≥0.7 paired Δ −0.070, p<0.001; rich share 36 %→11 %). S=128 still untested (needs P384 embed + 128-px grid). | cheap re-runs |
 | **2c DONE** | L1+L2 | **LDS density reweighting** (`_diag_tier2_reweight.py`): **DOMINATED** — de-compresses raw (top 0.67→0.88) but costs ranking (paired p≈0.015); qmatch gives the marginal free. | small |
@@ -295,6 +295,49 @@ L4 is the honest endpoint (intervals need recalibration, 58 % coverage); the one
 simplification (qmatch `P(rich)`) is viable at a small cost (§3 ceiling diagnostic).
 Only S=128 (needs a fresh embedding pass + label grid) remains untested.
 
+### Stage 1 design — RESOLVED 2026-06-16 (Brian)
+
+The deployment is **staged**, and the granularity question follows the stage:
+
+1. **`CalibrationLayer`** (new, in `src/calibration.py`) bundles two fitted, monotone
+   maps with a `DeployableHead`-style `save`/`load`: **isotonic** (`P(rich)` →
+   calibrated probability) + **global quantile-match** (raw abundance → `fractional_area`
+   marginal). Fit **deployment-honest on all 38 images** (not LOIO); the LOIO numbers
+   (Tier-1 ECE 0.014; Tier-2 top_ratio 0.87, rank-preserved) are the conservative bound
+   it inherits, since off-HiRISE terrain has no truth.
+2. **Calibration is OPTIONAL — raw must stay a one-flag toggle.** `predict_window`
+   (and the map scripts) take an optional `calibrator`; `None` ⇒ render raw, exactly as
+   today. The map scripts get a `--calibrate/--raw` switch so raw and de-compressed maps
+   are both trivially producible (and comparable side-by-side, the QA pattern).
+3. **One-model simplification is the default abundance path.** No separate Tier-2 head:
+   the abundance map is `quantile_match(P(rich) → fa)` (isotonic gives the rich/poor map
+   off the *same* `P(rich)`). Costs ~0.02 ranking vs a dedicated head (§3) but deletes a
+   whole trained artifact. Banking a dedicated all-data Tier-2 regression head stays a
+   documented option if abundance ranking is later promoted to a first-class deliverable.
+4. **Granularity is GLOBAL for the regional map.** The first deliverable maps the cohort
+   cluster (≈40–46°N, 0–20°E), so deployment terrain ≈ the training cohort **by
+   construction** — global qmatch's assumption holds, no gating needed. Global qmatch is
+   also a *fixed pointwise map* (not per-window re-ranking), so it only mis-scales where
+   the **classifier itself** is fooled by out-of-distribution texture.
+5. **OOD handling is DEFERRED to the global-map phase** — but the layer is built
+   **extensible** (an optional novelty/flag hook) so adding it later is a small change,
+   not a re-architecture. The dusty-plains / OOD problem (where global qmatch can amplify
+   a fooled `P(rich)` into fake abundance) is a *global-map* concern; it is materially
+   shrunk first by the **§2.3 expansion cohort** (broader reference) and checked by
+   **THEMIS (W3)** (independent coarse abundance over exactly the un-HiRISE'd regions).
+   When built, the OOD layer **flags** ("classifier is extrapolating here"), it does not
+   fabricate a fix; covariate-conditioned qmatch is the eventual refinement once the
+   data to validate it exists. (Note: the §2.7 novelty score validated *negative as a
+   skill predictor* at n=38 — it is usable as a definitional OOD/extrapolation flag, not
+   as an accuracy estimate.)
+6. **L4 uncertainty is OUT of Stage 1** — its intervals are under-covered (58 % vs 80 %)
+   and need recalibration first (Stage 3).
+
+Deliverables: `CalibrationLayer` + tests (round-trip, monotonicity, the §6 gates);
+optional wiring in `predict_window` + a `--calibrate/--raw` map flag; bank the fitted
+layer; re-render the regional/headline maps raw-vs-calibrated; update `docs/model_evidence.md`
+§8 + `DATA_DICTIONARY` if output columns change.
+
 ## 6. Metrics (declared)
 
 - **Tier-1:** ECE ≤ 0.05; AUC within ±0.005; reliability diagonal; Brier.
@@ -309,21 +352,30 @@ Only S=128 (needs a fresh embedding pass + label grid) remains untested.
 
 ```
 PLAN_FM 2.6 deployable head + map (DONE)
-   └─ PLAN_Calibration  Stage 1 (L3, ship) → Stage 2 (L1 bake-off) ─┐
-                                            → Stage 2b/2c (L2, ceiling) ─┼─ Stage 3 (L4) → Stage 4 freeze+wire
+   └─ Stage 2 + 2b/2c (L1/L2 bake-off) DONE → all levers exhausted, ceiling = data
+        └─ Stage 1 (L3 CalibrationLayer, global qmatch, NEXT) → regional map shipped
+             └─ Stage 3 (L4 intervals) → Stage 4 freeze+wire → global-map OOD handling
 PLAN_ModelUsability W3 (operationalized here) ── THEMIS validation consumes Stage 4
+§2.3 expansion cohort ── the only ranking-ceiling lever; feeds the global map
 ```
 
 Independent of the §2.3 expansion cohort (works on the 38). **Risks:** covariate
-shift breaks global marginal-matching (→ conditioned/gated); the floor is the floor
-(L1/L2 raise it, L4 reports it — no per-tile miracle); per-fold pooling adds a small
-Spearman wobble (report per-image); bake-off scope creep (time-boxed).
+shift breaks global marginal-matching on OOD terrain — **scoped out of the regional
+map (in-distribution by construction); a global-map concern, deferred** (§Stage 1
+design pt 5); the floor is the floor (L1/L2 raise it, L4 reports it — no per-tile
+miracle); per-fold pooling adds a small Spearman wobble (report per-image).
 
-**Open decisions (Brian):**
-1. **Headline Tier-2 product** — distributionally-correct point map (Stage 1) vs
-   honest uncertainty-interval map (Stage 3)?
-2. **How far to push L2** — is a coarser/cleaner/count-based Tier-2 acceptable
-   (trades spatial resolution / changes the target) for less compression?
-3. **Calibration granularity** — global vs per-region vs novelty-conditioned.
-4. **ViT fine-tune** — in or out for the representation-level ceiling (ties to the
-   PLAN_FM fine-tune go/no-go).
+**Decisions — RESOLVED 2026-06-16 (Brian):**
+1. **Headline Tier-2 product** → distributionally-correct **point map** (Stage 1,
+   global qmatch); the L4 uncertainty-interval map is deferred (Stage 3, intervals
+   need recalibration).
+2. **How far to push L2** → **done** — all in-cohort L2/2c levers tested and exhausted
+   (§5); not pursued further. The ranking ceiling is the data; §2.3 expansion is the
+   lever, not a coarser/cleaner in-cohort target.
+3. **Calibration granularity** → **global** for the regional map (in-distribution);
+   OOD flag + covariate-conditioning **deferred to the global-map phase**, layer built
+   extensible (§Stage 1 design pts 4–5). Calibration is an **optional** step (raw toggle).
+4. **One-model simplification** → **default** abundance path (qmatch `P(rich)`, no
+   separate Tier-2 head); dedicated head remains a documented option.
+5. **ViT fine-tune** → still **out** — the ceiling is the data, not the representation;
+   nothing in Stage 2 motivates it (ties to the PLAN_FM fine-tune go/no-go).
