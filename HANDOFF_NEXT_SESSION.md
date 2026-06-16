@@ -1,37 +1,42 @@
 # Handoff prompt — next session
 
-**Last updated 2026-06-14b — §2.7 reliability overlay BUILT + LOIO-validated,
-result NEGATIVE at n=38 → overlay DEFERRED; §2.6 deployable head + map pilot DONE
-(committed baf65ef); §2.1 freeze + §2.2 productization + §2.4 Tier-2 done;
-§2.3/2.5 DESIGNED.** [PLAN_FM.md](PLAN_FM.md) is the active plan. This session's
-§2.7 work is UNCOMMITTED (Brian sign-off before committing).
+**Last updated 2026-06-15 — Calibration/de-compression workstream opened + Stage 0
++ prototypes DONE (committed b96b8f4). Everything below is COMMITTED on branch
+`fm-deployable-head-and-map-pilot` (recent: b96b8f4 cal-prototypes, 63fd8b7 cal-Stage0,
+3a66f53 figure-rich report, fd38a19 §2.7).** [PLAN_FM.md](PLAN_FM.md) is the active
+program; [PLAN_Calibration.md](PLAN_Calibration.md) is the new de-compression plan.
+
+**DONE & committed:** §2.1 freeze, §2.2 productize, §2.4 Tier-2, §2.6 deployable head
++ off-HiRISE map, §2.7 reliability (validated NEGATIVE at n=38 → overlay DEFERRED),
+§2.5 model-evidence report (figure-rich: gap-fill headline + basis + gallery + Tier-2
+map; Tier-2 deep-dive §8), and **PLAN_Calibration Stage 0 + prototypes**.
 
 **The critical-path bottleneck is still on Brian's side:** any "confirmed" claim
-(§2.3) needs the 23 expansion ObsIds (`cohort_expansion_candidates.csv`) run
-through BoulderNet — not yet done. The next BUILDABLE pieces (no expansion data):
-- **§2.3 declaration — the recommended next build.** Can be WRITTEN any time
-  (pre-data) — confirm-then-absorb design + proposed gates in PLAN_FM §2.3. Writing
-  it now (gates/baseline/protocol) is what lets the expansion numbers, when they
-  land, carry a pre-registered stamp.
-- **§2.5 report — DRAFTED + figure-rich 2026-06-14b** (`docs/model_evidence.md`,
-  9 figures / 9 sections). Prose complete; **4 NEW bespoke figures** rendered from
-  cached data (basis HiRISE↔CTX rich/poor; 6-image terrain+regime prediction
-  gallery; headline **regional gap-fill map** = 1 GPU run over E12_N44 around
-  ESP_045139_2270's footprint, replaced a confounded validated|deployed two-panel;
-  Tier-2 true-vs-predicted abundance map) via `scripts/probes/_evidence_*.py`.
-  **§8 is now a Tier-2 status/reach/use deep-dive**
-  (Brian ask). Honest §6 reliability deferral kept. Remaining: the §4 ViT→GeM→MLP
-  schematic figure and the `[held-out: pending]` headline row (gated on §2.3).
-- **§2.7 reliability overlay — DONE (validation) + DEFERRED (wiring).** Built
-  `src/reliability.py` (Mahalanobis + kNN, +10 tests) and validated per-image
-  novelty against the frozen recipe's OWN per-image AUC. **Bar NOT cleared at
-  n=38** (Maha rho −0.108 p0.52 / kNN −0.141 p0.40; bottom-5 flag prec 0.00):
-  the FM already absorbed the covariate-shift class, so novelty and skill are
-  decoupled (most-novel image ESP_076499_1160 is a FM *winner*, AUC 0.868; the
-  weakest image is texturally ordinary). Novelty is a valid OOD flag but NOT an
-  accuracy predictor → Brian DEFERRED wiring it into the map; re-run the SAME
-  validation (`scripts/probes/_fm_reliability_validation.py`) when the expansion
-  cohort lands. Map stays trust-layer-less. DECISIONS.md "2026-06-14b".
+(§2.3) needs the 23 expansion ObsIds (`cohort_expansion_candidates.csv`) run through
+BoulderNet — not yet done. The next BUILDABLE pieces (no expansion data), suggested order:
+
+- **Calibration Stage 1 — RECOMMENDED next build** (no GPU). Productize a
+  `CalibrationLayer` in `src/`: **isotonic** for Tier-1 P(rich), **quantile-match**
+  for Tier-2 abundance (both fit LOIO/all-38, rank-preserving), and wire into
+  `predict_window` / the map renderer. Drafts already exist
+  (`model_evidence_{gapfill_map,tier2_map}_calibrated*.png`); this makes them a real
+  layer. Gates: Tier-1 ECE≤0.05 + global-AUC±0.005; Tier-2 top-bin∈[0.8,1.2] +
+  Spearman±0.01. PLAN_Calibration §5 Stage 1.
+- **§2.3 declaration** — writable now (pre-data): confirm-then-absorb gates/baseline/
+  protocol (PLAN_FM §2.3). Unlocks the held-out stamp for §2.5's headline row.
+- **Calibration Stage 2 (L1/L2)** — the cheap L1 swaps (log1p, count-Poisson) are
+  RULED OUT (2026-06-15); the remaining levers are **HL-Gauss/quantile head (L1)** and
+  **coarser-scale / `min_confidence` label-noise (L2)** — the only lever that raises
+  the ranking ceiling. GPU, minutes. PLAN_Calibration §3.
+- **§2.5 finish** — the §4 ViT→GeM→MLP schematic figure + fill the `[held-out: pending]`
+  headline row once §2.3 lands.
+
+**Calibration findings (committed):** Tier-1 already well-calibrated (ECE 0.06);
+ISOTONIC fixes both ends best (→0.014, AUC-exact at deployment; beta = smooth
+fallback). Tier-2 compression is TWO-SIDED + intrinsic (aleatoric floor); quantile-
+matching de-compresses the marginal (top-bin 0.71→0.87, ranking preserved); cheap L1
+swaps don't help. `src/calibration.py` (+9 tests), notebook 23. The map currently has
+NO calibration layer wired (drafts only) and NO reliability overlay (deferred).
 
 ## What landed in the §2.7 session (2026-06-14b; DECISIONS.md 2026-06-14b)
 
