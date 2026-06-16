@@ -3891,9 +3891,12 @@ median-of-medians glance is misleading — both "wins" below shrank under pairin
   ranker.** P(rich), a classifier that never saw `fractional_area`, ranks it per-image
   at **0.437** — statistically identical to the dedicated regressor's **0.433** (counts
   0.436); within rich tiles only 0.34. Two different model families hit the same ~0.43
-  wall ⇒ the magnitude signal in 5 m/px CTX **is** the rich/poor signal. Implication: a
-  **calibrated P(rich) + quantile-match ≈ Tier-2** (one-model simplification candidate
-  for Stage 1/4).
+  wall ⇒ the magnitude signal in 5 m/px CTX **is** the rich/poor signal. **Direct test
+  (qmatch both onto the fa marginal, notebook 23 §7b):** identical marginal, but the
+  dedicated regressor keeps a small, borderline ranking edge (pooled 0.642 vs 0.625;
+  paired per-image wins 24/38, Wilcoxon p≈0.05). So the **one-model simplification**
+  (drop the Tier-2 head, use a quantile-matched P(rich)) is **viable at a ~0.02 ranking
+  cost, not free** — a Stage 1/4 option.
 - **Net:** L1 fully ruled out as a ranking lever; L2 is the only remaining lever and
   even it is unconfirmed in-cohort. **qmatch (L3) stays the product win** for the
   marginal; the per-tile ceiling is the data. Next greenlit (Brian): `min_confidence`

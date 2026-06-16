@@ -161,9 +161,12 @@ strategically important even though each item is more work.
   dedicated Tier-2 regressor's **0.433** (and counts: 0.436). Within the rich class it
   falls to **0.34** (texture barely resolves *how* rich). Two different model families
   hitting the same ~0.43 wall ⇒ the magnitude signal in 5 m/px CTX ≈ the rich/poor
-  signal, with little extra. Implication: a **calibrated `P(rich)` + quantile-match ≈
-  the Tier-2 regressor**, a one-model simplification candidate for Stage 1/4; and L1/
-  representation tweaks can't beat a ceiling that is in the inputs.
+  signal, with little extra. **Direct test (qmatch both onto the fa marginal):** the
+  abundance maps share an identical marginal, but the dedicated regressor keeps a small,
+  borderline edge on ranking (pooled 0.642 vs 0.625; paired per-image wins 24/38,
+  Wilcoxon p≈0.05). So the **one-model simplification** (drop the Tier-2 head, use a
+  quantile-matched `P(rich)`) is **viable at a ~0.02 ranking cost, not free** — a Stage
+  1/4 option. Either way, L1/representation tweaks can't beat a ceiling in the inputs.
 - **Target choice: counts, with a count likelihood.** Predict `boulder_count` under
   a **Poisson / negative-binomial NLL** (the natural count model). **TESTED
   2026-06-15 (`_diag_tier2_objectives.py`): Poisson-count → area is WORSE for the

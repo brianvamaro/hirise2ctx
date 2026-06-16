@@ -6,7 +6,7 @@ LOIO-honest, calling `src.calibration`. Reads banked predictions, recomputes not
 heavy.
 
 Figures: reports/figures/23_{tier1_calibration,tier2_compression,tier2_decompression,
-tier2_l1_bakeoff,tier2_scale_sweep,prich_vs_abundance}.png
+tier2_l1_bakeoff,tier2_scale_sweep,prich_vs_abundance,prich_qmatch_confirm}.png
 To regenerate: `python notebooks/_build_23.py` then nbconvert --execute.
 
 §§5-8 (Stage 2) read the banked probe artifacts under models/fang_tier2/l1_bakeoff/
@@ -406,8 +406,8 @@ the Tier-1 rich/poor **classifier** — which never saw the continuous target �
 Within the rich class the correlation falls (texture barely resolves *how* rich). Two
 different model families hitting the same ~0.43 wall ⇒ the magnitude signal in 5 m/px
 CTX essentially *is* the rich/poor signal. (Practical upshot: a calibrated `P(rich)`
-pushed through quantile-match would approximate the Tier-2 abundance map — a possible
-one-model simplification.)
+pushed through quantile-match would approximate the Tier-2 abundance map — a one-model
+simplification, tested directly in §7b.)
 """, "prich_md"))
 
 cells.append(code(
@@ -447,6 +447,59 @@ fig.tight_layout(); fig.savefig(FIG / "23_prich_vs_abundance.png", dpi=130)
 """, "prich_code"))
 
 cells.append(md(
+    """### 7b. Confirming the one-model simplification (direct test)
+
+The inference made flesh: push each input through the **same LOIO quantile-match**
+onto the `fractional_area` marginal and score the resulting abundance maps. By
+construction both hit the **identical marginal** (top_ratio ≈ 0.86, near-zero 18.6 %,
+marginal-L1 0.0002), so the only open question is ranking. Result: the maps are **close
+but not identical — the dedicated regressor keeps a small, borderline-significant edge**
+(pooled 0.642 vs 0.625; paired per-image the regressor wins 24/38, Wilcoxon p ≈ 0.05).
+So replacing the Tier-2 head with a quantile-matched `P(rich)` is **viable at a ~0.02
+ranking cost, not free**. (Quantile-match also ties the lowest ~18 % of predictions at
+the zero floor, which slightly lowers per-image Spearman for both inputs — and the
+median-of-medians glance misleads again: it favours `P(rich)` while the paired test
+favours the regressor.)
+""", "prich_qm_md"))
+
+cells.append(code(
+    """from scipy.stats import spearmanr, wilcoxon
+
+def qmatch_abundance(src_col):
+    df = pd.DataFrame({"obs_id": j.obs_id, "y_true": j.fractional_area, "y_pred": j[src_col]})
+    return loio_calibrate(df, lambda rp, rt, hp: quantile_match(hp, rp, rt))
+
+yt = j.fractional_area.to_numpy(); grp = j.obs_id.to_numpy()
+qa = {"qmatch(P_rich)": qmatch_abundance("p_rich"), "qmatch(mlp_reg)": qmatch_abundance("point")}
+
+def per_img(yp):
+    return {o: spearmanr(yt[grp == o], yp[grp == o]).correlation
+            for o in np.unique(grp) if np.unique(yt[grp == o]).size > 1}
+
+print(f"{'abundance map':>16} {'perimg_rho':>11} {'pooled':>7} {'top':>5} {'near0':>6} {'margL1':>7}")
+for name, q in qa.items():
+    m = compression_metrics(yt, q)
+    print(f"{name:>16} {np.nanmedian(list(per_img(q).values())):>11.3f} {m['spearman']:>7.3f} "
+          f"{m['top_ratio']:>5.2f} {m['near_zero_pred']:>6.1%} {m['marginal_l1']:>7.4f}")
+
+a = per_img(qa["qmatch(P_rich)"]); b = per_img(qa["qmatch(mlp_reg)"])
+keys = [k for k in a if k in b and np.isfinite(a[k]) and np.isfinite(b[k])]
+aa = np.array([a[k] for k in keys]); bb = np.array([b[k] for k in keys])
+pval = wilcoxon(aa, bb).pvalue
+print(f"\\npaired per-image rho  qmatch(P_rich) vs qmatch(mlp_reg): n={len(keys)} "
+      f"dmed={np.median(aa-bb):+.3f}  P_rich wins {int((aa>bb).sum())}/{len(keys)}  Wilcoxon p={pval:.3f}")
+print("-> identical marginal by construction; the regressor keeps a small, borderline ranking edge.")
+
+fig, ax = plt.subplots(figsize=(5, 4.6))
+ax.scatter(bb, aa, s=22, alpha=0.75)
+lim = [min(aa.min(), bb.min()) - 0.02, max(aa.max(), bb.max()) + 0.02]
+ax.plot(lim, lim, "k:"); ax.set_xlim(lim); ax.set_ylim(lim)
+ax.set_xlabel("per-image rho  qmatch(mlp_reg)"); ax.set_ylabel("per-image rho  qmatch(P_rich)")
+ax.set_title(f"one-model simplification: near-equal (paired p={pval:.2f})")
+fig.tight_layout(); fig.savefig(FIG / "23_prich_qmatch_confirm.png", dpi=130)
+""", "prich_qm_code"))
+
+cells.append(md(
     """## 8. Stage 2 verdict — the per-tile ceiling is the data
 
 - **L1 is ruled out as a ranking lever.** The heavy distributional heads
@@ -459,14 +512,16 @@ cells.append(md(
   but the per-image ranking gain is only directional (paired +0.025, **p=0.19**) and
   partly an easier-target artefact. A confident gain needs the §2.3 expansion cohort.
 - **Independent proof the wall is the data:** Tier-1 `P(rich)` — a classifier — ranks
-  abundance as well as the dedicated regressor (0.437 vs 0.433). Implies a calibrated
-  `P(rich)` + quantile-match ≈ the Tier-2 regressor (a one-model simplification).
+  abundance as well as the dedicated regressor (0.437 vs 0.433). The one-model
+  simplification (qmatch the `P(rich)` instead of running a Tier-2 head) is **viable but
+  not free** — §7b: identical marginal, regressor keeps a ~0.02 / paired p≈0.05 ranking
+  edge.
 - **So the product story holds:** quantile-match (L3) is the marginal win; the per-tile
   residual is the texture floor, reported honestly via L4 — whose intervals still need
   recalibration (58 % vs 80 % coverage). Next: `min_confidence` label-noise + LDS
   reweighting (L2/2c).
 
-Figures: `reports/figures/23_{tier2_l1_bakeoff,tier2_scale_sweep,prich_vs_abundance}.png`.
+Figures: `reports/figures/23_{tier2_l1_bakeoff,tier2_scale_sweep,prich_vs_abundance,prich_qmatch_confirm}.png`.
 """, "stage2_synth"))
 
 nb = {"cells": cells,
