@@ -24,12 +24,16 @@ Primitives
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
 __all__ = [
     "reliability_curve", "expected_calibration_error",
-    "TemperatureScaler", "BetaCalibrator", "IsotonicCalibrator", "quantile_match",
+    "TemperatureScaler", "BetaCalibrator", "IsotonicCalibrator",
+    "QuantileMatcher", "quantile_match", "CalibrationLayer",
     "compression_metrics", "loio_calibrate",
 ]
 
@@ -180,6 +184,52 @@ class IsotonicCalibrator:
             raise RuntimeError("IsotonicCalibrator.predict before fit")
         return self._iso.predict(np.asarray(pred, dtype=np.float64))
 
+    def knots(self) -> tuple[np.ndarray, np.ndarray]:
+        """The fitted piecewise-linear knots `(x, y)`. `np.interp(v, x, y)` reproduces
+        ``predict`` exactly (sklearn isotonic with ``out_of_bounds='clip'`` clamps `v`
+        to `[x[0], x[-1]]` then linearly interpolates) — used to serialize the map
+        without pickling the sklearn estimator."""
+        if self._iso is None:
+            raise RuntimeError("IsotonicCalibrator.knots before fit")
+        return (np.asarray(self._iso.X_thresholds_, dtype=np.float64),
+                np.asarray(self._iso.y_thresholds_, dtype=np.float64))
+
+
+class QuantileMatcher:
+    """Deployable quantile-matching: the *fixed* monotone map carrying a reference
+    prediction distribution onto a reference truth distribution.
+
+    The runtime form of :func:`quantile_match` — fit once on ``(ref_pred, ref_true)``,
+    storing the paired sorted quantiles, then apply pointwise. Rank-preserving (so
+    Spearman/AUC are invariant) and distribution-matching (so the calibrated marginal
+    equals the truth marginal — recovering the high tail + true-zero mass). Because the
+    map is a fixed function of the value, it does NOT re-rank per window: a tile gets
+    the same calibrated value regardless of its neighbours.
+    """
+
+    def __init__(self, n_quantiles: int = 4000) -> None:
+        self.n_quantiles = n_quantiles
+        self._xp: np.ndarray | None = None   # sorted reference-prediction quantiles
+        self._fp: np.ndarray | None = None   # sorted reference-truth quantiles
+
+    def fit(self, ref_pred: np.ndarray, ref_true: np.ndarray) -> "QuantileMatcher":
+        sp = np.sort(np.asarray(ref_pred, dtype=np.float64))
+        st = np.sort(np.asarray(ref_true, dtype=np.float64))
+        q = np.linspace(0, 1, min(len(sp), self.n_quantiles))
+        self._xp = np.quantile(sp, q)
+        self._fp = np.quantile(st, q)
+        return self
+
+    def predict(self, pred: np.ndarray) -> np.ndarray:
+        if self._xp is None:
+            raise RuntimeError("QuantileMatcher.predict before fit")
+        return np.interp(np.asarray(pred, dtype=np.float64), self._xp, self._fp)
+
+    def knots(self) -> tuple[np.ndarray, np.ndarray]:
+        if self._xp is None:
+            raise RuntimeError("QuantileMatcher.knots before fit")
+        return self._xp, self._fp
+
 
 def quantile_match(pred: np.ndarray, ref_pred: np.ndarray, ref_true: np.ndarray) -> np.ndarray:
     """Map `pred` through the monotone function that carries the ref-prediction
@@ -187,16 +237,10 @@ def quantile_match(pred: np.ndarray, ref_pred: np.ndarray, ref_true: np.ndarray)
 
     By construction the calibrated marginal matches the truth marginal, so the high
     tail and the true-zero mass are both recovered — directly attacking compression
-    — while monotonicity preserves ranking. Equivalent to sorting both references
-    and interpolating the i-th sorted prediction to the i-th sorted truth.
+    — while monotonicity preserves ranking. Thin functional wrapper over
+    :class:`QuantileMatcher` (fit-and-apply in one call).
     """
-    sp = np.sort(np.asarray(ref_pred, dtype=np.float64))
-    st = np.sort(np.asarray(ref_true, dtype=np.float64))
-    # common quantile grid (references may differ in length)
-    q = np.linspace(0, 1, min(len(sp), 4000))
-    xp = np.quantile(sp, q)
-    fp = np.quantile(st, q)
-    return np.interp(np.asarray(pred, dtype=np.float64), xp, fp)
+    return QuantileMatcher().fit(ref_pred, ref_true).predict(pred)
 
 
 # ============================================================================
@@ -254,3 +298,88 @@ def loio_calibrate(df: pd.DataFrame, fit_apply, *, group_col: str = "obs_id",
         ref = ~held
         out[held] = fit_apply(pred[ref], true[ref], pred[held])
     return out
+
+
+# ============================================================================
+# Deployment calibration layer (Stage 1)
+# ============================================================================
+
+
+class CalibrationLayer:
+    """The deployed, rank-preserving calibration that sits AFTER the frozen Tier-1 head.
+
+    Bundles two fitted monotone maps (PLAN_Calibration Stage 1):
+
+    - **Tier-1** ``calibrate_prob``: isotonic ``P(rich) → calibrated probability``
+      (ECE 0.060 → 0.014; AUC-exact at deployment).
+    - **Tier-2** ``calibrate_abundance``: **global** quantile-match
+      ``input → fractional_area`` marginal. In the **one-model** default the input is
+      the *same* ``P(rich)`` (no separate Tier-2 head); for a two-model deployment it is
+      a dedicated regressor's output.
+
+    Both maps are monotone (ranking invariant) and **global** (a fixed pointwise
+    function), so they never reopen the freeze and only mis-scale where the head itself
+    is fooled by out-of-distribution texture — an off-cohort / global-map concern handled
+    later by the (deferred) novelty hook, not here. Fit **deployment-honest** on the
+    pooled LOIO predictions of all labelled images (``from_loio_predictions``); the LOIO
+    scorecard is the conservative bound the deployed layer inherits, since off-HiRISE
+    terrain has no truth. Serialized as a single ``.npz`` of interpolation knots (no
+    pickle): ``np.interp`` on the knots reproduces either map exactly.
+    """
+
+    def __init__(self, t1_knots=None, t2_knots=None, meta: dict | None = None) -> None:
+        self._t1 = t1_knots   # (x, y) for isotonic Tier-1; None until fit/load
+        self._t2 = t2_knots   # (x, y) for quantile-match Tier-2
+        self.meta = meta or {}
+
+    @classmethod
+    def fit(cls, p_rich, y_binary, abundance_input, y_fractional_area,
+            *, meta: dict | None = None) -> "CalibrationLayer":
+        """Fit both maps. ``abundance_input`` is ``p_rich`` for the one-model default,
+        or a dedicated regressor's prediction for a two-model deployment."""
+        t1 = IsotonicCalibrator().fit(p_rich, y_binary).knots()
+        t2 = QuantileMatcher().fit(abundance_input, y_fractional_area).knots()
+        return cls(t1, t2, {"n": int(np.size(p_rich)), **(meta or {})})
+
+    @classmethod
+    def from_loio_predictions(cls, df: pd.DataFrame, *, p_rich_col="p_rich",
+                              y_binary_col="y_binary", fa_col="fractional_area",
+                              abundance_col: str | None = None,
+                              meta: dict | None = None) -> "CalibrationLayer":
+        """Fit from a pooled LOIO predictions table. One-model unless ``abundance_col``
+        (a dedicated regressor's prediction) is given."""
+        ab = df[p_rich_col] if abundance_col is None else df[abundance_col]
+        return cls.fit(df[p_rich_col].to_numpy(), df[y_binary_col].to_numpy(),
+                       ab.to_numpy(), df[fa_col].to_numpy(),
+                       meta={"abundance_source": abundance_col or p_rich_col, **(meta or {})})
+
+    def _require_fit(self):
+        if self._t1 is None or self._t2 is None:
+            raise RuntimeError("CalibrationLayer used before fit/load")
+
+    def calibrate_prob(self, p_rich) -> np.ndarray:
+        """Tier-1 rich/poor product: raw ``P(rich)`` → calibrated probability."""
+        self._require_fit()
+        return np.interp(np.asarray(p_rich, dtype=np.float64), self._t1[0], self._t1[1])
+
+    def calibrate_abundance(self, abundance_input) -> np.ndarray:
+        """Tier-2 abundance product: input → ``fractional_area``. Pass raw ``P(rich)``
+        in the one-model default (the same scores feeding ``calibrate_prob``)."""
+        self._require_fit()
+        return np.interp(np.asarray(abundance_input, dtype=np.float64), self._t2[0], self._t2[1])
+
+    def save(self, path: str | Path) -> None:
+        self._require_fit()
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(path, t1_x=self._t1[0], t1_y=self._t1[1], t2_x=self._t2[0], t2_y=self._t2[1],
+                 meta=np.array(json.dumps(self.meta)))
+
+    @classmethod
+    def load(cls, path: str | Path) -> "CalibrationLayer":
+        path = Path(path)
+        if path.suffix != ".npz" and not path.exists():
+            path = path.with_suffix(".npz")
+        d = np.load(path, allow_pickle=False)
+        meta = json.loads(str(d["meta"]))
+        return cls((d["t1_x"], d["t1_y"]), (d["t2_x"], d["t2_y"]), meta)

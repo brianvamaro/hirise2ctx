@@ -1,0 +1,21 @@
+{
+  "obs_id": "ESP_055253_2245",
+  "murray_tile": "E4_N44",
+  "placement": "east",
+  "window_offset_rowcol": [
+    43790,
+    10828
+  ],
+  "win_px": 3000,
+  "tile_px": 32,
+  "model_dir": "models\\deployable\\86c51a5dca220f63",
+  "recipe_hash": "86c51a5dca220f63",
+  "n_tiles": 8281,
+  "n_predicted": 8281,
+  "n_nodata_masked": 0,
+  "calibrated": true,
+  "isotonic": true,
+  "rich_share_at_0p5": 0.0007245501750996257,
+  "abundance_mean": 0.0020776721743886954,
+  "abundance_rich_share": 0.0027774423378818984
+}

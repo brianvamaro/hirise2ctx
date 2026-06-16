@@ -95,6 +95,12 @@ def main() -> int:
     ap.add_argument("--model", default=None)
     ap.add_argument("--max-zero-fraction", type=float, default=0.3,
                     help="reject a candidate window if more than this share of pixels are mosaic nodata")
+    ap.add_argument("--raw", action="store_true",
+                    help="render RAW (skip the Stage-1 CalibrationLayer); default is calibrated")
+    ap.add_argument("--no-isotonic", action="store_true",
+                    help="when calibrating, skip the Tier-1 isotonic prob polish (abundance qmatch still applied)")
+    ap.add_argument("--calibration", default=str(REPO_ROOT / "models/deployable/calibration.npz"),
+                    help="banked CalibrationLayer .npz (from scripts/bank_calibration.py)")
     args = ap.parse_args()
 
     model_dir = resolve_model_dir(args.model)
@@ -143,11 +149,19 @@ def main() -> int:
     from src.fm_embeddings import FangEmbedder
     from src.modeling.mlp_head import DeployableHead
 
+    calibrator = None
+    if not args.raw:
+        from src.calibration import CalibrationLayer
+        calibrator = CalibrationLayer.load(args.calibration)
+        print(f"  calibration: {Path(args.calibration).name}  "
+              f"isotonic={'off' if args.no_isotonic else 'on'}  abundance=qmatch(P(rich))", flush=True)
+
     t0 = time.monotonic()
     embedder = FangEmbedder.load()
     head = DeployableHead.load(model_dir)
     pred = predict_window(window, embedder, head, tile_px=TILE_PX,
-                          max_zero_fraction=args.max_zero_fraction)
+                          max_zero_fraction=args.max_zero_fraction,
+                          calibrator=calibrator, apply_isotonic=not args.no_isotonic)
     finite = np.isfinite(pred.prob)
     print(f"  embed+predict {time.monotonic() - t0:.0f}s  tiles={pred.ti.size}  "
           f"valid={pred.n_valid}  nodata_masked={pred.n_masked_nodata}  "
@@ -156,13 +170,22 @@ def main() -> int:
         p = pred.prob[finite]
         print(f"  prob: mean={p.mean():.3f}  >=0.5 share={float((p >= 0.5).mean()):.3f}  "
               f"min={p.min():.3f}  max={p.max():.3f}", flush=True)
+        if pred.abundance is not None:
+            a = pred.abundance[finite]
+            print(f"  abundance (fa): mean={a.mean():.4f}  >1e-2 share={float((a > 1e-2).mean()):.3f}  "
+                  f"max={a.max():.4f}", flush=True)
 
-    # --- write GeoTIFF (160 m, tile CRS) ---
+    # --- write GeoTIFF(s) (160 m, tile CRS) ---
     OUT_MAP.mkdir(parents=True, exist_ok=True)
-    stem = f"map_pilot_{murray_tile}_{args.obs_id}_{where}"
+    tag = "raw" if args.raw else ("cal_noiso" if args.no_isotonic else "cal")
+    stem = f"map_pilot_{murray_tile}_{args.obs_id}_{where}_{tag}"
     tif_path = OUT_MAP / f"{stem}.tif"
     write_geotiff(tif_path, pred.raster, pred.transform, pred.crs_wkt)
-    print(f"  GeoTIFF -> {tif_path.relative_to(REPO_ROOT)}", flush=True)
+    print(f"  GeoTIFF (rich/poor) -> {tif_path.relative_to(REPO_ROOT)}", flush=True)
+    if pred.abundance_raster is not None:
+        ab_path = OUT_MAP / f"{stem}_abundance.tif"
+        write_geotiff(ab_path, pred.abundance_raster, pred.transform, pred.crs_wkt)
+        print(f"  GeoTIFF (abundance) -> {ab_path.relative_to(REPO_ROOT)}", flush=True)
 
     # --- render PNG ---
     png_path = render_png(window, pred, stem, args.obs_id, murray_tile, where, card)
@@ -174,33 +197,47 @@ def main() -> int:
         "tile_px": TILE_PX, "model_dir": str(model_dir.relative_to(REPO_ROOT)),
         "recipe_hash": card.get("recipe_hash"), "n_tiles": int(pred.ti.size),
         "n_predicted": int(finite.sum()), "n_nodata_masked": int(pred.n_masked_nodata),
+        "calibrated": bool(pred.calibrated), "isotonic": (not args.no_isotonic) and not args.raw,
         "rich_share_at_0p5": float((pred.prob[finite] >= 0.5).mean()) if finite.any() else None,
+        "abundance_mean": float(pred.abundance[finite].mean()) if pred.abundance is not None and finite.any() else None,
+        "abundance_rich_share": float((pred.abundance[finite] > 1e-2).mean()) if pred.abundance is not None and finite.any() else None,
     }, indent=2), encoding="utf-8")
     print(f"  [done] -> reports/map_pilot/{stem}.*")
     return 0
 
 
 def render_png(window, pred, stem, obs_id, murray_tile, where, card) -> Path:
-    """CTX backdrop + predicted rich/poor probability heatmap (160 m) side by side."""
+    """CTX backdrop + rich/poor probability + rich/poor decision, plus an abundance
+    panel when the prediction was calibrated (one-model qmatch)."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     OUT_FIG.mkdir(parents=True, exist_ok=True)
     raster = np.ma.masked_invalid(pred.raster)
-    fig, axes = plt.subplots(1, 3, figsize=(16.5, 5.6), constrained_layout=True)
+    has_ab = pred.abundance_raster is not None
+    ncol = 4 if has_ab else 3
+    fig, axes = plt.subplots(1, ncol, figsize=(5.5 * ncol, 5.6), constrained_layout=True)
 
     axes[0].imshow(window.data, cmap="gray", interpolation="nearest")
     axes[0].set_title(f"CTX 5 m/px ({window.data.shape[0]}x{window.data.shape[1]} px)")
 
+    ptitle = "P(boulder-rich)  fa>1e-2  @160 m" + ("  (calibrated)" if pred.calibrated else "  (raw)")
     im = axes[1].imshow(raster, cmap="magma", vmin=0, vmax=1, interpolation="nearest")
-    axes[1].set_title("P(boulder-rich)  fa>1e-2  @160 m")
+    axes[1].set_title(ptitle)
     fig.colorbar(im, ax=axes[1], fraction=0.046, pad=0.04)
 
     rich = np.ma.masked_invalid((pred.raster >= 0.5).astype(float))
     rich.mask = ~np.isfinite(pred.raster)
     axes[2].imshow(rich, cmap="RdYlBu_r", vmin=0, vmax=1, interpolation="nearest")
     axes[2].set_title("rich / poor  (P>=0.5)")
+
+    if has_ab:
+        ab = np.ma.masked_invalid(pred.abundance_raster)
+        vmax = float(np.nanpercentile(pred.abundance_raster, 99)) or 1e-3
+        imab = axes[3].imshow(ab, cmap="turbo", vmin=0, vmax=vmax, interpolation="nearest")
+        axes[3].set_title(f"abundance  fractional_area  (qmatch, vmax=p99={vmax:.3f})")
+        fig.colorbar(imab, ax=axes[3], fraction=0.046, pad=0.04)
 
     for ax in axes:
         ax.set_xticks([]); ax.set_yticks([])

@@ -10,8 +10,70 @@ import pytest
 
 from src.fm_embeddings import tile_grid_for_window
 from src.mapping import (
-    coarsened_transform, own_tile_zero_fraction, tile_origin_transform, tiles_to_raster,
+    CtxWindow, coarsened_transform, own_tile_zero_fraction, predict_window,
+    tile_origin_transform, tiles_to_raster,
 )
+
+
+class _FakeEmbedder:
+    """Returns a per-tile embedding whose column 0 is a 0.1..0.9 ramp; all valid."""
+    def embed_window(self, arr, ti, tj, *, tile_px, row0, col0, pool, batch):
+        n = ti.size
+        emb = np.zeros((n, 4), np.float32)
+        emb[:, 0] = np.linspace(0.1, 0.9, n)
+        return emb, np.ones(n, dtype=bool)
+
+
+class _FakeHead:
+    """P(rich) = embedding column 0 (so raw prob is the known ramp)."""
+    def predict(self, emb):
+        return emb[:, 0].astype(np.float64)
+
+
+def _fit_layer():
+    from src.calibration import CalibrationLayer
+    rng = np.random.default_rng(0)
+    pr = rng.uniform(0, 1, 3000)
+    fa = np.clip(pr * 0.05, 0, 0.3); fa[rng.random(3000) < 0.18] = 0.0
+    return CalibrationLayer.fit(pr, (fa > 1e-2).astype(int), pr, fa)
+
+
+def _window():
+    data = np.full((32, 32), 100, dtype=np.uint8)   # non-zero -> no nodata masking
+    return CtxWindow(data=data, row_off=0, col_off=0,
+                     transform=(5.0, 0.0, 0.0, 0.0, -5.0, 0.0), crs_wkt="LOCAL")
+
+
+def test_predict_window_raw_is_backward_compatible():
+    pred = predict_window(_window(), _FakeEmbedder(), _FakeHead(), tile_px=8)
+    assert pred.calibrated is False
+    assert pred.prob_raw is None and pred.abundance is None and pred.abundance_raster is None
+    assert np.nanmax(pred.prob) <= 0.9 + 1e-9         # raw ramp, uncalibrated
+
+
+def test_predict_window_calibration_applies_both_maps():
+    layer = _fit_layer()
+    pred = predict_window(_window(), _FakeEmbedder(), _FakeHead(), tile_px=8, calibrator=layer)
+    assert pred.calibrated is True
+    u = np.isfinite(pred.prob_raw)
+    assert u.any()
+    # rich/poor raster is isotonic(raw); abundance is qmatch(raw) — both off the SAME raw P(rich)
+    assert np.allclose(pred.prob[u], layer.calibrate_prob(pred.prob_raw[u]))
+    assert np.allclose(pred.abundance[u], layer.calibrate_abundance(pred.prob_raw[u]))
+    assert pred.abundance_raster.shape == pred.raster.shape
+    assert np.all(pred.abundance[u] >= 0)            # fractional_area is non-negative
+
+
+def test_predict_window_isotonic_toggle():
+    layer = _fit_layer()
+    on = predict_window(_window(), _FakeEmbedder(), _FakeHead(), tile_px=8, calibrator=layer)
+    off = predict_window(_window(), _FakeEmbedder(), _FakeHead(), tile_px=8, calibrator=layer,
+                         apply_isotonic=False)
+    u = np.isfinite(on.prob_raw)
+    # isotonic off -> rich/poor raster is raw P(rich); abundance (qmatch) still applied either way
+    assert np.allclose(off.prob[u], off.prob_raw[u])
+    assert np.allclose(on.abundance[u], off.abundance[u])
+    assert off.calibrated is True
 
 
 def test_tiles_to_raster_places_by_index():

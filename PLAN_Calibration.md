@@ -295,16 +295,28 @@ L4 is the honest endpoint (intervals need recalibration, 58 % coverage); the one
 simplification (qmatch `P(rich)`) is viable at a small cost (§3 ceiling diagnostic).
 Only S=128 (needs a fresh embedding pass + label grid) remains untested.
 
-### Stage 1 design — RESOLVED 2026-06-16 (Brian)
+### Stage 1 design — RESOLVED 2026-06-16 (Brian); IMPLEMENTED same day
 
-The deployment is **staged**, and the granularity question follows the stage:
+Built: `CalibrationLayer` + `QuantileMatcher` in `src/calibration.py` (+8 tests);
+optional `calibrator`/`apply_isotonic` wiring in `mapping.predict_window` (+abundance
+raster, +3 tests); `scripts/bank_calibration.py` banks the layer to
+`models/deployable/calibration.npz`; `scripts/map_pilot.py` gains `--raw` / `--no-isotonic`
++ an abundance panel. The deployment is **staged**, and the granularity question follows
+the stage:
 
 1. **`CalibrationLayer`** (new, in `src/calibration.py`) bundles two fitted, monotone
    maps with a `DeployableHead`-style `save`/`load`: **isotonic** (`P(rich)` →
    calibrated probability) + **global quantile-match** (raw abundance → `fractional_area`
    marginal). Fit **deployment-honest on all 38 images** (not LOIO); the LOIO numbers
-   (Tier-1 ECE 0.014; Tier-2 top_ratio 0.87, rank-preserved) are the conservative bound
-   it inherits, since off-HiRISE terrain has no truth.
+   (Tier-1 ECE 0.014; Tier-2 top_ratio 0.86, rank-preserved) are the conservative bound
+   it inherits, since off-HiRISE terrain has no truth. **Asymmetry between the two maps
+   (verified 2026-06-16):** the **Tier-2 qmatch is the substantive, robust win** (top
+   0.66→0.86, marginal-L1→0, by construction) — the abundance product. The **Tier-1
+   isotonic ECE win is NOT statistically robust** — pooled 0.060→0.014 but per-image
+   paired Wilcoxon p=0.11 (13/38) and the image-bootstrap CI on the reduction crosses
+   zero ([−0.054, +0.007]); it is a rank-safe, gate-clearing *aggregate polish*, not a
+   per-image improvement. Hence isotonic is **optional** (`apply_isotonic`, default-on
+   for the in-distribution regional map) and must be described as a polish, not touted.
 2. **Calibration is OPTIONAL — raw must stay a one-flag toggle.** `predict_window`
    (and the map scripts) take an optional `calibrator`; `None` ⇒ render raw, exactly as
    today. The map scripts get a `--calibrate/--raw` switch so raw and de-compressed maps

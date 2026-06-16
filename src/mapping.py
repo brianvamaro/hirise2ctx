@@ -176,11 +176,18 @@ def write_geotiff(path: str | Path, raster: np.ndarray, transform, crs_wkt: str,
 
 @dataclass
 class WindowPrediction:
-    """Result of predicting one CTX window: tile keys + probability raster."""
+    """Result of predicting one CTX window: tile keys + probability raster.
+
+    With a Stage-1 ``calibrator`` (see ``predict_window``), ``prob``/``raster`` carry the
+    **calibrated** rich/poor probability, ``prob_raw`` keeps the uncalibrated value for
+    QA, and ``abundance``/``abundance_raster`` carry the de-compressed Tier-2 abundance
+    (one-model quantile-match of the raw ``P(rich)``). Without a calibrator the
+    abundance fields are ``None`` and ``prob`` is raw — backward-compatible.
+    """
 
     ti: np.ndarray
     tj: np.ndarray
-    prob: np.ndarray            # per-tile probability, NaN where masked
+    prob: np.ndarray            # per-tile probability (calibrated if calibrator given), NaN where masked
     raster: np.ndarray          # (n_ti, n_tj) prob, NaN nodata
     ti_min: int
     tj_min: int
@@ -188,17 +195,30 @@ class WindowPrediction:
     crs_wkt: str
     n_valid: int
     n_masked_nodata: int
+    calibrated: bool = False
+    prob_raw: np.ndarray | None = None          # uncalibrated P(rich), kept for QA
+    abundance: np.ndarray | None = None         # per-tile fractional_area (one-model)
+    abundance_raster: np.ndarray | None = None  # (n_ti, n_tj) abundance, NaN nodata
 
 
 def predict_window(window: CtxWindow, embedder, head, *, tile_px: int = 32,
                    pool: str = "gem", batch: int = 96,
-                   max_zero_fraction: float = 0.5) -> WindowPrediction:
-    """Embed -> predict -> rasterize one CTX window with the deployable head.
+                   max_zero_fraction: float = 0.5, calibrator=None,
+                   apply_isotonic: bool = True) -> WindowPrediction:
+    """Embed -> predict -> (optionally calibrate) -> rasterize one CTX window.
 
     `embedder` is a `src.fm_embeddings.FangEmbedder`; `head` exposes
     `predict(emb)->prob` (`DeployableHead`). Tiles whose context box spills the
     window edge (embed returns NaN) or whose own-tile CTX is >`max_zero_fraction`
     nodata are masked (prob NaN). Returns the dense raster + its affine.
+
+    `calibrator` is an optional Stage-1 `src.calibration.CalibrationLayer`. When given,
+    an **abundance** raster `calibrate_abundance(raw P(rich))` (the one-model
+    quantile-match — the de-compression win) is added, and the rich/poor raster is
+    isotonic-calibrated unless `apply_isotonic=False` (the isotonic ECE polish is a
+    rank-safe gate-clear, not a per-image-significant win, so it is toggleable). The
+    raw probability is always kept in `prob_raw`. `calibrator=None` (default) renders
+    raw, unchanged — the raw/calibrated toggle.
     """
     from src.fm_embeddings import tile_grid_for_window
 
@@ -215,7 +235,22 @@ def predict_window(window: CtxWindow, embedder, head, *, tile_px: int = 32,
     if usable.any():
         prob[usable] = head.predict(emb[usable])
 
+    prob_raw = abundance = abundance_raster = None
+    if calibrator is not None:
+        prob_raw = prob.copy()                       # keep the uncalibrated value for QA
+        abundance = np.full(ti.size, np.nan, dtype=np.float64)
+        cal = np.full(ti.size, np.nan, dtype=np.float64)
+        if usable.any():
+            # both maps consume the RAW P(rich) (one-model): isotonic -> calibrated prob,
+            # qmatch -> abundance. Compute before overwriting `prob`.
+            cal[usable] = calibrator.calibrate_prob(prob_raw[usable])
+            abundance[usable] = calibrator.calibrate_abundance(prob_raw[usable])
+        # abundance (qmatch) is always applied; isotonic on the rich/poor map is optional
+        prob = cal if apply_isotonic else prob_raw.copy()
+
     raster, ti_min, tj_min = tiles_to_raster(ti, tj, prob, fill=np.nan)
+    if calibrator is not None:
+        abundance_raster, _, _ = tiles_to_raster(ti, tj, abundance, fill=np.nan)
     # (ti, tj) are tile-anchored (global); rebuild the tile origin so the window
     # offset isn't double-counted (it already lives in window.transform).
     tile_transform = tile_origin_transform(window.transform, row0, col0)
@@ -224,4 +259,6 @@ def predict_window(window: CtxWindow, embedder, head, *, tile_px: int = 32,
         ti=ti, tj=tj, prob=prob, raster=raster, ti_min=ti_min, tj_min=tj_min,
         transform=transform, crs_wkt=window.crs_wkt,
         n_valid=int(valid.sum()), n_masked_nodata=int((valid & ~usable).sum()),
+        calibrated=calibrator is not None, prob_raw=prob_raw,
+        abundance=abundance, abundance_raster=abundance_raster,
     )

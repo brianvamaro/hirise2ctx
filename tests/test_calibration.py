@@ -11,9 +11,21 @@ from scipy.stats import spearmanr
 
 from src.calibration import (
     reliability_curve, expected_calibration_error,
-    TemperatureScaler, BetaCalibrator, IsotonicCalibrator, quantile_match,
+    TemperatureScaler, BetaCalibrator, IsotonicCalibrator,
+    QuantileMatcher, quantile_match, CalibrationLayer,
     compression_metrics, loio_calibrate,
 )
+
+
+def _synth_preds(seed=0, n=4000):
+    """Synthetic deployment-style table: P(rich) correlated with a zero-inflated,
+    right-skewed fractional_area, plus the rich/poor binary."""
+    rng = np.random.default_rng(seed)
+    p_rich = rng.uniform(0, 1, n)
+    fa = np.clip(np.expm1((p_rich - 0.3) * 2 + rng.normal(0, 0.3, n)) * 0.03, 0, 0.3)
+    fa[rng.random(n) < 0.18] = 0.0
+    return pd.DataFrame({"p_rich": p_rich, "y_binary": (fa > 1e-2).astype(int),
+                         "fractional_area": fa})
 
 
 def test_ece_zero_for_perfect_calibration():
@@ -126,3 +138,74 @@ def test_compression_metrics_keys():
     assert set(m) == {"spearman", "top_ratio", "low_over", "near_zero_pred",
                       "near_zero_true", "marginal_l1"}
     assert m["near_zero_true"] == 0.5
+
+
+# --------------------------------------------------------------------------
+# QuantileMatcher / CalibrationLayer (Stage 1)
+# --------------------------------------------------------------------------
+
+
+def test_quantile_matcher_matches_functional():
+    df = _synth_preds(1)
+    new = np.linspace(0, 1, 200)
+    fitted = QuantileMatcher().fit(df.p_rich, df.fractional_area).predict(new)
+    direct = quantile_match(new, df.p_rich.to_numpy(), df.fractional_area.to_numpy())
+    assert np.allclose(fitted, direct)
+
+
+def test_quantile_matcher_recovers_marginal_and_rank():
+    df = _synth_preds(2)
+    qm = QuantileMatcher().fit(df.p_rich, df.fractional_area).predict(df.p_rich)
+    # marginal matched: zero share + high tail land on the truth
+    assert np.mean(qm < 1e-4) == pytest.approx(np.mean(df.fractional_area <= 0), abs=0.03)
+    # monotone non-decreasing -> no rank inversions (ties at the zero floor are expected,
+    # so Spearman is <1; the invariant is monotonicity, not Spearman==1)
+    assert np.all(np.diff(qm[np.argsort(df.p_rich.to_numpy())]) >= -1e-12)
+
+
+def test_isotonic_knots_reproduce_predict():
+    df = _synth_preds(3)
+    iso = IsotonicCalibrator().fit(df.p_rich, df.y_binary)
+    x, y = iso.knots()
+    assert np.allclose(np.interp(df.p_rich, x, y), iso.predict(df.p_rich))
+
+
+def test_calibration_layer_one_model_paths():
+    df = _synth_preds(4)
+    layer = CalibrationLayer.from_loio_predictions(
+        df, p_rich_col="p_rich", y_binary_col="y_binary", fa_col="fractional_area")
+    # Tier-1 == isotonic; Tier-2 == quantile-match of the SAME P(rich) (one-model)
+    iso = IsotonicCalibrator().fit(df.p_rich, df.y_binary).predict(df.p_rich)
+    qm = quantile_match(df.p_rich.to_numpy(), df.p_rich.to_numpy(), df.fractional_area.to_numpy())
+    assert np.allclose(layer.calibrate_prob(df.p_rich), iso)
+    assert np.allclose(layer.calibrate_abundance(df.p_rich), qm)
+    # both maps monotone non-decreasing in P(rich) -> no rank inversions
+    order = np.argsort(df.p_rich.to_numpy())
+    assert np.all(np.diff(layer.calibrate_abundance(df.p_rich.to_numpy())[order]) >= -1e-12)
+    assert np.all(np.diff(layer.calibrate_prob(df.p_rich.to_numpy())[order]) >= -1e-12)
+
+
+def test_calibration_layer_two_model_uses_abundance_col():
+    df = _synth_preds(5)
+    df["reg"] = df.fractional_area + np.random.default_rng(0).normal(0, 0.01, len(df))  # a noisy regressor
+    layer = CalibrationLayer.from_loio_predictions(df, abundance_col="reg")
+    expect = quantile_match(df.reg.to_numpy(), df.reg.to_numpy(), df.fractional_area.to_numpy())
+    assert np.allclose(layer.calibrate_abundance(df.reg), expect)
+    assert layer.meta["abundance_source"] == "reg"
+
+
+def test_calibration_layer_save_load_roundtrip(tmp_path):
+    df = _synth_preds(6)
+    layer = CalibrationLayer.from_loio_predictions(df, meta={"tag": "unit"})
+    p = tmp_path / "calibration.npz"
+    layer.save(p)
+    back = CalibrationLayer.load(p)
+    probe = np.linspace(0, 1, 137)
+    assert np.array_equal(layer.calibrate_prob(probe), back.calibrate_prob(probe))
+    assert np.array_equal(layer.calibrate_abundance(probe), back.calibrate_abundance(probe))
+    assert back.meta["tag"] == "unit" and back.meta["n"] == len(df)
+
+
+def test_calibration_layer_requires_fit():
+    with pytest.raises(RuntimeError):
+        CalibrationLayer().calibrate_prob(np.array([0.5]))
