@@ -101,13 +101,23 @@ information in `x`):
   for deep regression precisely because it doesn't collapse to a point and is robust
   to heavy tails ([Imani & White 2018](https://arxiv.org/abs/1806.04613);
   [Farebrother et al. 2024, "Stop Regressing"](https://arxiv.org/abs/2403.03950)).
-  **Top candidate** — directly attacks the compression cause, gives a full
-  predictive distribution (feeds L4), and is a small change to the MLP head
-  (768→256→64→K-bin softmax). Natural fit with the Serrano hazard-class product.
+  Was the **top candidate** — directly attacks the compression cause, gives a full
+  predictive distribution (feeds L4), small change to the MLP head
+  (768→256→64→K-bin softmax). **TESTED 2026-06-15 (`_diag_tier2_l1_bakeoff.py`):
+  WASH on ranking.** Its mean readout ties `mlp_reg` per-image (paired Δ −0.017,
+  Wilcoxon p≈0.08, i.e. marginally *worse*); mode/P90 readouts rank worse still. The
+  P90 does de-compress the tail (raw top_ratio 1.13) but at a ranking cost. Ruled out
+  as a ranking lever, alongside the cheap swaps.
 - **Quantile / pinball regression.** Predict P10/P50/P90 with the pinball loss
   ([Koenker & Bassett 1978](https://doi.org/10.2307/1913643)). The median is a
   robust, less-compressed point; P90 captures the tail; the spread *is* L4's
-  interval. Cheap (multi-output head + pinball). **Strong candidate**, pairs with L4.
+  interval. Cheap (multi-output head + pinball). **TESTED 2026-06-15 (bake-off): the
+  best of the L1 heads but still a WASH on ranking** — median ties `mlp_reg`
+  per-image (paired Δ −0.002, 18/38 wins, Wilcoxon p=0.48). The **one keeper**: its
+  **P90 has raw top_ratio 0.98** — a tail-calibrated point *without* the L3 layer, at
+  no ranking cost (a useful optional readout). Intervals: [P10,P90] covered only
+  **58.6 %** vs nominal 80 % → the head under-estimates its own spread; L4 needs
+  interval recalibration before it is honest.
 - **Expectile regression** — the asymmetric-MSE analogue of quantiles; a tunable
   knob between mean and tail. Cheaper to optimize than pinball (smooth), worth a
   sweep of the asymmetry parameter.
@@ -119,6 +129,10 @@ information in `x`):
   - **Zero-inflated log-normal / Tweedie-NLL** — matches the data-generating process
     (a zero spike + a positive right tail). The LightGBM Tweedie under-performed, but
     a *neural* zero-inflated head on the FM embedding is untried and principled.
+    **TESTED 2026-06-15 (bake-off): neural ZILN is a WASH** — mean/median tie or
+    slightly trail `mlp_reg` per-image (paired Δ −0.019/−0.025). Its **median is the
+    only readout that recovers near-zero mass** (near0 9.9 % vs truth 18 %), but that
+    doesn't help ranking; [P10,P90] covered 58.8 % (same under-dispersion as pinball).
   - **Mixture density network** ([Bishop 1994](https://publications.aston.ac.uk/id/eprint/373/))
     — a flexible multi-modal `p(y|x)`; heavier, keep as a fallback.
 - **Ordinal regression** (CORAL/CORN, [Cao et al. 2020](https://arxiv.org/abs/2111.08851)).
@@ -133,9 +147,23 @@ strategically important even though each item is more work.
 
 - **Coarser operating scale for Tier-2.** Per-tile abundance at S=64 / S=128
   averages over more area → higher SNR, less label-noise per tile → `p(y|x)`
-  narrows → less compression. Quantify the compression-vs-resolution trade
-  explicitly (cheap: re-run the regressor at each scale, plot top-bin ratio &
-  Spearman vs scale). The Tier-2 *map* can be coarser than the Tier-1 rich/poor map.
+  narrows → less compression. **TESTED 2026-06-15 (`_diag_tier2_scale_sweep.py`,
+  S=32→64):** raw top_ratio 0.66→**0.72** (less compressed), pooled rho 0.648→**0.695**,
+  per-image rho paired Δmed **+0.025** (25/38 images) — directionally the right way
+  but **Wilcoxon p=0.19, not significant at n=38**, and partly an easier-target
+  artefact (true zero share 18 %→6.9 % at the coarser tile). So coarsening *probably*
+  helps and the Tier-2 *map* can run coarser than the Tier-1 rich/poor map, but a
+  confident ranking gain needs the §2.3 expansion. S=128 untested (needs a P384
+  embedding pass + a 128-px label grid — out of the cheap scope).
+- **Ceiling diagnostic — the wall is the data, not the head** (`_diag_tier1_vs_tier2_ranking`,
+  2026-06-15). Tier-1 `P(rich)` — a *classifier* that never saw the continuous target
+  — ranks `fractional_area` per-image at **0.437**, statistically identical to the
+  dedicated Tier-2 regressor's **0.433** (and counts: 0.436). Within the rich class it
+  falls to **0.34** (texture barely resolves *how* rich). Two different model families
+  hitting the same ~0.43 wall ⇒ the magnitude signal in 5 m/px CTX ≈ the rich/poor
+  signal, with little extra. Implication: a **calibrated `P(rich)` + quantile-match ≈
+  the Tier-2 regressor**, a one-model simplification candidate for Stage 1/4; and L1/
+  representation tweaks can't beat a ceiling that is in the inputs.
 - **Target choice: counts, with a count likelihood.** Predict `boulder_count` under
   a **Poisson / negative-binomial NLL** (the natural count model). **TESTED
   2026-06-15 (`_diag_tier2_objectives.py`): Poisson-count → area is WORSE for the
@@ -227,18 +255,26 @@ behind HL-Gauss and the L2 items unless they stall.
 |---|---|---|---|
 | **0 DONE** | diagnose | `src/calibration.py`, notebook 23, scorecard | — |
 | **1** | L3 (+Tier-1) | bank a `CalibrationLayer` (quantile-match Tier-2, **isotonic** Tier-1), wire into `predict_window`/map; pick global vs conditioned | low, no GPU |
-| **2** | L1 | **HL-Gauss** + **quantile/pinball** heads vs `mlp_reg`+L3, same LOIO harness (log1p + count-Poisson already ruled out, Stage-0 follow-up) | head re-train, minutes |
-| **2b** | L2 | scale sweep (S=32/64/128 compression curve), `min_confidence` sweep | cheap re-runs |
+| **2 DONE** | L1 | **HL-Gauss + pinball + neural-ZILN bake-off** (`_diag_tier2_l1_bakeoff.py`): all a **WASH on ranking** vs `mlp_reg` (best = pinball.median, paired p=0.48). Keepers: pinball.P90 = raw tail-calibrated point (top_ratio 0.98); intervals under-dispersed (58 % vs 80 %). **L1 ruled out as a ranking lever.** | head re-train, ~10 min/head GPU |
+| **2b** | L2 | scale sweep **DONE for S=32→64** (`_diag_tier2_scale_sweep.py`): per-image rho directional-up (paired Δmed **+0.025**, 25/38 images, **Wilcoxon p=0.19 — NOT significant at n=38**); pooled rho 0.648→0.695 + raw top_ratio 0.66→0.72 also up. Partly confounded (zero-inflation 18 %→6.9 % is an easier target). Best L2 *direction* but unconfirmed in-cohort → needs §2.3 expansion. Remaining: `min_confidence` label-noise sweep; S=128 (needs P384 embed pass + 128-px label grid) | cheap re-runs |
 | **2c** | L1+L2 | LDS/FDS or density weighting on the winning head | small |
 | **3** | L4 | uncertainty product: intervals + coverage validation + map overlay | small |
 | **4** | — | freeze the Tier-2 head + calibrator into the deployable path; re-render docs §8; hand to THEMIS (W3) | — |
 
-Order rationale: L3 is the immediate product win (ship it; Tier-1 = isotonic,
-Tier-2 = quantile-match). L1's cheap swaps (log1p, count-Poisson) are **already
-ruled out** (2026-06-15) — the remaining L1 lever is **HL-Gauss/quantile**, which
-also unlocks L4. L2 (coarser scale, less label noise) is the only lever that raises
-the *ranking* ceiling and may be the biggest real-accuracy gain. L4 is the honest
-endpoint.
+Order rationale (updated 2026-06-15 after the Stage-2 bake-off): **L1 is now fully
+ruled out as a ranking lever** — the cheap swaps (log1p, count-Poisson) *and* the
+distributional heads (HL-Gauss, pinball, neural-ZILN) all wash out vs `mlp_reg`,
+because compression is the intrinsic aleatoric floor, not a loss-shape artefact. A
+second, independent proof: **Tier-1 `P(rich)` ranks `fractional_area` as well as the
+dedicated Tier-2 regressor** (per-image 0.437 vs 0.433; within-rich only 0.34) — a
+*classifier* hits the same ~0.43 wall, so the wall is the data, not the head. That
+leaves **L2 (coarser scale / cleaner labels) as the only remaining lever** — S=32→64
+points the right way (paired Δmed +0.025 per-image, pooled +0.047) but is **not
+significant at n=38** (Wilcoxon p=0.19) and is partly an easier-target artefact, so
+the ranking ceiling is *sticky* even here and likely needs the §2.3 expansion cohort
+to move confidently. L3 remains the immediate product win (Tier-1 = isotonic, Tier-2
+= quantile-match); L4 is the honest endpoint but its intervals need recalibration
+(58 % coverage).
 
 ## 6. Metrics (declared)
 

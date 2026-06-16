@@ -5,8 +5,12 @@ the dynamic-range compression in both products and preview the post-hoc fixes, a
 LOIO-honest, calling `src.calibration`. Reads banked predictions, recomputes nothing
 heavy.
 
-Figures: reports/figures/23_{tier1_calibration,tier2_compression,tier2_decompression}.png
+Figures: reports/figures/23_{tier1_calibration,tier2_compression,tier2_decompression,
+tier2_l1_bakeoff,tier2_scale_sweep,prich_vs_abundance}.png
 To regenerate: `python notebooks/_build_23.py` then nbconvert --execute.
+
+§§5-8 (Stage 2) read the banked probe artifacts under models/fang_tier2/l1_bakeoff/
+(written by scripts/probes/_diag_tier2_{l1_bakeoff,scale_sweep}.py) — no GPU.
 """
 from __future__ import annotations
 
@@ -31,16 +35,22 @@ cells = []
 cells.append(md(
     """# 23 — Calibration & de-compression diagnostic
 
-Stage-0 of [PLAN_Calibration.md](../PLAN_Calibration.md). Both deployed products
-compress toward the middle; this notebook **characterizes** that compression for
-each tier and **previews** the post-hoc, ranking-preserving fixes — the evidence
-the plan is built on. Everything is group-aware leave-image-out (LOIO): the
-calibrator is fit on the other 37 images and applied to the held-out one, via
+[PLAN_Calibration.md](../PLAN_Calibration.md) **Stage 0** (diagnosis + post-hoc
+preview, §§1-4) **and Stage 2** (the expensive de-compression bake-off, §§5-8). Both
+deployed products compress toward the middle; this notebook **characterizes** that
+compression, **previews** the post-hoc ranking-preserving fixes, and **tests** whether
+retraining can beat the floor. Everything is group-aware leave-image-out (LOIO): the
+calibrator/head is fit on the other 37 images and applied to the held-out one, via
 `src.calibration.loio_calibrate`.
 
-Headline (computed below): **Tier-1 is already well-calibrated** (ECE ≈ 0.06);
-**Tier-2 quantile-matching recovers the true value distribution** (high tail +
-true-zero mass) with ranking intact, while isotonic does not.
+Headlines (computed below):
+- **Tier-1** is already well-calibrated (ECE ≈ 0.06); **isotonic** is the calibrator.
+- **Tier-2 quantile-matching** recovers the true value distribution (high tail +
+  true-zero mass) with ranking intact; isotonic does not.
+- **Stage 2:** the L1 distributional heads (HL-Gauss, pinball, ZILN) are a **wash on
+  ranking**; coarser scale (L2) helps only directionally; a Tier-1 *classifier* ranks
+  abundance as well as the dedicated regressor ⇒ **the per-tile ceiling is the data**,
+  not the head.
 """, "intro"))
 
 cells.append(code(
@@ -249,11 +259,12 @@ fig.tight_layout(); fig.savefig(FIG / "23_tier2_decompression.png", dpi=130)
 """, "t2d_code"))
 
 cells.append(md(
-    """## 4. What this tells the plan
+    """## 4. Stage 0 verdict — what this tells the plan
 
 - **Tier-1** is already well-calibrated (ECE ≈ 0.06, well-spread probabilities);
-  temperature scaling is a small, safe refinement. *Not* the problem — the headline
-  "mostly rich" maps over boulder-rich regions are largely correct.
+  **isotonic** trims it the rest of the way (ECE → 0.014, AUC-exact at deployment) —
+  a small, safe refinement. *Not* the problem — the headline "mostly rich" maps over
+  boulder-rich regions are largely correct.
 - **Tier-2** compression is real and two-sided, and the banked structural variants
   (Tweedie, two-stage) compress *more*, not less — it is intrinsic to MSE-on-skewed
   + the texture floor.
@@ -268,6 +279,195 @@ cells.append(md(
 
 Figures: `reports/figures/23_{tier1_calibration,tier2_compression,tier2_decompression}.png`.
 """, "synth"))
+
+# ---------------- Stage 2: L1 bake-off ----------------
+cells.append(md(
+    """## 5. Stage 2 — L1 distributional bake-off: a wash on ranking
+
+Stage 0 ruled out the *cheap* L1 swaps (log1p, count-Poisson). Stage 2 tests the
+*heavy* L1 lever — losses whose optimum is **not** the arithmetic mean, each emitting
+a full per-tile distribution so we can also read a non-mean summary (a high quantile,
+the mode):
+
+- **HL-Gauss** — histogram loss over Gaussian-smoothed bins; read the distribution's
+  mean / mode / P90.
+- **pinball** — multi-output P10/P50/P90 quantile regression; the median is a robust
+  point, [P10,P90] is the L4 interval.
+- **neural ZILN** — zero-inflated log-normal NLL (π, μ, σ); read mixture mean / median
+  / P90.
+
+Same emb-only S=32 LOIO. Each point readout is scored by **raw `top_ratio`** (tail
+de-compression *without* L3) and by **paired per-image Spearman vs `mlp_reg`** (the
+honest must-not-regress test — the median-of-medians glance misleads). The table
+below: no head beats `mlp_reg` on rank (best p=0.48); the only keeper is
+`pinball.P90`, whose raw `top_ratio ≈ 0.98` gives a tail-calibrated point with no L3
+and no ranking cost. The [P10,P90] intervals are under-dispersed (~58 % vs 80 %).
+""", "t2_l1_md"))
+
+cells.append(code(
+    """import json
+from scipy.stats import spearmanr, wilcoxon
+
+BO = REPO / "models/fang_tier2/l1_bakeoff"
+base = pd.read_parquet(BO / "preds_mlp_reg.parquet")   # obs_id, ti, tj, y_true(=fa), point
+
+def per_img_rho(df, col):
+    return {o: spearmanr(g.y_true, g[col]).correlation for o, g in df.groupby("obs_id")
+            if g.y_true.nunique() > 1 and g[col].nunique() > 1}
+
+b = per_img_rho(base, "point")
+base_top = compression_metrics(base.y_true, base.point)["top_ratio"]
+print(f"{'readout':>16} {'raw_top':>8} {'perimg_rho':>11} {'paired_d':>9} {'wilcoxon_p':>11}")
+print(f"{'mlp_reg.mean':>16} {base_top:>8.2f} {np.nanmedian(list(b.values())):>11.3f} {'--':>9} {'--':>11}")
+
+bars = {"mlp_reg.mean": base_top}
+for h, cols in {"hlgauss": ["mean", "mode", "p90"], "pinball": ["median", "p90"],
+                "ziln": ["mean", "median", "p90"]}.items():
+    d = pd.read_parquet(BO / f"preds_{h}.parquet")
+    for c in cols:
+        top = compression_metrics(d.y_true, d[c])["top_ratio"]
+        rr = per_img_rho(d, c)
+        keys = [k for k in b if k in rr and np.isfinite(b[k]) and np.isfinite(rr[k])]
+        bb = np.array([b[k] for k in keys]); cc = np.array([rr[k] for k in keys])
+        print(f"{h+'.'+c:>16} {top:>8.2f} {np.nanmedian(cc):>11.3f} "
+              f"{np.median(cc-bb):>+9.3f} {wilcoxon(cc, bb).pvalue:>11.3f}")
+        bars[f"{h}.{c}"] = top
+
+cov = json.loads((BO / "coverage.json").read_text())
+print("\\n[P10,P90] interval coverage (nominal 80%):  " +
+      "   ".join(f"{r['readout']} {r['coverage_p10_p90']:.0%}" for r in cov))
+
+fig, ax = plt.subplots(figsize=(9.5, 4.2))
+names = list(bars); colors = ["tab:red" if n == "mlp_reg.mean" else "tab:blue" for n in names]
+ax.bar(names, [bars[n] for n in names], color=colors)
+ax.axhline(1.0, ls=":", c="k", label="uncompressed (1.0)")
+ax.axhline(base_top, ls="--", c="tab:red", lw=0.8, label=f"mlp_reg mean ({base_top:.2f})")
+ax.set_ylabel("raw top_ratio"); ax.set_xticks(range(len(names)))
+ax.set_xticklabels(names, rotation=35, ha="right")
+ax.set_title("raw tail de-compression by readout (pinball.P90 ~ 1.0) -- but all wash on rank")
+ax.legend(fontsize=8); fig.tight_layout(); fig.savefig(FIG / "23_tier2_l1_bakeoff.png", dpi=130)
+""", "t2_l1_code"))
+
+# ---------------- Stage 2: L2 scale sweep ----------------
+cells.append(md(
+    """## 6. L2 scale sweep — coarser narrows the marginal, ranking only directional
+
+The one lever the theory says can raise the *ranking* ceiling is shrinking `p(y|x)`:
+coarser tiles average over more area → higher SNR. We re-run the same `mlp_reg` at
+S=64 (320 m) vs the frozen S=32 (160 m). The marginal de-compresses (raw `top_ratio`
+0.66→0.72; pooled rho up), but the per-image ranking gain is only **directional** —
+paired Δ +0.025, Wilcoxon p=0.19, not significant at n=38 — and it is partly an
+**easier-target artefact** (the true-zero share drops 18 %→6.9 %, so coarse tiles are
+a less zero-inflated, easier ranking problem). Honest read: coarsening probably helps
+and the Tier-2 map *may* run coarser than Tier-1, but a confident ranking gain needs
+the expansion cohort.
+""", "scale_md"))
+
+cells.append(code(
+    """from scipy.stats import spearmanr, wilcoxon
+
+sw = pd.read_csv(REPO / "models/fang_tier2/l1_bakeoff/scale_sweep.csv")
+print(sw.round(4).to_string(index=False))
+
+s32 = pd.read_parquet(REPO / "models/fang_tier2/l1_bakeoff/preds_mlp_reg.parquet")
+s64 = pd.read_parquet(REPO / "models/fang_tier2/l1_bakeoff/preds_mlp_reg_S64.parquet")
+
+def per_img(df):
+    return {o: spearmanr(g.y_true, g.point).correlation for o, g in df.groupby("obs_id")
+            if g.y_true.nunique() > 1}
+
+a, b64 = per_img(s32), per_img(s64)
+keys = [k for k in a if k in b64 and np.isfinite(a[k]) and np.isfinite(b64[k])]
+aa = np.array([a[k] for k in keys]); bb = np.array([b64[k] for k in keys])
+pval = wilcoxon(bb, aa).pvalue
+print(f"\\npaired per-image rho  S=32 vs S=64:  n={len(keys)}  paired dmed={np.median(bb-aa):+.3f}"
+      f"  S64 wins {int((bb>aa).sum())}/{len(keys)}  Wilcoxon p={pval:.3f}  "
+      f"({'NOT ' if pval>=0.05 else ''}significant)")
+
+fig, ax = plt.subplots(1, 2, figsize=(11, 4.4))
+ax[0].bar(["S=32\\n(160 m)", "S=64\\n(320 m)"], sw.raw_top_ratio, color=["tab:red", "tab:orange"])
+ax[0].axhline(1.0, ls=":", c="k"); ax[0].set_ylabel("raw top_ratio (1.0 = uncompressed)")
+ax[0].set_title("coarser tile -> less raw compression of the marginal")
+ax[1].scatter(aa, bb, s=20, alpha=0.7)
+lim = [min(aa.min(), bb.min()) - 0.02, max(aa.max(), bb.max()) + 0.02]
+ax[1].plot(lim, lim, "k:"); ax[1].set_xlim(lim); ax[1].set_ylim(lim)
+ax[1].set_xlabel("per-image rho  S=32"); ax[1].set_ylabel("per-image rho  S=64")
+ax[1].set_title(f"ranking gain only directional (p={pval:.2f}, n.s.)")
+fig.tight_layout(); fig.savefig(FIG / "23_tier2_scale_sweep.png", dpi=130)
+""", "scale_code"))
+
+# ---------------- Stage 2: P(rich) vs abundance ----------------
+cells.append(md(
+    """## 7. Tier-1 P(rich) ≈ Tier-2 regressor as a magnitude ranker — the wall is the data
+
+The cleanest evidence that the per-tile ceiling is set by the *inputs*, not the model:
+the Tier-1 rich/poor **classifier** — which never saw the continuous target — ranks
+`fractional_area` per-image about as well as the head built specifically to predict it.
+Within the rich class the correlation falls (texture barely resolves *how* rich). Two
+different model families hitting the same ~0.43 wall ⇒ the magnitude signal in 5 m/px
+CTX essentially *is* the rich/poor signal. (Practical upshot: a calibrated `P(rich)`
+pushed through quantile-match would approximate the Tier-2 abundance map — a possible
+one-model simplification.)
+""", "prich_md"))
+
+cells.append(code(
+    """from scipy.stats import spearmanr
+
+t1p = pd.read_parquet(REPO / "models/fang_probe/fw_emb_mlp_ens3_gem96_S32_fa_gt_1e-2/predictions.parquet").rename(columns={"y_pred": "p_rich"})
+parts = []
+for p in (REPO / "dataset_v2/labels").glob("*.parquet"):
+    d = pd.read_parquet(p)
+    parts.append(d[d.tile_size_px == 32][["obs_id", "ti", "tj", "fractional_area", "boulder_count"]])
+lab = pd.concat(parts, ignore_index=True)
+j = t1p.merge(lab, on=["obs_id", "ti", "tj"]).merge(base[["obs_id", "ti", "tj", "point"]], on=["obs_id", "ti", "tj"])
+
+def pim(col, tcol, mask=None):
+    s = j if mask is None else j[mask]
+    r = [spearmanr(g[tcol], g[col]).correlation for _, g in s.groupby("obs_id")
+         if g[tcol].nunique() > 1 and g[col].nunique() > 1]
+    return float(np.nanmedian(r))
+
+rich = j.fractional_area > 1e-2
+print(f"P(rich) vs fractional_area  per-image: {pim('p_rich','fractional_area'):.3f}"
+      f"   (within rich tiles only: {pim('p_rich','fractional_area', rich):.3f})")
+print(f"P(rich) vs boulder_count    per-image: {pim('p_rich','boulder_count'):.3f}")
+print(f"\\nAs fractional_area rankers:  P(rich) {pim('p_rich','fractional_area'):.3f}"
+      f"   vs   mlp_reg {pim('point','fractional_area'):.3f}   (a dead heat)")
+
+vals = [pim("p_rich", "fractional_area"), pim("point", "fractional_area"),
+        pim("p_rich", "fractional_area", rich)]
+fig, ax = plt.subplots(figsize=(5.4, 4))
+ax.bar(["P(rich)\\n(classifier)", "mlp_reg\\n(regressor)", "P(rich)\\nwithin rich"],
+       vals, color=["tab:green", "tab:red", "tab:gray"])
+for i, v in enumerate(vals):
+    ax.text(i, v + 0.005, f"{v:.3f}", ha="center")
+ax.set_ylabel("per-image rho vs fractional_area")
+ax.set_title("the magnitude signal IS the rich/poor signal")
+fig.tight_layout(); fig.savefig(FIG / "23_prich_vs_abundance.png", dpi=130)
+""", "prich_code"))
+
+cells.append(md(
+    """## 8. Stage 2 verdict — the per-tile ceiling is the data
+
+- **L1 is ruled out as a ranking lever.** The heavy distributional heads
+  (HL-Gauss, pinball, neural-ZILN) join the cheap swaps (log1p, count-Poisson) in
+  washing out vs `mlp_reg` per-image (best p=0.48) — exactly what "compression = the
+  intrinsic aleatoric floor, not a loss-shape artefact" predicts. Changing the
+  targeted functional moves the *value* (de-compresses), never the *rank*.
+- **L2 (coarser scale) is the only remaining lever, and even it is unconfirmed
+  in-cohort:** S=32→64 lifts the marginal (raw top_ratio 0.66→0.72, pooled rho up)
+  but the per-image ranking gain is only directional (paired +0.025, **p=0.19**) and
+  partly an easier-target artefact. A confident gain needs the §2.3 expansion cohort.
+- **Independent proof the wall is the data:** Tier-1 `P(rich)` — a classifier — ranks
+  abundance as well as the dedicated regressor (0.437 vs 0.433). Implies a calibrated
+  `P(rich)` + quantile-match ≈ the Tier-2 regressor (a one-model simplification).
+- **So the product story holds:** quantile-match (L3) is the marginal win; the per-tile
+  residual is the texture floor, reported honestly via L4 — whose intervals still need
+  recalibration (58 % vs 80 % coverage). Next: `min_confidence` label-noise + LDS
+  reweighting (L2/2c).
+
+Figures: `reports/figures/23_{tier2_l1_bakeoff,tier2_scale_sweep,prich_vs_abundance}.png`.
+""", "stage2_synth"))
 
 nb = {"cells": cells,
       "metadata": {"kernelspec": {"display_name": "Python 3 (ipykernel)",

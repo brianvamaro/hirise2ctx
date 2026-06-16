@@ -215,7 +215,10 @@ notebook.
 
 ### QA notebooks (visual verification)
 One notebook per major step under `notebooks/`, each importing from `src/`, runnable top-to-bottom,
-and saving figures to `reports/figures/` so results persist without re-running. Minimum visuals:
+and saving figures to `reports/figures/` so results persist without re-running. **The `.ipynb` files
+are generated — each has a source-of-truth builder `notebooks/_build_NN.py`. Edit the builder, not
+the `.ipynb`; regenerate with `python notebooks/_build_NN.py` then `nbconvert --execute --inplace`
+(see README "QA notebooks").** Minimum visuals:
 - **Detection ingest:** boulder polygons overlaid on the decimated HiRISE image for one ObsId.
 - **Reprojection / CRS:** reprojected polygons overlaid on the CTX window, with the measured
   HiRISE↔CTX residual offset annotated (the visual form of acceptance check #1).

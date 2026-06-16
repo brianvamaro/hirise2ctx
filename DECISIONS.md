@@ -3859,3 +3859,43 @@ Ran the highest-leverage next probes from PLAN_Calibration. Two clear verdicts.
 - **Tier-1 accuracy** (Brian aside, `_diag_tier1_accuracy.py`): 0.800 @0.5 (vs 0.640
   majority-class baseline), balanced-acc 0.775, F1 0.712, prec/rec 0.737/0.689 — LOIO.
   Plan/notebook 23/scorecard updated; metrics gates unchanged.
+
+## 2026-06-15 -- Calibration Stage 2: L1 bake-off ruled out, L2 scale directional, Tier-1≈Tier-2 ranking
+
+Brian chose the expensive Tier-2 path (improve calibration, don't yet productize). Same
+emb-only S=32 LOIO protocol as the cheap-swap probe; every readout scored raw AND
++quantile-match, with **paired per-image Wilcoxon** as the must-not-regress guard (the
+median-of-medians glance is misleading — both "wins" below shrank under pairing).
+
+- **L1 distributional bake-off** (`_diag_tier2_l1_bakeoff.py`: HL-Gauss histogram loss
+  + pinball quantile + neural zero-inflated-lognormal, each a 3-seed MLP head): **all a
+  WASH on per-image ranking** vs `mlp_reg`. Best = pinball.median (paired Δ −0.002,
+  18/38 wins, **p=0.48**); HL-Gauss.mean Δ −0.017 (p≈0.08), ziln Δ −0.019/−0.025 — i.e.
+  tie-to-slightly-worse. Confirms the cheap-swap result for the *heavy* losses too:
+  **compression is the intrinsic aleatoric floor, not a loss-shape artefact**, so
+  changing the targeted functional moves the *value* (de-compresses) but not the *rank*
+  (all qmatch can't fix). **Two keepers:** (1) `pinball.P90` raw top_ratio **0.98** — a
+  tail-calibrated point WITHOUT the L3 layer, no ranking cost; (2) ziln.median recovers
+  near-zero mass (9.9 % vs truth 18 %). **L4 caveat:** both heads' [P10,P90] cover only
+  **~58 %** vs nominal 80 % → they under-estimate their own spread; the honest-interval
+  product needs interval recalibration. Artifacts: `models/fang_tier2/l1_bakeoff/`.
+- **L2 scale sweep S=32→64** (`_diag_tier2_scale_sweep.py`, mlp_reg identity): raw
+  top_ratio 0.66→**0.72**, pooled rho 0.648→**0.695**, per-image rho paired Δmed
+  **+0.025** (25/38 images) — directionally the right way but **Wilcoxon p=0.19, NOT
+  significant at n=38**, and partly an easier-target artefact (true-zero share 18 %→
+  6.9 % at 320 m). So coarsening *probably* helps and the Tier-2 map may run coarser
+  than Tier-1, but the in-cohort ranking ceiling is **sticky** — a confident gain needs
+  the §2.3 expansion. S=128 deferred (needs a P384 ViT embedding pass + 128-px label
+  grid). S=64 per-tile preds banked at `l1_bakeoff/preds_mlp_reg_S64.parquet`.
+- **Independent ceiling proof — Tier-1 P(rich) ≈ Tier-2 regressor as a magnitude
+  ranker.** P(rich), a classifier that never saw `fractional_area`, ranks it per-image
+  at **0.437** — statistically identical to the dedicated regressor's **0.433** (counts
+  0.436); within rich tiles only 0.34. Two different model families hit the same ~0.43
+  wall ⇒ the magnitude signal in 5 m/px CTX **is** the rich/poor signal. Implication: a
+  **calibrated P(rich) + quantile-match ≈ Tier-2** (one-model simplification candidate
+  for Stage 1/4).
+- **Net:** L1 fully ruled out as a ranking lever; L2 is the only remaining lever and
+  even it is unconfirmed in-cohort. **qmatch (L3) stays the product win** for the
+  marginal; the per-tile ceiling is the data. Next greenlit (Brian): `min_confidence`
+  label-noise sweep + Stage 2c density/LDS reweighting. PLAN_Calibration §3/§5 + notebook
+  23 updated.
