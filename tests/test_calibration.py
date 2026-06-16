@@ -11,7 +11,7 @@ from scipy.stats import spearmanr
 
 from src.calibration import (
     reliability_curve, expected_calibration_error,
-    TemperatureScaler, IsotonicCalibrator, quantile_match,
+    TemperatureScaler, BetaCalibrator, IsotonicCalibrator, quantile_match,
     compression_metrics, loio_calibrate,
 )
 
@@ -44,6 +44,23 @@ def test_temperature_fixes_overconfidence():
     ece_before = expected_calibration_error(y, p_over)
     cal = TemperatureScaler().fit(p_over, y).predict(p_over)
     assert expected_calibration_error(y, cal) < ece_before
+
+
+def test_beta_is_strictly_monotone_and_auc_exact():
+    from sklearn.metrics import roc_auc_score
+    rng = np.random.default_rng(11)
+    z = rng.normal(0, 1, 20000)
+    ptrue = 1 / (1 + np.exp(-z))
+    y = (rng.uniform(0, 1, 20000) < ptrue).astype(int)
+    p_over = 1 / (1 + np.exp(-z * 2.5))               # over-confident at both ends
+    beta = BetaCalibrator().fit(p_over, y)
+    grid = np.linspace(0.01, 0.99, 500)
+    out = beta.predict(grid)
+    assert np.all(np.diff(out) > 0)                    # strictly increasing -> no ties
+    # strictly monotone -> ranking (AUC) preserved exactly
+    assert roc_auc_score(y, beta.predict(p_over)) == pytest.approx(roc_auc_score(y, p_over), abs=1e-9)
+    # and it improves calibration
+    assert expected_calibration_error(y, beta.predict(p_over)) < expected_calibration_error(y, p_over)
 
 
 def test_isotonic_is_monotone():

@@ -29,7 +29,7 @@ import pandas as pd
 
 __all__ = [
     "reliability_curve", "expected_calibration_error",
-    "TemperatureScaler", "IsotonicCalibrator", "quantile_match",
+    "TemperatureScaler", "BetaCalibrator", "IsotonicCalibrator", "quantile_match",
     "compression_metrics", "loio_calibrate",
 ]
 
@@ -107,6 +107,53 @@ class TemperatureScaler:
 
     def predict(self, p_pred: np.ndarray) -> np.ndarray:
         return 1.0 / (1.0 + np.exp(-_logit(p_pred) / self.T))
+
+
+class BetaCalibrator:
+    """Beta calibration (Kull, Silva Filho & Flach 2017): a 3-parameter *smooth*
+    strictly-monotone probability map `p' = sigmoid(a·ln p − b·ln(1−p) + c)`.
+
+    Fit by logistic regression of `y` on the two features `[ln p, ln(1−p)]`; the
+    coefficients give `(a, −b)` and the intercept `c`. Flexible enough to bend the
+    two ends independently (fixes the over-confident highs AND the lows that one-knob
+    temperature trades off), yet — unlike isotonic — strictly monotone with no flat
+    steps, so ROC-AUC / ranking are preserved. Monotonicity needs a≥0, b≥0; if the
+    unconstrained fit violates it (rare here) we drop the offending feature and refit
+    (Kull's fallback), guaranteeing a monotone map.
+    """
+
+    def __init__(self) -> None:
+        self.a = 1.0
+        self.b = 1.0
+        self.c = 0.0
+
+    def fit(self, p_pred: np.ndarray, y_true: np.ndarray) -> "BetaCalibrator":
+        from sklearn.linear_model import LogisticRegression
+
+        p = np.clip(np.asarray(p_pred, dtype=np.float64), _EPS, 1 - _EPS)
+        y = np.asarray(y_true, dtype=np.float64)
+        s1, s2 = np.log(p), np.log(1 - p)
+
+        def _fit(cols):
+            lr = LogisticRegression(C=1e6, solver="lbfgs", max_iter=2000)
+            lr.fit(np.column_stack(cols), y)
+            return lr
+
+        lr = _fit([s1, s2])
+        a, nb = lr.coef_[0]            # coefficients on [ln p, ln(1-p)] = (a, -b)
+        b = -nb
+        if a < 0 or b < 0:            # enforce monotonicity by dropping the bad feature
+            if a < 0:                 # drop ln p
+                lr = _fit([s2]); a = 0.0; b = -lr.coef_[0][0]
+            else:                     # drop ln(1-p)
+                lr = _fit([s1]); a = lr.coef_[0][0]; b = 0.0
+        self.a, self.b, self.c = float(max(a, 0.0)), float(max(b, 0.0)), float(lr.intercept_[0])
+        return self
+
+    def predict(self, p_pred: np.ndarray) -> np.ndarray:
+        p = np.clip(np.asarray(p_pred, dtype=np.float64), _EPS, 1 - _EPS)
+        z = self.a * np.log(p) - self.b * np.log(1 - p) + self.c
+        return 1.0 / (1.0 + np.exp(-z))
 
 
 class IsotonicCalibrator:

@@ -3833,3 +3833,29 @@ PLAN_ModelUsability W3 + PLAN_FM item 4) and did Stage 0:
     red→amber), ≥0.5 share 0.79 unchanged (ranking-invariant).
   Confirms the Tier-1 "flexible monotone calibrator" insight transfers to Tier-2 via
   quantile-matching — bounded by ranking (texture floor), not calibration.
+
+## 2026-06-15 -- Calibration prototypes: Tier-1 isotonic (NOT beta), Tier-2 L1 swaps ruled out
+
+Ran the highest-leverage next probes from PLAN_Calibration. Two clear verdicts.
+
+- **Tier-1: ISOTONIC is the calibrator** (Brian caught that isotonic beats beta).
+  Added `BetaCalibrator` (Kull 2017, smooth 3-param strictly-monotone; +1 test, suite
+  331) and compared LOIO (`_diag_tier1_{isotonic,beta}.py`): isotonic ECE
+  0.060→**0.014** (low/high both 0.014) vs beta 0.040 (3 params underfit the
+  reliability curve) vs temperature 0.049 (trades the low end for the high). The
+  ranking worry was wrong: the LOIO pooled-AUC drop (isotonic 0.848→0.833) is a
+  PER-FOLD artifact — a single GLOBAL calibrator is AUC-exact (isotonic +0.0003, beta
+  +0.0000), and ties are harmless at n=161k. So isotonic = Tier-1 `CalibrationLayer`;
+  beta = smooth fallback. (My earlier "isotonic breaches the AUC gate, use beta" was
+  based on the artifact — corrected in the plan + notebook 23.)
+- **Tier-2 L1 swaps (log1p, count-Poisson) RULED OUT** (`_diag_tier2_objectives.py`,
+  same LOIO protocol, batch 4096): identity vs log1p is a WASH (raw top-bin 0.66→0.67,
+  per-image ρ 0.433→0.445 = noise; both →0.87 after quantile-match); count-Poisson is
+  WORSE (ρ 0.425, top 0.54, +qmatch only 0.78) because count→area conversion discards
+  per-tile boulder-size info. The compression is intrinsic (aleatoric floor), not a
+  target-scale artifact -> the cheap L1 swaps don't help. Remaining L1 lever =
+  HL-Gauss/quantile; the ranking ceiling needs L2 (coarser scale / less label noise).
+  quantile-match (L3) remains the Tier-2 de-compression win (identity+qmatch 0.87).
+- **Tier-1 accuracy** (Brian aside, `_diag_tier1_accuracy.py`): 0.800 @0.5 (vs 0.640
+  majority-class baseline), balanced-acc 0.775, F1 0.712, prec/rec 0.737/0.689 — LOIO.
+  Plan/notebook 23/scorecard updated; metrics gates unchanged.

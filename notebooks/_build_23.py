@@ -53,8 +53,8 @@ from sklearn.metrics import roc_auc_score
 REPO = next(p for p in [Path.cwd(), *Path.cwd().parents] if (p / "src").exists())
 sys.path.insert(0, str(REPO))
 from src.calibration import (reliability_curve, expected_calibration_error,
-    TemperatureScaler, IsotonicCalibrator, quantile_match, compression_metrics,
-    loio_calibrate)
+    TemperatureScaler, BetaCalibrator, IsotonicCalibrator, quantile_match,
+    compression_metrics, loio_calibrate)
 
 FIG = REPO / "reports" / "figures"; FIG.mkdir(parents=True, exist_ok=True)
 T1 = REPO / "models/fang_probe/fw_emb_mlp_ens3_gem96_S32_fa_gt_1e-2/predictions.parquet"
@@ -73,13 +73,24 @@ rich-rate against the bin's mean confidence; on the diagonal = calibrated, ECE i
 count-weighted gap. The raw classifier is mildly **over-dispersed**: above the
 diagonal for p<0.5 (under-confident lows) and below for p>0.5 (over-confident highs).
 
-We compare two calibrators (both LOIO, both monotone):
+We compare three calibrators (all LOIO, all monotone):
 - **temperature scaling** — *one* global parameter (`p' = σ(logit(p)/T)`), strictly
   monotone so ROC-AUC is exact. But one knob can only squeeze uniformly toward 0.5,
   so it fixes the over-confident high end **at the cost of** the low end.
-- **isotonic** — a *free* monotone map, so it can bend the two ends independently
-  and fix both — at a small ranking cost (its flat steps create ties). A smooth
-  flexible calibrator (beta / monotonic spline) is the best-of-both (plan L3).
+- **isotonic** — a *free* monotone map, so it can bend the two ends independently and
+  fix both. **The best calibration here** (lowest ECE). Its flat steps create ties (a
+  theoretical ranking risk), but with 161k tiles that cost is negligible — see the AUC
+  note.
+- **beta calibration** — a smooth 3-parameter *strictly*-monotone map
+  ([Kull et al. 2017](https://proceedings.mlr.press/v54/kull17a.html)): no ties, but
+  3 parameters underfit the reliability curve, so its ECE lands between temperature
+  and isotonic. A smooth fallback if isotonic's step artifacts ever matter.
+
+Note on AUC: a monotone map can't change ranking *within* an image, but the LOIO pool
+fits a **different** map per held-out image, which reorders tiles *across* images and
+dents the *pooled* AUC. At deployment a **single** global map is fit — AUC-exact for
+all three (isotonic +0.0003, temperature/beta +0.0000) — so the LOIO pooled-AUC drop
+is an artifact, not a real cost. Verdict: **isotonic** for Tier-1.
 """, "t1_md"))
 
 cells.append(code(
@@ -93,28 +104,37 @@ def ece_split(p):  # overall, lows(<0.5), highs(>=0.5)
 
 temp = loio_calibrate(t1, lambda rp, rt, hp: TemperatureScaler().fit(rp, rt).predict(hp))
 iso  = loio_calibrate(t1, lambda rp, rt, hp: IsotonicCalibrator().fit(rp, rt).predict(hp))
+beta = loio_calibrate(t1, lambda rp, rt, hp: BetaCalibrator().fit(rp, rt).predict(hp))
 T_all = TemperatureScaler().fit(t1.y_pred.to_numpy(), y).T
-rows = {"raw": t1.y_pred.to_numpy(), f"temperature (T={T_all:.2f})": temp, "isotonic": iso}
-print(f"{'variant':>22} {'ECE':>6} {'ECE_low':>8} {'ECE_high':>9} {'AUC':>7}")
+rows = {"raw": t1.y_pred.to_numpy(), f"temperature (T={T_all:.2f})": temp,
+        "isotonic": iso, "beta": beta}
+print(f"{'variant':>22} {'ECE':>6} {'ECE_low':>8} {'ECE_high':>9} {'AUC_loio':>9}")
 for n, p in rows.items():
     e, el, eh = ece_split(p)
-    print(f"{n:>22} {e:>6.3f} {el:>8.3f} {eh:>9.3f} {roc_auc_score(y, np.clip(p,0,1)):>7.4f}")
+    print(f"{n:>22} {e:>6.3f} {el:>8.3f} {eh:>9.3f} {roc_auc_score(y, np.clip(p,0,1)):>9.4f}")
+# deployment case: ONE global map -> strictly-monotone calibrators are AUC-exact
+gb = {n: c.fit(t1.y_pred.to_numpy(), y).predict(t1.y_pred.to_numpy())
+      for n, c in [("temperature", TemperatureScaler()), ("beta", BetaCalibrator())]}
+print("global-fit AUC (deployment): " + "  ".join(
+    f"{n} {roc_auc_score(y, p):.4f}" for n, p in gb.items())
+    + f"  (raw {roc_auc_score(y, t1.y_pred):.4f}) -> LOIO drop is a per-fold artifact")
 
 fig, ax = plt.subplots(1, 2, figsize=(11, 4.6))
 for p, lbl, c in [(rows["raw"], "raw", "tab:blue"),
                   (temp, "temperature (1 knob)", "tab:orange"),
-                  (iso, "isotonic (flexible)", "tab:green")]:
+                  (iso, "isotonic (flexible)", "tab:green"),
+                  (beta, "beta (smooth)", "tab:purple")]:
     conf, acc, _ = reliability_curve(y, np.clip(p, 0, 1), n_bins=12)
-    ax[0].plot(conf, acc, "o-", color=c, label=lbl)
+    ax[0].plot(conf, acc, "o-", color=c, label=lbl, alpha=0.85)
 ax[0].plot([0, 1], [0, 1], "k:", lw=1)
 ax[0].set_xlabel("mean predicted P(rich)"); ax[0].set_ylabel("empirical rich-rate")
-ax[0].set_title("temperature trades lows for highs; isotonic fixes both"); ax[0].legend()
+ax[0].set_title("temperature trades lows for highs; isotonic hugs the diagonal"); ax[0].legend()
 ax[1].hist(t1.y_pred, bins=40, color="tab:blue", alpha=0.7)
 ax[1].set_xlabel("predicted P(rich)"); ax[1].set_ylabel("tiles")
 ax[1].set_title(f"probability spread (std {t1.y_pred.std():.2f}) — not collapsed")
 fig.tight_layout(); fig.savefig(FIG / "23_tier1_calibration.png", dpi=130)
-print("\\nVerdict: Tier-1 is already near-calibrated; a FLEXIBLE monotone calibrator "
-      "(isotonic/spline) fixes both ends, where one-knob temperature cannot.")
+print("\\nVerdict: Tier-1 is near-calibrated; ISOTONIC fixes both ends best (ECE -> 0.014) "
+      "and is AUC-exact at deployment. Beta is a smooth fallback; temperature trades the ends.")
 """, "t1_code"))
 
 # ---------------- Tier 2 characterize ----------------

@@ -89,9 +89,12 @@ information in `x`):
 - **Target transform** (the lightweight entry, ~one line): train MSE on
   `log1p(y)` / `sqrt(y)` / a Box-Cox–Yeo-Johnson fit, then back-transform. MSE in
   log-space targets ≈ the conditional *median / geometric mean*, which the heavy
-  right tail pulls far less than the arithmetic mean — so it de-compresses the high
-  end for free. **`fractional_area` currently uses identity + MSE; log1p is untried
-  for it** (counts already use it) → the cheapest first probe.
+  right tail pulls far less than the arithmetic mean. **TESTED 2026-06-15
+  (`_diag_tier2_objectives.py`): log1p is a WASH** — raw top-bin 0.66→0.67, per-image
+  ρ 0.433→0.445 (within noise); after quantile-matching both reach 0.87. The
+  compression here is intrinsic (aleatoric floor), not a target-scale artifact, so
+  the cheap transform doesn't move it. Deprioritized; the heavier L1 below is the
+  real lever.
 - **Regression-as-classification / histogram loss (HL-Gauss).** Bin the target,
   put a (soft, Gaussian-smoothed) label over bins, train cross-entropy, report the
   distribution's mean *or a high quantile or the mode*. Repeatedly beats direct MSE
@@ -134,11 +137,13 @@ strategically important even though each item is more work.
   explicitly (cheap: re-run the regressor at each scale, plot top-bin ratio &
   Spearman vs scale). The Tier-2 *map* can be coarser than the Tier-1 rich/poor map.
 - **Target choice: counts, with a count likelihood.** Predict `boulder_count` under
-  a **Poisson / negative-binomial NLL** (the natural count model), convert to area
-  post-hoc (count × mean boulder size / tile area). Counts are the cleaner physical
-  quantity (area-fraction compounds count × size noise); W0 found "count beats area"
-  and under the FM the advantage is target-robust. A count likelihood is far less
-  compression-prone than Gaussian-MSE-on-area.
+  a **Poisson / negative-binomial NLL** (the natural count model). **TESTED
+  2026-06-15 (`_diag_tier2_objectives.py`): Poisson-count → area is WORSE for the
+  area target** — per-image ρ 0.425 vs 0.433, raw top-bin 0.54, +qmatch only 0.78
+  (vs 0.87). The count→area conversion (× mean boulder size) discards the per-tile
+  size information that area-fraction needs, so area can't be recovered from counts
+  alone. Count-Poisson would only make sense **if the product itself is count-density**
+  (Serrano hazard classes), not area-fraction.
 - **Reduce label noise.** The untested `min_confidence` BoulderNet filter
   ([CLAUDE.md §11]) — sweep it; cleaner labels shrink the aleatoric floor. Also
   consider modelling label noise explicitly (noise-robust losses).
@@ -173,17 +178,18 @@ Ranking-preserving monotone remaps fit LOIO (`src.calibration`):
 - Open refinements: **global vs per-region vs covariate-conditioned** mapping
   (condition on predicted-mean or the §2.7 novelty score) to handle a genuinely
   boulder-poor image whose lows should *not* be lifted.
-- **Tier-1 — use a *flexible* monotone calibrator, not just temperature.** The raw
-  classifier is over-dispersed (under-confident lows, over-confident highs);
-  temperature is one global knob, so it fixes the high end *at the cost of* the low
-  end (LOIO split-ECE: low 0.043→0.063, high 0.096→0.021; net ECE 0.060→0.049,
-  AUC-exact). **Isotonic** bends both ends independently → ECE **0.060→0.014** (low
-  0.014 / high 0.014), but its flat steps cost a little ranking (pooled AUC
-  0.848→0.833). Best-of-both = a **smooth strictly-monotone calibrator**
-  (beta calibration, or a monotonic/I-spline) — flexible like isotonic, tie-free
-  like temperature, so it fixes both ends with minimal ranking loss. Build that as
-  the Tier-1 `CalibrationLayer`; gate on ECE ≤ 0.05 **and** AUC within ±0.005
-  (isotonic alone breaches the AUC gate — hence the spline).
+- **Tier-1 — use a *flexible* monotone calibrator; ISOTONIC wins** (TESTED
+  2026-06-15, `_diag_tier1_{isotonic,beta}.py`). The raw classifier is over-dispersed
+  (under-confident lows, over-confident highs); temperature is one global knob, so it
+  fixes the high end *at the cost of* the low end (split-ECE low 0.043→0.063, high
+  0.096→0.021; net ECE 0.060→0.049). **Isotonic** bends both ends → ECE **0.060→0.014**
+  (low/high both 0.014). **Beta** (smooth 3-param, `BetaCalibrator`) lands at 0.040 —
+  its 3 parameters underfit the reliability curve. The feared ranking cost is **not
+  real at deployment**: the LOIO pooled-AUC drop (isotonic 0.848→0.833) is a per-fold
+  artifact; a single *global* calibrator is AUC-exact (isotonic +0.0003, beta +0.0000),
+  and isotonic's ties are harmless at n=161k. **Recommendation: isotonic** as the Tier-1
+  `CalibrationLayer`; beta is a smooth fallback if step artifacts ever matter. Gate
+  ECE ≤ 0.05 (both pass) and global-fit AUC within ±0.005 (both pass).
 
 ### L4 — report the distribution (the honest product)
 
@@ -220,17 +226,19 @@ behind HL-Gauss and the L2 items unless they stall.
 | stage | lever(s) | content | cost |
 |---|---|---|---|
 | **0 DONE** | diagnose | `src/calibration.py`, notebook 23, scorecard | — |
-| **1** | L3 (+Tier-1) | bank a `CalibrationLayer` (quantile-match Tier-2, temperature Tier-1), wire into `predict_window`/map; pick global vs conditioned | low, no GPU |
-| **2** | L1 | head bake-off on the FM features: **HL-Gauss** + **quantile/pinball** + count-Poisson, vs `mlp_reg`+L3, same LOIO harness | head re-train, minutes |
-| **2b** | L2 | scale sweep (S=32/64/128 compression curve), `min_confidence` sweep, count-vs-area | cheap re-runs |
+| **1** | L3 (+Tier-1) | bank a `CalibrationLayer` (quantile-match Tier-2, **isotonic** Tier-1), wire into `predict_window`/map; pick global vs conditioned | low, no GPU |
+| **2** | L1 | **HL-Gauss** + **quantile/pinball** heads vs `mlp_reg`+L3, same LOIO harness (log1p + count-Poisson already ruled out, Stage-0 follow-up) | head re-train, minutes |
+| **2b** | L2 | scale sweep (S=32/64/128 compression curve), `min_confidence` sweep | cheap re-runs |
 | **2c** | L1+L2 | LDS/FDS or density weighting on the winning head | small |
 | **3** | L4 | uncertainty product: intervals + coverage validation + map overlay | small |
 | **4** | — | freeze the Tier-2 head + calibrator into the deployable path; re-render docs §8; hand to THEMIS (W3) | — |
 
-Order rationale: L3 is the immediate product win (ship it). L1 (HL-Gauss/quantile)
-is the highest-leverage retraining and also unlocks L4. L2 raises the ceiling but is
-more work; the scale + count + confidence probes are cheap and may be the biggest
-real-accuracy gains. L4 is the honest endpoint.
+Order rationale: L3 is the immediate product win (ship it; Tier-1 = isotonic,
+Tier-2 = quantile-match). L1's cheap swaps (log1p, count-Poisson) are **already
+ruled out** (2026-06-15) — the remaining L1 lever is **HL-Gauss/quantile**, which
+also unlocks L4. L2 (coarser scale, less label noise) is the only lever that raises
+the *ranking* ceiling and may be the biggest real-accuracy gain. L4 is the honest
+endpoint.
 
 ## 6. Metrics (declared)
 
