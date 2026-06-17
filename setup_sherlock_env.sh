@@ -20,6 +20,14 @@ if [ -z "$PYBIN" ] || ! "$PYBIN" -c "import venv, ensurepip" >/dev/null 2>&1; th
     exit 1
 fi
 echo "using $PYMODULE -> $PYBIN ($($PYBIN --version))"
+# Reject a free-threaded / too-new interpreter: scipy/scikit-learn/rasterio don't ship wheels
+# for it, so everything falls back to source builds that fail (no OpenBLAS/GDAL on Sherlock).
+if [ "$("$PYBIN" -c 'import sysconfig;print(sysconfig.get_config_var("Py_GIL_DISABLED") or 0)')" = "1" ]; then
+    echo "ERROR: $PYBIN is a FREE-THREADED Python -- the sci stack has no wheels for it." >&2
+    echo "  Use a standard CPython 3.11/3.12 module:  ml spider python" >&2
+    echo "  then:  rm -rf '$ENV_DIR'; PYMODULE=python/<ver> bash setup_sherlock_env.sh" >&2
+    exit 1
+fi
 
 ENV_DIR="${ENV_DIR:-/home/groups/mlapotre/bamaro/envs/hirise2ctx}"
 if [ ! -d "$ENV_DIR" ]; then
@@ -37,10 +45,11 @@ pip install torch
 # --only-binary forbids sdists, so pip picks the newest version that ships a manylinux wheel
 # (GDAL bundled inside) for this Python instead of compiling. pyogrio is geopandas' I/O engine.
 pip install --only-binary=:all: \
-    "rasterio>=1.3" "pyproj>=3.6" "shapely>=2.0" pyogrio fiona scikit-image
+    "rasterio>=1.3" "pyproj>=3.6" "shapely>=2.0" pyogrio fiona scikit-image \
+    "scipy>=1.11" "scikit-learn>=1.4" "lightgbm>=4.0" "pyarrow>=14.0"
 # If the line above errors "Could not find a version that satisfies ... (--only-binary)", this
-# Python is too new/old for the geo wheels -> rebuild the venv against another module, e.g.:
-#   rm -rf "$ENV_DIR"; PYMODULE=python/3.12.1 bash setup_sherlock_env.sh
+# Python has no wheels for one of these -> rebuild the venv against a standard CPython module:
+#   ml spider python ; rm -rf "$ENV_DIR"; PYMODULE=python/<ver> bash setup_sherlock_env.sh
 
 # Project (editable) core + modeling (lightgbm/sklearn/scipy/pyarrow) + dev (jupyter/nbconvert).
 # The geo deps above are already satisfied, so this no longer tries to build rasterio.
