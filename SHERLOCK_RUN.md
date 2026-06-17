@@ -83,14 +83,15 @@ check + the throughput probe.
 
 ### A2. Upload the trained artifacts via the Files browser
 These three live only on your laptop and are gitignored (so `git clone` won't bring them).
-On the **laptop**, bundle them into one file first (Git Bash):
-```bash
-cd /c/Users/brian/Documents/PhD/HiRiseToCTXBoulders/hirise2ctx
-tar -czf h2c_artifacts.tgz \
-    models/deployable/86c51a5dca220f63 \
-    models/deployable/calibration.npz \
-    models/deployable/parity_ref.npz
+On the **laptop**, bundle them into one file first. Run this from the repo root **on one
+line** — it works in both PowerShell and Git Bash (Windows ships `tar.exe`). Do *not* use
+bash-style `\` line-continuations in PowerShell; they aren't continuations there and tar
+will error with `Couldn't visit directory`:
 ```
+tar -czf h2c_artifacts.tgz models/deployable/86c51a5dca220f63 models/deployable/calibration.npz models/deployable/parity_ref.npz
+```
+Verify the bundle with `tar -tzf h2c_artifacts.tgz` (should list the head dir + the two
+`.npz`). It's ~2.4 MB and safe to delete after upload.
 In OnDemand: **Files → Home Directory**, navigate into `hirise2ctx/` (after step B0/A3 clones
 it), click **Upload**, drop `h2c_artifacts.tgz`. Then in the terminal:
 ```bash
