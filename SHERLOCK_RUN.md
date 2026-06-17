@@ -49,9 +49,25 @@ and **Interactive Apps** (JupyterLab, etc.).
 This single session gives you a shell *and* a file browser for all of setup + the parity
 check + the throughput probe.
 
-- **Interactive Apps → JupyterLab.** In the form set: **Partition = `gpu`**, **GPUs = 1**,
-  CPUs = 8, Memory = 32 GB, Time = 3 hours. Click **Launch**, wait for the queue, then
-  **Connect to JupyterLab**.
+- **Interactive Apps → JupyterLab.** Fill the form (labels vary slightly by OnDemand
+  version) roughly as below, then **Launch**, wait in the queue, and **Connect to
+  JupyterLab**:
+
+  | Field | Choose | Why |
+  |---|---|---|
+  | **Partition** | `gpu` | the GPU partition |
+  | **Number of GPUs** | **1** | ⚠️ the field that matters — without it `cuda_available` is `False` and everything runs on CPU |
+  | CPUs | 8 | |
+  | Memory | 32 GB | embedding windows fit comfortably |
+  | Time | 3 hours | covers setup + parity + the probe |
+  | **Python version** | `python/3.12.1` (or newest ≥ 3.10 offered) | matches `setup_sherlock_env.sh`; **not critical** — we activate our own venv in the terminal |
+  | **Additional modules** | *leave empty* | the pip `torch` wheel bundles its own CUDA runtime (no `cuda/...` module); the venv has rasterio/numpy/jupyter/etc. |
+  | **Workspace / working dir** | `$HOME/hirise2ctx` (or leave default and `cd` later) | just the starting folder; doesn't affect compute |
+
+  **The JupyterLab app is only a vehicle to get a Terminal on a GPU node** — we `source` the
+  venv for every command, so the form's Python/modules don't drive the real work. The one
+  choice that affects correctness is **GPUs = 1 on `gpu`**.
+
 - In JupyterLab open **File → New → Terminal**. That terminal is running **on a GPU node** —
   exactly where the setup and parity check should run.
 
@@ -59,6 +75,11 @@ check + the throughput probe.
   Access** gives you a login-node shell. Good for `sbatch`/`git`, but it is NOT a GPU node,
   so don't run the parity check there — use the JupyterLab terminal for anything that needs
   the GPU.)*
+
+  *(If the app refuses to start because the chosen Python lacks Jupyter: our venv ships
+  Jupyter via the `dev` extra, so after step 1 you can point the app's "custom environment"
+  at `/home/groups/mlapotre/bamaro/envs/hirise2ctx`, or just do the non-GPU steps in a
+  Sherlock Shell and the GPU-only parity check via `sh_dev -p gpu -G 1`.)*
 
 ### A2. Upload the trained artifacts via the Files browser
 These three live only on your laptop and are gitignored (so `git clone` won't bring them).
