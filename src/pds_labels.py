@@ -12,22 +12,36 @@ The labels carry the authoritative HiRISE-side metadata we need for two purposes
 Labels are small (~10–20 KB each). The module caches the raw text under
 `{cache_dir}/pds_labels/{ObsId}.LBL` and parses keywords on demand.
 
-TLS: depends on `truststore` (auto-installed). On Windows + conda the stdlib's CA bundle
-is insufficient for some servers; `truststore.inject_into_ssl()` delegates to the OS trust
-store, which is what browsers use.
+TLS is platform-specific (both symptoms are the same `CERTIFICATE_VERIFY_FAILED: unable to
+get local issuer certificate`, but the fixes differ):
+- **Windows + conda:** the stdlib CA bundle misses issuers; `truststore.inject_into_ssl()`
+  delegates verification to the OS (Windows) trust store, like browsers do.
+- **Linux/macOS (e.g. Sherlock):** the interpreter's OpenSSL may have no working default CA
+  path, and truststore on Linux defers to that same broken store, so instead point urllib
+  at `certifi`'s CA bundle via `SSL_CERT_FILE` (OpenSSL reads it at context creation).
 """
 from __future__ import annotations
 
+import os as _os
 import re
 import ssl as _ssl  # noqa: F401  (kept for future tweaks)
 import urllib.request
 from pathlib import Path
 from typing import Any
 
-import truststore
+# Configure TLS trust once at import, per platform (see module docstring).
+if _os.name == "nt":
+    import truststore
 
-# Inject once at import time; idempotent
-truststore.inject_into_ssl()
+    truststore.inject_into_ssl()  # idempotent
+else:
+    try:
+        import certifi as _certifi
+
+        # setdefault: an explicit SSL_CERT_FILE in the environment still wins.
+        _os.environ.setdefault("SSL_CERT_FILE", _certifi.where())
+    except Exception:  # pragma: no cover - certifi missing -> fall back to system default
+        pass
 
 
 CACHE_SUBDIR = "pds_labels"

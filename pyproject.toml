@@ -17,10 +17,11 @@ dependencies = [
     "numpy>=1.24",
     "pyyaml>=6.0",
     "matplotlib>=3.7",
-    # SSL cert verification via the OS trust store (src/pds_labels.py inject_into_ssl()).
-    # Was only ever hand-installed in the conda env; declared here so fresh venvs (Sherlock)
-    # get it. Pure-python, cross-platform.
+    # TLS trust for downloads (src/pds_labels.py). truststore -> OS store on Windows;
+    # certifi -> CA bundle on Linux/macOS (Sherlock's python module lacks a default CA path).
+    # Were only hand-installed in the conda env; declared so fresh venvs get both.
     "truststore>=0.8",
+    "certifi>=2023.7",
 ]
 
 [project.optional-dependencies]
