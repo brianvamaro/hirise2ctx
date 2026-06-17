@@ -29,8 +29,18 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-# Configure TLS trust once at import, per platform (see module docstring).
-if _os.name == "nt":
+# Configure TLS trust once at import (see module docstring).
+if _os.environ.get("HIRISE2CTX_INSECURE_TLS") == "1":
+    # OPT-IN escape hatch (off by default). Some hosts (e.g. murray-lab.caltech.edu, zenodo)
+    # send an incomplete cert chain and OpenSSL on Linux won't AIA-fetch the missing
+    # intermediate (Windows schannel does, which is why it works on the laptop but not on
+    # Sherlock). For these PUBLIC, fixed-URL downloads only, skip verification; integrity is
+    # still bounded by post-download size/zip-validity checks. Never enable for anything
+    # sensitive. Applies process-wide to urllib downloads.
+    import ssl as _ssl_insecure
+
+    _ssl_insecure._create_default_https_context = _ssl_insecure._create_unverified_context
+elif _os.name == "nt":
     import truststore
 
     truststore.inject_into_ssl()  # idempotent

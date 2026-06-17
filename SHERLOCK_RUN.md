@@ -148,6 +148,17 @@ Then do **Setup steps 0–3** below. Download results at the end with `rsync` (P
 > `sh_dev -p gpu -G 1`). Downloads and `git`/`sbatch` are fine anywhere; only the env smoke
 > test and the parity check actually need the GPU.
 
+> **Sherlock TLS escape hatch.** murray-lab.caltech.edu and Zenodo send incomplete cert
+> chains, and Linux OpenSSL won't auto-fetch the missing intermediate (Windows does, so it
+> works on the laptop but fails here with `CERTIFICATE_VERIFY_FAILED`). For these public,
+> fixed-URL downloads only, set this **once per shell** before steps 1–2:
+> ```bash
+> export HIRISE2CTX_INSECURE_TLS=1
+> ```
+> It makes the checkpoint `curl` (step 1) and the Python tile fetch (step 2) skip cert
+> verification (off by default; only honored when set). Not needed after the data is cached —
+> the `sbatch` run reads from disk and does no downloads.
+
 ### 0. Get the code (and the right branch)
 `git clone` checks out `main`, but this work is on a feature branch — check it out:
 ```bash

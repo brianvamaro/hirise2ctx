@@ -76,7 +76,11 @@ if [ ! -f "$CKPT" ] || [ "$(ckpt_size)" -lt "$CKPT_MIN_BYTES" ]; then
     mkdir -p models/pretrained
     [ -f "$CKPT" ] && rm -f "$CKPT"     # drop any truncated/garbage partial first
     echo "Downloading Fang checkpoint (~341 MB) from Zenodo 18180801 ..."
-    curl -fL --retry 5 --retry-delay 5 -C - -o "$CKPT" "$CKPT_URL" || true
+    # Same opt-in escape hatch as the Python downloads (src/pds_labels.py): Zenodo's chain may
+    # not verify on Sherlock's Linux OpenSSL. -k only when HIRISE2CTX_INSECURE_TLS=1.
+    CURL_INSECURE=""
+    [ "${HIRISE2CTX_INSECURE_TLS:-}" = "1" ] && CURL_INSECURE="-k"
+    curl $CURL_INSECURE -fL --retry 5 --retry-delay 5 -C - -o "$CKPT" "$CKPT_URL" || true
     if [ "$(ckpt_size)" -lt "$CKPT_MIN_BYTES" ]; then
         echo "ERROR: checkpoint download incomplete ($(ckpt_size) bytes; expected ~341 MB)." >&2
         echo "  Retry on the data-transfer node, or just upload it from the laptop (you have it):" >&2
