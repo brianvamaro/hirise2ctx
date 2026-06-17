@@ -14,6 +14,8 @@
 #SBATCH --time=12:00:00
 #SBATCH --output=logs/h2c-map-%j.out
 #SBATCH --error=logs/h2c-map-%j.out
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=bamaro@stanford.edu
 
 set -euo pipefail
 mkdir -p logs
