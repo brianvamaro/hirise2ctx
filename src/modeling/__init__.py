@@ -31,22 +31,27 @@ from pathlib import Path as _Path
 # init time.
 _os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
-_spec = _ilu.find_spec("torch")
-if _spec is not None and _spec.origin is not None:
-    _torch_lib_dir = _Path(_spec.origin).parent / "lib"
-    if _torch_lib_dir.exists():
-        _os.add_dll_directory(str(_torch_lib_dir))
-        # Explicit shm.dll preload populates its dependency chain into the process so
-        # torch's own _load_dll_libraries() finds them at import time. add_dll_directory
-        # alone is necessary but not sufficient on this env; the ctypes preload is the
-        # actual fix verified in scripts/probes/_diag_torch_import.py.
-        import ctypes as _ctypes
+# The DLL-search-path workaround below is Windows-only: `os.add_dll_directory` and
+# `ctypes.WinDLL` exist only on Windows, and the shm.dll problem is a Windows-loader
+# issue. On Linux (e.g. Sherlock) torch's .so loading works normally, so this is a
+# no-op there -- guard it rather than crash with `os has no attribute add_dll_directory`.
+if _os.name == "nt":
+    _spec = _ilu.find_spec("torch")
+    if _spec is not None and _spec.origin is not None:
+        _torch_lib_dir = _Path(_spec.origin).parent / "lib"
+        if _torch_lib_dir.exists():
+            _os.add_dll_directory(str(_torch_lib_dir))
+            # Explicit shm.dll preload populates its dependency chain into the process so
+            # torch's own _load_dll_libraries() finds them at import time. add_dll_directory
+            # alone is necessary but not sufficient on this env; the ctypes preload is the
+            # actual fix verified in scripts/probes/_diag_torch_import.py.
+            import ctypes as _ctypes
 
-        _shm = _torch_lib_dir / "shm.dll"
-        if _shm.exists():
-            try:
-                _ctypes.WinDLL(str(_shm))
-            except OSError:
-                pass
+            _shm = _torch_lib_dir / "shm.dll"
+            if _shm.exists():
+                try:
+                    _ctypes.WinDLL(str(_shm))
+                except OSError:
+                    pass
 
 __all__ = []  # populated by sub-modules at use time

@@ -64,13 +64,28 @@ pip install -e .
 pip install --only-binary=:all: lightgbm pyarrow pytest jupyter nbconvert \
     || echo "NOTE: skipped some optional extras (no compatible wheel); the inference path is unaffected."
 
-# Fang-ViT checkpoint (341 MB) -- NOT auto-downloaded; fetch from Zenodo 18180801 once.
+# Fang-ViT checkpoint (~341.7 MB) from Zenodo 18180801. A bare `curl -L` silently saves an
+# error/redirect page on a stalled transfer (seen: a 92-byte file), which then blows up at
+# FangEmbedder.load(). So: -f (fail on HTTP error, don't save the page), --retry/-C (resume),
+# and a size check that rejects a too-small file and tells you how to recover.
 CKPT="models/pretrained/mars-mae-dino-vit-base-v1.pth"
-if [ ! -f "$CKPT" ]; then
+CKPT_URL="https://zenodo.org/records/18180801/files/mars-mae-dino-vit-base-v1.pth?download=1"
+CKPT_MIN_BYTES=$((300 * 1024 * 1024))   # expect ~341 MB
+ckpt_size() { stat -c%s "$CKPT" 2>/dev/null || echo 0; }
+if [ ! -f "$CKPT" ] || [ "$(ckpt_size)" -lt "$CKPT_MIN_BYTES" ]; then
     mkdir -p models/pretrained
-    echo "Downloading Fang checkpoint from Zenodo 18180801 ..."
-    curl -L -o "$CKPT" \
-      "https://zenodo.org/records/18180801/files/mars-mae-dino-vit-base-v1.pth?download=1"
+    [ -f "$CKPT" ] && rm -f "$CKPT"     # drop any truncated/garbage partial first
+    echo "Downloading Fang checkpoint (~341 MB) from Zenodo 18180801 ..."
+    curl -fL --retry 5 --retry-delay 5 -C - -o "$CKPT" "$CKPT_URL" || true
+    if [ "$(ckpt_size)" -lt "$CKPT_MIN_BYTES" ]; then
+        echo "ERROR: checkpoint download incomplete ($(ckpt_size) bytes; expected ~341 MB)." >&2
+        echo "  Retry on the data-transfer node, or just upload it from the laptop (you have it):" >&2
+        echo "    scp models/pretrained/mars-mae-dino-vit-base-v1.pth \\" >&2
+        echo "        bamaro@dtn.sherlock.stanford.edu:hirise2ctx/models/pretrained/" >&2
+        rm -f "$CKPT"
+        exit 1
+    fi
+    echo "checkpoint OK ($(ckpt_size) bytes)"
 fi
 
 # Smoke test: torch sees CUDA, and the whole inference import chain resolves (so a missing

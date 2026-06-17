@@ -101,8 +101,10 @@ the FALLBACK if cloud setup stalls.)
 
 **Portability verdict (checked 2026-06-16): favorable.**
 - No env spec yet → author `environment.yml` (+ optional CUDA-torch Dockerfile).
-- OpenMP bootstrap (`src/modeling/__init__.py`) is **Linux-safe** (`KMP_DUPLICATE_LIB_OK`
-  `setdefault`; the libiomp5md reference is a comment, not a dependency).
+- OpenMP bootstrap (`src/modeling/__init__.py`): `KMP_DUPLICATE_LIB_OK setdefault` is
+  Linux-safe, but the Windows DLL block called `os.add_dll_directory` unconditionally and
+  **crashed on Linux** — now guarded behind `os.name == "nt"` (fixed 2026-06-16 during the
+  Sherlock port).
 - Fang ViT checkpoint re-downloadable from **Zenodo 18180801**
   (`mars-mae-dino-vit-base-v1.pth`, 341 MB) — no upload.
 - **Re-fetch the 7 CTX Murray tiles on the box** (fast net to Murray Lab) — don't upload GBs.
