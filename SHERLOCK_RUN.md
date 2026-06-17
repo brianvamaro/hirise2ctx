@@ -45,6 +45,17 @@ OnDemand is Sherlock's web portal: <https://ondemand.sherlock.stanford.edu> (log
 SUNet ID + the usual two-step). The Dashboard has menus for **Files**, **Clusters** (shell),
 and **Interactive Apps** (JupyterLab, etc.).
 
+**Order of operations** (A-steps are web-UI actions, Setup/Part-C steps run in the terminal —
+they interleave, so follow this sequence, not the section numbers):
+
+1. **A1** — launch JupyterLab on a GPU node, open a Terminal.
+2. **Setup step 0** — `git clone` + `git checkout` (in that terminal). *Do this before A2.*
+3. **A2** — upload `h2c_artifacts.tgz` via the Files browser into the just-cloned folder,
+   then extract it in the terminal.
+4. **Setup steps 1–3** — build the venv → symlink + fetch CTX tiles → parity gate.
+5. **Part C** — throughput probe → `sbatch` the full run → monitor.
+6. **A4 / Part D** — download the GeoTIFFs back to the laptop.
+
 ### A1. Get a terminal on a GPU compute node
 This single session gives you a shell *and* a file browser for all of setup + the parity
 check + the throughput probe.
@@ -92,15 +103,18 @@ tar -czf h2c_artifacts.tgz models/deployable/86c51a5dca220f63 models/deployable/
 ```
 Verify the bundle with `tar -tzf h2c_artifacts.tgz` (should list the head dir + the two
 `.npz`). It's ~2.4 MB and safe to delete after upload.
-In OnDemand: **Files → Home Directory**, navigate into `hirise2ctx/` (after step B0/A3 clones
-it), click **Upload**, drop `h2c_artifacts.tgz`. Then in the terminal:
+
+**Do this after Setup step 0 (the clone), so the `hirise2ctx/` folder exists.** In OnDemand:
+**Files → Home Directory** (`/home/users/bamaro`), navigate into `hirise2ctx/`, click
+**Upload**, drop `h2c_artifacts.tgz`. Then in the terminal:
 ```bash
 cd $HOME/hirise2ctx && tar -xzf h2c_artifacts.tgz && rm h2c_artifacts.tgz
 ls models/deployable/      # should show 86c51a5dca220f63/  calibration.npz  parity_ref.npz
 ```
 
 ### A3. Now do the shared setup
-Continue in the JupyterLab terminal with **Setup steps 0–3** below.
+In the JupyterLab terminal run **Setup steps 0–3** below, with the A2 upload slotted in right
+after step 0 (per the order-of-operations list above).
 
 ### A4. Download the results when done
 After the run, **Files → navigate to** `$SCRATCH/hirise2ctx/map_region` (the Files browser
