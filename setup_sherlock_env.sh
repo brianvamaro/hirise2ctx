@@ -32,9 +32,19 @@ python -m pip install --upgrade pip wheel
 # module needed). The embedder auto-uses cuda + fp16 autocast when a GPU is visible.
 pip install torch
 
-# Project core + modeling (lightgbm/sklearn/scipy/pyarrow) + scikit-image (feature stage;
-# not declared in pyproject). geopandas/shapely/pyproj come via the core deps (Linux wheels).
-pip install -e ".[dev,modeling]" scikit-image
+# Pre-install the compiled geospatial stack as WHEELS ONLY. Sherlock has no system GDAL, so a
+# source build of rasterio/fiona (pip grabbing the .tar.gz sdist) fails at gdal-config.
+# --only-binary forbids sdists, so pip picks the newest version that ships a manylinux wheel
+# (GDAL bundled inside) for this Python instead of compiling. pyogrio is geopandas' I/O engine.
+pip install --only-binary=:all: \
+    "rasterio>=1.3" "pyproj>=3.6" "shapely>=2.0" pyogrio fiona scikit-image
+# If the line above errors "Could not find a version that satisfies ... (--only-binary)", this
+# Python is too new/old for the geo wheels -> rebuild the venv against another module, e.g.:
+#   rm -rf "$ENV_DIR"; PYMODULE=python/3.12.1 bash setup_sherlock_env.sh
+
+# Project (editable) core + modeling (lightgbm/sklearn/scipy/pyarrow) + dev (jupyter/nbconvert).
+# The geo deps above are already satisfied, so this no longer tries to build rasterio.
+pip install -e ".[dev,modeling]"
 
 # Fang-ViT checkpoint (341 MB) -- NOT auto-downloaded; fetch from Zenodo 18180801 once.
 CKPT="models/pretrained/mars-mae-dino-vit-base-v1.pth"
