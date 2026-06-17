@@ -5,11 +5,25 @@
 # Run INSIDE a GPU session (sh_dev -p gpu -G 1) so torch sees CUDA during the smoke test.
 set -euo pipefail
 
-ml python/3.12.1                 # `ml spider python` for versions (need >=3.10)
+# Load a Python module that provides `venv`. Sherlock uses Lmod; `ml` can exit 0 even when a
+# version is missing, and some python modules expose `python3` but not bare `python` -- either
+# way the system /bin/python (no venv) sneaks in. So load, then VERIFY python3 has venv, and
+# fail loudly with the fix rather than the cryptic "No module named venv".
+# Override the version without editing this file:  PYMODULE=python/3.12.4 bash setup_sherlock_env.sh
+PYMODULE="${PYMODULE:-python/3.12.1}"     # `ml spider python` to list real versions (need >=3.10)
+ml "$PYMODULE" 2>/dev/null || true
+PYBIN="$(command -v python3 || true)"
+if [ -z "$PYBIN" ] || ! "$PYBIN" -c "import venv, ensurepip" >/dev/null 2>&1; then
+    echo "ERROR: module '$PYMODULE' did not put a venv-capable python3 on PATH (got: ${PYBIN:-none})." >&2
+    echo "  Fix: run 'ml spider python' (or 'module avail python') to find the exact name, then:" >&2
+    echo "       PYMODULE=python/<version> bash setup_sherlock_env.sh" >&2
+    exit 1
+fi
+echo "using $PYMODULE -> $PYBIN ($($PYBIN --version))"
 
 ENV_DIR="${ENV_DIR:-/home/groups/mlapotre/bamaro/envs/hirise2ctx}"
 if [ ! -d "$ENV_DIR" ]; then
-    python -m venv "$ENV_DIR"
+    "$PYBIN" -m venv "$ENV_DIR"
 fi
 source "$ENV_DIR/bin/activate"
 python -m pip install --upgrade pip wheel
@@ -38,4 +52,4 @@ print("torch", torch.__version__, "cuda_available", torch.cuda.is_available(),
       "device", (torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"))
 PY
 
-echo "OK -- activate later with:  ml python/3.12.1 && source $ENV_DIR/bin/activate"
+echo "OK -- activate later with:  ml $PYMODULE && source $ENV_DIR/bin/activate"
