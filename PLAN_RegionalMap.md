@@ -128,6 +128,45 @@ GeoTIFFs (rich/poor + abundance). Validation (THEMIS/MOLA, the 5 legs) stays on 
 `map_region.py` driver, the fp16 path + a throughput benchmark, `environment.yml`, a cloud
 setup script + the parity-test script.
 
+### 4a. Target chosen: Stanford Sherlock HPC (Brian, 2026-06-16)
+
+The "cloud GPU" of §4 is **Sherlock** (`sherlock.stanford.edu`). Strategy = **prepare the
+turnkey kit here, Brian runs it there, downloads the prediction GeoTIFFs back** — *not*
+running Claude Code on Sherlock. The `sherlock_hirise2ctx_runbook.md` doc describes porting
+the *whole CPU pipeline*; we **ignore that** — the cohort dataset already exists locally and
+is not rebuilt. Our scope is only the §4 inference path.
+
+**Confirmed Sherlock parameters:**
+- Group **`mlapotre`**; home `/home/groups/mlapotre/bamaro`. Venv at
+  `/home/groups/mlapotre/bamaro/envs/hirise2ctx` (backed-up `$GROUP_HOME`); heavy I/O
+  (`cache/`, prediction outputs) symlinked to `$SCRATCH`.
+- **GPU partition `gpu`** (so **CUDA torch**, *not* the runbook's CPU-only wheel). The fp16
+  path is **already in `FangEmbedder`** (auto-CUDA + `autocast(fp16)`, `src/fm_embeddings.py`),
+  so §4 item 5 is effectively done.
+- **Scope now = regional (the 7-tile block); architecture must scale to global later**
+  (Brian: "eventually we will be doing global inference there"). → `map_region.py` is
+  **tile-list-driven** (regional = 7 tiles; global = the full Murray index, no rewrite) and
+  **resumable at the (tile, read-window) granularity** so a Slurm wall-clock/pre-emption
+  resumes mid-tile.
+
+**Upload artifacts** (exist only on the laptop, ~2.7 MB total, one `scp`):
+`models/deployable/86c51a5dca220f63/` (the DeployableHead: `recipe.json` + `seed{0,1,2}`)
+and `models/deployable/calibration.npz` (the Stage-1 CalibrationLayer). Fang (341 MB) and the
+CTX tiles (GBs) are re-fetched on the box, not uploaded.
+
+**Output GeoTIFFs** (per Murray tile; single-band float32, 160 m/px, `NaN`=nodata/masked):
+`*_prob.tif` (calibrated P(rich)∈[0,1]), `*_abundance.tif` (fractional_area qmatch, ≥0),
+`*_prob_raw.tif` (uncalibrated P(rich), QA). All validation/figures stay on the laptop.
+
+**The turnkey kit (built here, no GPU):**
+1. `scripts/map_region.py` — resumable tile-list block driver (per-window partials + a
+   done-manifest → per-tile GeoTIFFs).
+2. `scripts/parity_check.py` — reproduce a fixed `map_pilot` E4_N44 window, assert match vs a
+   laptop-generated reference (catches torch/CUDA/fp16 drift). **Run this first on Sherlock.**
+3. `environment.yml` / `setup_sherlock_env.sh` (CUDA torch) + `run_region.sbatch` (gpu
+   partition, resumable) + `SHERLOCK_RUN.md` (exact commands).
+4. Throughput micro-benchmark → sizes `--time` and gives the global-cost extrapolation.
+
 ---
 
 ## 5. The convincing figures (the deliverable)

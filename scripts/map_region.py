@@ -1,0 +1,297 @@
+"""Regional (→ global) rock-abundance inference driver (PLAN_RegionalMap §4 / §4a).
+
+Scales the validated one-window path (`scripts/map_pilot.py`) out to **whole Murray
+Lab CTX tiles**, tile-list-driven and **resumable**, so it runs unchanged on a Sherlock
+`gpu` node for the 7-tile circum-Chryse block now and the full Murray index later.
+
+    for each Murray tile:
+        sweep overlapping read windows across the 47420² px tile
+            window -> FangEmbedder.embed_window -> DeployableHead.predict
+            -> CalibrationLayer (isotonic P(rich) + qmatch abundance)
+            -> append finite tiles to a per-window partial (.npz)        [checkpoint]
+        assemble all partials -> per-tile GeoTIFFs (prob / abundance / prob_raw)
+
+Resumability is at the **(tile, read-window) granularity**: each finished window writes
+`partials/<tile>/<row>_<col>.npz`; a re-run skips windows whose partial exists and skips
+tiles whose final GeoTIFF exists. A Slurm wall-clock limit or pre-emption therefore
+resumes mid-tile with at most one window re-done.
+
+Read windows overlap by `2*tile_px` (one context ring on each side) because the embedder
+drops any tile whose 96-px (3×32) context box spills the window edge; the overlap lets a
+neighbouring window supply that tile with full context. Tiles are anchored to the parent
+tile's pixel origin (CLAUDE.md Stage 4), so global `(ti, tj)` are consistent across
+windows and overlap just re-writes identical values. The outermost one-tile ring of each
+Murray tile has no context and is legitimately left nodata (a ~160 m seam; cross-tile
+stitching is a laptop-side validation concern, not this driver's).
+
+Output per Murray tile (single-band float32, 160 m/px, NaN = nodata/masked):
+    <tile>_prob.tif       calibrated P(boulder-rich) in [0, 1]   (raw if --raw)
+    <tile>_abundance.tif  fractional_area (qmatch)               (omitted with --raw)
+    <tile>_prob_raw.tif   uncalibrated P(rich), QA               (omitted with --raw)
+
+Usage (Sherlock gpu node, venv active):
+    python scripts/map_region.py --all
+    python scripts/map_region.py --tiles E4_N44 E8_N44
+    python scripts/map_region.py --tiles E4_N44 --limit-windows 4   # throughput probe
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+import src.modeling  # noqa: F401  -- OpenMP/DLL bootstrap; must precede numpy
+
+import numpy as np
+
+from src.mapping import coarsened_transform, predict_window, read_tile_window, write_geotiff
+
+CTX_TILES = REPO_ROOT / "cache_v2" / "ctx_tiles"
+DEFAULT_MODEL_PARENT = REPO_ROOT / "models" / "deployable"
+DEFAULT_CALIBRATION = DEFAULT_MODEL_PARENT / "calibration.npz"
+DEFAULT_OUT = REPO_ROOT / "reports" / "map_region"
+TILE_PX = 32  # frozen S=32 (160 m at 5 m/px)
+
+# The circum-Chryse highland-lowland boundary block (PLAN_RegionalMap §0); all cached.
+BLOCK_TILES = ["E0_N40", "E4_N40", "E4_N44", "E8_N40", "E8_N44", "E12_N44", "E16_N44"]
+
+
+def resolve_model_dir(arg: str | None) -> Path:
+    if arg:
+        return Path(arg)
+    hits = sorted(p for p in DEFAULT_MODEL_PARENT.glob("*") if (p / "recipe.json").exists())
+    if not hits:
+        raise SystemExit(f"no deployable head under {DEFAULT_MODEL_PARENT}; "
+                         "run scripts/train_deployable_head.py")
+    return hits[-1]
+
+
+def window_offsets(extent: int, win: int, overlap: int, tile_px: int) -> list[int]:
+    """Tile-aligned read-window start offsets covering [0, extent) with `overlap`.
+
+    Offsets are multiples of `tile_px` (so global tile indices stay aligned). `step =
+    win - overlap` keeps consecutive gaps <= step, so every interior tile sits with its
+    full 3x3 context box inside at least one window. The final offset is the tile-aligned
+    `extent - win` (its window reaches within one tile of the tile edge; the outermost
+    context-less ring is left nodata by design).
+    """
+    win = min(win, extent)
+    step = max(tile_px, win - overlap)
+    last = ((extent - win) // tile_px) * tile_px  # tile-aligned final start
+    offs: list[int] = []
+    o = 0
+    while o < last:
+        offs.append(o)
+        o += step
+    if not offs or offs[-1] != last:
+        offs.append(last)
+    return offs
+
+
+def load_tile_sidecar(murray_tile: str) -> dict:
+    side_path = CTX_TILES / f"{murray_tile}.json"
+    zip_path = CTX_TILES / f"{murray_tile}.zip"
+    if not side_path.exists():
+        raise SystemExit(f"tile sidecar missing: {side_path} "
+                         "(re-fetch via ctx_retrieve.ensure_tile_cached)")
+    if not zip_path.exists():
+        raise SystemExit(f"tile zip missing: {zip_path} "
+                         "(re-fetch via ctx_retrieve.ensure_tile_cached)")
+    info = json.loads(side_path.read_text(encoding="utf-8"))
+    info["_zip_path"] = zip_path
+    return info
+
+
+def map_one_tile(murray_tile: str, embedder, head, calibrator, *, args) -> dict:
+    """Sweep one Murray tile and write its GeoTIFFs. Returns a status dict."""
+    info = load_tile_sidecar(murray_tile)
+    zip_path = info["_zip_path"]
+    inner_tif = info["inner_tif"]
+    inner_transform = tuple(info["inner_transform"])
+    crs_wkt = info.get("inner_crs_wkt", "")
+    H, W = info["inner_shape"]
+
+    out_dir = Path(args.out_dir)
+    prob_tif = out_dir / f"{murray_tile}_prob.tif"
+    if prob_tif.exists() and not args.force:
+        print(f"[{murray_tile}] final GeoTIFF exists -> skip (use --force to redo)", flush=True)
+        return {"tile": murray_tile, "status": "skipped_done"}
+
+    partial_dir = out_dir / "partials" / murray_tile
+    partial_dir.mkdir(parents=True, exist_ok=True)
+
+    win, overlap = args.win_px, 2 * TILE_PX
+    row_offs = window_offsets(H, win, overlap, TILE_PX)
+    col_offs = window_offsets(W, win, overlap, TILE_PX)
+    grid = [(r, c) for r in row_offs for c in col_offs]
+    print(f"[{murray_tile}] {H}x{W}px  win={win} overlap={overlap}  "
+          f"{len(row_offs)}x{len(col_offs)}={len(grid)} windows", flush=True)
+
+    done_tiles = 0
+    t_tile = time.monotonic()
+    for k, (row_off, col_off) in enumerate(grid):
+        part_path = partial_dir / f"{row_off:06d}_{col_off:06d}.npz"
+        if part_path.exists() and not args.force:
+            continue
+        if args.limit_windows is not None and done_tiles >= args.limit_windows:
+            print(f"[{murray_tile}] --limit-windows {args.limit_windows} reached", flush=True)
+            break
+
+        t0 = time.monotonic()
+        window = read_tile_window(zip_path, inner_tif, row_off, col_off, win)
+        pred = predict_window(window, embedder, head, tile_px=TILE_PX,
+                              batch=args.batch, max_zero_fraction=args.max_zero_fraction,
+                              calibrator=calibrator, apply_isotonic=not args.no_isotonic)
+        keep = np.isfinite(pred.prob)
+        cols = {
+            "ti": pred.ti[keep].astype(np.int32),
+            "tj": pred.tj[keep].astype(np.int32),
+            "prob": pred.prob[keep].astype(np.float32),
+        }
+        if calibrator is not None:
+            cols["prob_raw"] = pred.prob_raw[keep].astype(np.float32)
+            cols["abundance"] = pred.abundance[keep].astype(np.float32)
+        np.savez_compressed(part_path, **cols)
+        done_tiles += 1
+        dt = time.monotonic() - t0
+        rate = int(keep.sum() / dt) if dt > 0 else 0
+        print(f"[{murray_tile}] win {k + 1}/{len(grid)} off=({row_off},{col_off}) "
+              f"kept={int(keep.sum())} {dt:.1f}s ~{rate} tiles/s", flush=True)
+
+    # Assemble: need every window's partial present before writing the final raster.
+    present = sorted(partial_dir.glob("*.npz"))
+    if len(present) < len(grid) and args.limit_windows is None:
+        print(f"[{murray_tile}] {len(present)}/{len(grid)} windows done -> "
+              "not yet assembling (re-run to finish)", flush=True)
+        return {"tile": murray_tile, "status": "partial",
+                "windows_done": len(present), "windows_total": len(grid)}
+    if args.limit_windows is not None:
+        print(f"[{murray_tile}] benchmark mode (--limit-windows) -> skip assembly", flush=True)
+        return {"tile": murray_tile, "status": "benchmark", "windows_done": done_tiles,
+                "elapsed_s": round(time.monotonic() - t_tile, 1)}
+
+    write_tile_geotiffs(murray_tile, present, inner_transform, crs_wkt, calibrator, args)
+    if args.clean_partials:
+        for p in present:
+            p.unlink()
+        try:
+            partial_dir.rmdir()
+        except OSError:
+            pass
+    print(f"[{murray_tile}] DONE in {time.monotonic() - t_tile:.0f}s", flush=True)
+    return {"tile": murray_tile, "status": "done", "windows": len(grid)}
+
+
+def write_tile_geotiffs(murray_tile, partials, inner_transform, crs_wkt, calibrator, args):
+    """Scatter all per-window partials into the per-tile rasters and write GeoTIFFs."""
+    ti = np.concatenate([np.load(p)["ti"] for p in partials]).astype(np.int64)
+    tj = np.concatenate([np.load(p)["tj"] for p in partials]).astype(np.int64)
+    prob = np.concatenate([np.load(p)["prob"] for p in partials]).astype(np.float64)
+    has_cal = calibrator is not None
+    prob_raw = (np.concatenate([np.load(p)["prob_raw"] for p in partials]).astype(np.float64)
+                if has_cal else None)
+    abundance = (np.concatenate([np.load(p)["abundance"] for p in partials]).astype(np.float64)
+                 if has_cal else None)
+
+    ti_min, ti_max = int(ti.min()), int(ti.max())
+    tj_min, tj_max = int(tj.min()), int(tj.max())
+    shape = (ti_max - ti_min + 1, tj_max - tj_min + 1)
+    transform = coarsened_transform(inner_transform, ti_min, tj_min, TILE_PX)
+    out_dir = Path(args.out_dir)
+
+    def scatter(values):
+        r = np.full(shape, np.nan, dtype=np.float64)
+        r[ti - ti_min, tj - tj_min] = values  # overlap re-writes identical values
+        return r
+
+    write_geotiff(out_dir / f"{murray_tile}_prob.tif", scatter(prob), transform, crs_wkt)
+    if has_cal:
+        write_geotiff(out_dir / f"{murray_tile}_abundance.tif", scatter(abundance), transform, crs_wkt)
+        write_geotiff(out_dir / f"{murray_tile}_prob_raw.tif", scatter(prob_raw), transform, crs_wkt)
+    n_tiles = ti.size
+    (out_dir / f"{murray_tile}.json").write_text(json.dumps({
+        "murray_tile": murray_tile, "tile_px": TILE_PX, "raster_shape": list(shape),
+        "ti_min": ti_min, "tj_min": tj_min, "n_predicted_tiles": int(n_tiles),
+        "calibrated": has_cal, "isotonic": has_cal and not args.no_isotonic,
+        "prob_mean": float(np.nanmean(prob)),
+        "rich_share_at_0p5": float((prob >= 0.5).mean()),
+        "abundance_mean": float(np.nanmean(abundance)) if has_cal else None,
+    }, indent=2), encoding="utf-8")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    g = ap.add_mutually_exclusive_group(required=True)
+    g.add_argument("--tiles", nargs="+", help="Murray tile ids, e.g. E4_N44 E8_N44")
+    g.add_argument("--all", action="store_true", help="the 7 circum-Chryse block tiles")
+    ap.add_argument("--win-px", type=int, default=4096, help="read-window side in CTX px")
+    ap.add_argument("--batch", type=int, default=96, help="embedder batch size")
+    ap.add_argument("--max-zero-fraction", type=float, default=0.3,
+                    help="mask a tile whose own CTX is more than this share mosaic nodata")
+    ap.add_argument("--model", default=None, help="deployable head dir (default: latest)")
+    ap.add_argument("--calibration", default=str(DEFAULT_CALIBRATION),
+                    help="banked CalibrationLayer .npz")
+    ap.add_argument("--raw", action="store_true",
+                    help="render RAW P(rich) only (skip the Stage-1 CalibrationLayer)")
+    ap.add_argument("--no-isotonic", action="store_true",
+                    help="skip the Tier-1 isotonic polish (abundance qmatch still applied)")
+    ap.add_argument("--out-dir", default=str(DEFAULT_OUT),
+                    help="output dir (point at $SCRATCH on Sherlock)")
+    ap.add_argument("--limit-windows", type=int, default=None,
+                    help="process at most N windows per tile then stop (throughput probe)")
+    ap.add_argument("--force", action="store_true", help="recompute existing windows/tiles")
+    ap.add_argument("--clean-partials", action="store_true",
+                    help="delete per-window .npz after a tile's GeoTIFFs are written")
+    args = ap.parse_args()
+
+    tiles = BLOCK_TILES if args.all else args.tiles
+    Path(args.out_dir).mkdir(parents=True, exist_ok=True)
+
+    model_dir = resolve_model_dir(args.model)
+    card = json.loads((model_dir / "recipe.json").read_text(encoding="utf-8"))
+    print(f"=== map_region: {len(tiles)} tile(s)  model={model_dir.name}  "
+          f"recipe={card['recipe'].get('cell')}  out={args.out_dir} ===", flush=True)
+
+    from src.fm_embeddings import FangEmbedder
+    from src.modeling.mlp_head import DeployableHead
+
+    calibrator = None
+    if not args.raw:
+        from src.calibration import CalibrationLayer
+        calibrator = CalibrationLayer.load(args.calibration)
+        print(f"  calibration={Path(args.calibration).name}  "
+              f"isotonic={'off' if args.no_isotonic else 'on'}  abundance=qmatch(P(rich))",
+              flush=True)
+
+    embedder = FangEmbedder.load()
+    head = DeployableHead.load(model_dir)
+    dev = getattr(getattr(embedder, "device", None), "type", "?")
+    print(f"  embedder device={dev}  head seeds={card.get('n_seeds', '?')}", flush=True)
+
+    results = []
+    t0 = time.monotonic()
+    for tile in tiles:
+        results.append(map_one_tile(tile, embedder, head, calibrator, args=args))
+
+    manifest = Path(args.out_dir) / "region_manifest.json"
+    manifest.write_text(json.dumps({
+        "tiles": tiles, "model_dir": str(model_dir.relative_to(REPO_ROOT)),
+        "recipe_hash": card.get("recipe_hash"), "win_px": args.win_px,
+        "calibrated": calibrator is not None, "raw": args.raw,
+        "elapsed_s": round(time.monotonic() - t0, 1), "results": results,
+    }, indent=2), encoding="utf-8")
+    n_done = sum(r["status"] == "done" for r in results)
+    print(f"=== {n_done}/{len(tiles)} tiles complete  "
+          f"{time.monotonic() - t0:.0f}s  manifest -> {manifest} ===", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
