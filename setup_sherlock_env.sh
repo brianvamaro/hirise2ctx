@@ -40,20 +40,29 @@ python -m pip install --upgrade pip wheel
 # module needed). The embedder auto-uses cuda + fp16 autocast when a GPU is visible.
 pip install torch
 
-# Pre-install the compiled geospatial stack as WHEELS ONLY. Sherlock has no system GDAL, so a
-# source build of rasterio/fiona (pip grabbing the .tar.gz sdist) fails at gdal-config.
-# --only-binary forbids sdists, so pip picks the newest version that ships a manylinux wheel
-# (GDAL bundled inside) for this Python instead of compiling. pyogrio is geopandas' I/O engine.
+# Pre-install EVERY compiled dependency the inference path needs, WHEELS ONLY. The Sherlock
+# gotcha: its base OS has an older glibc (~2.17) and no system GDAL/OpenBLAS, so (a) the newest
+# scipy/scikit-learn/numpy/pandas wheels (built for manylinux_2_28) won't load and (b) a source
+# fallback can't compile (no gdal-config / no OpenBLAS). `--only-binary` forbids sdists, so pip
+# picks the newest version whose wheel is *compatible with this glibc* (a slightly older one)
+# instead of trying to build. These + torch (above) cover map_region.py + parity_check.py.
 pip install --only-binary=:all: \
+    numpy pandas matplotlib pyyaml \
     "rasterio>=1.3" "pyproj>=3.6" "shapely>=2.0" pyogrio fiona scikit-image \
-    "scipy>=1.11" "scikit-learn>=1.4" "lightgbm>=4.0" "pyarrow>=14.0"
-# If the line above errors "Could not find a version that satisfies ... (--only-binary)", this
-# Python has no wheels for one of these -> rebuild the venv against a standard CPython module:
-#   ml spider python ; rm -rf "$ENV_DIR"; PYMODULE=python/<ver> bash setup_sherlock_env.sh
+    "scipy>=1.11" "scikit-learn>=1.4"
+# If this errors "Could not find a version that satisfies ... (--only-binary)", no compatible
+# wheel exists for this Python -> try another module: ml spider python ;
+#   rm -rf "$ENV_DIR"; PYMODULE=python/<ver> bash setup_sherlock_env.sh
 
-# Project (editable) core + modeling (lightgbm/sklearn/scipy/pyarrow) + dev (jupyter/nbconvert).
-# The geo deps above are already satisfied, so this no longer tries to build rasterio.
-pip install -e ".[dev,modeling]"
+# The project itself (editable). CORE deps only -- the geo/sci stack above is already satisfied,
+# so this won't rebuild anything; remaining core deps (geopandas) are pure-python.
+pip install -e .
+
+# Training/notebook extras, BEST-EFFORT. lightgbm/pyarrow are training-only and may lack an
+# old-glibc wheel; jupyter/pytest are for local dev. None are needed for the inference run, so
+# don't let them fail the setup.
+pip install --only-binary=:all: lightgbm pyarrow pytest jupyter nbconvert \
+    || echo "NOTE: skipped some optional extras (no compatible wheel); the inference path is unaffected."
 
 # Fang-ViT checkpoint (341 MB) -- NOT auto-downloaded; fetch from Zenodo 18180801 once.
 CKPT="models/pretrained/mars-mae-dino-vit-base-v1.pth"
@@ -64,11 +73,21 @@ if [ ! -f "$CKPT" ]; then
       "https://zenodo.org/records/18180801/files/mars-mae-dino-vit-base-v1.pth?download=1"
 fi
 
-# Smoke test: torch sees CUDA, and the embedder + head load.
+# Smoke test: torch sees CUDA, and the whole inference import chain resolves (so a missing
+# dep shows up here, not mid-run). Run from the repo root so `import src` works.
 python - <<'PY'
-import torch
+import torch, rasterio, scipy, sklearn, numpy, pandas
 print("torch", torch.__version__, "cuda_available", torch.cuda.is_available(),
       "device", (torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"))
+print("rasterio", rasterio.__version__, "| scipy", scipy.__version__,
+      "| sklearn", sklearn.__version__, "| numpy", numpy.__version__)
+import sys; sys.path.insert(0, ".")
+import src.modeling  # OpenMP/DLL bootstrap; must precede the heavy imports
+from src.mapping import predict_window          # rasterio path
+from src.calibration import CalibrationLayer    # scipy + sklearn path
+from src.fm_embeddings import FangEmbedder       # torch path
+from src.modeling.mlp_head import DeployableHead
+print("inference imports OK -> ready for parity_check + map_region")
 PY
 
 echo "OK -- activate later with:  ml $PYMODULE && source $ENV_DIR/bin/activate"
