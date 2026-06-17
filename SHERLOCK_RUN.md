@@ -172,14 +172,21 @@ artifacts (A2 or B) so `models/deployable/` is populated.
 
 ### 1. Build the Python environment (no conda)
 ```bash
+export HIRISE2CTX_INSECURE_TLS=1     # see the TLS note above; needed for the checkpoint download
 bash setup_sherlock_env.sh
 ```
-What it does, and what to expect: loads `python/3.12.1`, creates a venv at
-`/home/groups/mlapotre/bamaro/envs/hirise2ctx` (backed up), installs **CUDA** PyTorch +
-the project deps, and downloads the 341 MB Fang-ViT checkpoint from Zenodo into
-`models/pretrained/`. It ends by printing `cuda_available True` and your GPU's name — if you
-see `False`, you launched the terminal on a non-GPU node (relaunch the app with Partition =
-`gpu`, GPUs = 1). First run takes a few minutes (it compiles nothing, just downloads wheels).
+What it does, and what to expect: loads `python/3.12.1` (verifying it provides a venv-capable
+`python3`), creates a venv at `/home/groups/mlapotre/bamaro/envs/hirise2ctx` (backed up),
+installs **CUDA** PyTorch + the project deps **as wheels only** (`--only-binary`, so Sherlock's
+older glibc gets compatible wheels instead of failing source builds), and downloads the
+341 MB Fang-ViT checkpoint from Zenodo into `models/pretrained/` (with the TLS escape hatch
+above). It ends by importing the full inference chain and printing
+`inference imports OK … device NVIDIA L40S` — if `cuda_available` is `False`, you launched on
+a non-GPU node (relaunch the app with Partition = `gpu`, GPUs = 1). First run takes a few
+minutes (downloads wheels + the checkpoint; compiles nothing).
+
+> `truststore` (Windows) and `certifi` (Linux) are declared deps now, so `setup_sherlock_env.sh`
+> installs them automatically — no manual `pip install` needed.
 
 Activate it in any later terminal with:
 ```bash
@@ -195,9 +202,12 @@ mkdir -p $SCRATCH/hirise2ctx/{cache,map_region}
 ln -sfn $SCRATCH/hirise2ctx/cache      $HOME/hirise2ctx/cache_v2
 ln -sfn $SCRATCH/hirise2ctx/map_region $HOME/hirise2ctx/reports/map_region
 ```
-Re-fetch the 7 block tiles from Murray Lab (a few minutes on Sherlock's fast network),
-using config for the URL template + cache dir exactly as `scripts/run_stage2.py` does:
+Re-fetch the 7 block tiles from Murray Lab (~12 GB, a few minutes on Sherlock's fast network),
+using config for the URL template + cache dir exactly as `scripts/run_stage2.py` does. The
+`HIRISE2CTX_INSECURE_TLS=1` from step 1 must be set in this shell (Murray Lab sends an
+incomplete cert chain — same reason as the checkpoint):
 ```bash
+export HIRISE2CTX_INSECURE_TLS=1     # if not already set in this shell
 source /home/groups/mlapotre/bamaro/envs/hirise2ctx/bin/activate
 python - <<'PY'
 from src.config import load_config
@@ -287,13 +297,31 @@ index instead of the 7-tile `--all` list (and re-fetch those tiles in step 2). S
 same checkpointing. Size `--time` to your measured rate, or split into several jobs by
 tile-group and submit them in parallel (each writes independent per-tile GeoTIFFs).
 
-## Troubleshooting
+## Troubleshooting (incl. everything we hit on the first port — all fixed in-repo now)
 
+- **`CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate`** (on the tile /
+  checkpoint download) — Murray Lab & Zenodo send an **incomplete cert chain** and Linux
+  OpenSSL won't auto-fetch the missing intermediate (Windows does, so it works on the laptop).
+  Fix: `export HIRISE2CTX_INSECURE_TLS=1` before steps 1–2 (skips verification for these
+  public, fixed-URL downloads only; off by default). Not a proxy — the issuer is a real CA
+  (InCommon).
+- **`No module named venv`** during setup — the python module exposed `python3` but not bare
+  `python`; the setup script now builds the venv with the verified `python3`. (Python 3.12.1
+  is correct — don't switch.)
+- **`No module named 'truststore'` / `ModuleNotFoundError`** — `truststore`+`certifi` are now
+  declared deps, installed by `pip install -e .`. If on an old checkout: `pip install truststore certifi`.
+- **scipy/scikit-learn/rasterio building from source / `OpenBLAS not found` / `gdal-config`** —
+  Sherlock's old glibc can't load the newest manylinux_2_28 wheels and has no system
+  GDAL/OpenBLAS. The setup script's `--only-binary` picks older compatible wheels; if you see
+  this, you're not using the current `setup_sherlock_env.sh` (`git pull`).
+- **`os has no attribute add_dll_directory`** — a Windows-only DLL shim leaked to Linux; fixed
+  (guarded behind `os.name == "nt"`). `git pull` if you see it.
 - **`cuda_available False`** — your terminal isn't on a GPU node. Relaunch the OnDemand app
   (or `sh_dev`) with Partition = `gpu`, GPUs = 1.
 - **Job stuck in `PD` (pending)** — the `gpu` partition is busy; wait, or check `squeue`. GPU
   queues can be slow at peak times.
-- **`tile zip missing`** — step 2 didn't fetch that tile; re-run the fetch snippet.
+- **`tile zip missing`** — step 2 didn't fetch that tile; re-run the fetch snippet (with the
+  TLS flag set).
 - **Out of space on `$HOME`** — you skipped the `$SCRATCH` symlinks in step 2; the 12 GB
   cache landed in your 15 GB home. Remove `cache_v2`, make the symlink, re-fetch.
 - **geopandas/pyogrio I/O error** — `pip install pyogrio` into the venv (Linux wheel).
