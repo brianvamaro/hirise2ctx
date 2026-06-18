@@ -303,6 +303,18 @@ Resumable like the sequential job: re-`sbatch` after a wall-clock/pre-emption �
 are skipped (final GeoTIFF exists), partial tiles resume mid-window. Monitor with
 `squeue -u $USER` / `tail -f logs/h2c-map-arr-<arrayjob>_<task>.out`.
 
+The array passes `--clean-partials`, so when it finishes **`$OUT` holds only the downloadable
+products** — one flat folder of `<tile>_{prob,abundance,prob_raw}.tif` + `<tile>.json` for the 19
+new tiles, no `partials/` clutter. Pull the whole folder back to the laptop in one shot:
+```bash
+# from the LAPTOP (the 7 already-run tiles are already in reports/map_region/).
+# ~/hirise2ctx/reports/map_region is symlinked to $SCRATCH/hirise2ctx/map_region on Sherlock,
+# so this home-relative path resolves there without needing $SCRATCH to expand:
+rsync -av <sunet>@dtn.sherlock.stanford.edu:hirise2ctx/reports/map_region/ \
+    ~/Documents/PhD/HiRiseToCTXBoulders/hirise2ctx/reports/map_region/
+# (or scp the *.tif + *.json; or drag the folder via the OnDemand Files browser)
+```
+
 > **Batch + parity:** `--batch 256` better saturates the L40S and is ~parity-safe (the Fang ViT
 > is per-sample). If you run the strict parity gate (C/B step 3), emit its reference at the same
 > `--batch` — fp16 GEMM kernel choice can shift outputs by ~tol across batch sizes. `BATCH=96`

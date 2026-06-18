@@ -54,5 +54,9 @@ echo "task $SLURM_ARRAY_TASK_ID/$N  host $(hostname)  GPU ${CUDA_VISIBLE_DEVICES
 echo "  tiles: ${SEL[*]}"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 
-python scripts/map_region.py --out-dir "$OUT" --batch "$BATCH" --tiles "${SEL[@]}"
+# --clean-partials: delete each tile's per-window .npz checkpoints once its GeoTIFFs are written,
+# so $OUT ends up holding ONLY the downloadable products (<tile>_{prob,abundance,prob_raw}.tif +
+# <tile>.json) in one flat folder. Resume-safe: partials are removed only after full assembly, so
+# an interrupted tile keeps its checkpoints and a finished tile is skipped via its existing .tif.
+python scripts/map_region.py --out-dir "$OUT" --batch "$BATCH" --clean-partials --tiles "${SEL[@]}"
 echo "task $SLURM_ARRAY_TASK_ID done -> $OUT"
