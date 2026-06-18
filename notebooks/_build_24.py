@@ -330,7 +330,7 @@ else:
                    origin="upper", interpolation="nearest", aspect="equal")
     for t, (lo, la) in boxes.items():                      # tile outlines
         ax.add_patch(Rectangle((lo, la), TILE_DEG, TILE_DEG, fill=False,
-                               edgecolor="white", lw=0.6, alpha=0.45))
+                               edgecolor="white", lw=0.3, alpha=0.12))  # faint: the grid is not data
     for lab, c in COL.items():                             # cohort footprints
         sub = in_block[in_block.BoulderLabel == lab]
         if len(sub):
@@ -416,7 +416,7 @@ if ab_tifs and MOLA.exists():
     ax.clabel(cs, fmt={-3795: "-3795 m (lHl1)"}, fontsize=7)
     for t, (lo, la) in boxes.items():
         ax.add_patch(Rectangle((lo, la), TILE_DEG, TILE_DEG, fill=False, edgecolor="#b8860b",
-                               lw=0.7, alpha=0.55, zorder=4))
+                               lw=0.4, alpha=0.22, zorder=4))
     ax.scatter(rich.CenterLon_180, rich.CenterLat, s=48, marker="^", facecolor="yellow",
                edgecolor="k", lw=0.5, zorder=6)
 

@@ -55,11 +55,15 @@ validation_rasters:
       resampling: bilinear     # 8-bit brightness temperature proxy
       native_res_m: 100
       read_mode: vsicurl       # 15 GB global -> windowed only, never download
-    tes_ti:
-      url: "https://mars.asu.edu/data/tes_putzigti/nighttime2005/nmap2003.tif"
-      lon_domain: "180"
-      resampling: bilinear
-      native_res_m: 2965       # ~3 km/px (20 ppd); confirm value semantics before leg-2 corr
+    # tes_ti DISABLED 2026-06-18: nmap2003.tif is a 3-band uint8 RGB *rendered* map with NO
+    # embedded CRS (identity transform) -- NOT physical TI values. Unusable for the quantitative
+    # abundance<->TI correlation (leg 2). Need a real georeferenced single-band TI product (PDS
+    # TES TI maps, or THEMIS quantitative TI / Fergason et al. 2006). See DECISIONS 2026-06-18.
+    # tes_ti:
+    #   url: "https://mars.asu.edu/data/tes_putzigti/nighttime2005/nmap2003.tif"
+    #   lon_domain: "180"
+    #   resampling: bilinear
+    #   native_res_m: 2965
 
 ctx_read: vsicurl_window
 hirise_decimation_mpp: 5

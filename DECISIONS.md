@@ -3956,3 +3956,26 @@ window is read, and the product is warped onto a grid in the **CTX clon_0 CRS** 
 co-registers with `reports/map_region/` outputs). TLS to these hosts reuses the project-wide
 `HIRISE2CTX_INSECURE_TLS=1` opt-in (GDAL `GDAL_HTTP_UNSAFESSL`) for the incomplete-chain case;
 otherwise GDAL is pointed at certifi's CA bundle.
+
+## 2026-06-18 — Regional map expanded to 26 tiles; rectangular-artifact + thermal-source findings
+
+- **Map expansion:** 7-tile block → 26-tile circum-Chryse map (box lon[-10,10] lat[32,46] snapped
+  to whole tiles + 2 NE tabs). All 26 GeoTIFFs back from Sherlock (job array, ~clean folder).
+  Notebook 24 reframed 7→26; regional MOLA re-fetched at bounds [-12,32,20,48].
+- **"Rectangular predictions" investigated (Brian's QA):** NOT a pipeline bug. (1) 4096px
+  read-window seams don't align with the structure → assembly clean. (2) Per-tile mean abundance
+  follows a smooth, geologically-correct N→S gradient (N44≈0.011 → N32≈0.0005), not arbitrary
+  per-tile radiometric jumps. The rectangular *impression* = (a) the cosmetic white tile-outline
+  gridlines drawn on the mosaic (now faded to alpha 0.12), (b) the SE nodata corner, (c) a real but
+  SECONDARY CTX-radiometry effect: abundance has a weak non-monotonic dependence on CTX brightness
+  (peaks mid-DN, r≈0.07) so pushbroom orbital-track/frame seams modulate predictions slightly. This
+  is the 5 m/px CTX-mosaic floor, not the model; the independent thermal legs are the test of it.
+- **TES `nmap2003.tif` is UNUSABLE for leg 2:** 3-band uint8 **RGB rendered map**, no CRS (identity
+  transform), values 0–255 — a colorized display image, not physical thermal inertia. Disabled in
+  config. Quantitative leg 2 needs a real georeferenced single-band TI raster (candidates: PDS
+  Geosciences TES TI maps; THEMIS quantitative TI / Fergason et al. 2006).
+- **THEMIS night-IR seam:** our region (lon −12→+20°E) straddles the prime meridian, and the THEMIS
+  60N60S v14 mosaic is stored 0–360°E → a windowed read crosses the 360/0 seam, which
+  `validation_retrieve` currently refuses. Leg 1 (the visual co-location panel) needs seam-crossing
+  handling (two reads either side of 0°, reprojected into the common clon_0 grid). MOLA/TES are
+  −180/180 so unaffected.
