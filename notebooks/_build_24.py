@@ -216,16 +216,16 @@ cells.append(code(
     panels = [("abundance  (fractional_area)", arr,      "turbo",    0.0, vmax),
               ("P(boulder-rich)  calibrated", prob_arr,  "magma",    0.0, 1.0),
               ("binary rich / poor  (P>=0.5)", binary,   "RdYlBu_r", 0.0, 1.0)]
-    fig, axes = plt.subplots(1, 3, figsize=(16.5, 5.4))
+    fig, axes = plt.subplots(3, 1, figsize=(9.5, 13.5))   # vertical stack (region is wide)
     for ax, (title, data, cmap, vmin, vmx) in zip(axes, panels):
         im = ax.imshow(np.ma.masked_invalid(data), cmap=cmap, vmin=vmin, vmax=vmx, extent=ext,
                        origin="upper", aspect="equal", interpolation="nearest")
         ax.scatter(rich.CenterLon_180, rich.CenterLat, s=16, c="cyan", edgecolor="k",
                    lw=0.3, zorder=4)
         ax.set_xlim(ext[0], ext[1]); ax.set_ylim(ext[2], ext[3])
-        ax.set_title(title, fontsize=10); ax.set_xlabel("lon (deg E)")
-        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.03)
-    axes[0].set_ylabel("lat (deg N)")
+        ax.set_title(title, fontsize=10); ax.set_ylabel("lat (deg N)")
+        fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02)
+    axes[-1].set_xlabel("lon (deg E)")
     fig.suptitle("Regional map products — circum-Chryse  (boulder-rich cohort sites in cyan)",
                  fontsize=12)
     fig.tight_layout()
