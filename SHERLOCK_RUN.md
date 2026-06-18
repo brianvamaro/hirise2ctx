@@ -361,6 +361,12 @@ tile-group and submit them in parallel (each writes independent per-tile GeoTIFF
   is correct — don't switch.)
 - **`No module named 'truststore'` / `ModuleNotFoundError`** — `truststore`+`certifi` are now
   declared deps, installed by `pip install -e .`. If on an old checkout: `pip install truststore certifi`.
+- **`No module named 'yaml'` / `'attr'` / `'certifi'` (or rasterio fails importing `attr`)** —
+  venv drift: the binary geo stack installed but the dependency closure (`pip install -e .`,
+  setup step 59) never finished, so pure-Python deps are missing. Fix: **`pip install -e .`** —
+  it pulls the missing wheels (`pyyaml`, `certifi`, `attrs`, rasterio's `affine`/`click`/`cligj`/
+  `snuggs`…) without rebuilding the already-installed binary geo packages. Verify with
+  `python -c "import yaml, certifi, attr, rasterio, numpy, torch; print('env OK')"`.
 - **scipy/scikit-learn/rasterio building from source / `OpenBLAS not found` / `gdal-config`** —
   Sherlock's old glibc can't load the newest manylinux_2_28 wheels and has no system
   GDAL/OpenBLAS. The setup script's `--only-binary` picks older compatible wheels; if you see
