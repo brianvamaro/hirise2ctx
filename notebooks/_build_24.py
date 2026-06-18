@@ -107,6 +107,22 @@ print("cohort total:", len(cohort))
 print("cohort within the 26-tile map:", len(in_block))
 print(in_block.BoulderLabel.value_counts().to_string())
 PAPER_IMG = "ESP_017355_2260"  # Rodriguez+2016 Fig 2C; in our cohort
+
+# Real HiRISE footprint boxes (the cached Stage-2 CTX-window bounds = footprint bbox + 1km buffer,
+# in the pipeline target_crs). That CRS and the Murray map CRS are both equirectangular on
+# R=3396190, so the same metres->degrees factor (dpm below) places them on the map. Used to CHECK
+# that abundance structure does NOT coincide with HiRISE coverage (inference is pure CTX -- HiRISE
+# never enters it -- so any coincidence would be a red flag).
+import json as _json
+_RDEG = 180.0 / (np.pi * 3396190.0)   # clon_0 / IAU-eqc metres -> degrees
+footprints = {}   # ObsId -> (lon0, lat0, lon1, lat1) in degrees
+for _, r in cohort.iterrows():
+    j = REPO / "cache_v2" / "ctx_windows" / f"{r.ObsId}.json"
+    if j.exists():
+        b = _json.loads(j.read_text()).get("actual_bounds_target_crs")
+        if b:
+            footprints[r.ObsId] = (b[0] * _RDEG, b[1] * _RDEG, b[2] * _RDEG, b[3] * _RDEG)
+print("HiRISE footprint boxes loaded:", len(footprints))
 print("paper Fig-2C image in cohort:", PAPER_IMG in set(cohort.ObsId))""",
     "cohort"))
 
@@ -331,19 +347,29 @@ else:
     for t, (lo, la) in boxes.items():                      # tile outlines
         ax.add_patch(Rectangle((lo, la), TILE_DEG, TILE_DEG, fill=False,
                                edgecolor="white", lw=0.3, alpha=0.12))  # faint: the grid is not data
-    for lab, c in COL.items():                             # cohort footprints
+    for lab, c in COL.items():                             # cohort centres (label colour)
         sub = in_block[in_block.BoulderLabel == lab]
         if len(sub):
-            ax.scatter(sub.CenterLon_180, sub.CenterLat, s=34, c=c, edgecolor="k", lw=0.4,
+            ax.scatter(sub.CenterLon_180, sub.CenterLat, s=30, c=c, edgecolor="k", lw=0.4,
                        label=f"{lab} (n={len(sub)})", zorder=4)
+    # HiRISE footprint outlines (real Stage-2 window bounds) — QA: abundance structure must NOT
+    # trace these boxes (the map is off-HiRISE CTX inference; HiRISE never enters it).
+    fp_drawn = 0
+    for oid, (flo0, fla0, flo1, fla1) in footprints.items():
+        if flo1 < ext[0] or flo0 > ext[1] or fla1 < ext[2] or fla0 > ext[3]:
+            continue
+        ax.add_patch(Rectangle((flo0, fla0), flo1 - flo0, fla1 - fla0, fill=False,
+                               edgecolor="lime", lw=0.9, zorder=6,
+                               label="HiRISE footprint" if fp_drawn == 0 else None))
+        fp_drawn += 1
     pi = cohort[cohort.ObsId == PAPER_IMG]
     if len(pi):
         ax.scatter(pi.CenterLon_180, pi.CenterLat, s=210, marker="*", facecolor="gold",
-                   edgecolor="k", lw=0.7, zorder=5, label=f"{PAPER_IMG} (Rodriguez+2016)")
+                   edgecolor="k", lw=0.7, zorder=7, label=f"{PAPER_IMG} (Rodriguez+2016)")
     ax.set_xlim(ext[0], ext[1]); ax.set_ylim(ext[2], ext[3])
     ax.set_xlabel("longitude (deg E)"); ax.set_ylabel("latitude (deg N)")
     ax.set_title("Regional rock-abundance mosaic — calibrated fractional_area @160 m/px\\n"
-                 "circum-Chryse highland–lowland boundary (26 CTX tiles)")
+                 "circum-Chryse boundary (26 CTX tiles) — green = HiRISE footprints (QA overlay)")
     fig.colorbar(im, ax=ax, fraction=0.030, pad=0.02, label=f"fractional_area (vmax=p99={vmax:.3f})")
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.10), ncol=4, fontsize=8, frameon=False)
     fig.tight_layout()
