@@ -379,6 +379,13 @@ tile-group and submit them in parallel (each writes independent per-tile GeoTIFF
   it pulls the missing wheels (`pyyaml`, `certifi`, `attrs`, rasterio's `affine`/`click`/`cligj`/
   `snuggs`…) without rebuilding the already-installed binary geo packages. Verify with
   `python -c "import yaml, certifi, attr, rasterio, numpy, torch; print('env OK')"`.
+- **`No module named 'typing_extensions'` / `'jinja2'` at `import torch`** — torch's own
+  pure-Python deps are missing (the same drift; `pip install -e .` doesn't cover them since torch
+  is installed separately). Run **`pip check`** to list every gap at once, then
+  `pip install typing_extensions jinja2` (and any other torch line `pip check` reports —
+  `sympy networkx filelock fsspec`). The many `jupyter*`/`pytest` lines from `pip check` are
+  **harmless for inference** — notebooks/tests run on the laptop, not Sherlock. Confirm with
+  `python -c "import torch; print(torch.__version__)"`.
 - **scipy/scikit-learn/rasterio building from source / `OpenBLAS not found` / `gdal-config`** —
   Sherlock's old glibc can't load the newest manylinux_2_28 wheels and has no system
   GDAL/OpenBLAS. The setup script's `--only-binary` picks older compatible wheels; if you see
