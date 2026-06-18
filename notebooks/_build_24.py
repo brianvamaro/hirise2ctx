@@ -198,6 +198,42 @@ else:
     "fig_ab"))
 
 cells.append(md(
+    """### 2b. All three products side by side
+
+The same stitch applied to the **calibrated P(boulder-rich)** tiles, plus the **binary
+rich/poor** map (threshold P ≥ 0.5). Abundance (continuous regression target) and
+probability (the classifier) carry the same spatial structure; the binary panel is what a
+"where are the boulder fields" map looks like. Boulder-rich cohort sites in cyan.
+""", "products_md"))
+
+cells.append(code(
+    """if ab_tifs:
+    prob_arr, _, _ = mosaic_geotiffs(sorted(MAP_DIR.glob("*_prob.tif")),
+                                     MAP_DIR / "regional_prob_mosaic.tif")
+    binary = np.where(np.isfinite(prob_arr), (prob_arr >= 0.5).astype(float), np.nan)
+    rich = in_block[in_block.BoulderLabel == "Boulder rich"]
+
+    panels = [("abundance  (fractional_area)", arr,      "turbo",    0.0, vmax),
+              ("P(boulder-rich)  calibrated", prob_arr,  "magma",    0.0, 1.0),
+              ("binary rich / poor  (P>=0.5)", binary,   "RdYlBu_r", 0.0, 1.0)]
+    fig, axes = plt.subplots(1, 3, figsize=(16.5, 5.4))
+    for ax, (title, data, cmap, vmin, vmx) in zip(axes, panels):
+        im = ax.imshow(np.ma.masked_invalid(data), cmap=cmap, vmin=vmin, vmax=vmx, extent=ext,
+                       origin="upper", aspect="equal", interpolation="nearest")
+        ax.scatter(rich.CenterLon_180, rich.CenterLat, s=16, c="cyan", edgecolor="k",
+                   lw=0.3, zorder=4)
+        ax.set_xlim(ext[0], ext[1]); ax.set_ylim(ext[2], ext[3])
+        ax.set_title(title, fontsize=10); ax.set_xlabel("lon (deg E)")
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.03)
+    axes[0].set_ylabel("lat (deg N)")
+    fig.suptitle("Regional map products — circum-Chryse  (boulder-rich cohort sites in cyan)",
+                 fontsize=12)
+    fig.tight_layout()
+    out = FIG / "24_region_products.png"; fig.savefig(out, dpi=145, bbox_inches="tight")
+    print("wrote", out.relative_to(REPO)); plt.show()""",
+    "fig_products"))
+
+cells.append(md(
     """## 3. Validation legs *(to come — PLAN §2)*
 
 1. **Spatial co-location** — abundance band ↔ THEMIS thermal-bright ↔ mapped contact.
