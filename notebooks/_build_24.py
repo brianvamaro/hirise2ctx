@@ -142,38 +142,59 @@ print("wrote", out.relative_to(REPO)); plt.show()""",
     "fig_extent"))
 
 cells.append(md(
-    """## 2. Predicted abundance mosaic *(fills in after the Sherlock run)*
+    """## 2. Stitched regional abundance mosaic
 
-`scripts/map_region.py --all` writes, per Murray tile, `<tile>_prob.tif` (calibrated
-P(boulder-rich)), `<tile>_abundance.tif` (qmatch fractional_area), and
-`<tile>_prob_raw.tif` (QA) to `reports/map_region/`. The cell below renders them if
-present; otherwise it prints the command to run on Sherlock.
+`scripts/map_region.py --all` writes per Murray tile `<tile>_{prob,abundance,prob_raw}.tif`
+(160 m/px) to `reports/map_region/`. All 7 share the Murray `clon_0` equirectangular CRS, so
+`src.mapping.mosaic_geotiffs` merges them into **one** georeferenced raster — no reprojection;
+the block is an L-shape so the two missing corners are nodata. Below is the calibrated
+`fractional_area` abundance with the cohort footprints overlaid: high-abundance terrain should
+track the boulder-rich cohort sites along the highland–lowland boundary (the qualitative form
+of validation leg 4, ahead of the quantitative legs in §3).
 """, "ab_md"))
 
 cells.append(code(
-    """import rasterio
+    """import math
+from src.mapping import mosaic_geotiffs
 MAP_DIR = REPO / "reports" / "map_region"
 ab_tifs = sorted(MAP_DIR.glob("*_abundance.tif")) if MAP_DIR.exists() else []
 if not ab_tifs:
     print("No abundance GeoTIFFs yet under reports/map_region/.")
-    print("Run on Sherlock (gpu node):  python scripts/map_region.py --all")
-    print("then scp reports/map_region/*.tif back here and re-run this cell.")
+    print("Run on Sherlock:  python scripts/map_region.py --all  -> download *.tif into reports/map_region/.")
 else:
-    n = len(ab_tifs)
-    fig, axes = plt.subplots(1, n, figsize=(4.2 * n, 4.4), squeeze=False)
-    for ax, tif in zip(axes[0], ab_tifs):
-        with rasterio.open(tif) as src:
-            a = src.read(1)
-        a = np.ma.masked_invalid(a)
-        vmax = float(np.nanpercentile(a.filled(np.nan), 99)) or 1e-3
-        im = ax.imshow(a, cmap="turbo", vmin=0, vmax=vmax)
-        ax.set_title(tif.stem.replace("_abundance", ""), fontsize=9)
-        ax.set_xticks([]); ax.set_yticks([])
-        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    fig.suptitle("Calibrated rock abundance (fractional_area) — regional block", fontsize=11)
+    arr, transform, _ = mosaic_geotiffs(ab_tifs, MAP_DIR / "regional_abundance_mosaic.tif")
+    R = 3396190.0; dpm = 180.0 / (math.pi * R)   # clon_0 equirectangular metres -> degrees
+    h, w = arr.shape
+    left, top = transform.c, transform.f
+    right, bottom = left + w * transform.a, top + h * transform.e
+    ext = [left * dpm, right * dpm, bottom * dpm, top * dpm]   # lon0, lon1, lat0, lat1
+    vmax = float(np.nanpercentile(arr, 99)) or 1e-3
+
+    fig, ax = plt.subplots(figsize=(11, 6.6))
+    im = ax.imshow(np.ma.masked_invalid(arr), cmap="turbo", vmin=0, vmax=vmax, extent=ext,
+                   origin="upper", interpolation="nearest", aspect="equal")
+    for t, (lo, la) in boxes.items():                      # tile outlines
+        ax.add_patch(Rectangle((lo, la), TILE_DEG, TILE_DEG, fill=False,
+                               edgecolor="white", lw=0.6, alpha=0.45))
+    for lab, c in COL.items():                             # cohort footprints
+        sub = in_block[in_block.BoulderLabel == lab]
+        if len(sub):
+            ax.scatter(sub.CenterLon_180, sub.CenterLat, s=34, c=c, edgecolor="k", lw=0.4,
+                       label=f"{lab} (n={len(sub)})", zorder=4)
+    pi = cohort[cohort.ObsId == PAPER_IMG]
+    if len(pi):
+        ax.scatter(pi.CenterLon_180, pi.CenterLat, s=210, marker="*", facecolor="gold",
+                   edgecolor="k", lw=0.7, zorder=5, label=f"{PAPER_IMG} (Rodriguez+2016)")
+    ax.set_xlim(ext[0], ext[1]); ax.set_ylim(ext[2], ext[3])
+    ax.set_xlabel("longitude (deg E)"); ax.set_ylabel("latitude (deg N)")
+    ax.set_title("Regional rock-abundance mosaic — calibrated fractional_area @160 m/px\\n"
+                 "circum-Chryse highland–lowland boundary (7 CTX tiles)")
+    fig.colorbar(im, ax=ax, fraction=0.030, pad=0.02, label=f"fractional_area (vmax=p99={vmax:.3f})")
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.10), ncol=4, fontsize=8, frameon=False)
     fig.tight_layout()
-    out = FIG / "24_region_abundance.png"; fig.savefig(out, dpi=140, bbox_inches="tight")
-    print("wrote", out.relative_to(REPO)); plt.show()""",
+    out = FIG / "24_region_mosaic.png"; fig.savefig(out, dpi=150, bbox_inches="tight")
+    print("wrote", out.relative_to(REPO), "+", (MAP_DIR / "regional_abundance_mosaic.tif").relative_to(REPO))
+    plt.show()""",
     "fig_ab"))
 
 cells.append(md(

@@ -153,6 +153,31 @@ def coarsened_transform(tile_transform: tuple[float, ...], ti_min: int, tj_min: 
     return Affine(a * tile_px, b, x0, d, e * tile_px, y0)
 
 
+def mosaic_geotiffs(paths, out_path: str | Path | None = None):
+    """Merge same-CRS single-band GeoTIFFs into one raster (Stage: regional mosaic).
+
+    The per-tile `map_region` outputs all share the Murray global equirectangular CRS
+    (`clon_0`), differing only in extent, so a straight merge stitches them — no
+    reprojection. Returns `(array2d, transform, crs_wkt)`; NaN fills any uncovered gap
+    (the block is an L-shape, so two corners are nodata). Writes `out_path` if given.
+    """
+    import rasterio
+    from rasterio.merge import merge
+
+    paths = [str(p) for p in paths]
+    srcs = [rasterio.open(p) for p in paths]
+    try:
+        arr, transform = merge(srcs, nodata=np.nan)
+        crs_wkt = srcs[0].crs.to_wkt() if srcs[0].crs else ""
+    finally:
+        for s in srcs:
+            s.close()
+    arr = arr[0]  # single band
+    if out_path is not None:
+        write_geotiff(out_path, arr, transform, crs_wkt)
+    return arr, transform, crs_wkt
+
+
 def write_geotiff(path: str | Path, raster: np.ndarray, transform, crs_wkt: str,
                   *, nodata: float = np.nan) -> Path:
     """Write a single-band float32 GeoTIFF (the abundance/probability raster)."""
