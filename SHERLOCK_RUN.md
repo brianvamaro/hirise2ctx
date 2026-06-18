@@ -208,6 +208,7 @@ using config for the URL template + cache dir exactly as `scripts/run_stage2.py`
 incomplete cert chain — same reason as the checkpoint):
 ```bash
 export HIRISE2CTX_INSECURE_TLS=1     # if not already set in this shell
+ml python/3.12.1                     # provides libpython3.12.so.1.0 the venv links against
 source /home/groups/mlapotre/bamaro/envs/hirise2ctx/bin/activate
 python - <<'PY'
 from src.config import load_config
@@ -276,6 +277,7 @@ sequential-GPU-h / concurrent-tasks (~13–19 GPU-h → ~2–3 h on 6 GPUs).
 First **re-fetch the 19 new CTX tiles** (same snippet as step 2, expansion list):
 ```bash
 export HIRISE2CTX_INSECURE_TLS=1
+ml python/3.12.1                     # provides libpython3.12.so.1.0 the venv links against
 source /home/groups/mlapotre/bamaro/envs/hirise2ctx/bin/activate
 python - <<'PY'
 from src.config import load_config
@@ -350,6 +352,10 @@ tile-group and submit them in parallel (each writes independent per-tile GeoTIFF
   Fix: `export HIRISE2CTX_INSECURE_TLS=1` before steps 1–2 (skips verification for these
   public, fixed-URL downloads only; off by default). Not a proxy — the issuer is a real CA
   (InCommon).
+- **`python: error while loading shared libraries: libpython3.12.so.1.0`** — you activated the
+  venv without loading the python module, so the interpreter's shared lib isn't on the library
+  path. Fix: `ml python/3.12.1` **before** `source .../activate` (every fresh shell; the sbatch
+  scripts already do this).
 - **`No module named venv`** during setup — the python module exposed `python3` but not bare
   `python`; the setup script now builds the venv with the verified `python3`. (Python 3.12.1
   is correct — don't switch.)
