@@ -4,13 +4,13 @@ Documentation + analysis home for [PLAN_RegionalMap.md](../PLAN_RegionalMap.md):
 regional rock-abundance map over the circum-Chryse highland-lowland boundary and its
 validation against Rodriguez et al. 2016 + THEMIS/TES thermal inertia.
 
-This first cut answers Brian's question "show me the area you are selecting": it draws
-the 7-Murray-tile inference block (what `scripts/map_region.py --all` covers), the cohort
-HiRISE footprints colour-coded rich/poor, and the paper's Fig-2C image. The downstream
-sections (the predicted-abundance mosaic, the 5 validation legs) fill in once the
-Sherlock run returns the GeoTIFFs to reports/map_region/.
+§1 draws the 26-Murray-tile regional map (what `scripts/map_region.py --all` covers) with the
+cohort HiRISE footprints colour-coded rich/poor; §1a records how the box was chosen (the first
+run mapped 7 eastern tiles, then it was widened to 26); §1b is the MOLA shaded-relief context;
+§2 stitches the returned GeoTIFFs into the abundance/probability/binary mosaics; §3 is the 5
+validation legs (filled as thermal data lands).
 
-Figures: reports/figures/24_region_extent.png (+ 24_region_abundance.png once run).
+Figures: reports/figures/24_region_{extent,coverage_planning,context_mola,mosaic,products}.png.
 To regenerate: `python notebooks/_build_24.py` then nbconvert --execute --inplace.
 """
 from __future__ import annotations
@@ -42,18 +42,19 @@ against the boulder-rich Late-Hesperian tsunami deposits of
 [Rodriguez et al. 2016, *Sci. Rep.* 6:25106](https://doi.org/10.1038/srep25106) and
 independent **THEMIS / TES thermal inertia**.
 
-**This notebook, §1:** *what region are we mapping?* It draws the inference block that
-`scripts/map_region.py --all` runs on Sherlock — the **7 contiguous Murray Lab CTX
-tiles** (`E0_N40, E4_N40, E4_N44, E8_N40, E8_N44, E12_N44, E16_N44`) over the eastern
-circum-Chryse / NW Arabia Terra highland-lowland boundary — with the cohort HiRISE
-footprints that train/anchor the model overlaid. The key realisation (PLAN §0): ~21
-boulder-rich cohort images sit **on this boundary**, and the paper's Fig-2C image
-**ESP_017355_2260** *is* a cohort image, so the region is in-distribution where we lead
-and OOD in the distal plains where we stress-test.
+**This notebook, §1:** *what region are we mapping?* It draws the **26-tile circum-Chryse
+regional map** that `scripts/map_region.py --all` runs on Sherlock (the box
+`lon[-10,10] lat[32,46]` snapped to whole 4° Murray tiles, plus the 2 original NE tiles
+`E12_N44`, `E16_N44`) over the circum-Chryse / NW Arabia Terra highland-lowland boundary —
+with the cohort HiRISE footprints that train/anchor the model overlaid. The key realisation
+(PLAN §0): boulder-rich cohort images sit **on this boundary**, and the paper's Fig-2C image
+**ESP_017355_2260** *is* a cohort image, so the region is in-distribution where we lead and
+OOD in the distal plains / southern highlands where we stress-test. §1a records how the box
+was chosen (the first run mapped only the 7 eastern tiles; the map was then widened).
 
-Later sections (filled once the Sherlock run returns GeoTIFFs to `reports/map_region/`):
-the calibrated abundance mosaic, abundance↔thermal-inertia correlation, the
-shoreline-distance profile, the cohort truth-anchor, and the OOD-honesty panel.
+Later sections: the calibrated abundance mosaic (§2), then the 5 validation legs (§3) —
+abundance↔thermal-inertia correlation, the shoreline-distance profile, the cohort
+truth-anchor, and the OOD-honesty panel.
 """, "intro"))
 
 cells.append(code(
@@ -67,8 +68,14 @@ REPO = next(p for p in [Path.cwd(), *Path.cwd().parents] if (p / "src").exists()
 sys.path.insert(0, str(REPO))
 FIG = REPO / "reports" / "figures"; FIG.mkdir(parents=True, exist_ok=True)
 
-# The 7-tile inference block (must match scripts/map_region.BLOCK_TILES).
-BLOCK_TILES = ["E0_N40", "E4_N40", "E4_N44", "E8_N40", "E8_N44", "E12_N44", "E16_N44"]
+# The 26-tile circum-Chryse regional map (must match scripts/map_region.BLOCK_TILES):
+# box lon[-10,10] lat[32,46] snapped to whole tiles (24) + the 2 original NE tiles.
+BLOCK_TILES = [
+    "E-12_N32", "E-12_N36", "E-12_N40", "E-12_N44", "E-8_N32", "E-8_N36", "E-8_N40", "E-8_N44",
+    "E-4_N32", "E-4_N36", "E-4_N40", "E-4_N44", "E0_N32", "E0_N36", "E0_N40", "E0_N44",
+    "E4_N32", "E4_N36", "E4_N40", "E4_N44", "E8_N32", "E8_N36", "E8_N40", "E8_N44",
+    "E12_N44", "E16_N44",
+]
 TILE_DEG = 4  # Murray Lab tiles are 4 deg x 4 deg
 
 def tile_to_box(name):
@@ -81,9 +88,10 @@ def tile_to_box(name):
 boxes = {t: tile_to_box(t) for t in BLOCK_TILES}
 lons = [lo for lo, _ in boxes.values()]; lats = [la for _, la in boxes.values()]
 block_extent = (min(lons), max(lons) + TILE_DEG, min(lats), max(lats) + TILE_DEG)
-print("block tiles:", BLOCK_TILES)
-print("block extent  lon[%g, %g]  lat[%g, %g] deg" % block_extent)
-print("block area ~ %d tiles x (4 deg)^2; full-res S=32 ~ 15.4M tiles" % len(BLOCK_TILES))""",
+print("map tiles (%d):" % len(BLOCK_TILES), " ".join(BLOCK_TILES))
+print("map extent  lon[%g, %g]  lat[%g, %g] deg" % block_extent)
+print("map area ~ %d tiles x (4 deg)^2; full-res S=32 ~ %.0fM tiles"
+      % (len(BLOCK_TILES), len(BLOCK_TILES) * 2.2))""",
     "setup"))
 
 cells.append(code(
@@ -96,28 +104,28 @@ cohort["color"] = cohort.BoulderLabel.map(COL).fillna("0.55")
 lo0, lo1, la0, la1 = block_extent
 in_block = cohort[(cohort.CenterLon_180.between(lo0, lo1)) & (cohort.CenterLat.between(la0, la1))]
 print("cohort total:", len(cohort))
-print("cohort within the 7-tile block:", len(in_block))
+print("cohort within the 26-tile map:", len(in_block))
 print(in_block.BoulderLabel.value_counts().to_string())
 PAPER_IMG = "ESP_017355_2260"  # Rodriguez+2016 Fig 2C; in our cohort
 print("paper Fig-2C image in cohort:", PAPER_IMG in set(cohort.ObsId))""",
     "cohort"))
 
 cells.append(code(
-    """fig, ax = plt.subplots(figsize=(11, 6.2))
+    """fig, ax = plt.subplots(figsize=(12, 6.4))
 
-# 1) the 7 Murray tiles = the inference block.
+# 1) the 26 Murray tiles = the regional map.
 for t, (lo, la) in boxes.items():
     ax.add_patch(Rectangle((lo, la), TILE_DEG, TILE_DEG, facecolor="#fff2cc",
                            edgecolor="#b8860b", lw=1.4, zorder=1))
     ax.text(lo + TILE_DEG / 2, la + TILE_DEG / 2, t, ha="center", va="center",
             fontsize=8, color="#6b5300", zorder=2)
 
-# 2) cohort footprints WITHIN the block, coloured by label (count only what's drawn).
+# 2) cohort footprints WITHIN the map, coloured by label (count only what's drawn).
 for lab, c in COL.items():
     sub = in_block[in_block.BoulderLabel == lab]
     if len(sub):
         ax.scatter(sub.CenterLon_180, sub.CenterLat, s=46, c=c, edgecolor="k",
-                   lw=0.4, label=f"{lab} (n={len(sub)} in block)", zorder=4)
+                   lw=0.4, label=f"{lab} (n={len(sub)} in map)", zorder=4)
 
 # 3) the paper's Fig-2C image — the parity / truth-anchor site.
 pi = cohort[cohort.ObsId == PAPER_IMG]
@@ -128,13 +136,13 @@ if len(pi):
 
 ax.set_xlim(lo0 - 2, lo1 + 2); ax.set_ylim(la0 - 2, la1 + 2)
 ax.set_xlabel("longitude (deg E)"); ax.set_ylabel("latitude (deg N)")
-ax.set_title("Regional inference block — 7 Murray CTX tiles over the circum-Chryse\\n"
+ax.set_title("Regional map — 26 Murray CTX tiles over the circum-Chryse\\n"
              "highland-lowland boundary (lHl1 tsunami-deposit zone), with cohort footprints")
 ax.grid(True, ls=":", alpha=0.4); ax.set_aspect("equal")
 ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), fontsize=8, frameon=False)
-ax.annotate("distal Chryse plains\\n(OOD stress-test, lowland-ward)", (lo0 - 1.5, la0 - 1.2),
+ax.annotate("southern highlands\\n(specificity check)", (lo0 + 1.0, la0 + 0.5),
             fontsize=8, style="italic", color="0.4")
-ax.annotate(f"{len(in_block)} of {len(cohort)} cohort images fall in this block",
+ax.annotate(f"{len(in_block)} of {len(cohort)} cohort images fall in this map",
             (lo1 + 1.8, la0 - 1.2), ha="right", fontsize=8, color="0.3")
 fig.tight_layout()
 out = FIG / "24_region_extent.png"; fig.savefig(out, dpi=140, bbox_inches="tight")
@@ -145,13 +153,14 @@ cells.append(md(
     """## 1a. Coverage planning — the 26-tile expansion (PLAN §10 decision #5)
 
 The 39-image cohort spans **lon −54→+22°E, lat −64→+52°N** and its centers touch **20** distinct
-4° Murray tiles — but the first regional run mapped only **7** (the eastern block above). To give
-the validation real reach, the map is widened to a box **lon[-10,10] lat[32,46]**, snapped to whole
-tiles (→ lon[-12,12] lat[32,48] = 24 tiles) **plus** the 2 already-run NE tiles (`E12_N44`,
-`E16_N44`) = **26 tiles**. Orange = the **19 net-new** tiles to run; green = the **7 already run**.
-The box deliberately reaches south into the highlands (lat 32–40, above the −3795 m boundary) as a
-specificity check — terrain the model should read *poor*. Wide MOLA basemap is fetched once
-(`scripts/fetch_validation_data.py` download path → `cache_v2/validation/mola_dem_wide.tif`).
+4° Murray tiles — but the *first* regional run mapped only **7** (the eastern block). To give the
+validation real reach the map was widened to a box **lon[-10,10] lat[32,46]**, snapped to whole
+tiles (→ lon[-12,12] lat[32,48] = 24 tiles) **plus** the 2 original NE tiles (`E12_N44`,
+`E16_N44`) = **26 tiles**, all now mapped. This panel records the choice: orange = the **19
+expansion** tiles (added this round), green = the **7 original**. The box deliberately reaches
+south into the highlands (lat 32–40, above the −3795 m boundary) as a specificity check — terrain
+the model should read *poor*. Wide MOLA basemap is fetched once by `scripts/fetch_wide_basemap.py`
+(→ `cache_v2/validation/mola_dem_wide.tif`).
 """, "plan_md"))
 
 cells.append(code(
@@ -206,13 +215,13 @@ else:
                    zorder=7, label=f"{lab} (n={len(sub)})")
     from matplotlib.patches import Patch
     h2, _ = ax.get_legend_handles_labels()
-    ax.legend(handles=[Patch(fc="#ff7f0e", alpha=0.42, ec="#cc5500", label="new to run (19)"),
-                       Patch(fc="#2ca02c", alpha=0.42, ec="#1a6b1a", label="already run (7)")] + h2,
+    ax.legend(handles=[Patch(fc="#ff7f0e", alpha=0.42, ec="#cc5500", label="expansion (19)"),
+                       Patch(fc="#2ca02c", alpha=0.42, ec="#1a6b1a", label="original (7)")] + h2,
               loc="upper left", bbox_to_anchor=(1.01, 1.0), fontsize=8, frameon=False)
     ax.set_xlim(-22, 24); ax.set_ylim(26, 52)
     ax.set_xlabel("longitude (deg E)"); ax.set_ylabel("latitude (deg N)")
     ax.set_title("Coverage planning — 26-tile circum-Chryse map  (red dashed = box lon[-10,10] lat[32,46])\\n"
-                 "orange = 19 new tiles to run;  green = 7 already run;  number = cohort imgs in tile")
+                 "orange = 19 expansion tiles;  green = 7 original;  number = cohort imgs in tile")
     fig.tight_layout()
     out = FIG / "24_coverage_planning.png"; fig.savefig(out, dpi=145, bbox_inches="tight")
     print("wrote", out.relative_to(REPO)); plt.show()""",
@@ -228,8 +237,9 @@ mosaic. Shaded relief underlay + the paper's paleoshoreline elevations as contex
 (**−3795 m lHl1**, **−4100 m lHl2**; [Rodriguez et al. 2016](https://doi.org/10.1038/srep25106)).
 The −3795 m contour separates the bouldery highland–lowland run-up zone (PLAN §1 prediction 1)
 from the distal Chryse plains; the boulder-rich cohort sites should cluster on the highland
-side of it. *(Sanity: the block's median elevation came back −3794 m — the contour bisects the
-region, confirming we are imaging exactly the boundary the hypothesis is about.)*
+side of it. *(Sanity: the eastern boundary block's median elevation came back −3794 m — right on
+the lHl1 shoreline — and the contour threads through the whole map, with the southern tiles
+(lat 32–40) climbing above it into the highlands and the NW lowering toward the lowland plains.)*
 """, "ctx_md"))
 
 cells.append(code(
@@ -289,12 +299,13 @@ cells.append(md(
     """## 2. Stitched regional abundance mosaic
 
 `scripts/map_region.py --all` writes per Murray tile `<tile>_{prob,abundance,prob_raw}.tif`
-(160 m/px) to `reports/map_region/`. All 7 share the Murray `clon_0` equirectangular CRS, so
+(160 m/px) to `reports/map_region/`. All 26 share the Murray `clon_0` equirectangular CRS, so
 `src.mapping.mosaic_geotiffs` merges them into **one** georeferenced raster — no reprojection;
-the block is an L-shape so the two missing corners are nodata. Below is the calibrated
-`fractional_area` abundance with the cohort footprints overlaid: high-abundance terrain should
-track the boulder-rich cohort sites along the highland–lowland boundary (the qualitative form
-of validation leg 4, ahead of the quantitative legs in §3).
+the map is the lon[-12,12] box plus a NE tab (`E12/E16_N44`), so the SE corner of the bounding
+rectangle (lon 12–20, lat 32–44) is nodata. Below is the calibrated `fractional_area` abundance
+with the cohort footprints overlaid: high-abundance terrain should track the boulder-rich cohort
+sites along the highland–lowland boundary (the qualitative form of validation leg 4, ahead of
+the quantitative legs in §3).
 """, "ab_md"))
 
 cells.append(code(
@@ -332,7 +343,7 @@ else:
     ax.set_xlim(ext[0], ext[1]); ax.set_ylim(ext[2], ext[3])
     ax.set_xlabel("longitude (deg E)"); ax.set_ylabel("latitude (deg N)")
     ax.set_title("Regional rock-abundance mosaic — calibrated fractional_area @160 m/px\\n"
-                 "circum-Chryse highland–lowland boundary (7 CTX tiles)")
+                 "circum-Chryse highland–lowland boundary (26 CTX tiles)")
     fig.colorbar(im, ax=ax, fraction=0.030, pad=0.02, label=f"fractional_area (vmax=p99={vmax:.3f})")
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.10), ncol=4, fontsize=8, frameon=False)
     fig.tight_layout()
