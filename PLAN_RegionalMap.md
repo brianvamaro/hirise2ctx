@@ -219,6 +219,12 @@ Output: `docs/regional_validation.md` + `reports/figures/regional_*` (committed 
   residuals; use cohort co-reg shifts.
 - **Cohort is small (38)** — generalizing to a ~1000 km region is the leap; figures 4–5
   bound it honestly.
+- **OPEN: rectangular/striped artifacts in the abundance map** (Brian, 2026-06-18) — persist after
+  fading the cosmetic tile grid; ruled out pipeline window seams, per-tile radiometric offsets, and
+  HiRISE footprints. Leading hypothesis = **CTX mosaic stitching** (source-frame radiometric seams
+  the model keys on; abundance has a weak non-monotonic CTX-brightness dependence, r≈0.07).
+  Deferred for later investigation (overlay CTX frame boundaries; consider per-track destriping
+  before embedding). The independent thermal legs are the external test. See DECISIONS 2026-06-18.
 
 ---
 
