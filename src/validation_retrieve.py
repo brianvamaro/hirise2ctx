@@ -125,37 +125,47 @@ def open_source(url: str, *, read_mode: str = "vsicurl", cache_dir: str | Path |
 # =====================================================================================
 
 
-def _wrap_lon(bounds_lonlat, lon_domain: str):
-    """Shift a (W, S, E, N) lon/lat bbox into the source longitude convention.
+def seam_lon(crs_wkt: str) -> float:
+    """Longitude (deg, -180..180) of the source CRS's left/right edge = its 'seam'.
 
-    `lon_domain` is `"180"` (-180..180) or `"360"` (0..360). Our region (0–20°E) does not
-    cross the seam, so this is a simple per-edge add; we deliberately do not handle
-    antimeridian-crossing windows (none occur in the circum-Chryse block).
+    For an equirectangular raster the seam sits at `central_meridian + 180`. A region that
+    crosses it projects to a *wrapped* (wrong, antipodal) axis-aligned bbox, so we split the
+    read there. `central_meridian` 0 -> seam ±180 (the usual -180/180 mosaics: MOLA, TES);
+    `central_meridian` 180 -> seam 0 (THEMIS night-IR, which our circum-Chryse region crosses).
+    """
+    import pyproj
+
+    cm = pyproj.CRS.from_user_input(crs_wkt).to_dict().get("lon_0", 0.0)
+    return ((cm + 360.0) % 360.0) - 180.0
+
+
+def split_bounds_at_seam(bounds_lonlat, seam: float, eps: float = 1e-4):
+    """Split a (W, S, E, N) bbox into 1 or 2 sub-bboxes that don't straddle `seam`.
+
+    If `W < seam < E` the region wraps the raster edge -> return the two halves (nudged
+    `eps` off the seam to avoid the ±180 projection ambiguity at the exact edge). Each half
+    then projects to a correct contiguous bbox; the caller reads + reprojects both and merges.
     """
     w, s, e, n = (float(v) for v in bounds_lonlat)
-    if lon_domain == "360":
-        w = w % 360.0
-        e = e % 360.0
-        if e < w:  # would only happen for a seam-crossing window
-            raise ValueError(f"lon window {bounds_lonlat} crosses the 0/360 seam; unsupported")
-    elif lon_domain != "180":
-        raise ValueError(f"lon_domain must be '180' or '360', got {lon_domain!r}")
-    return w, s, e, n
+    if w < seam < e:
+        return [(w, s, seam - eps, n), (seam + eps, s, e, n)]
+    return [(w, s, e, n)]
 
 
-def bounds_lonlat_to_crs(bounds_lonlat, crs_wkt: str, *, lon_domain: str = "180"):
+def bounds_lonlat_to_crs(bounds_lonlat, crs_wkt: str):
     """Project a geographic (W, S, E, N) bbox into `crs_wkt`'s coordinates.
 
     Transforms the four corners (geodetic deg, planetocentric) into the target CRS via
     pyproj and returns the enclosing axis-aligned bbox. Works whether the target CRS is a
-    geographic CRS tagged in degrees or a projected equirectangular CRS in metres — the
-    caller never has to know which.
+    geographic CRS tagged in degrees or a projected equirectangular CRS in metres. The caller
+    must pre-split any seam-crossing region (`split_bounds_at_seam`) — a wrapped bbox here
+    would otherwise enclose the antipode.
     """
     import pyproj
 
     crs = pyproj.CRS.from_user_input(crs_wkt)
     geo = crs.geodetic_crs
-    w, s, e, n = _wrap_lon(bounds_lonlat, lon_domain)
+    w, s, e, n = (float(v) for v in bounds_lonlat)
     tf = pyproj.Transformer.from_crs(geo, crs, always_xy=True)
     xs, ys = tf.transform([w, e, w, e], [s, s, n, n])
     return (min(xs), min(ys), max(xs), max(ys))
@@ -177,18 +187,20 @@ def build_target_grid(bounds_lonlat, dst_crs_wkt: str, res_m: float):
     return transform, width, height
 
 
-def windowed_read(src, bounds_lonlat, *, lon_domain: str = "180", buffer_deg: float = 0.5):
+def windowed_read(src, bounds_lonlat, *, buffer_deg: float = 0.5):
     """Read only the window of `src` covering `bounds_lonlat` (+ `buffer_deg`).
 
     Returns `(array2d, window_transform)`. The buffer guards against edge resampling and
     the ~200 m CTX/THEMIS co-registration slack at the boundary. `src` is an open rasterio
-    dataset; its own CRS is used to place the window (units read from the file).
+    dataset; its own CRS is used to place the window (units read from the file). The region
+    must not straddle the source seam (`split_bounds_at_seam` first) — `fetch_region_raster`
+    handles that.
     """
     from rasterio.windows import from_bounds
 
     w, s, e, n = bounds_lonlat
     buffered = (w - buffer_deg, s - buffer_deg, e + buffer_deg, n + buffer_deg)
-    left, bottom, right, top = bounds_lonlat_to_crs(buffered, src.crs.to_wkt(), lon_domain=lon_domain)
+    left, bottom, right, top = bounds_lonlat_to_crs(buffered, src.crs.to_wkt())
     win = from_bounds(left, bottom, right, top, transform=src.transform)
     # clamp to the raster and snap to whole pixels
     col_off = max(0, int(math.floor(win.col_off)))
@@ -287,7 +299,6 @@ def fetch_region_raster(
     dst_transform=None,
     dst_shape=None,
     dst_res_m: float | None = None,
-    src_lon_domain: str = "180",
     read_mode: str = "vsicurl",
     resampling: str = "bilinear",
     src_nodata=None,
@@ -318,15 +329,21 @@ def fetch_region_raster(
     with open_source(source_url, read_mode=read_mode, cache_dir=cache_dir) as src:
         src_crs_wkt = src.crs.to_wkt()
         src_nd = src.nodata if src_nodata is None else src_nodata
-        data, win_transform = windowed_read(
-            src, bounds_lonlat, lon_domain=src_lon_domain, buffer_deg=buffer_deg
-        )
+        # Pre-buffer, then split at the source seam so a region crossing the raster edge
+        # (e.g. circum-Chryse over THEMIS's central_meridian=180 mosaic) reads as two halves.
+        bw, bs, be, bn = bounds_lonlat
+        buffered = (bw - buffer_deg, bs - buffer_deg, be + buffer_deg, bn + buffer_deg)
+        parts = split_bounds_at_seam(buffered, seam_lon(src_crs_wkt))
+        out_arr = None
+        for part in parts:
+            data, win_transform = windowed_read(src, part, buffer_deg=0.0)
+            a = reproject_to_grid(
+                data, win_transform, src_crs_wkt,
+                dst_crs_wkt=dst_crs_wkt, dst_transform=dst_transform, dst_shape=dst_shape,
+                resampling=resampling, src_nodata=src_nd,
+            )
+            out_arr = a if out_arr is None else np.where(np.isfinite(out_arr), out_arr, a)
 
-    out_arr = reproject_to_grid(
-        data, win_transform, src_crs_wkt,
-        dst_crs_wkt=dst_crs_wkt, dst_transform=dst_transform, dst_shape=dst_shape,
-        resampling=resampling, src_nodata=src_nd,
-    )
     mapping.write_geotiff(out_path, out_arr, dst_transform, dst_crs_wkt)
 
     provenance = {
@@ -334,7 +351,7 @@ def fetch_region_raster(
         "source_url": source_url,
         "read_mode": read_mode,
         "bounds_lonlat": [float(v) for v in bounds_lonlat],
-        "src_lon_domain": src_lon_domain,
+        "n_seam_parts": len(parts),
         "src_crs_wkt": src_crs_wkt,
         "src_nodata": None if src_nd is None else float(src_nd),
         "dst_crs_wkt": dst_crs_wkt,

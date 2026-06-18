@@ -43,15 +43,18 @@ validation_rasters:
   # 4-deg tiles -> lon[-12,12] lat[32,48], plus the 2 kept NE tiles -> lon max 20). PLAN §10 #5.
   region_bounds_lonlat: [-12.0, 32.0, 20.0, 48.0]  # W, S, E, N (deg, -180..180)
   cache_subdir: validation                         # under cache_v2/
+  # Note: the source seam is auto-detected from each raster's CRS (central_meridian) and the
+  # read is split if the region crosses it -- THEMIS is central_meridian=180 (seam at lon 0,
+  # which our region crosses); MOLA is central_meridian=0. `lon_domain` below is informational.
   products:
     mola_dem:
       url: "https://planetarymaps.usgs.gov/mosaic/Mars_MGS_MOLA_DEM_mosaic_global_463m.tif"
-      lon_domain: "180"        # -180..180
+      lon_domain: "180"        # -180..180 (central_meridian 0)
       resampling: bilinear     # continuous elevation
       native_res_m: 463
     themis_night_ir:
       url: "https://planetarymaps.usgs.gov/mosaic/Mars_MO_THEMIS-IR-Night_mosaic_60N60S_100m_v14.tif"
-      lon_domain: "360"        # 0..360 (verified); our block 0-20E needs no seam handling
+      lon_domain: "360"        # central_meridian 180; region crosses seam(lon 0) -> auto two-read split
       resampling: bilinear     # 8-bit brightness temperature proxy
       native_res_m: 100
       read_mode: vsicurl       # 15 GB global -> windowed only, never download

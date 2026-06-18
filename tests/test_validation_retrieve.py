@@ -1,6 +1,6 @@
 """Unit tests for src/validation_retrieve.py (PLAN_RegionalMap §3, phase 1).
 
-No network: the geometry helpers (lon-domain wrap, geographic->CRS bbox, target grid),
+No network: the geometry helpers (seam detection/split, geographic->CRS bbox, target grid),
 the reproject-onto-grid, the windowed read, and the hillshade are exercised on synthetic
 in-memory rasters and Mars proj4 CRSs. The real fetch is covered by the figure step, not here.
 """
@@ -18,12 +18,22 @@ EQC = f"+proj=eqc +R={R} +lat_ts=0 +lon_0=0 +x_0=0 +y_0=0 +units=m +no_defs"
 DEG2M = R * math.pi / 180.0  # metres per degree on the eqc sphere at the equator
 
 
-def test_wrap_lon_domains():
-    assert vr._wrap_lon((0, 40, 20, 48), "180") == (0, 40, 20, 48)
-    # 0..360 source leaves an all-positive window unchanged here (0-20E).
-    assert vr._wrap_lon((0, 40, 20, 48), "360") == (0, 40, 20, 48)
-    with pytest.raises(ValueError):
-        vr._wrap_lon((0, 40, 20, 48), "bogus")
+def test_seam_lon_from_central_meridian():
+    cm180 = f"+proj=eqc +R={R} +lat_ts=0 +lon_0=180 +x_0=0 +y_0=0 +units=m +no_defs"
+    assert vr.seam_lon(EQC) == pytest.approx(-180.0)     # cm=0 (MOLA/TES) -> seam +/-180
+    assert vr.seam_lon(cm180) == pytest.approx(0.0)      # cm=180 (THEMIS night-IR) -> seam 0
+
+
+def test_split_bounds_at_seam():
+    # Not crossing the seam -> single part unchanged.
+    assert vr.split_bounds_at_seam((0, 40, 20, 48), seam=-180.0) == [(0, 40, 20, 48)]
+    # Circum-Chryse over a cm=180 source: seam=0 inside [-12,20] -> two halves split at 0.
+    parts = vr.split_bounds_at_seam((-12, 32, 20, 48), seam=0.0)
+    assert len(parts) == 2
+    (w0, _, e0, _), (w1, _, e1, _) = parts
+    assert w0 == -12 and e1 == 20
+    assert e0 == pytest.approx(0.0, abs=1e-3) and w1 == pytest.approx(0.0, abs=1e-3)
+    assert e0 < 0 < w1                                   # nudged off the seam either side
 
 
 def test_bounds_lonlat_to_crs_projects_to_metres():
@@ -70,7 +80,7 @@ def test_windowed_read_returns_covering_subwindow():
     arr = (np.arange(60 * 30).reshape(30, 60)).astype(np.float32)  # 30 rows x 60 cols
     mf, ds = _memraster(EQC, transform, arr)
     try:
-        data, win_tr = vr.windowed_read(ds, (0, 40, 20, 48), lon_domain="180", buffer_deg=0.5)
+        data, win_tr = vr.windowed_read(ds, (0, 40, 20, 48), buffer_deg=0.5)
     finally:
         ds.close(); mf.close()
     # Sub-window is much smaller than the full raster but covers the request.
@@ -91,7 +101,7 @@ def test_windowed_read_raises_off_raster():
     mf, ds = _memraster(EQC, transform, arr)
     try:
         with pytest.raises(ValueError):
-            vr.windowed_read(ds, (100, 80, 110, 85), lon_domain="180", buffer_deg=0.1)
+            vr.windowed_read(ds, (100, 80, 110, 85), buffer_deg=0.1)
     finally:
         ds.close(); mf.close()
 

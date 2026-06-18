@@ -96,7 +96,6 @@ def main() -> None:
             out_path=out_path,
             cache_dir=cfg.cache_dir,
             dst_res_m=None if args.match_mosaic else res_m,
-            src_lon_domain=str(p.get("lon_domain", "180")),
             read_mode=p.get("read_mode", "vsicurl"),
             resampling=p.get("resampling", "bilinear"),
             overwrite=args.overwrite,
