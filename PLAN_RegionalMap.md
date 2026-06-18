@@ -86,7 +86,7 @@ train-on-this-region circularity.
 - All reproject to the CTX mosaic CRS; co-registration across CTX (~200 m offset) /
   THEMIS / MOLA quantified at the boundary (reuse cohort co-reg shifts where available).
 - **THEMIS retrieval is net-new** (CLAUDE.md §3.4 had it as future work) → a small
-  `src/thermal_retrieve.py` (windowed mosaic reads + reproject), mirroring `ctx_retrieve`.
+  `src/validation_retrieve.py` (windowed mosaic reads + reproject), mirroring `ctx_retrieve`.
 
 ---
 
@@ -238,7 +238,7 @@ the flag is right** (does flagged terrain coincide with thermal-dust/low-TI?).
 | phase | content | cost |
 |---|---|---|
 | **0** | finalize region/swath + the cohort-anchored zoom sites; confirm tile coverage | cheap, no GPU |
-| **1** | `src/thermal_retrieve.py`: fetch+reproject THEMIS night-IR + TES TI + MOLA to CTX CRS; draw the −3795/−4100 contours | downloads, CPU |
+| **1** | `src/validation_retrieve.py`: fetch+reproject MOLA + THEMIS night-IR + TES TI to CTX CRS; draw the −3795/−4100 contours | downloads, CPU |
 | **2** | `scripts/map_region.py`: scale-out mosaic inference driver (checkpointed) | code |
 | **3** | regional subsampled overview + full-res zoom windows (calibrated) | few GPU h |
 | **4** | thermal co-registration + the 3 quantitative legs (corr, profile, anchor); dust mask | CPU |
@@ -254,6 +254,23 @@ cloud GPU** (§4). **NEXT SESSION:** Brian provides cloud provider/GPU details �
 actual run (env spec, `map_region.py` driver, fp16, parity check). The laptop-side prep
 (§4 last paragraph) is the critical path and is buildable without the GPU.
 
+**UPDATE 2026-06-17:** §4 inference DONE on Sherlock (L40S, all 7 tiles) → GeoTIFFs back on
+laptop, stitched mosaic + product panels rendered (notebook 24 §2). Now in **§5 validation**.
+
+**UPDATE 2026-06-17b — phase-1 retrieval built + MOLA leg shipped.** `src/validation_retrieve.py`
+(windowed `/vsicurl/` read + reproject onto the CTX clon_0 CRS, mirroring `ctx_retrieve`;
+source units read-from-file, never assumed; named for purpose since MOLA is topo not thermal) +
+`scripts/fetch_validation_data.py` (config-driven) +
+`config_v2.yaml::validation_rasters` block (MOLA/THEMIS/TES URLs verified, DECISIONS 2026-06-17) +
+9 unit tests (suite 350). **MOLA fetched + co-registered** (`cache_v2/thermal/mola_dem_region.tif`,
+463 m/px, valid_frac 1.0) and the **regional-context figure rendered** (notebook 24 §1b →
+`reports/figures/24_region_context_mola.png`: shaded relief + −3795/−4100 m contours + cohort).
+Correctness check: block median elevation = **−3794 m**, i.e. the lHl1 contour bisects the
+block — we are imaging exactly the boundary. **NEXT:** THEMIS night-IR + TES TI fetch (legs
+1–2; THEMIS is 15 GB → vsicurl-window only) then legs 3–5. **Leg-2 caveats to resolve:** TES
+`nmap2003.tif` may be a rendered map not physical TI values; no dust-index raster is bundled
+(needs a separate DCI source for the confound mask).
+
 Remaining open decisions (Brian):
 1. ~~Overview resolution~~ → **moot** (full-res entire block, §4).
 2. **Parity/anchor site** — confirmed default: the E12/E16_N44 dense-cohort segment
@@ -262,3 +279,18 @@ Remaining open decisions (Brian):
 3. **Novelty flag** — wire it in this plan (its natural debut) or defer and ship the
    in-distribution validation first?
 4. **Cloud specifics** — provider, GPU, Docker-vs-conda env, spot-vs-on-demand (NEXT SESSION).
+5. **Map extent — RESOLVED 2026-06-17: expand to a 26-tile box (Brian).** The cohort actually
+   spans lon −54→+22°E / lat −64→+52°N and touches 20 distinct 4° tiles; the first run mapped 7.
+   Brian chose a near-rectangular box **lon[-10,10] lat[32,46]** → snapped to whole tiles
+   (lon[-12,12] lat[32,48] = 24) **plus** the 2 already-run NE tiles (`E12_N44`,`E16_N44`) =
+   **26-tile map**, of which **19 are net-new** (`map_region.EXPANSION_TILES`). The box reaches
+   south into the highlands (lat 32–40, above −3795 m) on purpose — a specificity check (terrain
+   the model should read poor). The far-western cohort cluster (E−48..E−56) is left for a later
+   phase. **Wired:** `map_region.BLOCK_TILES`→26 + `--expansion` flag; `validation_rasters.
+   region_bounds_lonlat`→[-12,32,20,48]; notebook 24 §1a coverage figure; SHERLOCK_RUN §C4.
+   **Speedups (Brian asked):** (a) `run_region_array.sbatch` — Slurm **job array** fans the 19
+   independent tiles across N 1-GPU jobs (race-free: per-tile outputs, no shared manifest) →
+   wall-clock ≈ 13–19 GPU-h / N (~2–3 h on 6 GPUs); (b) `--batch 256` (vs 96) better saturates
+   the L40S, parity-safe (ViT per-sample) but re-emit the parity ref at the matching batch if
+   running the strict gate. **NEXT runtime step:** Brian fetches the 19 CTX tiles on Sherlock +
+   `sbatch run_region_array.sbatch` → download 19 GeoTIFFs → notebook 24 §2 auto-stitches 26.

@@ -3930,3 +3930,29 @@ Wilcoxon. Both NEGATIVE -> the expensive de-compression investigation is complet
   ways. **Path forward is NOT a better model:** ship Stage 1 (productize qmatch + isotonic
   into the map) + §2.3 expansion cohort (the only thing that can raise the ranking ceiling).
   PLAN §3/§5 + notebook 23 (§8 + §9 verdict, +figure) updated.
+
+## 2026-06-17 — Validation-raster sources verified (topo + thermal; PLAN_RegionalMap §3, phase 1)
+
+Net-new retrieval (`src/validation_retrieve.py`) for the regional-validation legs. URLs, sizes,
+projections, and longitude domains verified against USGS Astropedia / ASU MarsSpaceFlight today:
+
+- **MOLA MEGDM DEM 463 m/px** — `https://planetarymaps.usgs.gov/mosaic/Mars_MGS_MOLA_DEM_mosaic_global_463m.tif`
+  (~2 GB; simple cylindrical; clon 0). Topography underlay + paleoshoreline contours.
+- **THEMIS night-IR 100 m/px (60N60S) v14** — `https://planetarymaps.usgs.gov/mosaic/Mars_MO_THEMIS-IR-Night_mosaic_60N60S_100m_v14.tif`
+  (**15 GB**; simple cylindrical; **0–360° E**; 8-bit; 213388×71130). Our block (40–48°N) is
+  well inside the ±60° coverage. **Too big to download → windowed `/vsicurl/` only.**
+- **TES thermal inertia nightside 2005 (Putzig & Mellon) ~3 km/px** —
+  `https://mars.asu.edu/data/tes_putzigti/nighttime2005/nmap2003.tif` (7200×3600, 20 ppd;
+  simple cylindrical; −180..180; ocentric). Small/global → download or vsicurl both fine.
+  **Caveat for leg 2:** `nmap2003.tif` may be a *rendered* TI map rather than physical TI
+  values — confirm the value semantics before computing the abundance↔TI rank correlation.
+  **No dust-cover-index raster** is served alongside it; the TES DCI confound mask (PLAN §7)
+  needs a separate source (Ruff & Christensen 2002 DCI) — deferred until leg 2.
+
+Design notes pinned in code: the source CRS/units are **read from each file, never assumed**
+(USGS "simple cylindrical" GeoTIFFs vary between metre-equirectangular and degree-geographic);
+our geographic region bounds are projected into the source CRS via pyproj, only the covering
+window is read, and the product is warped onto a grid in the **CTX clon_0 CRS** (so it
+co-registers with `reports/map_region/` outputs). TLS to these hosts reuses the project-wide
+`HIRISE2CTX_INSECURE_TLS=1` opt-in (GDAL `GDAL_HTTP_UNSAFESSL`) for the incomplete-chain case;
+otherwise GDAL is pointed at certifi's CA bundle.

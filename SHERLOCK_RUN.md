@@ -247,15 +247,18 @@ Read the `~N tiles/s` lines. **Laptop baseline (RTX 5070, fp16): ~365 tiles/s �
 7-tile block ≈ 15.4M tiles ≈ 11.7 GPU-h.** A Sherlock A100/H100 is ~2–3× faster (~4–6 h); an
 older V100 is similar-to-slower than the laptop. Use your measured rate to decide `--time`.
 
-### C2. Submit the full block (batch, unattended, resumable)
+### C2. Submit a run (batch, unattended, resumable)
 ```bash
-sbatch run_region.sbatch --all
+sbatch run_region.sbatch --tiles E4_N44 E8_N44   # specific tiles, one GPU, sequential
+sbatch run_region.sbatch --all                   # the full 26-tile map (skips done tiles)
 ```
-This requests 1 GPU / 8 CPUs / 32 GB / 12 h on the `gpu` partition and writes GeoTIFFs to
-`$SCRATCH/hirise2ctx/map_region`. **It is checkpointed at the (tile, read-window) level**
-(1008 windows for the block): if the 12 h limit is hit or the job is pre-empted, just
-`sbatch run_region.sbatch --all` **again** — it skips finished windows and tiles and
-continues (verified locally). Raise `--time` in the script for fewer resumes.
+`run_region.sbatch` requests 1 GPU / 8 CPUs / 32 GB / 12 h on the `gpu` partition and writes
+GeoTIFFs to `$SCRATCH/hirise2ctx/map_region`. **It is checkpointed at the (tile, read-window)
+level**: if the 12 h limit is hit or the job is pre-empted, just re-`sbatch` the same command —
+it skips finished windows and tiles and continues (verified locally). Raise `--time` for fewer
+resumes. **For the 19-tile expansion, prefer the parallel job array in C4** (much faster
+wall-clock). `--all` is now the full **26-tile** regional map (was 7); it skips any tile whose
+final GeoTIFF already exists, so it only computes what's missing.
 
 ### C3. Monitor
 ```bash
@@ -263,6 +266,48 @@ squeue -u $USER                       # is it queued (PD) or running (R)?
 sacct -j <jobid>                      # exit status after it finishes
 tail -f logs/h2c-map-<jobid>.out      # live progress: "[E4_N44] win 37/144 ... ~N tiles/s"
 ```
+
+### C4. Expansion run — the 19 new tiles, PARALLEL (PLAN_RegionalMap §10 #5)
+The regional map was widened to **26 tiles** (box lon[-10,10] lat[32,46] + the 2 kept NE tiles).
+The first 7 already ran; the **19 net-new tiles** are independent, so fan them across a Slurm
+**job array** (`run_region_array.sbatch`) instead of one sequential GPU — wall-clock ≈
+sequential-GPU-h / concurrent-tasks (~13–19 GPU-h → ~2–3 h on 6 GPUs).
+
+First **re-fetch the 19 new CTX tiles** (same snippet as step 2, expansion list):
+```bash
+export HIRISE2CTX_INSECURE_TLS=1
+source /home/groups/mlapotre/bamaro/envs/hirise2ctx/bin/activate
+python - <<'PY'
+from src.config import load_config
+from src.ctx_retrieve import ensure_tile_cached
+EXPANSION_TILES = [  # = scripts/map_region.py EXPANSION_TILES (19 new tiles)
+    "E-12_N32","E-12_N36","E-12_N40","E-12_N44","E-8_N32","E-8_N36","E-8_N40","E-8_N44",
+    "E-4_N32","E-4_N36","E-4_N40","E-4_N44","E0_N32","E0_N36","E0_N44","E4_N32","E4_N36",
+    "E8_N32","E8_N36"]
+cfg = load_config("config_v2.yaml")
+tmpl, cache = cfg["ctx_mosaic"]["url_template"], cfg["cache_dir"]
+for t in EXPANSION_TILES:
+    ensure_tile_cached(t, url_template=tmpl, cache_dir=cache); print("cached", t)
+PY
+```
+Then submit the array (defaults to the 19 `EXPANSION_TILES`, 6-way, `--batch 256`):
+```bash
+mkdir -p logs
+sbatch run_region_array.sbatch
+# match the parity reference's batch exactly:   BATCH=96 sbatch run_region_array.sbatch
+# fewer/more concurrent GPUs: edit  #SBATCH --array=0-5  (N tasks share the 19 tiles by stride)
+```
+Resumable like the sequential job: re-`sbatch` after a wall-clock/pre-emption — finished tiles
+are skipped (final GeoTIFF exists), partial tiles resume mid-window. Monitor with
+`squeue -u $USER` / `tail -f logs/h2c-map-arr-<arrayjob>_<task>.out`.
+
+> **Batch + parity:** `--batch 256` better saturates the L40S and is ~parity-safe (the Fang ViT
+> is per-sample). If you run the strict parity gate (C/B step 3), emit its reference at the same
+> `--batch` — fp16 GEMM kernel choice can shift outputs by ~tol across batch sizes. `BATCH=96`
+> keeps the existing reference exactly valid.
+
+When all 26 tiles' GeoTIFFs are back on the laptop in `reports/map_region/`, notebook 24 §2
+stitches them automatically (it globs `*_abundance.tif`).
 *(OnDemand also shows running jobs under **Jobs → Active Jobs**, and you can `tail` the log
 file in the **Files** editor.)*
 

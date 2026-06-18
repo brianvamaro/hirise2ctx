@@ -58,8 +58,29 @@ DEFAULT_CALIBRATION = DEFAULT_MODEL_PARENT / "calibration.npz"
 DEFAULT_OUT = REPO_ROOT / "reports" / "map_region"
 TILE_PX = 32  # frozen S=32 (160 m at 5 m/px)
 
-# The circum-Chryse highland-lowland boundary block (PLAN_RegionalMap §0); all cached.
-BLOCK_TILES = ["E0_N40", "E4_N40", "E4_N44", "E8_N40", "E8_N44", "E12_N44", "E16_N44"]
+# The circum-Chryse regional map (PLAN_RegionalMap §10 decision #5, box lon[-10,10] lat[32,46]
+# snapped to whole 4-deg Murray tiles = the 24 box tiles, PLUS the 2 already-run tiles NE of the
+# box (E12_N44, E16_N44) so the original block stays in-map). 26 tiles total. The first 7 were
+# run 2026-06-17; the other 19 are the expansion. `--tiles` skips any whose final GeoTIFF exists,
+# so re-running --all only computes what's missing.
+BLOCK_TILES = [
+    "E-12_N32", "E-12_N36", "E-12_N40", "E-12_N44",
+    "E-8_N32", "E-8_N36", "E-8_N40", "E-8_N44",
+    "E-4_N32", "E-4_N36", "E-4_N40", "E-4_N44",
+    "E0_N32", "E0_N36", "E0_N40", "E0_N44",
+    "E4_N32", "E4_N36", "E4_N40", "E4_N44",
+    "E8_N32", "E8_N36", "E8_N40", "E8_N44",
+    "E12_N44", "E16_N44",
+]
+# The 19 net-new tiles (everything in the box minus the 5 already-run box tiles + the 2 kept NE
+# tiles); pass these to --tiles for the incremental expansion run so done tiles aren't recomputed.
+EXPANSION_TILES = [
+    "E-12_N32", "E-12_N36", "E-12_N40", "E-12_N44",
+    "E-8_N32", "E-8_N36", "E-8_N40", "E-8_N44",
+    "E-4_N32", "E-4_N36", "E-4_N40", "E-4_N44",
+    "E0_N32", "E0_N36", "E0_N44",
+    "E4_N32", "E4_N36", "E8_N32", "E8_N36",
+]
 
 
 def resolve_model_dir(arg: str | None) -> Path:
@@ -230,9 +251,17 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--tiles", nargs="+", help="Murray tile ids, e.g. E4_N44 E8_N44")
-    g.add_argument("--all", action="store_true", help="the 7 circum-Chryse block tiles")
+    g.add_argument("--all", action="store_true",
+                   help="the full 26-tile circum-Chryse regional map (BLOCK_TILES)")
+    g.add_argument("--expansion", action="store_true",
+                   help="only the 19 net-new expansion tiles (EXPANSION_TILES); skips the "
+                        "7 already-run tiles regardless of $SCRATCH state")
     ap.add_argument("--win-px", type=int, default=4096, help="read-window side in CTX px")
-    ap.add_argument("--batch", type=int, default=96, help="embedder batch size")
+    ap.add_argument("--batch", type=int, default=96,
+                    help="embedder batch size. Default 96 matches the parity reference. The ViT is "
+                         "per-sample so larger batches (e.g. 256) better saturate an L40S/A100 and "
+                         "are ~parity-safe; if you bump it, re-emit the parity reference at the same "
+                         "--batch (fp16 GEMM kernels can vary slightly by batch).")
     ap.add_argument("--max-zero-fraction", type=float, default=0.3,
                     help="mask a tile whose own CTX is more than this share mosaic nodata")
     ap.add_argument("--model", default=None, help="deployable head dir (default: latest)")
@@ -251,7 +280,7 @@ def main() -> int:
                     help="delete per-window .npz after a tile's GeoTIFFs are written")
     args = ap.parse_args()
 
-    tiles = BLOCK_TILES if args.all else args.tiles
+    tiles = BLOCK_TILES if args.all else (EXPANSION_TILES if args.expansion else args.tiles)
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)
 
     model_dir = resolve_model_dir(args.model)

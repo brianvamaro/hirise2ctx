@@ -142,6 +142,150 @@ print("wrote", out.relative_to(REPO)); plt.show()""",
     "fig_extent"))
 
 cells.append(md(
+    """## 1a. Coverage planning — the 26-tile expansion (PLAN §10 decision #5)
+
+The 39-image cohort spans **lon −54→+22°E, lat −64→+52°N** and its centers touch **20** distinct
+4° Murray tiles — but the first regional run mapped only **7** (the eastern block above). To give
+the validation real reach, the map is widened to a box **lon[-10,10] lat[32,46]**, snapped to whole
+tiles (→ lon[-12,12] lat[32,48] = 24 tiles) **plus** the 2 already-run NE tiles (`E12_N44`,
+`E16_N44`) = **26 tiles**. Orange = the **19 net-new** tiles to run; green = the **7 already run**.
+The box deliberately reaches south into the highlands (lat 32–40, above the −3795 m boundary) as a
+specificity check — terrain the model should read *poor*. Wide MOLA basemap is fetched once
+(`scripts/fetch_validation_data.py` download path → `cache_v2/validation/mola_dem_wide.tif`).
+""", "plan_md"))
+
+cells.append(code(
+    """import math, rasterio
+from src.validation_retrieve import hillshade
+
+WIDE = REPO / "cache_v2" / "validation" / "mola_dem_wide.tif"
+BOX = dict(lonmin=-10.0, lonmax=10.0, latmin=32.0, latmax=46.0)
+MAP_TILES = [(lo, la) for lo in range(-12, 12, 4) for la in range(32, 48, 4)] + [(12, 44), (16, 44)]
+CURRENT = {(0, 40), (4, 40), (4, 44), (8, 40), (8, 44), (12, 44), (16, 44)}
+counts = {(int(np.floor(r.CenterLon_180 / 4) * 4), int(np.floor(r.CenterLat / 4) * 4)): 0
+          for _, r in cohort.iterrows()}
+for _, r in cohort.iterrows():
+    counts[(int(np.floor(r.CenterLon_180 / 4) * 4), int(np.floor(r.CenterLat / 4) * 4))] += 1
+
+if not WIDE.exists():
+    print("No wide MOLA basemap yet:", WIDE.relative_to(REPO))
+    print("Make it once:  python scripts/fetch_wide_basemap.py  (downloads the 2 GB global MOLA, caches a coarse reprojection)")
+else:
+    with rasterio.open(WIDE) as ds:
+        dem = ds.read(1); T = ds.transform; res_m = abs(T.a)
+    R = 3396190.0; dpm = 180.0 / (math.pi * R)
+    hh, ww = dem.shape
+    we = [T.c * dpm, (T.c + ww * T.a) * dpm, (T.f + hh * T.e) * dpm, T.f * dpm]
+    Lo = np.linspace(we[0], we[1], ww); La = np.linspace(we[3], we[2], hh)
+    Log, Lag = np.meshgrid(Lo, La)
+    hs = hillshade(dem, res_m=res_m, azimuth_deg=315, altitude_deg=45)
+
+    fig, ax = plt.subplots(figsize=(12.5, 6.6))
+    ax.imshow(hs, cmap="gray", extent=we, origin="upper", aspect="equal", zorder=0)
+    ax.imshow(np.ma.masked_invalid(dem), cmap="terrain", extent=we, origin="upper",
+              aspect="equal", alpha=0.38, zorder=1)
+    cs = ax.contour(Log, Lag, dem, levels=[-3795], colors="k", linewidths=1.1, zorder=2)
+    ax.clabel(cs, fmt={-3795: "-3795 m"}, fontsize=7)
+    for (lo, la) in MAP_TILES:
+        new = (lo, la) not in CURRENT
+        ax.add_patch(Rectangle((lo, la), TILE_DEG, TILE_DEG,
+                               facecolor=("#ff7f0e" if new else "#2ca02c"),
+                               edgecolor=("#cc5500" if new else "#1a6b1a"),
+                               lw=1.2, alpha=0.42, zorder=3))
+        n = counts.get((lo, la), 0)
+        if n:
+            ax.text(lo + 3.3, la + 3.3, f"{n}", ha="center", fontsize=8, fontweight="bold",
+                    color="#063", zorder=5)
+    ax.add_patch(Rectangle((BOX["lonmin"], BOX["latmin"]), BOX["lonmax"] - BOX["lonmin"],
+                           BOX["latmax"] - BOX["latmin"], fill=False, edgecolor="red",
+                           lw=2.0, ls="--", zorder=6))
+    for lab, c in {"Boulder rich": "#d62728", "unknown": "0.45"}.items():
+        sub = cohort[(cohort.BoulderLabel == lab) & cohort.CenterLon_180.between(we[0], we[1])
+                     & cohort.CenterLat.between(we[2], we[3])]
+        ax.scatter(sub.CenterLon_180, sub.CenterLat, s=28, c=c, edgecolor="k", lw=0.3,
+                   zorder=7, label=f"{lab} (n={len(sub)})")
+    from matplotlib.patches import Patch
+    h2, _ = ax.get_legend_handles_labels()
+    ax.legend(handles=[Patch(fc="#ff7f0e", alpha=0.42, ec="#cc5500", label="new to run (19)"),
+                       Patch(fc="#2ca02c", alpha=0.42, ec="#1a6b1a", label="already run (7)")] + h2,
+              loc="upper left", bbox_to_anchor=(1.01, 1.0), fontsize=8, frameon=False)
+    ax.set_xlim(-22, 24); ax.set_ylim(26, 52)
+    ax.set_xlabel("longitude (deg E)"); ax.set_ylabel("latitude (deg N)")
+    ax.set_title("Coverage planning — 26-tile circum-Chryse map  (red dashed = box lon[-10,10] lat[32,46])\\n"
+                 "orange = 19 new tiles to run;  green = 7 already run;  number = cohort imgs in tile")
+    fig.tight_layout()
+    out = FIG / "24_coverage_planning.png"; fig.savefig(out, dpi=145, bbox_inches="tight")
+    print("wrote", out.relative_to(REPO)); plt.show()""",
+    "fig_plan"))
+
+cells.append(md(
+    """## 1b. Regional context — MOLA shaded-relief underlay (PLAN §5 fig 1)
+
+The independent geological frame for the map: **MOLA MEGDM topography** (463 m/px, USGS),
+fetched + reprojected onto the CTX `clon_0` CRS by `src/validation_retrieve.py`
+(`python scripts/fetch_validation_data.py --product mola_dem`) so it co-registers with the abundance
+mosaic. Shaded relief underlay + the paper's paleoshoreline elevations as context contours
+(**−3795 m lHl1**, **−4100 m lHl2**; [Rodriguez et al. 2016](https://doi.org/10.1038/srep25106)).
+The −3795 m contour separates the bouldery highland–lowland run-up zone (PLAN §1 prediction 1)
+from the distal Chryse plains; the boulder-rich cohort sites should cluster on the highland
+side of it. *(Sanity: the block's median elevation came back −3794 m — the contour bisects the
+region, confirming we are imaging exactly the boundary the hypothesis is about.)*
+""", "ctx_md"))
+
+cells.append(code(
+    """import math
+import rasterio
+from src.validation_retrieve import hillshade
+
+MOLA = REPO / "cache_v2" / "validation" / "mola_dem_region.tif"
+if not MOLA.exists():
+    print("No MOLA raster yet:", MOLA.relative_to(REPO))
+    print("Fetch it:  python scripts/fetch_validation_data.py --product mola_dem")
+else:
+    with rasterio.open(MOLA) as ds:
+        dem = ds.read(1)
+        T = ds.transform
+        res_m = abs(T.a)
+    R = 3396190.0; dpm = 180.0 / (math.pi * R)           # clon_0 metres -> degrees
+    h, w = dem.shape
+    lon0, lat1 = T.c * dpm, T.f * dpm                     # top-left
+    lon1, lat0 = (T.c + w * T.a) * dpm, (T.f + h * T.e) * dpm
+    mext = [lon0, lon1, lat0, lat1]
+    lon = np.linspace(lon0, lon1, w); lat = np.linspace(lat1, lat0, h)
+    LON, LAT = np.meshgrid(lon, lat)
+    hs = hillshade(dem, res_m=res_m, azimuth_deg=315, altitude_deg=45)
+
+    fig, ax = plt.subplots(figsize=(12, 6.0))
+    ax.imshow(hs, cmap="gray", extent=mext, origin="upper", aspect="equal", zorder=0)
+    im = ax.imshow(np.ma.masked_invalid(dem), cmap="terrain", extent=mext, origin="upper",
+                   aspect="equal", alpha=0.45, zorder=1)
+    cs = ax.contour(LON, LAT, dem, levels=[-4100, -3795], colors=["#2b2b2b", "k"],
+                    linewidths=[0.9, 1.6], linestyles=["--", "-"], zorder=3)
+    ax.clabel(cs, fmt={-4100: "-4100 m (lHl2)", -3795: "-3795 m (lHl1)"}, fontsize=7)
+    for t, (lo, la) in boxes.items():                    # the 7 inference tiles
+        ax.add_patch(Rectangle((lo, la), TILE_DEG, TILE_DEG, fill=False,
+                               edgecolor="#b8860b", lw=0.8, alpha=0.7, zorder=2))
+    for lab, c in COL.items():                           # cohort footprints
+        sub = in_block[in_block.BoulderLabel == lab]
+        if len(sub):
+            ax.scatter(sub.CenterLon_180, sub.CenterLat, s=40, c=c, edgecolor="k", lw=0.4,
+                       label=f"{lab} (n={len(sub)})", zorder=5)
+    pi = cohort[cohort.ObsId == PAPER_IMG]
+    if len(pi):
+        ax.scatter(pi.CenterLon_180, pi.CenterLat, s=260, marker="*", facecolor="gold",
+                   edgecolor="k", lw=0.7, zorder=6, label=f"{PAPER_IMG} (Rodriguez+2016)")
+    ax.set_xlim(mext[0], mext[1]); ax.set_ylim(mext[2], mext[3])
+    ax.set_xlabel("longitude (deg E)"); ax.set_ylabel("latitude (deg N)")
+    ax.set_title("Regional context — MOLA shaded relief + paleoshoreline contours\\n"
+                 "circum-Chryse highland–lowland boundary (cohort footprints overlaid)")
+    fig.colorbar(im, ax=ax, fraction=0.030, pad=0.02, label="elevation (m, MOLA)")
+    ax.legend(loc="upper left", bbox_to_anchor=(1.13, 1.0), fontsize=8, frameon=False)
+    fig.tight_layout()
+    out = FIG / "24_region_context_mola.png"; fig.savefig(out, dpi=150, bbox_inches="tight")
+    print("wrote", out.relative_to(REPO)); plt.show()""",
+    "fig_ctx"))
+
+cells.append(md(
     """## 2. Stitched regional abundance mosaic
 
 `scripts/map_region.py --all` writes per Murray tile `<tile>_{prob,abundance,prob_raw}.tif`
@@ -234,6 +378,53 @@ cells.append(code(
     "fig_products"))
 
 cells.append(md(
+    """### 2c. Binary boulder map on the MOLA terrain (where are the boulder fields?)
+
+The deliverable read of the map: predicted **boulder-rich (P ≥ 0.5)** tiles overlaid in red on
+the MOLA shaded-relief background, predicted-poor dimmed, with the **−3795 m lHl1 paleoshoreline**
+and the cohort boulder-rich truth sites (yellow triangles). This is the qualitative form of
+PLAN legs 1/3/4 in one frame: the predicted boulder fields should hug the highland side of the
+contour (the run-up zone) and coincide with the cohort truth, while the distal lowland plains
+stay poor. Co-registration is exact — both layers are in the CTX `clon_0` CRS.
+""", "binmola_md"))
+
+cells.append(code(
+    """from matplotlib.colors import ListedColormap
+from matplotlib.patches import Patch
+if ab_tifs and MOLA.exists():
+    rich_overlay = np.where(binary == 1, 1.0, np.nan)   # predicted boulder-rich
+    poor_overlay = np.where(binary == 0, 1.0, np.nan)   # predicted boulder-poor
+
+    fig, ax = plt.subplots(figsize=(12, 6.0))
+    ax.imshow(hs, cmap="gray", extent=mext, origin="upper", aspect="equal", zorder=0)
+    ax.imshow(np.ma.masked_invalid(poor_overlay), cmap=ListedColormap(["#1f77b4"]), extent=ext,
+              origin="upper", aspect="equal", alpha=0.18, zorder=1, interpolation="nearest")
+    ax.imshow(np.ma.masked_invalid(rich_overlay), cmap=ListedColormap(["#d62728"]), extent=ext,
+              origin="upper", aspect="equal", alpha=0.55, zorder=2, interpolation="nearest")
+    cs = ax.contour(LON, LAT, dem, levels=[-3795], colors="k", linewidths=1.4, zorder=3)
+    ax.clabel(cs, fmt={-3795: "-3795 m (lHl1)"}, fontsize=7)
+    for t, (lo, la) in boxes.items():
+        ax.add_patch(Rectangle((lo, la), TILE_DEG, TILE_DEG, fill=False, edgecolor="#b8860b",
+                               lw=0.7, alpha=0.55, zorder=4))
+    ax.scatter(rich.CenterLon_180, rich.CenterLat, s=48, marker="^", facecolor="yellow",
+               edgecolor="k", lw=0.5, zorder=6)
+
+    ax.set_xlim(mext[0], mext[1]); ax.set_ylim(mext[2], mext[3])
+    ax.set_xlabel("longitude (deg E)"); ax.set_ylabel("latitude (deg N)")
+    ax.set_title("Predicted boulder-rich tiles on MOLA terrain — circum-Chryse boundary\\n"
+                 "(red = P(rich)>=0.5; blue = poor; black = -3795 m paleoshoreline)")
+    handles = [Patch(facecolor="#d62728", alpha=0.55, label="predicted boulder-rich (P>=0.5)"),
+               Patch(facecolor="#1f77b4", alpha=0.30, label="predicted boulder-poor"),
+               plt.Line2D([], [], marker="^", ls="", mfc="yellow", mec="k",
+                          label="cohort boulder-rich (truth)")]
+    ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(1.01, 1.0), fontsize=8,
+              frameon=False)
+    fig.tight_layout()
+    out = FIG / "24_region_binary_on_mola.png"; fig.savefig(out, dpi=150, bbox_inches="tight")
+    print("wrote", out.relative_to(REPO)); plt.show()""",
+    "fig_binmola"))
+
+cells.append(md(
     """## 3. Validation legs *(to come — PLAN §2)*
 
 1. **Spatial co-location** — abundance band ↔ THEMIS thermal-bright ↔ mapped contact.
@@ -242,7 +433,7 @@ cells.append(md(
 4. **Truth anchor** — predictions vs BoulderNet detections at `ESP_017355_2260`.
 5. **Generalisation** — does the band continue along un-imaged boundary segments?
 
-These require `src/thermal_retrieve.py` (PLAN phase 1) and the returned GeoTIFFs; they
+These require `src/validation_retrieve.py` (PLAN phase 1) and the returned GeoTIFFs; they
 land here as they are built.
 """, "legs_md"))
 
