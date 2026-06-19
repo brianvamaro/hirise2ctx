@@ -462,17 +462,99 @@ if ab_tifs and MOLA.exists():
     "fig_binmola"))
 
 cells.append(md(
-    """## 3. Validation legs *(to come — PLAN §2)*
+    """## 3. Validation legs (PLAN §2)
 
-1. **Spatial co-location** — abundance band ↔ THEMIS thermal-bright ↔ mapped contact.
-2. **Thermal-inertia correlation** — rank-corr(abundance, TES TI), dust-masked.
+1. **Spatial co-location** *(below)* — abundance band ↔ THEMIS night-IR thermal-bright.
+2. **Thermal-inertia correlation** — rank-corr(abundance, THEMIS *quantitative* TI / Fergason
+   2006). *(TES `nmap2003` was an RGB render — unusable; switched to physical THEMIS TI, DECISIONS
+   2026-06-18b. Needs the two `.cub` tiles → to come.)*
 3. **Shoreline-distance profile** — abundance vs distance from the −3795 m MOLA contour.
 4. **Truth anchor** — predictions vs BoulderNet detections at `ESP_017355_2260`.
 5. **Generalisation** — does the band continue along un-imaged boundary segments?
 
-These require `src/validation_retrieve.py` (PLAN phase 1) and the returned GeoTIFFs; they
-land here as they are built.
+### 3.1 Leg 1 — spatial co-location (abundance ↔ THEMIS night-IR)
+
+The paper's exact proxy: in **THEMIS nighttime IR**, rocky/high-thermal-inertia surfaces stay warm
+(bright), dust/fines go cold (dark). If our CTX-texture abundance is recovering real rockiness, the
+high-abundance band should co-locate with the thermal-bright terrain — an **independent** check
+(THEMIS never enters the model). THEMIS night-IR (100 m/px, USGS v14) is fetched + reprojected onto
+the **abundance grid** (`fetch_validation_data.py --product themis_night_ir --match-mosaic`; the
+region crosses the mosaic's lon-0 seam, auto-split by `validation_retrieve`). Brightness here is
+8-bit DN (a relative proxy), so the correlation is reported as **Spearman ρ** (rank), not absolute TI.
 """, "legs_md"))
+
+cells.append(code(
+    """from scipy.stats import spearmanr
+import rasterio
+THERMAL = REPO / "cache_v2" / "validation" / "themis_night_ir_region.tif"
+AB = MAP_DIR / "regional_abundance_mosaic.tif"
+if not THERMAL.exists() or not AB.exists():
+    print("Missing inputs for leg 1:")
+    print("  abundance mosaic:", AB.exists(), AB.relative_to(REPO))
+    print("  THEMIS night-IR :", THERMAL.exists(), THERMAL.relative_to(REPO))
+    print("Fetch THEMIS:  python scripts/fetch_validation_data.py --product themis_night_ir --match-mosaic")
+else:
+    with rasterio.open(AB) as da:
+        ab = da.read(1); T = da.transform; H, W = ab.shape
+    with rasterio.open(THERMAL) as dt:
+        ti = dt.read(1)
+    R = 3396190.0; dpm = 180.0 / (math.pi * R)
+    e3 = [T.c * dpm, (T.c + W * T.a) * dpm, (T.f + H * T.e) * dpm, T.f * dpm]
+    good = np.isfinite(ab) & np.isfinite(ti) & (ti > 0)
+    rho, p = spearmanr(ab[good], ti[good])
+    print(f"co-registered pixels: {int(good.sum()):,}   pixel-level Spearman rho = {rho:+.3f} (p={p:.1e})")
+
+    # The hypothesis is about the BAND, not 160 m pixels -- coarsen (block-mean, nodata-aware) and
+    # re-correlate. Pixel noise + the ~200 m co-reg slack + crater rings wash out at the band scale.
+    def _coarsen(a, f):
+        h, w = (a.shape[0] // f) * f, (a.shape[1] // f) * f
+        return np.nanmean(a[:h, :w].reshape(h // f, f, w // f, f), axis=(1, 3))
+    abm = np.where(good, ab, np.nan); tim = np.where(good, ti, np.nan)
+    rho_band = rho
+    for f in (8, 32, 64):
+        ac, tc = _coarsen(abm, f), _coarsen(tim, f)
+        m = np.isfinite(ac) & np.isfinite(tc)
+        if m.sum() > 20:
+            rc, pc = spearmanr(ac[m], tc[m])
+            if f == 32:
+                rho_band = rc
+            print(f"  coarsened x{f:>2} (~{f*160/1000:.1f} km cells, n={int(m.sum()):,}): Spearman rho = {rc:+.3f} (p={pc:.1e})")
+
+    fig, axes = plt.subplots(2, 1, figsize=(11, 11))
+    panels = [("calibrated abundance (fractional_area)", ab, "turbo", np.nanpercentile(ab, 99)),
+              ("THEMIS night-IR brightness (rocky=bright, proxy for thermal inertia)", ti, "inferno", None)]
+    for axi, (title, dat, cmap, vmx) in zip(axes, panels):
+        im = axi.imshow(np.ma.masked_invalid(dat), cmap=cmap, extent=e3, origin="upper",
+                        aspect="equal", vmin=0, vmax=vmx, interpolation="nearest")
+        try:
+            axi.contour(LON, LAT, dem, levels=[-3795], colors="cyan", linewidths=0.9)
+        except Exception:
+            pass
+        rich = in_block[in_block.BoulderLabel == "Boulder rich"]
+        axi.scatter(rich.CenterLon_180, rich.CenterLat, s=16, c="cyan", edgecolor="k", lw=0.3, zorder=5)
+        axi.set_xlim(e3[0], e3[1]); axi.set_ylim(e3[2], e3[3]); axi.set_title(title, fontsize=10)
+        axi.set_ylabel("lat (deg N)"); fig.colorbar(im, ax=axi, fraction=0.025, pad=0.02)
+    axes[-1].set_xlabel("lon (deg E)")
+    fig.suptitle(f"Leg 1 — abundance vs THEMIS night-IR  (Spearman rho = {rho:+.3f} pixel / {rho_band:+.3f} @5km;"
+                 f"  cyan = -3795 m + cohort)", fontsize=12)
+    fig.tight_layout()
+    out = FIG / "24_leg1_colocation.png"; fig.savefig(out, dpi=150, bbox_inches="tight")
+    print("wrote", out.relative_to(REPO)); plt.show()""",
+    "fig_leg1"))
+
+cells.append(md(
+    """**Leg-1 read (honest).** The independent thermal proxy co-locates with predicted abundance in
+the **right direction but weakly**: Spearman ρ ≈ **+0.06 (pixel)** rising only to **≈ +0.07 at the
+5–10 km band scale** — highly significant (n is huge) but a small effect. So this corroborates rather
+than confirms. Several reasons it's weak, none fatal: (i) THEMIS **night-IR brightness is a crude
+8-bit relative proxy**, not calibrated thermal inertia, and responds to *all* rocky/bedrock/dust/slope
+variation, not specifically meter-boulders — **leg 2's physical THEMIS TI (Fergason 2006) is the
+cleaner test**; (ii) the abundance map carries the CTX-mosaic stitching noise we flagged (the
+rectangular-artifact open item, DECISIONS 2026-06-18); (iii) ~200 m co-registration slack +
+THEMIS's own. The
+visual band-to-bright correspondence along the boundary is the qualitative form of the claim; the
+quantitative weight should rest on leg 2 + the cohort truth-anchor (leg 4).
+""", "leg1_read"))
 
 nb = {"cells": cells,
       "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python",

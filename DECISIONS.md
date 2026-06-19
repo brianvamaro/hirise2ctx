@@ -3979,3 +3979,22 @@ otherwise GDAL is pointed at certifi's CA bundle.
   `validation_retrieve` currently refuses. Leg 1 (the visual co-location panel) needs seam-crossing
   handling (two reads either side of 0°, reprojected into the common clon_0 grid). MOLA/TES are
   −180/180 so unaffected.
+
+## 2026-06-18b — THEMIS seam handling + leg-2 TI product chosen
+
+- **THEMIS night-IR seam:** the v14 mosaic is a projected equirectangular with
+  **central_meridian=180** (verified from its CRS), so its raster seam is at **lon 0**, which the
+  circum-Chryse region (lon −12→+20) crosses. `validation_retrieve` now auto-detects the seam from
+  the source CRS (`seam_lon` = cm+180) and splits the read into two halves (`split_bounds_at_seam`),
+  reprojecting + merging each — replaces the old `_wrap_lon` modulo. Fetched at `--match-mosaic`
+  (160 m, co-registered to the abundance grid) for both legs. (Striped TIFF, no overviews → each
+  seam-half windowed read transfers full-width rows over the lat band, ~few GB; one-time.)
+- **Leg-2 quantitative TI source = THEMIS-Derived Thermal Inertia (Fergason et al. 2006), NOT TES.**
+  32-bit **physical** TI, 100 m/px, same instrument as the night-IR panel. Served as ISIS3 `.cub`
+  tiles (30°×60°, ~2.36 GB each) at
+  `astropedia.astrogeology.usgs.gov/download/Mars/Odyssey/THEMIS-Global-Thermal-Inertia-Mosaic/Quantitative-32-Bit/THEMIS_TI_Mosaic_Quant_{LAT}{LON}_100mpp.cub`.
+  Our region needs **two** tiles: `30N000E` (0–60°E → covers 0–20°E) + `30N300E` (300–360°E → covers
+  −12–0°E). GDAL reads `.cub`. Wiring needs multi-tile-source support in `validation_retrieve`
+  (current model = one global source → window); deferred until leg-1 ships. TES Putzig physical TI
+  (MARSTHERM/PDS, 3 km) is the fallback + carries the dust-cover index for the confound mask, but the
+  ASU `nmap2003.tif` is the unusable RGB render (see 2026-06-18).
