@@ -469,7 +469,10 @@ cells.append(md(
    2006). *(TES `nmap2003` was an RGB render — unusable; switched to physical THEMIS TI, DECISIONS
    2026-06-18b. Needs the two `.cub` tiles → to come.)*
 3. **Shoreline-distance profile** — abundance vs distance from the −3795 m MOLA contour.
-4. **Truth anchor** — predictions vs BoulderNet detections at `ESP_017355_2260`.
+4. **LOIO truth anchor** — **held-out** predicted abundance vs BoulderNet detections across the
+   cohort (per-image AUC ≈ 0.43). *NOT* the all-data map at a cohort site like `ESP_017355_2260`:
+   that's **in-sample** (the deployed head trained on it) → circular. The honest anchor reuses the
+   modeling LOIO cross-validation; a map-at-cohort panel, if shown, is labelled in-sample.
 5. **Generalisation** — does the band continue along un-imaged boundary segments?
 
 ### 3.1 Leg 1 — spatial co-location (abundance ↔ THEMIS night-IR)

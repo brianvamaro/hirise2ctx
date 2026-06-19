@@ -62,11 +62,19 @@ is the **THEMIS thermal-bright deposit** (independent of CTX), NOT the elevation
 | **1. Spatial co-location** | predicted-abundance band ↔ THEMIS thermal-bright ↔ mapped contact | THEMIS fully independent |
 | **2. Thermal-inertia correlation** | rank-corr(predicted abundance, THEMIS/TES TI) over the region | independent rockiness measure |
 | **3. Shoreline-distance profile** | abundance vs distance from the −3795 m contour: boundary peak, distal decay | geometry independent |
-| **4. Cohort-truth anchor** | at HiRISE sites, predictions match the actual BoulderNet detections | the ground truth |
+| **4. LOIO truth anchor** | **held-out** (leave-one-image-out) predicted abundance ↔ BoulderNet detections at cohort sites | honest (each image scored by a model that never saw it) |
 | **5. Generalization** | does the band continue along boundary segments with **no** cohort image? | rebuts circularity |
 
-Legs 1–3 = "works at regional scale"; leg 4 anchors to truth; leg 5 rebuts the
+Legs 1–3 = "works at regional scale"; leg 4 anchors to truth **honestly**; leg 5 rebuts the
 train-on-this-region circularity.
+
+> **Leg-4 caveat (Brian, 2026-06-18):** the deployed regional map uses the **all-data**
+> `DeployableHead`, so its predictions at a cohort image (e.g. `ESP_017355_2260`) are **in-sample**
+> — comparing the *map* to that image's detections is circular and validates nothing. The honest
+> anchor is the **LOIO cross-validation** the modeling work already produced (each image predicted
+> by a model trained without it; per-image AUC ≈ 0.43, pooled ρ). Leg 4 therefore reuses those
+> **held-out** predictions vs BoulderNet truth, **not** the all-data map at a training site. A map
+> panel at a cohort site is at most a *pipeline sanity check*, labelled as in-sample.
 
 ---
 
@@ -180,8 +188,9 @@ CTX tiles (GBs) are re-fetched on the box, not uploaded.
    run-up band.
 3. **Quantitative** — (a) abundance vs TI binned scatter + rank-ρ (dust-masked);
    (b) abundance vs distance-from-shoreline profile with the boundary peak.
-4. **Truth anchor** — HiRISE image + BoulderNet detections + predicted abundance at a
-   cohort site (they match).
+4. **LOIO truth anchor** — **held-out** predicted abundance vs BoulderNet detections across the
+   cohort (per-image AUC ≈ 0.43, pooled ρ). NOT the all-data map at a training site (in-sample;
+   see the leg-4 caveat in §2). A map-at-cohort-site panel, if shown, is labelled in-sample.
 5. **OOD honesty** — a distal dusty plain where the model over-predicts but THEMIS says
    low TI / high dust → flagged by the novelty score. Turns a weakness into a rigor demo.
 
@@ -279,9 +288,10 @@ block — we are imaging exactly the boundary. **NEXT:** THEMIS night-IR + TES T
 
 Remaining open decisions (Brian):
 1. ~~Overview resolution~~ → **moot** (full-res entire block, §4).
-2. **Parity/anchor site** — confirmed default: the E12/E16_N44 dense-cohort segment
-   (anchored on ESP_017355_2260 / ESP_055978_2270) for the parity check + the truth-anchor
-   zoom (leg 4). Generalization (leg 5) is automatic once the whole block is mapped.
+2. **Parity site** — the E12/E16_N44 dense-cohort segment (anchored on ESP_017355_2260 /
+   ESP_055978_2270) for the parity check. (NOTE: this is a *cohort* segment → in-sample, so it is
+   the parity/sanity site, NOT a skill validation — see the leg-4 caveat in §2.) Generalization
+   (leg 5) is automatic once the whole block is mapped.
 3. **Novelty flag** — wire it in this plan (its natural debut) or defer and ship the
    in-distribution validation first?
 4. **Cloud specifics** — provider, GPU, Docker-vs-conda env, spot-vs-on-demand (NEXT SESSION).
