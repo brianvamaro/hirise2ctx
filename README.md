@@ -11,11 +11,23 @@ won't touch the code (collaborators, reviewers, committee members) see
 
 ## Status
 
-**Project wrapped at v1-reportable state 2026-06-03.** Stage 7 compositional
-analysis landed at "modest empirical support for transported provenance over
-crater-ejecta-locally-sourced; surface-maturity-locally-sourced alternative
-remains in play and needs Tier 3 (CRISM/HiRISE upstream source-unit comparison)
-to disambiguate." Paper-Methods style writeups in [docs/](docs/).
+**Current phase (2026-06): regional deployment + artifact mitigation.** See
+[ROADMAP.md](ROADMAP.md) for the full plan index and the live `project_state_*` memory notes
+for session state. The arc since the v1-reportable wrap:
+- **Foundation-model recipe frozen** ([PLAN_FM.md](PLAN_FM.md)): Fang-ViT embeddings + 3-seed MLP
+  ensemble (`fw_emb_mlp_ens3_gem96_S32_fa_gt_1e-2`) productized to one all-data `DeployableHead`.
+- **Calibration shipped** ([PLAN_Calibration.md](PLAN_Calibration.md)): `CalibrationLayer`
+  (isotonic P(rich) + quantile-match abundance); Stage-2 retraining ceiling = 5 m/px CTX floor.
+- **Regional map** ([PLAN_RegionalMap.md](PLAN_RegionalMap.md)): 26-tile circum-Chryse abundance
+  map on Sherlock GPUs (`scripts/map_region.py`), validated vs MOLA shoreline + THEMIS/TES thermal
+  (legs in progress). Notebook 24.
+- **Striping artifact SOLVED + mitigation in progress** ([PLAN_StripingArtifact.md](PLAN_StripingArtifact.md)):
+  the regional-map rectangular blocks are **CTX source-frame radiometry** (notebook 25); the **A1**
+  per-frame normalization prototype is under test (skill gate −0.024 median AUC; eta² payoff pending).
+
+**v1-reportable wrap (2026-06-03):** Stage 7 compositional analysis landed at "modest empirical
+support for transported provenance over crater-ejecta-locally-sourced; surface-maturity alternative
+needs Tier 3." Paper-Methods writeups in [docs/](docs/).
 
 | Deliverable | Where |
 |---|---|
@@ -63,15 +75,18 @@ to disambiguate." Paper-Methods style writeups in [docs/](docs/).
 | Provenance disambiguation Tier 3 (CRISM/HiRISE upstream source comparison) | open — decisive transport-vs-maturity test | [docs/compositional.md §8](docs/compositional.md) |
 | Stage 7e (Atwood-Stone & McEwen 2013 dust index + pixel-level shadow masking) | open | [docs/compositional.md §8](docs/compositional.md) |
 
-**281 pytest pass.** ESP_057469_2215 is excluded from Stage 4 / 4b / 5 sweeps
+**362 pytest pass** (fast suite; +A1/striping + EDR-resolver tests). ESP_057469_2215 is excluded from Stage 4 / 4b / 5 sweeps
 because its polygon bbox straddles a Murray Lab tile boundary (see
 [DECISIONS.md](DECISIONS.md) 2026-05-22 entry). ESP_046803_2325 is in the v2
 cohort with COLOR.JP2 + LBL on disk but never had Stage 4 run; it is excluded
 from Stage 7 (cohort 36 of 37 colour-eligible).
 
-**Next priorities (see [HANDOFF_NEXT_SESSION.md](HANDOFF_NEXT_SESSION.md)):**
-Tier 3 (decisive composition vs maturity test, multi-day) + Stage 7e
-refinement + Path A model bank + ESP_046803_2325 Stage 4 backfill.
+**Next priorities:** the F-vs-E striping-mitigation decision — de-risk step = the 10-frame ISIS
+timing test on Sherlock (`sbatch run_f_timing.sbatch`; SHERLOCK_RUN.md Part E;
+[PLAN_StripingArtifact.md](PLAN_StripingArtifact.md)) — then the regional-map validation legs
+(THEMIS/TES thermal on the final map; [PLAN_RegionalMap.md](PLAN_RegionalMap.md)). Parked: Stage-7 Tier 3,
+Path A model bank. (Live session state = the `project_state_*` memory notes; `HANDOFF_NEXT_SESSION.md`
+is stale.)
 
 ## Setup
 
@@ -273,6 +288,36 @@ Grid note: tiles are anchored to the **parent Murray-tile** pixel origin, so `(t
 are unique within a tile; `tile_origin_transform` rebuilds that origin for georeferencing
 (passing the window affine directly double-counts the read offset). Cross-tile scale-out
 additionally keys placement on the Murray-tile id.
+
+### Regional map (PLAN_RegionalMap) + striping artifact (PLAN_StripingArtifact)
+
+```powershell
+# Regional map: sweep whole Murray tiles -> per-tile {prob,abundance,prob_raw}.tif (160 m).
+# Resumable at (tile, read-window) granularity; built for the Sherlock job array (SHERLOCK_RUN.md).
+& $conda run -n geospatial python scripts/map_region.py --tiles E8_N44   # one tile
+& $conda run -n geospatial python scripts/map_region.py --all            # the 26-tile block
+# Notebook 24 stitches the mosaic + validation legs (MOLA / THEMIS); notebook 25 = striping analysis.
+
+# Striping artifact = CTX SOURCE-FRAME radiometry (the rectangular blocks). Analysis (no inference):
+& $conda run -n geospatial python scripts/striping_frame_blocks.py       # eta^2 + choropleth proof
+& $conda run -n geospatial python scripts/striping_frame_radiometry.py   # per-frame DN decomposition
+
+# A1 mitigation prototype: per-frame robust offset+gain CTX normalization before the embedder.
+& $conda run -n geospatial python scripts/probes/_w2_fang_embed.py --tile-px 32 --norm a1 --out-suffix _a1
+& $conda run -n geospatial python scripts/train_deployable_head.py --store-name fang_embeddings_a1 --out models/deployable_a1
+& $conda run -n geospatial python scripts/striping_a1_loio.py            # skill gate (baseline vs A1)
+& $conda run -n geospatial python scripts/striping_a1_infer_crop.py      # eta^2 payoff on a crop
+
+# F de-risk (per-source-frame inference): build + URL-verify the 10-frame timing list (laptop),
+# then run the ISIS timing test on Sherlock (SHERLOCK_RUN.md Part E; setup_isis_env.sh once).
+& $conda run -n geospatial python scripts/f_edr_frame_list.py --verify   # -> reports/f_timing/frame_list.csv
+```
+
+The Murray Lab **SeamMap** (per-pixel source-frame partition) is pulled from the remote tile zip via
+`/vsizip/vsicurl/` range requests (no GB download) and cached as `cache/ctx_tiles/_frames_<tile>.gpkg`
+by `src.striping.load_frames`. All striping/A1 logic lives in `src/striping.py`. CTX **EDR**
+URLs resolve from SeamMap `VOLUME_ID`+`PRODUCT_ID` alone via `src/ctx_edr.py` (the cached
+`PDS_IMG` links are stale; DECISIONS 2026-07-02).
 
 ## Layout
 

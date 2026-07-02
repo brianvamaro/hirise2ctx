@@ -349,6 +349,34 @@ mosaic from the returned GeoTIFFs — and proceed to the validation legs.
 
 ---
 
+## Part E — F de-risk: the 10-frame ISIS timing test (PLAN_StripingArtifact)
+
+Prices option **F** (per-source-frame inference) before committing: EDR download → `mroctx2isis`
+→ `spiceinit web=yes` → `ctxcal` → `ctxevenodd` → `cam2map` on the 10 frames in
+`reports/f_timing/frame_list.csv` (built + URL-verified on the laptop by
+`scripts/f_edr_frame_list.py --verify`; ~2 GB total download). CPU-only — no GPU, and a
+separate env from the map venv (ISIS is conda-forge-only; Sherlock discourages system conda,
+so this uses **micromamba**, a single static binary).
+
+```bash
+# once (login or sh_dev node; downloads ISIS + ~10 GB base data to $SCRATCH/isisdata)
+cd ~/hirise2ctx && git pull
+bash setup_isis_env.sh
+
+# then
+sbatch run_f_timing.sbatch
+# watch:   tail -f logs/h2c-f-timing-*.out
+# result:  $SCRATCH/hirise2ctx/f_timing/timing.csv  (per-step timings + the 907-frame
+#          regional / 86,571-frame global extrapolation printed at the end)
+# home:    copy timing.csv back into reports/f_timing/ (OnDemand Files or rsync, as Part D)
+```
+
+First-run failure modes to expect: `spiceinit web=yes` needs outbound HTTPS from compute nodes
+(the map's `/vsicurl/` reads already work there, so it should too); a `ctxcal` error naming a
+missing calibration file means the targeted `downloadIsisData mro -- --include "calibration/**"`
+pull didn't cover it — fetch the named file or the full `mro` area and re-submit (the driver
+skips nothing: each frame is independent, failures are recorded per-row in timing.csv).
+
 ## Going global later
 
 `scripts/map_region.py` is tile-list-driven, so global inference = feed the full Murray tile

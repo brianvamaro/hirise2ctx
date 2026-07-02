@@ -1,0 +1,14 @@
+Group = Mapping
+  # Match the Murray CTX mosaic grid: Mars_2015 sphere equirectangular, clon 0, 5 m/px
+  # (CLAUDE.md invariants; verified at runtime against the mosaic CRS).
+  ProjectionName     = Equirectangular
+  CenterLongitude    = 0.0
+  CenterLatitude     = 0.0
+  TargetName         = Mars
+  EquatorialRadius   = 3396190.0 <meters>
+  PolarRadius        = 3396190.0 <meters>
+  LatitudeType       = Planetocentric
+  LongitudeDirection = PositiveEast
+  LongitudeDomain    = 180
+  PixelResolution    = 5.0 <meters/pixel>
+End_Group

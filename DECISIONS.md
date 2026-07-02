@@ -3998,3 +3998,255 @@ otherwise GDAL is pointed at certifi's CA bundle.
   (current model = one global source → window); deferred until leg-1 ships. TES Putzig physical TI
   (MARSTHERM/PDS, 3 km) is the fallback + carries the dust-cover index for the confound mask, but the
   ASU `nmap2003.tif` is the unusable RGB render (see 2026-06-18).
+
+## 2026-06-18c — Striping-artifact investigation §1+§2 (PLAN_StripingArtifact); mitigation NOT started
+
+> **SUPERSEDED by 2026-06-18d (below).** Brian clarified the artifact is *high-amplitude rectangular
+> blocks visible without detrending, tilted (not vertical)* — NOT the faint vertical banding analysed
+> here, and NOT tile-assembly seams. The §1a/§1b/§2 findings below stand as facts but addressed the
+> wrong feature; the vertical-stripe "identification" and the seam-LINE test were mis-reads. The
+> correct cause = CTX source-frame radiometry (18d).
+
+Ran the cheap, no-re-inference characterization on the 26 written map tiles
+(`scripts/striping_characterize.py`) + the decisive edge/seam tests on the 9 tiles that have an
+abundance raster + cached CTX zip + cached Murray Lab **SeamMap** (`scripts/striping_seam_test.py`).
+Figures: `reports/figures/striping_fft_*`, `striping_orientation_summary.png`,
+`striping_seam_*.png`, `striping_*_summary.csv`.
+
+- **§1a (geometry):** the structure is **aperiodic** → FFT gives only weak anisotropy (~1.3) and an
+  unreliable orientation (FFT = wrong tool). Confirmed: it is **identical in `prob_raw` and
+  `abundance`** → in the **raw model output, not introduced by qmatch**. A directional banding metric
+  (col-vs-row variance) shows banding is **weak and not strongly vertical** (V≈H≈0.005–0.006) — i.e.
+  no strong organised N–S periodic stripe.
+- **§1b (edge coincidence) — POSITIVE, robust:** |∇abundance| ~ |∇CTX brightness| Spearman
+  ρ ≈ +0.08…+0.27 (**median +0.14, all 9 tiles positive**), vs row-shuffled null ~0.00. The model
+  **is** sensitive to CTX brightness/texture. BUT that brightness structure is **dominated by geology**
+  (valley networks / ridges / craters; e.g. E12_N44 frames = "closely-spaced valleys"), not linear
+  track seams.
+- **§2 (gold-standard seam test) — provenance EXISTS but test UNDERPOWERED → inconclusive.** Murray
+  Lab **does** ship a per-frame **SeamMap shapefile** (one polygon per source CTX frame +
+  PRODUCT_ID/INCIDENCE/EMISSION/IMAGE_TIME), cached for 9 map tiles. Rasterizing footprint boundaries
+  and comparing |∇abundance| near vs far from a seam gives ratio **~1.02 (0.86–1.14)** — no real
+  elevation. **Confound:** ~758 heavily-overlapping *candidate* frames per tile tile the whole 237 km
+  tile densely → every pixel is within ~1 km of a boundary (seam-distance maxes at 1.75 km); and these
+  are candidate footprints, not the mosaic's actual per-pixel *selected*-frame seams. So it neither
+  confirms nor refutes frame-seams.
+- **VERDICT:** the **CTX-brightness-sensitivity mechanism is confirmed**; the **specific CTX
+  frame-stitching-seam hypothesis is NOT** (and is somewhat weakened — visible structure looks like
+  geology). **Per Brian's standing caution, this is explicitly NOT documented as a "5 m/px CTX-floor
+  limitation"** — a failed/underpowered seam test does not prove an irreducible floor. Item stays
+  **OPEN**.
+- **Notebook 25** (`notebooks/_build_25.py` → `25_striping_artifact.ipynb`, figs
+  `reports/figures/25_striping_*`) records all of the above with visuals **+ zoomed edge panels**:
+  (i) a Murray-tile-boundary zoom and (ii) an internal-geology-edge zoom.
+- **§3 tile-seam zoom — assembly re-verified CLEAN (quantitatively).** A single cross-seam transect
+  *looked* like an abundance step, but that was a coincidental geology contrast at that latitude.
+  Averaged over the **full** lon=8°E seam, the abundance step is **+8e-5 — at the 16th percentile of
+  the interior-column (geology) null**, i.e. *smaller* than ~83% of random interior columns; CTX is
+  continuous (−0.4 DN) since Murray "tiles" are just download chunks of one seamless global mosaic.
+  So tile seams are NOT the rectangles. The internal-edge zoom confirms §1b at pixel scale (abundance
+  edges trace CTX brightness/geology). Net: the "rectangle" impression = cosmetic 4° gridlines +
+  geology blocks + the weak CTX-brightness sensitivity, **not** assembly discontinuities.
+- **Striping POSITIVELY IDENTIFIED + highlighted** (notebook §1a.2, fig `25_striping_highlight.png`;
+  `stripe_enhance` = detrend + average along-stripe). It is **low-amplitude, aperiodic, VERTICAL
+  (N–S) banding, ~km-coherent**, visible at Brian's lon 11°E/lat 36°N example and elsewhere. This
+  reconciles with the weak full-column banding index (§1a): the bands are ~km-scale, not full-tile
+  height, so a full-column-mean variance washes them out. On equipped tile E8_N44 the CTX brightness
+  shows vertical bands too, sharing structure (2D stripe ρ ≈ +0.20) but with **column positions only
+  weakly aligned** (column-profile ρ ≈ −0.09) → the abundance stripes track CTX **texture/contrast**
+  more than mean brightness. ⇒ the planned synthetic test must include a **contrast lever**, not just
+  offset/gain.
+- **MITIGATION NOT STARTED** (PLAN §4 gate: wait until §1–§3 confirm the cause).
+- **NEXT (pre-mitigation):** §3-plan synthetic brightness gain/offset/**contrast**-step susceptibility (clean, no
+  seam-density confound) to quantify how much a radiometric step moves predicted abundance; and a
+  better-powered §2 using the per-pixel *selected*-frame / per-frame incidence map (SeamMap metadata)
+  instead of all candidate footprints. Thermal legs remain the external adjudicator.
+
+## 2026-06-18d — Artifact CAUSE FOUND: CTX source-frame radiometry (rectangular blocks)
+
+Brian corrected the target: the artifact is **high-amplitude rectangular blocks** (visible in the raw
+map, no detrend), **tilted not vertical** — i.e. CTX **source frames**, not vertical stripes or
+tile-assembly seams. Re-investigated and **positively confirmed** the cause.
+Code: `src/striping.py` (now hosts the analysis fns) + `scripts/striping_frame_blocks.py`; visuals in
+`notebooks/25_striping_artifact.ipynb` (full rewrite) + `notebooks/24` §2d (raw-CTX). Figures
+`reports/figures/{25_artifact_*,26_frameblocks_*}.png`, CSVs `striping_frameblocks_*`.
+
+- **SeamMap is a PARTITION** (sum frame area ≈ union ≈ tile area; ratio 1.0): one source CTX frame per
+  pixel. ~800 polygon fragments dissolve (by `PRODUCT_ID`) to ~**46–63 distinct source frames per
+  tile**. (Corrects 18c's "758 overlapping candidates" — they don't overlap.) SeamMaps for any tile
+  are pulled from the remote Murray zip via `/vsizip/vsicurl/` range requests (no GB download),
+  cached as `cache/ctx_tiles/_frames_<tile>.gpkg` (`src.striping.load_frames`).
+- **Blocks align with frames** (notebook 25 §1): the bright/dark rectangles are bounded by source-frame
+  footprints; e.g. Brian's lon 11°E/lat 36°N block (E8_N36) steps ~0.003→~0.02 across a frame edge.
+- **eta² (variance explained by frame) of DETRENDED abundance: median 0.011 vs rotation-null 0.002,
+  89% of tiles > null-95p** — frames carry ~5–9× the null abundance structure. The frame-mean
+  choropleth reproduces the blocks after geology is removed. THIS is the decisive, robust test.
+- **Per-frame effect is mean-brightness-WEAK, texture/contrast-driven:** pooled per-frame
+  Spearman(CTX DN, detrended abundance) ≈ **+0.14** (n≈400 frames); geology-controlled near-boundary
+  step Spearman(dAbund, dCTX) ≈ **+0.10** (n≈880 adjacent-frame pairs). Both only weakly positive
+  because abundance↔brightness is non-monotonic and the embedder passes each frame's full texture.
+- **Why a filled block, not a seam line:** the model is per-patch with a **fixed `/255` embedder
+  scaling and NO per-frame normalization** (`src/fm_embeddings.py:264`); a frame's radiometry is
+  ~uniform across the whole footprint, so every interior patch is biased alike → filled rectangle. An
+  edge artifact would be boundary-only. This rules out a stitching-*discontinuity* mechanism.
+- **Why invisible in development:** training CTX windows = footprint bbox + `buffer_m=1000` ≈ **8 km**,
+  inside a single **~28 km** CTX frame (SeamMap SAMPLES≈5056×~5.5 m), so no within-scene frame seams in
+  training; **LOIO scores per-image = per-frame**, blind to a frame-level block offset. It only appears
+  when a contiguous deployment scene spans many frames. (Image-level radiometry may be weakly confounded
+  with the rich/poor label in the 39-img cohort → the model may even use it as a cue.)
+- **VERDICT:** cause = **CTX source-frame radiometry**, established positively (not by elimination), so
+  this is NOT a "CTX-floor" cop-out. **Mitigation candidate = per-frame radiometric normalization**
+  (re-tint each source frame to a common DN distribution via the SeamMap partition, before embedding)
+  = the deferred per-image/per-track standardization bet, applied per frame. **Not implemented**; next
+  step = prototype on one tile, re-score, and adjudicate by **LOIO skill preserved (per-image AUC≈0.43)
+  + THEMIS/TES thermal ρ ideally up**.
+
+## 2026-06-19/20 — A1 striping mitigation prototype (per-frame CTX normalization)
+
+Brian chose to prototype **A1** (per-frame robust offset+gain CTX normalization before the frozen Fang
+embedder) and measure its payoff. Mitigation options + the A-vs-C reasoning are written up in
+PLAN_StripingArtifact "MITIGATION" §. Code: `src/striping.py` (`a1_apply`/`a1_normalize_window`/
+`a1_normalize_per_frame`, + `eta2`/`load_frames`/`frame_label_map`), `scripts/striping_frame_radiometry.py`,
+`scripts/striping_a1_loio.py`, `scripts/striping_a1_infer_crop.py`; 7 new tests (`tests/test_striping.py`).
+
+- **Pipeline framing:** `CTX → [A1] → frozen ViT → embedding → MLP head`. ViT frozen; only the head
+  retrains. Embeddings are cached per exact input → A1 = new input → must re-embed (frozen-ViT forward)
+  then re-bake the head. A1 acts *before* the frozen ViT (higher ceiling than C, which only adjusts the
+  head after it). Training windows are ~single-frame, so A1 at train = per-window normalization.
+- **Diagnostic** (`striping_frame_radiometry.py`, 380 frames): between-frame **level spread ≈20 DN**,
+  **scale CV ≈0.43** — both large; a robust offset+gain collapses the per-frame DN histograms. → A1 is
+  the right first cut. Reference **m0=125 DN, s0=27.7** (global median-of-frame-medians / median-IQR).
+- **Implementation:** A1 wired into the embedder (`_w2_fang_embed.py --norm a1 --out-suffix _a1`);
+  re-embedded the 38-img cohort → `dataset_v2/fang_embeddings_a1/` (frozen ViT, ~14 min). Loaders got a
+  `store_name` param (so head/eval point at either store); full suite **351 passed** (no regression),
+  **+7 striping tests → 358**.
+- **SKILL GATE** (`striping_a1_loio.py`, frozen `mlp_ens3` LOIO, baseline vs A1):
+  baseline median per-image AUC **0.790** / pooled PR **0.777**; A1 **0.766** / **0.771**. **Δ median
+  AUC = −0.024** (marginal FAIL of the −0.02 gate), **Δ pooled PR = −0.007** (negligible). Reading: the
+  model **was using absolute CTX radiometry as a within-image cue** (the flagged confound); A1 removes
+  it at a small within-image cost. Caveat: **LOIO is within-frame and blind to the cross-frame artifact**
+  — so this is only A1's *cost*, not its *benefit*. Brian: measure the payoff (eta² + thermal) before
+  judging the trade.
+- **PAYOFF (eta² on a re-inferred crop)** — `striping_a1_infer_crop.py` on an E8_N44 8-frame / ~75 km
+  crop (218,089 of 219,961 160-m prediction tiles), raw P(rich), baseline head+raw CTX vs A1
+  head+per-frame-A1 CTX: **eta² 0.196 → 0.141 = 28% reduction** (fig `striping_a1_payoff.png`). So A1
+  **partially** removes the artifact — the per-frame block levels flatten but are NOT gone. Residual =
+  offset+gain doesn't capture the per-frame *shape/contrast/noise-character* differences the ViT keys
+  on (the diagnostic's ~0.4-IQR residual + the frozen-ViT ceiling).
+- **NET (A1):** partial 28% artifact reduction for a −0.024 median LOIO cost — real but **not decisive**.
+  A1 helps, doesn't solve. **NO DECISION TAKEN** — full option space (A2 / B2 / C / D / E / combos) +
+  pros/cons collected in PLAN_StripingArtifact "NEXT SESSION — decision setup". **Key un-run adjudicator
+  = THEMIS/TES thermal ρ** (baseline vs A1 vs de-block): it tells whether the −0.024 LOIO cost is real
+  (removing signal) or illusory (LOIO is within-frame; the artifact is cross-frame), and it adjudicates
+  the de-block option. Measure thermal ρ FIRST next session, then decide.
+
+## 2026-06-20 — striping artifact: literature review complete (5 papers read; NO decision)
+
+Brian provided 5 paywalled PDFs; all read in full. Findings consolidated into
+`PLAN_StripingArtifact.md` "LITERATURE & DATA-ROUTE FINDINGS" + memory
+`regional_map_rectangular_artifact`. Five independent sources converge on the diagnosis and
+sharpen the option menu (esp. F + a new entry A-meta). Compute now framed for **global** inference
+(full mosaic ≈ 86,571 source frames), not just the 26-tile box.
+
+- **Mechanism (Dickson 2024, 10.1029/2024EA003555):** each CTX frame is independently contrast-stretched
+  to **min/max = mean ± 8σ + a uniform non-linear tone stretch** *before blending*, then feathered →
+  the artifact is a per-frame **contrast** rescale (not a brightness offset; matches our mean-DN
+  Spearman +0.14), and the nonlinear part is **non-invertible from mosaic pixels** → explains A1's 28%
+  ceiling. Authors: mosaic "should not be used for radiometric statistics."
+- **Walter 2024 (10.1029/2023EA003491, open):** CTX flat-field **stable to ±2% over the ~20-yr mission**
+  → a uniformly `ctxcal`'d EDR set is frame-consistent to ~2% (**sets F's quality ceiling, high**).
+  Independently calls Murray's per-image `cubenorm` a "**high-pass filter**" that homogenizes natural
+  reflectance — our mechanism, from a calibration expert. Use new **v0003 flat-field**; EDR route
+  recovers **12-bit** (mosaic is 8-bit).
+- **Fang 2026 (10.1029/2025JH000827):** our embedder assumed the mosaic gives "consistent radiometric
+  calibration" (contradicted by Dickson) → frozen ViT never built per-frame invariance → confirms
+  **C's frozen-ViT ceiling** (DINO photometric aug already in pretraining; signal survives).
+- **Bickel & Valantinas 2025 (10.1038/s41467-025-59395-w):** closest analog (global CNN, same 86k
+  corpus) ran on **individual source frames off the ASU stream, NOT the mosaic** → the **F template**;
+  deduped ~6% overlap dupes; verified no CTX-imaging radiometric bias. Their local-detection task
+  tolerated per-frame radiometry; our cross-frame regression does not → F-for-us = per-frame source +
+  per-frame normalization.
+- **Zhang 2020 (IEEE GRSL) + Pang 2024 (ISPRS S0924271624003277):** canonical RRN = our **A3**
+  (per-frame mean+std LSQ over **image overlaps** + local refine) — but the mosaic discarded overlaps
+  (it's a partition) → a proper A3 needs source frames = **F**.
+
+**Data-route facts (verified from cached SeamMap):** 26-tile map spans **907 distinct source frames**
+(1,371 footprint-polygons; global ≈ 86,571). Each SeamMap polygon carries **`PDS_IMG`** + **`SESE_LINK`**
+(ASU `planetview` browse, resolves but **8-bit display-stretched → NOT clean for regression**) + 50
+metadata fields (INCIDENCE/EMISSION/sub-solar-az/local-time/…). **⚠️ DATA-EXISTENCE CHECK (2026-06-20):
+the SeamMap `PDS_IMG` URLs are STALE — all 10/10 sampled return 404** (PDS Imaging Node reorganized its
+tree post-2024; Dickson hedged links were "valid at time of publication"). Frames are real (CTX 5056-px
+labels) and EDRs remain in the **permanent archive** (live index pages on USGS
+`pdsimage2.wr.usgs.gov/archive/mro-m-ctx-2-edr-l0-v1.0/mrox_NNNN/` + JPL), but **F must resolve
+PRODUCT_ID → current URL via `planetarypy`** (Walter's tool; **not in env**) **or a verified USGS
+template — NOT `PDS_IMG`.** Radiometry-preserving F input = resolve-EDR → `ctxcal(v0003)` → project.
+One-library resolver dependency, not a blocker; definitive "can we pull an EDR" confirmation = first
+action of the 10-frame Sherlock timing test. **Robbins "Fully Controlled" mosaic (10.1029/2022EA002443)
+ruled out** as a swap: equatorial **±30°N only** (region is 32–46°N) + "cosmetically" corrected.
+
+**Option-menu changes:** **F** reframed from "ensemble over EDRs" → **per-source-frame inference**
+(highest ceiling; needs EDR recalibration + retrain head on source embeddings for train/deploy parity).
+**NEW A-meta** = per-frame normalize from illumination metadata (≈0 cost, no pixel pass). **Global-compute
+(Brian's constraint):** A-meta/A1/D ≈ free marginal; **F-rebuild heaviest at global** → compute pushes
+toward input-side + post-hoc D unless F's quality gain justifies re-deriving the global embedding.
+**Decision rule unchanged: thermal-ρ adjudicator FIRST.** Still NO decision taken.
+
+## 2026-06-22 — striping: D ruled out (circular); thermal-ρ retired as mitigation adjudicator
+
+**D (post-hoc de-block) RULED OUT (Brian).** D removes a frame's offset by fitting "regional geology
+trend + per-frame constant" and subtracting the constant — but separating the artifact offset from real
+geology **requires a model of the abundance field, the very unknown the map exists to discover.** D would
+assume regional structure, subtract frame-scale deviations from it, then present the result as a
+*discovery* of that structure — circular, and especially poisonous for the circum-Chryse megatsunami
+boulder deposits (real, spatially-coherent between-frame variation D could erase or manufacture). The
+Poisson/gradient-domain form doesn't escape it (it assumes the seam step is artifact; real geology may
+genuinely step at a frame boundary). Out.
+
+**Thermal-ρ RETIRED as a mitigation adjudicator.** Two compounding findings: (a) it's underpowered for
+this — baseline abundance↔TI ρ ≈ +0.07 (leg-1) and A1 removes only 28% of a modest artifact (eta² 0.011
+vs 0.002 null), so the expected Δρ is inside bootstrap noise → thermal-on-A1 would read "ambiguous" and
+add nothing the eye doesn't; (b) D was thermal's one remaining legitimate referee job (the zero-skill-cost
+option LOIO is blind to), and D is now out. So thermal has no mitigation-refereeing role left. **It
+survives only in its original role: an independent validation leg for the *final* map** (abundance vs
+thermal inertia, PLAN_RegionalMap §5) — a different question from "which mitigation."
+
+**Consequence — the decision no longer routes through thermal.** It is now a direct cost-vs-need call:
+science needs a clean, trustworthy between-frame map for regional discovery → **F** (per-source-frame,
+removes the artifact at the radiometry with NO assumption about the abundance field; ±2% floor); a
+partially-mitigated map + honest disclosure is acceptable → cheapest geology-agnostic input fix (A1 /
+A1-λ / A2 / A3 / A-meta) + **E**-style disclosure. The circularity that kills D *also* argues against
+leaning on the capped A-fixes for the final discovery map, so the live decision is essentially **F vs E**
+for the science map. Key clarification this surfaced: **A/F are preferable precisely because they fix the
+artifact at the source radiometry (known spurious per Dickson/Walter) without assuming the answer; D was
+the lone option that required assuming the abundance distribution.** PLAN_StripingArtifact option table +
+decision sequence updated; memory `regional_map_rectangular_artifact` updated. Still NO mitigation chosen.
+
+## 2026-07-02 — F de-risk step 1: EDR resolver SOLVED (no planetarypy); 10-frame timing kit built
+
+**Decision (Brian): de-risk F first** — price the per-source-frame pipeline before choosing F vs E
+(the fork framed 2026-06-22). Step 1 = can we reliably pull EDRs; step 2 = the 10-frame Sherlock
+ISIS timing test.
+
+**EDR resolver: SOLVED, and cheaper than planned.** The stale SeamMap `PDS_IMG` URLs failed only
+because the PDS Imaging Node renamed one path segment: `…/data/mro/mars_reconnaissance_orbiter/ctx/…`
+→ `…/img/data/mro/ctx/…` on `planetarydata.jpl.nasa.gov`. The frames never moved, and the SeamMap's
+own **`VOLUME_ID` + `PRODUCT_ID`** fields fully determine the live URL:
+`https://planetarydata.jpl.nasa.gov/img/data/mro/ctx/{volume_id_lower}/data/{PRODUCT_ID}.IMG`.
+**Verified 12/12** on mission-spanning volumes (mrox_0009…mrox_3355, 19–250 MB, all ranged-GET 206 +
+PDS3 labels), then **10/10** on the actual timing frame list. The **ODE REST API**
+(oderest.rsl.wustl.edu) returns the identical Product URL and is the documented fallback if JPL
+reorganizes again. **`planetarypy` is NOT needed** — the planned one-library dependency is dropped.
+(USGS `pdsimage2.wr.usgs.gov/archive/…` — the other 2026-06-20 candidate — is dead for this: 403
+Cloudflare without a UA, 404 with one.) Resolver = `src/ctx_edr.py` (`edr_url`, `frame_table`,
+`frames_in_crop`) + 4 tests; re-runnable check = `scripts/probes/_f_edr_url_verify.py`.
+
+**Timing-test kit (step 2) ready for Brian on Sherlock.** Frame list =
+`reports/f_timing/frame_list.csv` (`scripts/f_edr_frame_list.py --verify`): the **7 frames of the
+E8_N44 A1-payoff crop** (so the site doubles as the before/after comparison once per-frame inference
+exists) + 3 era-extreme fills; ~2 GB total. Pipeline per frame: EDR → `mroctx2isis` → `spiceinit
+web=yes` (no local SPICE kernels) → `ctxcal` (v0003 flat via ISISDATA mro/calibration) →
+`ctxevenodd` → `cam2map` to the mosaic grid (`f_equirect.map`: equirect clon 0, sphere 3396190 m,
+5 m/px). Kit = `setup_isis_env.sh` (micromamba — ISIS is conda-forge-only and Sherlock discourages
+system conda) + `f_timing_test.sh` (per-step timings, per-frame failure isolation, ×907/×86,571
+extrapolation) + `run_f_timing.sbatch` (CPU, `normal` partition) + SHERLOCK_RUN.md **Part E**.
+NEXT: Brian runs Part E; the timing.csv adjudicates F's cost line in the F-vs-E decision.
