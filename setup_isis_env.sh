@@ -36,7 +36,10 @@ eval "$("$MAMBA_ROOT/bin/micromamba" shell hook -s bash)"
 #    there with "Resource temporarily unavailable" (seen 2026-07-02 on a ~400-pkg
 #    transaction). Re-running is safe: the package cache resumes. If it still hits the
 #    limit, run this script inside a compute session instead:  sh_dev -c 4
-if ! micromamba env list | grep -q "^\s*isis\s"; then
+#    Completeness is checked via a sentinel BINARY, not `env list`: a crashed install leaves a
+#    registered-but-empty env behind (hit 2026-07-02), and `create -y` on it just re-runs the
+#    transaction from the package cache.
+if [ ! -x "$MAMBA_ROOT/envs/isis/bin/mroctx2isis" ]; then
     micromamba create -y -n isis --download-threads 2 \
         -c usgs-astrogeology -c conda-forge isis
 fi
