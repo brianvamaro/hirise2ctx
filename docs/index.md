@@ -10,6 +10,7 @@ care about how the results were produced but won't necessarily touch the code.
 
 | Document | Audience | Scope |
 |---|---|---|
+| [build_spec.md](build_spec.md) | Code users / maintainers | The original Weeks-1–2 build specification, preserved verbatim when [CLAUDE.md](../CLAUDE.md) was streamlined into an operating manual (2026-06-20). Authoritative for the data-pipeline stage definitions; the project has since moved on (see [ROADMAP.md](../ROADMAP.md)). |
 | [methods.md](methods.md) | Mixed / general scientific reader | Full data-pipeline Methods section in paper-Methods style: inputs → coordinate handling → co-registration → labels → features → cross-validation. Stops at the point where the modeler receives a packaged train/test dataset. ~20 pages of narrative + 9 embedded figures + 5 quantitative tables. |
 | [modeling.md](modeling.md) | Mixed / general scientific reader | Methods companion to `modeling_results.md` — describes the modelling stage on top of the packaged dataset: targets, features (incl. Stage 6a/6b/6c extensions), variants, CV design, evaluation, reproducibility. Written 2026-06-02 at project wrap-up. |
 | [modeling_slim.md](modeling_slim.md) | Mixed / general scientific reader | A simplified, reportable LightGBM model for predicting per-tile boulder abundance: 5 physically motivated features (shadow fraction + roughness), 36-image cohort, LOIO cross-validation. Used as the model writeup for the project report. Written 2026-06-03. |

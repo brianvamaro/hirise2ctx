@@ -1,5 +1,8 @@
 # PLAN — Building the dataset on the new 40-image "vClaire" detection set
 
+> **STATUS: SHIPPED.** Built → `dataset_v2/` (38 images); this is the dataset all subsequent
+> modeling/FM/regional work uses. See [ROADMAP.md](ROADMAP.md). Original draft header below.
+
 **Status:** planned, not yet implemented (updated 2026-05-28). Drafted after
 reading CLAUDE.md, README.md, DATA_DICTIONARY.md, DECISIONS.md, and the
 Stage 1–5 source; updated after inspecting the first 2 of 40 incoming

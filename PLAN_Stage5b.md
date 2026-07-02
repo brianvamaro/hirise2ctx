@@ -1,5 +1,8 @@
 # PLAN — Stage 5b: binary-classification reframing on the Stage 5 dataset
 
+> **STATUS: SHIPPED** (binary rich/poor reframing folded into the modeling track; the frozen recipe
+> targets `fa_gt_1e-2`). See [ROADMAP.md](ROADMAP.md). Original draft header below.
+
 **Status:** **planned, not yet implemented (2026-05-26)**. Will update with the
 shipped commit + DECISIONS.md entry once shipped. Three AskUserQuestion answers
 already pinned (§10).

@@ -1,5 +1,9 @@
 # PLAN — Week 3 modeling
 
+> **STATUS: SHIPPED v1 (historical) — superseded by [PLAN_FM.md](PLAN_FM.md).** LightGBM baseline +
+> two-stage executed; results in [docs/modeling_results.md](docs/modeling_results.md) §1–8. See
+> [ROADMAP.md](ROADMAP.md) for current status. Original draft header below.
+
 **Status:** plan. No code or files modified by this draft.
 **Inputs assumed in place:** Stage 4 label parquets at `dataset/labels/{ObsId}.parquet`, Stage 4b per-tile feature parquets (planned separately at `dataset/features/{ObsId}.parquet`), and Stage 4b context patches at `dataset/context_patches/{ObsId}/...` (`features.context_patch.enabled: true` required — the CNN baseline depends on these).
 **Out of scope here:** Stage 4b texture-feature implementation (see PLAN_Stage4b.md), Stage 5 packaging beyond what modeling needs (see PLAN_Stage5.md), THEMIS validation, compositional analysis.

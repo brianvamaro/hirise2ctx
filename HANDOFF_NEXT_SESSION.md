@@ -1,5 +1,9 @@
 # Handoff prompt — next session
 
+> ⚠️ **STALE (frozen at 2026-06-15; banner added 2026-07-02).** This file is no longer maintained;
+> live session state = the `project_state_*` memory notes, current phase = [ROADMAP.md](ROADMAP.md),
+> running log = [DECISIONS.md](DECISIONS.md). Kept only as a historical snapshot.
+
 **Last updated 2026-06-15 — Calibration/de-compression workstream opened + Stage 0
 + prototypes DONE (committed b96b8f4). Everything below is COMMITTED on branch
 `fm-deployable-head-and-map-pilot` (recent: b96b8f4 cal-prototypes, 63fd8b7 cal-Stage0,

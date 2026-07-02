@@ -228,12 +228,13 @@ Output: `docs/regional_validation.md` + `reports/figures/regional_*` (committed 
   residuals; use cohort co-reg shifts.
 - **Cohort is small (38)** — generalizing to a ~1000 km region is the leap; figures 4–5
   bound it honestly.
-- **OPEN: rectangular/striped artifacts in the abundance map** (Brian, 2026-06-18) — persist after
+- **Rectangular/striped artifacts in the abundance map** (Brian, 2026-06-18) — persist after
   fading the cosmetic tile grid; ruled out pipeline window seams, per-tile radiometric offsets, and
-  HiRISE footprints. Leading hypothesis = **CTX mosaic stitching** (source-frame radiometric seams
-  the model keys on; abundance has a weak non-monotonic CTX-brightness dependence, r≈0.07).
-  Deferred for later investigation (overlay CTX frame boundaries; consider per-track destriping
-  before embedding). The independent thermal legs are the external test. See DECISIONS 2026-06-18.
+  HiRISE footprints. *(UPDATE 2026-07-02: cause **SOLVED** — CTX **source-frame radiometry**
+  (per-frame contrast stretch in the Murray mosaic × no per-frame norm in the embedder), DECISIONS
+  2026-06-18d. Mitigation is its own program → [PLAN_StripingArtifact.md](PLAN_StripingArtifact.md):
+  A1 partial, decision = F vs E, F de-risk in progress. **The remaining thermal legs (1–2 quantitative)
+  should run on the final post-mitigation map**, not this one.)*
 
 ---
 
@@ -310,3 +311,15 @@ Remaining open decisions (Brian):
    the L40S, parity-safe (ViT per-sample) but re-emit the parity ref at the matching batch if
    running the strict gate. **NEXT runtime step:** Brian fetches the 19 CTX tiles on Sherlock +
    `sbatch run_region_array.sbatch` → download 19 GeoTIFFs → notebook 24 §2 auto-stitches 26.
+
+**UPDATE 2026-06-18/07-02 (status roll-up):** 26-tile expansion **RAN** (Sherlock job array) →
+notebook 24 stitches the full 26-tile mosaic. Validation so far: **MOLA leg shipped** (block median
+−3794 m ≈ the lHl1 shoreline — the contour bisects the block); **leg 1 (THEMIS night-IR co-location)
+DONE but WEAK** (abundance↔IR ρ ≈ +0.07; DECISIONS 2026-06-18); **leg-2 product chosen** = THEMIS
+quantitative TI (Fergason `.cub`; multi-tile fetch TODO); **TES nmap2003 RGB unusable** (rendered,
+not physical TI); **leg 4 corrected** — an all-data map at a cohort site is in-sample, NOT a truth
+anchor (use LOIO held-out instead, commit 5016275). The **rectangular-block artifact** dominated
+subsequent work → [PLAN_StripingArtifact.md](PLAN_StripingArtifact.md) (cause solved = CTX
+source-frame radiometry; mitigation decision F-vs-E pending the Sherlock ISIS timing de-risk).
+**The remaining quantitative thermal legs resume on whichever final map the mitigation decision
+produces.**
