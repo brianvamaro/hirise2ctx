@@ -46,15 +46,16 @@ INPUT_PX = 96          # 3x3-context box side (frozen)
 POOL = "gem"
 
 
-def build_all_image_matrix(target_id: str):
+def build_all_image_matrix(target_id: str, store_name: str = "fang_embeddings"):
     """Assemble (X_emb, y_binary, groups, obs_to_int) over every image at S=32.
 
     Each image is the test set of exactly one LOIO fold; the union of test slices
     is the full cohort, fang-augmented emb-only (P96 / GeM) so X matches the frozen
-    matrix the recipe was validated on.
+    matrix the recipe was validated on. ``store_name`` selects the embedding store
+    (e.g. ``fang_embeddings_a1`` for the A1 striping-mitigation variant).
     """
     target = get_target(target_id)
-    store = load_fang_store(INPUT_PX, pool=POOL, dataset_dir=DATASET_DIR)
+    store = load_fang_store(INPUT_PX, pool=POOL, dataset_dir=DATASET_DIR, store_name=store_name)
     Xs, ys, gs = [], [], []
     obs_to_int: dict[str, int] = {}
     for fold in iter_loio_folds(SCHEME, scale_idx=SCALE_IDX, dataset_dir=DATASET_DIR):
@@ -77,11 +78,13 @@ def main() -> int:
     ap.add_argument("--batch", type=int, default=4096)
     ap.add_argument("--seeds", nargs="+", type=int, default=[0, 1, 2])
     ap.add_argument("--out", default=str(REPO_ROOT / "models" / "deployable"))
+    ap.add_argument("--store-name", default="fang_embeddings",
+                    help="embedding store dir name (e.g. fang_embeddings_a1 for the A1 variant)")
     args = ap.parse_args()
 
     print(f"=== train deployable head ({args.target}, batch={args.batch}) ===", flush=True)
     t0 = time.monotonic()
-    X, y, groups, obs_to_int = build_all_image_matrix(args.target)
+    X, y, groups, obs_to_int = build_all_image_matrix(args.target, store_name=args.store_name)
     n_img = np.unique(groups).size
     print(f"  matrix: X={X.shape}  pos_rate={float(y.mean()):.4f}  images={n_img}  "
           f"nan_rows={int(np.isnan(X).any(axis=1).sum())}", flush=True)

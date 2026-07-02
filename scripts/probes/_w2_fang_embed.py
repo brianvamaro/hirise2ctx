@@ -53,6 +53,7 @@ import torch.nn.functional as F
 CKPT = REPO_ROOT / "models/pretrained/mars-mae-dino-vit-base-v1.pth"
 DATASET_DIR = REPO_ROOT / "dataset_v2"
 OUT_DIR = DATASET_DIR / "fang_embeddings"
+NORM = "none"   # set from --norm in main(); "a1" = striping-mitigation CTX normalization
 TILE_PX = 64           # set from --tile-px in main(); 64 (scale_idx 3) or 32 (scale_idx 2)
 CONTEXT_PX = 192       # always 3 * TILE_PX
 SCALE_IDX_BY_TILE = {64: 3, 32: 2}
@@ -199,6 +200,15 @@ def extract_one(model: ViTB16, obs_id: str, keys: pd.DataFrame, device: torch.de
 
     # ---- P=192: slice 3x3-tile boxes from the cached CTX window ----
     arr, row0, col0 = _load_ctx_window(obs_id)
+
+    # A1 striping mitigation: per-window robust offset+gain CTX normalization (each training
+    # window is ~one CTX source frame). Same (median, IQR) applied to the window and its own
+    # patches so within-frame texture is preserved and the geometry self-check still holds.
+    if NORM == "a1":
+        from src.striping import a1_apply, a1_stats
+        _med, _iqr = a1_stats(arr)
+        arr = a1_apply(arr, _med, _iqr)
+        own64 = a1_apply(own64, _med, _iqr)
     H, W = arr.shape
     r_win = ti * TILE_PX - row0
     c_win = tj * TILE_PX - col0
@@ -237,13 +247,20 @@ def extract_one(model: ViTB16, obs_id: str, keys: pd.DataFrame, device: torch.de
 def main() -> int:
     from src.modeling.loaders import load_fold
 
-    global TILE_PX, CONTEXT_PX
+    global TILE_PX, CONTEXT_PX, NORM, OUT_DIR
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--tile-px", type=int, default=64, choices=sorted(SCALE_IDX_BY_TILE))
+    ap.add_argument("--norm", choices=["none", "a1"], default="none",
+                    help="a1 = per-window robust offset+gain CTX normalization (striping mitigation)")
+    ap.add_argument("--out-suffix", default="",
+                    help="suffix on the output store dir, e.g. _a1 -> dataset_v2/fang_embeddings_a1")
     args = ap.parse_args()
     TILE_PX = args.tile_px
     CONTEXT_PX = 3 * TILE_PX
+    NORM = args.norm
+    OUT_DIR = DATASET_DIR / f"fang_embeddings{args.out_suffix}"
     scale_idx = SCALE_IDX_BY_TILE[TILE_PX]
+    print(f"norm={NORM}  out_dir={OUT_DIR}")
 
     t_start = time.monotonic()
     obj = torch.load(CKPT, map_location="cpu", weights_only=False)

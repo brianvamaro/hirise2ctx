@@ -10,7 +10,7 @@ run mapped 7 eastern tiles, then it was widened to 26); §1b is the MOLA shaded-
 §2 stitches the returned GeoTIFFs into the abundance/probability/binary mosaics; §3 is the 5
 validation legs (filled as thermal data lands).
 
-Figures: reports/figures/24_region_{extent,coverage_planning,context_mola,mosaic,products}.png.
+Figures: reports/figures/24_region_{extent,coverage_planning,context_mola,mosaic,products,abund_vs_ctx}.png.
 To regenerate: `python notebooks/_build_24.py` then nbconvert --execute --inplace.
 """
 from __future__ import annotations
@@ -460,6 +460,64 @@ if ab_tifs and MOLA.exists():
     out = FIG / "24_region_binary_on_mola.png"; fig.savefig(out, dpi=150, bbox_inches="tight")
     print("wrote", out.relative_to(REPO)); plt.show()""",
     "fig_binmola"))
+
+cells.append(md(
+    """### 2d. Abundance vs. raw CTX — are the rectangular blocks in the source data?
+
+The abundance map shows **high-amplitude rectangular blocks** (notebook 25). To test whether they
+originate in the **CTX mosaic itself** (radiometric differences between source frames) rather than in
+the model, here are the **predicted abundance (left) and the raw CTX brightness (right) side by side**,
+on the same 160 m/px grid and the same extent, for the tiles whose Murray CTX zip is cached locally,
+with HiRISE footprints overlaid. If the abundance blocks coincide with brightness/seam structure in
+the raw CTX, the artifact is a property of the 5 m/px source data (per-frame radiometry) that the
+model faithfully tracks. (Each Murray tile is itself a patchwork of CTX source frames — notebook 25
+quantifies the per-frame effect.)
+""", "ctx_md"))
+
+cells.append(code(
+    """from src.striping import mosaic_tiles, CTX_ZIP_DIR
+ctx_tiles = [t for t in BLOCK_TILES if (CTX_ZIP_DIR / f"{t}.zip").exists()]
+print(f"abundance+CTX available for {len(ctx_tiles)} of {len(BLOCK_TILES)} tiles:", ctx_tiles)
+if ctx_tiles:
+    abm, ctxm, ctr, _ = mosaic_tiles(ctx_tiles, "abundance", with_ctx=True)
+    R = 3396190.0; dpm = 180.0 / (math.pi * R)
+    ch, cw = ctxm.shape
+    cext = [ctr.c * dpm, (ctr.c + cw * ctr.a) * dpm, (ctr.f + ch * ctr.e) * dpm, ctr.f * dpm]
+    avmax = float(np.nanpercentile(abm, 99)) or 1e-3
+    cvlo, cvhi = np.nanpercentile(ctxm, [2, 98])
+
+    def overlay(ax):
+        for t, (lo, la) in boxes.items():
+            ax.add_patch(Rectangle((lo, la), TILE_DEG, TILE_DEG, fill=False,
+                                   edgecolor="cyan", lw=0.4, alpha=0.25))
+        fp = 0
+        for oid, (a0, b0, a1, b1) in footprints.items():
+            if a1 < ext[0] or a0 > ext[1] or b1 < ext[2] or b0 > ext[3]:
+                continue
+            ax.add_patch(Rectangle((a0, b0), a1 - a0, b1 - b0, fill=False, edgecolor="lime",
+                                   lw=0.9, zorder=6, label="HiRISE footprint" if fp == 0 else None))
+            fp += 1
+        ax.set_xlim(ext[0], ext[1]); ax.set_ylim(ext[2], ext[3])
+        ax.set_xlabel("longitude (deg E)")
+
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6.6), sharex=True, sharey=True)
+    i0 = axes[0].imshow(np.ma.masked_invalid(abm), cmap="turbo", vmin=0, vmax=avmax, extent=cext,
+                        origin="upper", interpolation="nearest", aspect="equal")
+    overlay(axes[0]); axes[0].set_ylabel("latitude (deg N)")
+    axes[0].set_title("predicted rock abundance (fractional_area)")
+    fig.colorbar(i0, ax=axes[0], fraction=0.030, pad=0.02, label=f"abundance (vmax=p99={avmax:.3f})")
+    i1 = axes[1].imshow(np.ma.masked_invalid(ctxm), cmap="gray", vmin=cvlo, vmax=cvhi, extent=cext,
+                        origin="upper", interpolation="nearest", aspect="equal")
+    overlay(axes[1]); axes[1].set_title("raw CTX brightness")
+    fig.colorbar(i1, ax=axes[1], fraction=0.030, pad=0.02, label="CTX DN")
+    axes[1].legend(loc="upper right", fontsize=8, frameon=False)
+    fig.suptitle("Abundance vs raw CTX @160 m/px (cached tiles) — same grid & scale\\n"
+                 "abundance blocks should coincide with CTX brightness/seam structure (green = HiRISE)",
+                 fontsize=12)
+    fig.tight_layout()
+    out = FIG / "24_region_abund_vs_ctx.png"; fig.savefig(out, dpi=150, bbox_inches="tight")
+    print("wrote", out.relative_to(REPO)); plt.show()""",
+    "fig_ctx"))
 
 cells.append(md(
     """## 3. Validation legs (PLAN §2)

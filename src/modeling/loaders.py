@@ -283,9 +283,10 @@ def augment_fold_with_per_image(fold: Fold, method: str) -> Fold:
 EMBED_DIM = 768
 
 
-def _fang_dir(dataset_dir: Path | str | None = None) -> Path:
+def _fang_dir(dataset_dir: Path | str | None = None,
+             store_name: str = "fang_embeddings") -> Path:
     base = Path(dataset_dir) if dataset_dir is not None else DEFAULT_DATASET_DIR
-    return base / "fang_embeddings"
+    return base / store_name
 
 
 def load_fang_store(
@@ -293,6 +294,7 @@ def load_fang_store(
     *,
     pool: str = "gem",
     dataset_dir: Path | str | None = None,
+    store_name: str = "fang_embeddings",
 ) -> tuple[pd.DataFrame, np.ndarray]:
     """Load the cached embedding store for one input size into a keyed matrix.
 
@@ -304,7 +306,7 @@ def load_fang_store(
     """
     if pool not in ("cls", "mean", "gem"):
         raise ValueError(f"unknown pool {pool!r}; pick from cls/mean/gem")
-    fdir = _fang_dir(dataset_dir)
+    fdir = _fang_dir(dataset_dir, store_name)
     files = sorted(fdir.glob(f"*_P{px}.npz"))
     if not files:
         raise FileNotFoundError(f"no Fang embedding store *_P{px}.npz under {fdir}")

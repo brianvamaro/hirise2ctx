@@ -44,6 +44,13 @@ models/
 *.pkl
 *.joblib
 
+# Regional-map rasters + run checkpoints (475 MB; regenerable on Sherlock — the *.tif rule
+# already blocks the rasters, this also keeps the per-tile .json checkpoints out)
+reports/map_region/
+# Per-tile LOIO prediction dump (18 MB; regenerable via scripts/striping_a1_loio.py;
+# the small striping_a1_loio_summary.csv IS tracked)
+reports/figures/striping_a1_loio_preds.csv
+
 # Background-sweep logs
 logs/
 scripts/probes/*.log
