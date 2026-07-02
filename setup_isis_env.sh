@@ -14,6 +14,14 @@
 #   export ISISROOT=$CONDA_PREFIX ISISDATA=<data dir printed below>
 set -euo pipefail
 
+# Login nodes have a per-user process/thread cgroup cap that kills micromamba's parallel
+# download AND extract phases with "Resource temporarily unavailable" (hit twice 2026-07-02,
+# with thread caps applied). Run this in a compute session:  sh_dev -c 4
+case "$(hostname)" in
+    *-ln*) echo "WARNING: $(hostname) is a LOGIN node -- the ISIS install has died here twice" >&2
+           echo "         with EAGAIN. Strongly recommended:  sh_dev -c 4  then re-run." >&2 ;;
+esac
+
 GROUP_HOME="${GROUP_HOME:-/home/groups/mlapotre}"
 MAMBA_ROOT="${MAMBA_ROOT_PREFIX:-$GROUP_HOME/$USER/micromamba}"
 # ISISDATA on scratch: base area is ~10 GB and it's re-downloadable.
@@ -41,7 +49,7 @@ eval "$("$MAMBA_ROOT/bin/micromamba" shell hook -s bash)"
 #    transaction from the package cache.
 if [ ! -x "$MAMBA_ROOT/envs/isis/bin/mroctx2isis" ]; then
     # thread caps via env vars: current micromamba has no --download-threads CLI flag
-    MAMBA_DOWNLOAD_THREADS=2 MAMBA_EXTRACT_THREADS=2 \
+    MAMBA_DOWNLOAD_THREADS=1 MAMBA_EXTRACT_THREADS=1 \
         micromamba create -y -n isis -c usgs-astrogeology -c conda-forge isis
 fi
 micromamba activate isis
