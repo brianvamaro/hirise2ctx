@@ -4250,3 +4250,10 @@ web=yes` (no local SPICE kernels) → `ctxcal` (v0003 flat via ISISDATA mro/cali
 system conda) + `f_timing_test.sh` (per-step timings, per-frame failure isolation, ×907/×86,571
 extrapolation) + `run_f_timing.sbatch` (CPU, `normal` partition) + SHERLOCK_RUN.md **Part E**.
 NEXT: Brian runs Part E; the timing.csv adjudicates F's cost line in the F-vs-E decision.
+
+## 2026-07-02b — fix: ISIS conda channel
+
+First Sherlock run of `setup_isis_env.sh` failed at env creation: `isis` does **not** exist on
+conda-forge — USGS distributes it via the **`usgs-astrogeology`** anaconda channel (conda-forge
+supplies only the dependencies). Fixed: `micromamba create -n isis -c usgs-astrogeology -c
+conda-forge isis` (USGS channel first). SHERLOCK_RUN Part E wording corrected likewise.

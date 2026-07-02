@@ -355,8 +355,9 @@ Prices option **F** (per-source-frame inference) before committing: EDR download
 → `spiceinit web=yes` → `ctxcal` → `ctxevenodd` → `cam2map` on the 10 frames in
 `reports/f_timing/frame_list.csv` (built + URL-verified on the laptop by
 `scripts/f_edr_frame_list.py --verify`; ~2 GB total download). CPU-only — no GPU, and a
-separate env from the map venv (ISIS is conda-forge-only; Sherlock discourages system conda,
-so this uses **micromamba**, a single static binary).
+separate env from the map venv (ISIS ships only via conda channels — the USGS
+`usgs-astrogeology` channel, deps from conda-forge; Sherlock discourages system conda, so
+this uses **micromamba**, a single static binary).
 
 ```bash
 # once (login or sh_dev node; downloads ISIS + ~10 GB base data to $SCRATCH/isisdata)

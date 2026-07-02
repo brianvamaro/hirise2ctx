@@ -1,8 +1,9 @@
 #!/bin/bash
 # setup_isis_env.sh -- ISIS environment on Sherlock for the F de-risk timing test
-# (PLAN_StripingArtifact: per-source-frame inference). ISIS ships only on conda-forge and
-# Sherlock discourages system conda, so this uses MICROMAMBA (one static binary, no root,
-# no module). CPU-only. Idempotent. Run on a login or sh_dev node.
+# (PLAN_StripingArtifact: per-source-frame inference). ISIS ships only via conda channels
+# (the USGS `usgs-astrogeology` channel, deps from conda-forge) and Sherlock discourages
+# system conda, so this uses MICROMAMBA (one static binary, no root, no module). CPU-only.
+# Idempotent. Run on a login or sh_dev node.
 #
 #   bash setup_isis_env.sh
 #
@@ -28,9 +29,11 @@ if [ ! -x "$MAMBA_ROOT/bin/micromamba" ]; then
 fi
 eval "$("$MAMBA_ROOT/bin/micromamba" shell hook -s bash)"
 
-# 2) ISIS env from conda-forge (pulls its own compatible libs; nothing system-wide)
+# 2) ISIS env. The `isis` package lives on the USGS `usgs-astrogeology` channel (NOT
+#    conda-forge -- that channel only supplies the dependencies), so both channels are
+#    required, USGS first.
 if ! micromamba env list | grep -q "^\s*isis\s"; then
-    micromamba create -y -n isis -c conda-forge isis
+    micromamba create -y -n isis -c usgs-astrogeology -c conda-forge isis
 fi
 micromamba activate isis
 export ISISROOT="$CONDA_PREFIX"
