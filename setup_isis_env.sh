@@ -40,8 +40,9 @@ eval "$("$MAMBA_ROOT/bin/micromamba" shell hook -s bash)"
 #    registered-but-empty env behind (hit 2026-07-02), and `create -y` on it just re-runs the
 #    transaction from the package cache.
 if [ ! -x "$MAMBA_ROOT/envs/isis/bin/mroctx2isis" ]; then
-    micromamba create -y -n isis --download-threads 2 \
-        -c usgs-astrogeology -c conda-forge isis
+    # thread caps via env vars: current micromamba has no --download-threads CLI flag
+    MAMBA_DOWNLOAD_THREADS=2 MAMBA_EXTRACT_THREADS=2 \
+        micromamba create -y -n isis -c usgs-astrogeology -c conda-forge isis
 fi
 micromamba activate isis
 export ISISROOT="$CONDA_PREFIX"
