@@ -31,9 +31,14 @@ eval "$("$MAMBA_ROOT/bin/micromamba" shell hook -s bash)"
 
 # 2) ISIS env. The `isis` package lives on the USGS `usgs-astrogeology` channel (NOT
 #    conda-forge -- that channel only supplies the dependencies), so both channels are
-#    required, USGS first.
+#    required, USGS first. --download-threads is capped because Sherlock LOGIN nodes have a
+#    tight per-user process/thread limit and micromamba's default parallel downloader dies
+#    there with "Resource temporarily unavailable" (seen 2026-07-02 on a ~400-pkg
+#    transaction). Re-running is safe: the package cache resumes. If it still hits the
+#    limit, run this script inside a compute session instead:  sh_dev -c 4
 if ! micromamba env list | grep -q "^\s*isis\s"; then
-    micromamba create -y -n isis -c usgs-astrogeology -c conda-forge isis
+    micromamba create -y -n isis --download-threads 2 \
+        -c usgs-astrogeology -c conda-forge isis
 fi
 micromamba activate isis
 export ISISROOT="$CONDA_PREFIX"
