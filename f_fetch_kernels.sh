@@ -35,6 +35,10 @@ PATTERNS=( "calibration/**"
 PATTERNS+=( "${FILES[@]}" )
 BRACES="{$(IFS=,; echo "${PATTERNS[*]}")}"
 
+# ⚠ OBSERVED 2026-07-02: this ISIS build's downloadIsisData silently IGNORED the --include
+# filter and mirrored the FULL mro area (257 GB) — which does work, just heavy. Kept as-is
+# since the mirror is now in place; revisit the filter (or switch to direct rclone with the
+# shipped config) before any fresh-machine rerun.
 downloadIsisData mro "$ISISDATA" --include="$BRACES"
 
 echo "OK -- kernels + calibration in $ISISDATA/mro"

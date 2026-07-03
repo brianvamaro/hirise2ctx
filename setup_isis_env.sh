@@ -65,8 +65,12 @@ echo "ISIS $(head -1 "$ISISROOT/version" 2>/dev/null || echo '?') at $ISISROOT"
 #    timing test -- its ctxcal step will name any file still missing.
 mkdir -p "$ISISDATA_DIR"
 export ISISDATA="$ISISDATA_DIR"
-if [ ! -d "$ISISDATA_DIR/base" ]; then
-    echo "downloading ISIS base data area -> $ISISDATA_DIR (~10 GB) ..."
+# Gate on a sentinel FILE spiceinit actually needs (the lsk selection db), not the dir: an
+# interrupted download leaves base/ present-but-unusable ("No existing files found with a
+# numerical version matching [kernels.????.db] in [.../base/kernels/lsk]", hit 2026-07-02).
+# rclone resumes, so re-running just fills the gaps.
+if ! ls "$ISISDATA_DIR"/base/kernels/lsk/kernels.*.db >/dev/null 2>&1; then
+    echo "downloading/completing ISIS base data area -> $ISISDATA_DIR (~10 GB) ..."
     downloadIsisData base "$ISISDATA_DIR"
 fi
 if [ ! -d "$ISISDATA_DIR/mro/calibration" ]; then

@@ -4287,3 +4287,16 @@ Part E "failure modes"):
 
 Partial timing already banked from the failed run: download ≈3–12 s, `mroctx2isis` ≈5–21 s per
 frame (129–264 MB EDRs) — those two legs alone ≈ 4 h serial for the 907-frame region.
+
+## 2026-07-02d — F timing: base data area was the missing piece (+ two corrections)
+
+The web=no run failed instantly: `No existing files found matching [kernels.????.db] in
+[$ISISDATA/base/kernels/lsk]` — the **base area was never (fully) downloaded**: the first setup
+run crashed at env activation *before* `downloadIsisData base`, and the re-run gate tested `-d
+base/` (present-but-empty passes). Fixed like the env check: gate on the sentinel FILE spiceinit
+needs (`base/kernels/lsk/kernels.*.db`); rclone resumes so re-running setup completes the area.
+**Corrections to 2026-07-02c:** (a) `downloadIsisData --include` was silently IGNORED by this
+build — the "targeted ~1–2 GB" fetch actually mirrored the FULL mro area (**257 GB** on scratch;
+works, heavy; noted in f_fetch_kernels.sh, revisit before any fresh-machine rerun); (b) with the
+full mirror, kernel availability is moot — the whole local-SPICE story reduces to "have base +
+mro areas, run web=no."
