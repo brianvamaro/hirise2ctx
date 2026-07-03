@@ -360,9 +360,14 @@ separate env from the map venv (ISIS ships only via conda channels — the USGS
 this uses **micromamba**, a single static binary).
 
 ```bash
-# once (login or sh_dev node; downloads ISIS + ~10 GB base data to $SCRATCH/isisdata)
+# once: env + ~10 GB ISIS base data to $SCRATCH/isisdata. Use a COMPUTE session (sh_dev -c 4):
+# login nodes kill micromamba's parallel install with EAGAIN (script warns if you try).
 cd ~/hirise2ctx && git pull
 bash setup_isis_env.sh
+
+# once: targeted MRO kernel + calibration fetch (~1-2 GB; login node -- needs internet).
+# Reads the kernel names the web service resolved into the first run's isis_steps.log.
+bash f_fetch_kernels.sh
 
 # then
 sbatch run_f_timing.sbatch
@@ -372,11 +377,18 @@ sbatch run_f_timing.sbatch
 # home:    copy timing.csv back into reports/f_timing/ (OnDemand Files or rsync, as Part D)
 ```
 
-First-run failure modes to expect: `spiceinit web=yes` needs outbound HTTPS from compute nodes
-(the map's `/vsicurl/` reads already work there, so it should too); a `ctxcal` error naming a
-missing calibration file means the targeted `downloadIsisData mro -- --include "calibration/**"`
-pull didn't cover it — fetch the named file or the full `mro` area and re-submit (the driver
-skips nothing: each frame is independent, failures are recorded per-row in timing.csv).
+Failure modes we hit on the way (all fixed in-repo, kept for recognition):
+- **micromamba install dies with `Resource temporarily unavailable`** → you're on a login node;
+  use `sh_dev -c 4` (per-user thread cgroup is the constraint, thread caps don't save you).
+- **`spiceinit web=yes` → "The SPICE server returned incompatible SPICE data"** → the web
+  service is version-pinned to a different ISIS release than the conda `isis` client; that's
+  why the test runs `web=no` on local kernels from `f_fetch_kernels.sh`. For a NEW frame set,
+  run once with `SPICE_WEB=yes sbatch run_f_timing.sbatch` to harvest the kernel names into
+  the log, `bash f_fetch_kernels.sh`, then re-submit (default local).
+- **`ctxcal` error naming a missing calibration file** → the targeted mro pull missed it;
+  `f_fetch_kernels.sh` includes `calibration/**`, or pull the named file manually.
+- Compute nodes DO have outbound internet (verified: `srun curl` → HTTP 206), so the EDR
+  downloads inside the job are fine.
 
 ## Going global later
 

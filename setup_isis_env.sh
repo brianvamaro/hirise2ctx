@@ -71,10 +71,13 @@ if [ ! -d "$ISISDATA_DIR/base" ]; then
 fi
 if [ ! -d "$ISISDATA_DIR/mro/calibration" ]; then
     echo "downloading MRO calibration area (small; NOT the huge kernels) ..."
-    downloadIsisData mro "$ISISDATA_DIR" -- --include "calibration/**" \
-        || echo "WARNING: targeted mro pull failed; run 'downloadIsisData mro $ISISDATA_DIR'\
- manually if ctxcal later reports a missing calibration file."
+    downloadIsisData mro "$ISISDATA_DIR" --include="calibration/**" \
+        || echo "WARNING: targeted mro pull failed; f_fetch_kernels.sh retries it, or run\
+ 'downloadIsisData mro $ISISDATA_DIR' manually if ctxcal later reports a missing file."
 fi
+# NOTE: SPICE kernels are NOT downloaded here. The web-SPICE service is version-pinned
+# (rejects our ISIS 10 client with "incompatible SPICE data"), so the timing test runs
+# spiceinit web=no against a targeted local fetch -- see f_fetch_kernels.sh.
 
 # 4) smoke test: the four apps the timing pipeline uses resolve + run
 for app in mroctx2isis spiceinit ctxcal ctxevenodd cam2map; do

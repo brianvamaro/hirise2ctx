@@ -4257,3 +4257,33 @@ First Sherlock run of `setup_isis_env.sh` failed at env creation: `isis` does **
 conda-forge — USGS distributes it via the **`usgs-astrogeology`** anaconda channel (conda-forge
 supplies only the dependencies). Fixed: `micromamba create -n isis -c usgs-astrogeology -c
 conda-forge isis` (USGS channel first). SHERLOCK_RUN Part E wording corrected likewise.
+
+## 2026-07-02c — F timing test: Sherlock gauntlet + web-SPICE verdict (local kernels)
+
+Getting Part E to first light surfaced five environment facts (all fixed in-repo, SHERLOCK_RUN
+Part E "failure modes"):
+1. **`isis` is NOT on conda-forge** — it lives on the **`usgs-astrogeology`** channel (conda-forge
+   supplies deps only).
+2. **Login nodes cannot install the env** — micromamba's parallel download AND extract both die
+   with EAGAIN under the per-user thread cgroup, even capped to 1 thread; `sh_dev` works.
+   setup_isis_env.sh now warns on `*-ln*` hostnames and gates completeness on the `mroctx2isis`
+   binary (a crashed transaction leaves a registered-but-empty env that `env list` calls done).
+3. **`micromamba activate` must run under `set +u`** — ISIS's bundled activate.d hooks
+   (libpdal-core) reference unset vars (`PDAL_DRIVER_PATH`).
+4. **Compute nodes DO have outbound internet** (verified `srun curl` → HTTP 206 on the JPL EDR
+   tree) — the timing job's downloads run fine in-batch. (The earlier all-`download_fail` run was
+   a script bug: `step()` ate its label as the command; fixed fd2e228.)
+5. **The ISIS web-SPICE service is USELESS to us: version-pinned.** `spiceinit web=yes` (ISIS
+   10.0.0 client, default `apis/ale/v0.9.1/spiceserver` URL) answers **"The SPICE server returned
+   incompatible SPICE data"** on every frame — the server serves a payload for a different ISIS
+   version (known failure class; only the server's own release is compatible). **Verdict: F runs
+   spiceinit `web=no` on LOCAL kernels.** The server's response still *names* the correct kernels
+   in the log, so `f_fetch_kernels.sh` harvests them and pulls a **targeted ~1–2 GB** (small
+   kernel dirs + ck/spk db files + the specific weekly CKs / psp SPKs + `calibration/**` for
+   ctxcal) instead of the 100s-of-GB full mro area. Also fixed: `downloadIsisData` filter syntax
+   is `--include="..."` direct (the setup script's earlier `-- --include` form silently failed →
+   calibration was missing too). Production-F implication: global runs use a local ISISDATA
+   mirror sized to the frame set — no web-service dependency, batch-friendly.
+
+Partial timing already banked from the failed run: download ≈3–12 s, `mroctx2isis` ≈5–21 s per
+frame (129–264 MB EDRs) — those two legs alone ≈ 4 h serial for the 907-frame region.

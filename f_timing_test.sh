@@ -43,7 +43,10 @@ tail -n +2 "$LIST" | while IFS= read -r line; do
     mb=$(echo "scale=1; $(stat -c%s "$pid.IMG" 2>/dev/null || echo 0)/1000000" | bc)
     ti=0; ts=0; tc=0; te=0; tm=0
     [ "$status" = ok ] && { ti=$(step import mroctx2isis from="$pid.IMG" to="$pid.cub") || status=import_fail; }
-    [ "$status" = ok ] && { ts=$(step spiceinit spiceinit from="$pid.cub" web=yes) || status=spiceinit_fail; }
+    # web=no default: the web-SPICE server is version-pinned and rejects our ISIS 10 client
+    # ("incompatible SPICE data"); local kernels come from f_fetch_kernels.sh. SPICE_WEB=yes
+    # is still useful once per new frame set: its log names the kernels to fetch.
+    [ "$status" = ok ] && { ts=$(step spiceinit spiceinit from="$pid.cub" web="${SPICE_WEB:-no}") || status=spiceinit_fail; }
     [ "$status" = ok ] && { tc=$(step ctxcal ctxcal from="$pid.cub" to="$pid.cal.cub") || status=ctxcal_fail; }
     [ "$status" = ok ] && { te=$(step ctxevenodd ctxevenodd from="$pid.cal.cub" to="$pid.eo.cub") || status=evenodd_fail; }
     [ "$status" = ok ] && { tm=$(step cam2map cam2map from="$pid.eo.cub" to="$pid.map.cub" map="$MAP" pixres=map) || status=cam2map_fail; }
