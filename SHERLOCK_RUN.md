@@ -390,6 +390,11 @@ Failure modes we hit on the way (all fixed in-repo, kept for recognition):
 - Compute nodes DO have outbound internet (verified: `srun curl` → HTTP 206), so the EDR
   downloads inside the job are fine.
 
+For the **F pilot** the same job doubles as the cube factory: `KEEP_CUBES=1 sbatch
+run_f_timing.sbatch` keeps the projected `.map.cub`s (~36 GB scratch), then
+`python scripts/f_pilot_extract_crop.py` (map venv) windows the 7 crop frames to small I/F
+GeoTIFFs → tar → laptop `reports/f_timing/pilot_crops/` (analysis runs there on the local GPU).
+
 ## Going global later
 
 `scripts/map_region.py` is tile-list-driven, so global inference = feed the full Murray tile

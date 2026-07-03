@@ -81,9 +81,10 @@ because its polygon bbox straddles a Murray Lab tile boundary (see
 cohort with COLOR.JP2 + LBL on disk but never had Stage 4 run; it is excluded
 from Stage 7 (cohort 36 of 37 colour-eligible).
 
-**Next priorities:** the F-vs-E striping-mitigation decision — de-risk step = the 10-frame ISIS
-timing test on Sherlock (`sbatch run_f_timing.sbatch`; SHERLOCK_RUN.md Part E;
-[PLAN_StripingArtifact.md](PLAN_StripingArtifact.md)) — then the regional-map validation legs
+**Next priorities:** the **F pilot** (per-source-frame inference on the 7 timed E8_N44 crop
+frames — leg A eta² GPU run via `scripts/f_pilot_crop.py`, then leg B LOIO re-gate;
+[PLAN_StripingArtifact.md](PLAN_StripingArtifact.md); timing test DONE 2026-07-03: 22 min/frame,
+regional ≈ 333 CPU-h) — then the F-vs-E call, the regional rebuild if F, and the validation legs
 (THEMIS/TES thermal on the final map; [PLAN_RegionalMap.md](PLAN_RegionalMap.md)). Parked: Stage-7 Tier 3,
 Path A model bank. (Live session state = the `project_state_*` memory notes; `HANDOFF_NEXT_SESSION.md`
 is stale.)
@@ -311,6 +312,11 @@ additionally keys placement on the Murray-tile id.
 # F de-risk (per-source-frame inference): build + URL-verify the 10-frame timing list (laptop),
 # then run the ISIS timing test on Sherlock (SHERLOCK_RUN.md Part E; setup_isis_env.sh once).
 & $conda run -n geospatial python scripts/f_edr_frame_list.py --verify   # -> reports/f_timing/frame_list.csv
+
+# F pilot (after a KEEP_CUBES=1 timing run + f_pilot_extract_crop.py on Sherlock brought the
+# 7 calibrated I/F crops home to reports/f_timing/pilot_crops/):
+& $conda run -n geospatial python scripts/f_pilot_ifcheck.py             # A0: I/F consistency (CPU)
+& $conda run -n geospatial python scripts/f_pilot_crop.py                # leg A: eta^2, 4 mappings (GPU)
 ```
 
 The Murray Lab **SeamMap** (per-pixel source-frame partition) is pulled from the remote tile zip via

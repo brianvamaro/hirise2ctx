@@ -132,6 +132,12 @@ frames** that per-frame inference actually kills the blocks:
   full 907-frame regional build.
 - **Step 1 is a rerun of the timing job with cubes kept:** `KEEP_CUBES=1 sbatch
   run_f_timing.sbatch` (the first run deleted its cubes by default; ~3.7 h, ~36 GB scratch).
+- **✅ Leg A0 DONE (2026-07-03b, CPU):** crops extracted + aligned; calibrated frames' 24.9% level
+  spread is **real illumination** (median↔cos i r=+0.83; same-incidence pairs agree 1–3% ≈ the
+  Walter claim; Lambert overcorrects; empirical **Minnaert k≈0.66**) → F needs an input-side
+  illumination layer; pilot now tests **4 mappings** (affine / lambert / **minnaert** / perframe).
+  `f_pilot_ifcheck.png` + CSVs; DECISIONS 2026-07-03b. **Leg A eta² GPU run pending** (waiting
+  for the local GPU to free; ~2.5–3 h, `scripts/f_pilot_crop.py`).
 
 ## NEXT SESSION — decision setup (collected; no decision taken 2026-06-20)
 
