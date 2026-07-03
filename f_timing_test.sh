@@ -25,7 +25,9 @@ PID_COL=$(col PRODUCT_ID); URL_COL=$(col edr_url)
 echo "product_id,edr_mb,t_download,t_import,t_spiceinit,t_ctxcal,t_evenodd,t_cam2map,t_total,map_mb,status" > "$OUT"
 now() { date +%s.%N; }
 step() {  # step <label> <cmd...>   -> echoes elapsed seconds, returns cmd status
+    local label="$1"; shift          # consume the label; "$@" is now just the command
     local t0; t0=$(now)
+    echo "--- $label ---" >> "$WORK/isis_steps.log"
     "$@" >> "$WORK/isis_steps.log" 2>&1
     local rc=$?
     echo "$(now) - $t0" | bc
