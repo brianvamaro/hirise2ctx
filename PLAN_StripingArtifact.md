@@ -112,6 +112,27 @@ THEMIS/TES thermal ρ ideally up** (external check). "Looks cleaner" alone is in
   and affordable at regional scale → decision is now purely Brian's F-vs-E call** (DECISIONS
   2026-07-03).
 
+### DECISION (Brian, 2026-07-03): **small F pilot first**, then commit
+One more gate before the full 907-frame build — prove on the **7 already-timed E8_N44 crop
+frames** that per-frame inference actually kills the blocks:
+- **Leg A (deploy-side, no retrain):** extract the crop windows from the projected I/F cubes
+  (`scripts/f_pilot_extract_crop.py`, Sherlock) → laptop: embed + predict with the existing
+  mosaic-trained heads under 2–3 **I/F→ViT-input mappings** — (a) global affine (pooled 2–98% →
+  0–255; the "calibrated frames need no per-frame norm" bet), (b) **Lambert cos(incidence)**
+  correction from SeamMap metadata then affine (calibrated I/F *exposes* real illumination
+  differences the mosaic's per-frame stretch used to hide — the A-meta insight resurfacing
+  inside F), (c) per-frame robust A1-style (reference). **Metrics:** frame eta² vs the mosaic
+  baseline **0.196** / A1 **0.141** (target ≲ ~0.03 ≈ block-free), frame-mean choropleth, and
+  **overlap-pair pixel agreement** (the Walter ±2% claim checked on our own frames — F's
+  built-in internal validation). Caveat: mosaic-trained head on F inputs is train/deploy
+  mismatched — eta² (between-frame structure) is still the right readout; absolute calibration
+  is NOT scored here.
+- **Leg B (skill-side, only if A passes):** project the source frames under the 38-image cohort,
+  re-embed training windows, re-bake head, **LOIO gate** (the A1-cycle machinery) → then the
+  full 907-frame regional build.
+- **Step 1 is a rerun of the timing job with cubes kept:** `KEEP_CUBES=1 sbatch
+  run_f_timing.sbatch` (the first run deleted its cubes by default; ~3.7 h, ~36 GB scratch).
+
 ## NEXT SESSION — decision setup (collected; no decision taken 2026-06-20)
 
 **Where we are:** cause = CTX source-frame radiometry (proven). A1 (per-frame offset+gain) is built
