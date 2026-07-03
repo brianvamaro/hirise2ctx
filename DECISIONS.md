@@ -4324,3 +4324,21 @@ pipeline. `reports/f_timing/timing.csv` (committed) is the price sheet:
   LOIO re-gate (the A1-cycle machinery), overlap composite/dedup à la Bickel.
 
 **The ISIS leg was F's last unknown → the F-vs-E call is now a pure numbers decision (Brian).**
+
+## 2026-07-03b — F pilot leg A0 (CPU): calibrated frames differ by REAL illumination, not error
+
+`scripts/f_pilot_ifcheck.py` on the 7 aligned E8_N44 crop frames (`f_pilot_ifcheck.png` + CSVs):
+- **Per-frame I/F level spread 24.9%** — but **median-vs-cos(incidence) r = +0.83**: the spread is
+  dominated by real illumination (B03 i=57.9° darkest 0.093; P18 i=43.1° brightest 0.115), plus
+  atmosphere. **Walter's ±2% is flat-field/instrument stability, NOT scene-level constancy** —
+  same-incidence pairs DO agree at 1.0–3.3% (P21~P22 pairs), high-Δi pairs disagree 13–22%.
+  Median |ratio−1| across all 15 overlap pairs = 10.2%. Overlap correlations 0.56–0.98 (structure
+  consistent; offsets multiplicative). IQR CV 0.26 (vs mosaic 0.43): contrast ~1.7× more uniform.
+- **The mosaic's per-frame stretch was partly hiding real illumination variability** — F exposes
+  it, so an input-side illumination handling layer is a *required* part of F, not an option.
+- **Pure Lambert overcorrects** (cos(i) too strong at high i: spread 24.9→21.8% only, B03
+  overshoots): Mars is non-Lambertian. The frames' own log(median)–log(cos i) slope gives
+  **Minnaert k ≈ 0.66** (classic Mars range) → added a 4th pilot mapping **`minnaert`**
+  (metadata-only at deploy once k is fixed — the A-meta idea landing inside F). Expected order
+  for block-killing: perframe ≥ minnaert > lambert > affine; skill/physics trade to be judged
+  with leg-A eta² + leg-B LOIO.

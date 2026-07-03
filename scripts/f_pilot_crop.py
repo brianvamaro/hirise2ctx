@@ -92,16 +92,24 @@ def align_frame(pid: str) -> None:
 
 
 # ---------------------------------------------------------------- phase 2: I/F -> uint8 maps
-def pooled_percentiles(pids, lambert_cos=None, step=16) -> tuple[float, float]:
+def pooled_percentiles(pids, divisor: dict | None = None, step=16) -> tuple[float, float]:
     vals = []
     for pid in pids:
         a = np.load(aligned_path(pid), mmap_mode="r")[::step, ::step]
         a = a[np.isfinite(a)]
-        if lambert_cos is not None:
-            a = a / lambert_cos[pid]
+        if divisor is not None:
+            a = a / divisor[pid]
         vals.append(a)
     pool = np.concatenate(vals)
     return float(np.percentile(pool, 2)), float(np.percentile(pool, 98))
+
+
+def frame_medians(pids, step=16) -> dict:
+    out = {}
+    for pid in pids:
+        a = np.load(aligned_path(pid), mmap_mode="r")[::step, ::step]
+        out[pid] = float(np.median(a[np.isfinite(a)]))
+    return out
 
 
 def to_uint8(arr: np.ndarray, lo: float, hi: float) -> np.ndarray:
@@ -119,6 +127,9 @@ def mapped_uint8(pid: str, mapping: str, ctx: dict) -> np.ndarray:
     if mapping == "lambert":
         lo, hi = ctx["lambert_lohi"]
         return to_uint8(arr / ctx["cos_i"][pid], lo, hi)
+    if mapping == "minnaert":
+        lo, hi = ctx["minnaert_lohi"]
+        return to_uint8(arr / ctx["minnaert_div"][pid], lo, hi)
     if mapping == "perframe":
         fin = np.isfinite(arr)
         med = float(np.median(arr[fin]))
@@ -295,7 +306,8 @@ def render(mapping: str, res: dict) -> None:
 def main():
     global SIZE, WORK
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mappings", nargs="+", default=["affine", "lambert", "perframe"])
+    ap.add_argument("--mappings", nargs="+",
+                    default=["affine", "lambert", "minnaert", "perframe"])
     ap.add_argument("--frames", type=int, default=0, help="limit frames (smoke test)")
     ap.add_argument("--smoke-size", type=int, default=0,
                     help="shrink the crop to N native px (multiple of 32; smoke test)")
@@ -323,7 +335,17 @@ def main():
         print(f"affine stretch: I/F {ctx['affine_lohi'][0]:.4f}..{ctx['affine_lohi'][1]:.4f}",
               flush=True)
     if "lambert" in args.mappings:
-        ctx["lambert_lohi"] = pooled_percentiles(pids, lambert_cos=cos_i)
+        ctx["lambert_lohi"] = pooled_percentiles(pids, divisor=cos_i)
+    if "minnaert" in args.mappings:
+        # empirical Minnaert exponent from the frames themselves: slope of
+        # log(median I/F) vs log(cos i) — metadata-only at deploy once k is fixed
+        med = frame_medians(pids)
+        k = float(np.polyfit([np.log(cos_i[p]) for p in pids],
+                             [np.log(med[p]) for p in pids], 1)[0])
+        ctx["k_minnaert"] = k
+        ctx["minnaert_div"] = {p: cos_i[p] ** k for p in pids}
+        ctx["minnaert_lohi"] = pooled_percentiles(pids, divisor=ctx["minnaert_div"])
+        print(f"minnaert k = {k:.3f} (fit from {len(pids)} frame medians)", flush=True)
 
     embedder = FangEmbedder.load(device="cpu" if args.cpu else None)
     heads = {"base": DeployableHead.load(BASE_HEAD)}
