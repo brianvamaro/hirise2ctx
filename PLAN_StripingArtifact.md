@@ -105,6 +105,12 @@ THEMIS/TES thermal ρ ideally up** (external check). "Looks cleaner" alone is in
   and prints the ×907 regional / ×86,571 global extrapolation. SHERLOCK_RUN.md **Part E**.
 - **Then:** timing.csv prices F's pipeline cost → make the F-vs-E call (embedding/head-retrain
   cost is already understood from the A1 cycle; the ISIS leg was the unknown).
+- **✅ TIMING DONE (2026-07-03, after a Sherlock env gauntlet — DECISIONS 2026-07-02b/c/d): 10/10
+  frames end-to-end, zero failures.** Mean **22 min/frame, 96.6% = cam2map**; regional 907 frames
+  ≈ **333 CPU-h** (≈10 h on a 32-task array, CPU-only); global ≈ 31,800 CPU-h. Regional storage
+  ~3.2 TB of projected cubes if kept (stream/16-bit/crop levers exist). **F's ISIS leg is proven
+  and affordable at regional scale → decision is now purely Brian's F-vs-E call** (DECISIONS
+  2026-07-03).
 
 ## NEXT SESSION — decision setup (collected; no decision taken 2026-06-20)
 

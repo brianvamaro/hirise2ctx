@@ -4300,3 +4300,27 @@ build — the "targeted ~1–2 GB" fetch actually mirrored the FULL mro area (**
 works, heavy; noted in f_fetch_kernels.sh, revisit before any fresh-machine rerun); (b) with the
 full mirror, kernel availability is moot — the whole local-SPICE story reduces to "have base +
 mro areas, run web=no."
+
+## 2026-07-03 — F timing test COMPLETE: 10/10 frames end-to-end; F is priced
+
+`run_f_timing.sbatch` (job 32611907, `normal` partition, 4 CPU) ran all 10 frames through
+EDR → `mroctx2isis` → `spiceinit web=no` (local kernels) → `ctxcal` → `ctxevenodd` → `cam2map`
+(5 m/px mosaic grid) with **zero failures** — the first complete end-to-end execution of the F
+pipeline. `reports/f_timing/timing.csv` (committed) is the price sheet:
+
+- **Per frame: mean 1323 s ≈ 22.0 min, median ≈ 20.3 min** (range 13.2–33.8 min; scales with
+  EDR size, 119–264 MB in-sample). **cam2map is 96.6% of the cost** (762–1984 s); everything
+  else (download+import+spiceinit+ctxcal+evenodd) totals ~45–75 s/frame.
+- **Regional (907 frames): ≈ 333 CPU-h serial** → embarrassingly parallel per-frame: ~10.4 h on
+  a 32-task job array, ~5.2 h on 64. CPU-only (`normal` partition — no GPU queue contention).
+- **Global (86,571 frames): ≈ 31,800 CPU-h ≈ 3.6 CPU-years** → needs ~500 concurrent tasks for
+  ~2.7 days wall. Heavy but Bickel-precedent scale; a later decision.
+- **Storage is the real regional constraint: projected cubes avg ~3.5 GB/frame** (32-bit + NULL
+  padding from the rotated footprint) → **~3.2 TB** if all 907 are kept on scratch. Levers:
+  stream (project → embed → delete), 16-bit output attribute (~half), or footprint-crop. Global
+  (~300 TB) MUST stream.
+- Remaining F line-items (already understood): ViT embed of projected frames (GPU, tens of h
+  regional incl. ~2–3× overlap redundancy), cohort re-embed from source frames + head re-bake +
+  LOIO re-gate (the A1-cycle machinery), overlap composite/dedup à la Bickel.
+
+**The ISIS leg was F's last unknown → the F-vs-E call is now a pure numbers decision (Brian).**
