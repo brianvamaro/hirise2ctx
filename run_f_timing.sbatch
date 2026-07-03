@@ -18,7 +18,9 @@ mkdir -p logs
 GROUP_HOME="${GROUP_HOME:-/home/groups/mlapotre}"
 export MAMBA_ROOT_PREFIX="${MAMBA_ROOT_PREFIX:-$GROUP_HOME/$USER/micromamba}"
 eval "$("$MAMBA_ROOT_PREFIX/bin/micromamba" shell hook -s bash)"
-micromamba activate isis
+# activate with nounset OFF: the env's activate.d hooks (libpdal-core) reference unset vars
+# like PDAL_DRIVER_PATH and would abort under `set -u`
+set +u; micromamba activate isis; set -u
 export ISISROOT="$CONDA_PREFIX"
 export ISISDATA="${ISISDATA_DIR:-$SCRATCH/isisdata}"
 

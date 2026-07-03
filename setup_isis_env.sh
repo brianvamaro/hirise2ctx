@@ -52,7 +52,9 @@ if [ ! -x "$MAMBA_ROOT/envs/isis/bin/mroctx2isis" ]; then
     MAMBA_DOWNLOAD_THREADS=1 MAMBA_EXTRACT_THREADS=1 \
         micromamba create -y -n isis -c usgs-astrogeology -c conda-forge isis
 fi
-micromamba activate isis
+# activate with nounset OFF: the env's bundled activate.d hooks (e.g. libpdal-core) reference
+# unset vars like PDAL_DRIVER_PATH and abort the script under `set -u`
+set +u; micromamba activate isis; set -u
 export ISISROOT="$CONDA_PREFIX"
 echo "ISIS $(head -1 "$ISISROOT/version" 2>/dev/null || echo '?') at $ISISROOT"
 
