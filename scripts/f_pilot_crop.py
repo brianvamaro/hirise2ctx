@@ -4,7 +4,7 @@ the frame blocks?
 Consumes the 7 calibrated, projected I/F crops from Sherlock
 (`reports/f_timing/pilot_crops/{PID}_ifcrop.tif`), aligns each onto the EXACT mosaic-crop 5 m
 grid of the A1 payoff test (E8_N44, row_off 1504 / col_off 8992 / 15008 px), maps I/F to the
-embedder's uint8 domain under three variants, embeds + predicts per frame with the existing
+embedder's uint8 domain under four variants, embeds + predicts per frame with the existing
 mosaic-trained heads, composites, and scores the frame-block eta^2 against the SAME-crop
 baselines: mosaic raw 0.196, A1 0.141 (scripts/striping_a1_infer_crop.py).
 
@@ -13,6 +13,8 @@ Mappings (I/F -> uint8 [1,255], 0 = nodata):
              per-frame handling" bet. THE headline variant.
   lambert  — divide by cos(incidence) per frame (SeamMap metadata) first, then the global
              stretch: removes the real cross-frame illumination signal ctxcal exposes.
+  minnaert — divide by cos^k(incidence) with empirical k (fitted log-log; A0: k≈0.66);
+             better than Lambert (overcorrects); metadata-only at deploy.
   perframe — per-frame robust (median/IQR -> 125/27.7, the A1 transform): reference point;
              if only this works, F needs per-frame normalization anyway (A1's ceiling
              argument returns, though now on artifact-free radiometry).
@@ -21,7 +23,7 @@ Caveat by design: the heads were trained on mosaic-stretch embeddings, so ABSOLU
 calibration is not scored here — only between-frame structure (eta^2, the artifact) and
 frame-overlap agreement (prediction + I/F; the Walter ±2% check).
 
-Run (GPU, ~40 min per mapping):
+Run (GPU, ~2.5-3 h total for all 4 mappings):
   conda run -n geospatial python scripts/f_pilot_crop.py                  # all 3 mappings
   conda run -n geospatial python scripts/f_pilot_crop.py --mappings affine --frames 2  # smoke
 Phases cache under reports/f_timing/pilot_work/; delete that dir to recompute.

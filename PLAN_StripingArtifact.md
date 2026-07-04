@@ -136,8 +136,14 @@ frames** that per-frame inference actually kills the blocks:
   spread is **real illumination** (median↔cos i r=+0.83; same-incidence pairs agree 1–3% ≈ the
   Walter claim; Lambert overcorrects; empirical **Minnaert k≈0.66**) → F needs an input-side
   illumination layer; pilot now tests **4 mappings** (affine / lambert / **minnaert** / perframe).
-  `f_pilot_ifcheck.png` + CSVs; DECISIONS 2026-07-03b. **Leg A eta² GPU run pending** (waiting
-  for the local GPU to free; ~2.5–3 h, `scripts/f_pilot_crop.py`).
+  `f_pilot_ifcheck.png` + CSVs; DECISIONS 2026-07-03b.
+- **✅ Leg A eta² DONE (2026-07-04, GPU): FAIL — all 4 mappings worse than raw mosaic baseline.**
+  Best: perframe eta² 0.233 (partition 0.257); target ≲ 0.03. Choropleth blocks clearly
+  visible in all mappings. **Cause = train/deploy mismatch** (mosaic-trained head is
+  out-of-distribution on calibrated-frame embeddings); NOT a fundamental F failure.
+  Perframe best (most like mosaic stretch); lambert worst (overcorrects cos i).
+  Full record: DECISIONS 2026-07-04, `reports/figures/f_pilot_eta2_summary.csv`,
+  `f_pilot_{affine,lambert,minnaert,perframe}.png`. **Decision on leg B deferred to Brian.**
 
 ## NEXT SESSION — decision setup (collected; no decision taken 2026-06-20)
 

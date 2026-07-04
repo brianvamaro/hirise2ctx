@@ -4325,6 +4325,41 @@ pipeline. `reports/f_timing/timing.csv` (committed) is the price sheet:
 
 **The ISIS leg was F's last unknown → the F-vs-E call is now a pure numbers decision (Brian).**
 
+## 2026-07-04 — F pilot leg A (GPU): FAIL — mosaic-trained head is out-of-distribution on calibrated frames
+
+`scripts/f_pilot_crop.py` on 7 E8_N44 crop frames, 4 I/F→uint8 mappings, 2 heads (base + a1).
+Full output: `reports/figures/f_pilot_eta2_summary.csv`, `f_pilot_overlap_pairs.csv`,
+`f_pilot_{affine,lambert,minnaert,perframe}.png`. Baselines: mosaic raw **0.196** / A1 **0.141**.
+Target: ≲ 0.03 (block-free).
+
+**All 4 mappings FAIL — every result is worse than the raw mosaic baseline:**
+
+| mapping | best eta² (median composite, base head) | vs raw mosaic |
+|---|---|---|
+| perframe | **0.233** | +19% worse |
+| affine | 0.282 | +44% worse |
+| minnaert | 0.319 | +63% worse |
+| lambert | 0.346 | +77% worse |
+
+Choropleth panels confirm visually: strong rectangular blocks present in all mappings;
+perframe blocks are narrower in range but still obvious.
+
+**Interpretation — this is train/deploy mismatch, not a fundamental F failure:**
+- The mosaic-trained head was never exposed to calibrated-frame embeddings — it maps them to a
+  different part of embedding space and makes predictions that vary more between frames, not less.
+- Perframe (which most resembles the mosaic's per-frame stretch) is best, consistent with the
+  A0 finding that illumination is the dominant cross-frame signal; lambert (overcorrects cos i)
+  is worst.
+- The overlap I/F agreement is 10.2% median |ratio−1| across all pairs (matches A0); prediction
+  overlap disagreement 13–16% (perframe/base) — the head amplifies I/F differences.
+- Minnaert k fitted from 7 frames = **0.694** (vs 0.66 in A0 from the same 7 frames with fewer
+  valid pixels; consistent range).
+
+**Conclusion: leg A cannot gate F** — you cannot evaluate whether calibrated frames kill the
+blocks without a head trained on calibrated-frame embeddings. The only real test is **leg B**
+(project ~40–80 cohort frames on Sherlock, re-embed with perframe normalization, re-bake head,
+LOIO gate). Decision on whether to proceed to leg B deferred to Brian.
+
 ## 2026-07-03b — F pilot leg A0 (CPU): calibrated frames differ by REAL illumination, not error
 
 `scripts/f_pilot_ifcheck.py` on the 7 aligned E8_N44 crop frames (`f_pilot_ifcheck.png` + CSVs):
