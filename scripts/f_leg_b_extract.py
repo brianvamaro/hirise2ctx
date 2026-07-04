@@ -27,7 +27,9 @@ from pathlib import Path
 
 import numpy as np
 import rasterio
-from rasterio.windows import from_bounds
+from rasterio.errors import WindowError
+from rasterio.transform import from_origin
+from rasterio.windows import Window, from_bounds
 from rasterio.warp import reproject, Resampling
 
 REPO = Path(__file__).resolve().parents[1]
@@ -55,18 +57,22 @@ def extract_crop(cub_path: Path, minx: float, miny: float,
     Returns True on success.
     """
     with rasterio.open(cub_path) as src:
-        win = from_bounds(minx, miny, maxx, maxy, src.transform)
-        # clip to the cube's extent (frame may only partially cover the obs window)
-        win = win.intersection(rasterio.windows.Window(0, 0, src.width, src.height))
+        try:
+            win = from_bounds(minx, miny, maxx, maxy, src.transform)
+            # clip to the cube's extent (frame may only partially cover the obs window);
+            # intersection() RAISES WindowError on disjoint windows
+            win = win.intersection(Window(0, 0, src.width, src.height))
+        except WindowError:
+            return False  # no overlap
         if win.width <= 0 or win.height <= 0:
             return False  # no overlap
         win = win.round_offsets().round_lengths()
-        arr = src.read(1, window=win, masked=True).astype("float32")
+        # filled(nan): ISIS special pixels -> NaN so reproject can't interpolate them
+        arr = src.read(1, window=win, masked=True).astype("float32").filled(np.nan)
         src_transform = src.window_transform(win)
         src_crs = src.crs
 
     # Reproject to the exact 5 m/px mosaic grid (aligns pixel boundaries)
-    from rasterio.transform import from_origin
     from math import ceil
     # Compute destination grid anchored at the obs window minx/maxy
     px = 5.0
@@ -77,7 +83,7 @@ def extract_crop(cub_path: Path, minx: float, miny: float,
     reproject(source=arr, destination=dst,
               src_transform=src_transform, src_crs=src_crs,
               dst_transform=dst_transform, dst_crs=src_crs,
-              src_nodata=arr.fill_value if hasattr(arr, "fill_value") else None,
+              src_nodata=np.nan,
               dst_nodata=np.nan, resampling=Resampling.bilinear)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)

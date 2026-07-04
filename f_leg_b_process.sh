@@ -24,8 +24,8 @@ OUT_STATUS="$WORK/status_${TASK_ID}.csv"
 [ -n "${ISISDATA:-}" ] || { echo "ERROR: ISISDATA not set (activate isis env)" >&2; exit 1; }
 mkdir -p "$WORK"; cd "$WORK"
 
-# Header-indexed CSV column lookup
-col() { head -1 "$LIST" | tr ',' '\n' | grep -nx "$1" | cut -d: -f1; }
+# Header-indexed CSV column lookup (tr -d '\r': survive a CRLF checkout)
+col() { head -1 "$LIST" | tr -d '\r' | tr ',' '\n' | grep -nx "$1" | cut -d: -f1; }
 PID_COL=$(col PRODUCT_ID); URL_COL=$(col edr_url)
 
 echo "product_id,edr_mb,t_download,t_import,t_spiceinit,t_ctxcal,t_evenodd,t_cam2map,t_total,map_mb,status" > "$OUT_STATUS"
@@ -43,7 +43,7 @@ step() {
 
 # Select this task's stride from the frame list (round-robin for load balance)
 FRAME_NUM=0
-tail -n +2 "$LIST" | while IFS= read -r line; do
+tail -n +2 "$LIST" | tr -d '\r' | while IFS= read -r line; do
     if (( FRAME_NUM % N_TASKS == TASK_ID )); then
         pid=$(echo "$line" | cut -d, -f"$PID_COL")
         url=$(echo "$line" | cut -d, -f"$URL_COL")

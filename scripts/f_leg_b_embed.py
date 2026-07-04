@@ -66,23 +66,22 @@ def to_uint8_perframe(arr: np.ndarray) -> np.ndarray:
 def composite_crops(obs_id: str, row0: int, col0: int, H: int, W: int) -> np.ndarray:
     """Composite all I/F crops for obs_id onto the mosaic pixel grid (H×W uint8).
 
-    Each crop is normalized per-frame before compositing.  Where multiple frames
-    overlap, the last one written wins (crops are sorted by filename so the order
-    is deterministic; seams between frames normalized to the same target should be
-    small).
+    Where multiple frames overlap, the last one written wins (crops are sorted by
+    filename so the order is deterministic).  The composite is normalized as one
+    frame at the end — all crops of an obs_id share the same target statistics, so
+    seams between them are small and a single robust mapping is appropriate.
     """
-    canvas = np.zeros((H, W), dtype=np.float32)
-    covered = np.zeros((H, W), dtype=bool)
+    # NaN canvas: uncovered pixels must stay non-finite so they are EXCLUDED from
+    # the median/IQR normalization stats (zeros would pollute them).
+    canvas = np.full((H, W), np.nan, dtype=np.float32)
 
     crops = sorted(CROPS_DIR.glob(f"{obs_id}_*_ifcrop.tif"))
     if not crops:
         return np.zeros((H, W), dtype=np.uint8)
 
-    # Destination transform: top-left of the mosaic window at native 5 m/px
-    # row0/col0 are mosaic pixel coordinates of the window's top-left corner
-    # x = col0 * 5 m + mosaic_x_origin — but we work in relative pixel coords:
-    # tile (ti, tj) covers rows [ti*32, ti*32+32) globally, so window rows
-    # start at row0.  We reconstruct the world coords from the first crop's CRS.
+    # All crops of one obs_id were extracted onto the identical grid anchored at
+    # the obs bounds (f_leg_b_extract.py), so the first crop's transform IS the
+    # destination grid; reprojection is a same-grid resample for alignment safety.
     dst_transform = None
 
     for crop_path in crops:
@@ -91,26 +90,15 @@ def composite_crops(obs_id: str, row0: int, col0: int, H: int, W: int) -> np.nda
             src_crs = src.crs
             src_transform = src.transform
             if dst_transform is None:
-                # Use this crop's CRS to fix the destination transform
-                dst_transform = src_transform  # will be recomputed below
-                # Reconstruct from row0/col0 and the crop's CRS transform:
-                # The mosaic window top-left in world coords:
-                from rasterio.transform import xy as _xy
-                # We need the world coords of mosaic pixel (row0, col0).
-                # They are stored in the ctx_window_tif which has the same
-                # transform as the mosaic tile. Read from the crop itself:
-                # crop covers the exact obs bounds, so its top-left IS (row0,col0).
-                dst_transform = src_transform  # same grid as the crop
+                dst_transform = src_transform
 
-        # Reproject onto the destination H×W grid
-        normed_if = arr.copy()
-        fin = np.isfinite(normed_if) & (normed_if > 0)
+        fin = np.isfinite(arr) & (arr > 0)
         if fin.sum() < 50:
             continue
-        normed_if[~fin] = np.nan
+        arr[~fin] = np.nan
 
         dst_if = np.full((H, W), np.nan, dtype=np.float32)
-        reproject(source=normed_if, destination=dst_if,
+        reproject(source=arr, destination=dst_if,
                   src_transform=src_transform, src_crs=src_crs,
                   dst_transform=dst_transform, dst_crs=src_crs,
                   src_nodata=np.nan, dst_nodata=np.nan,
@@ -118,13 +106,11 @@ def composite_crops(obs_id: str, row0: int, col0: int, H: int, W: int) -> np.nda
 
         new = np.isfinite(dst_if)
         canvas[new] = dst_if[new]
-        covered |= new
 
-    # Apply per-frame normalization to the composite (as if it were one frame)
-    result = np.zeros((H, W), dtype=np.uint8)
-    if covered.any():
-        result = to_uint8_perframe(canvas)
-    return result
+    # Per-frame normalization of the composite (uncovered NaN pixels -> uint8 0)
+    if not np.isfinite(canvas).any():
+        return np.zeros((H, W), dtype=np.uint8)
+    return to_uint8_perframe(canvas)
 
 
 # ------------------------------------------------------------------ embed one image
