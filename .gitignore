@@ -50,6 +50,11 @@ reports/map_region/
 # Per-tile LOIO prediction dump (18 MB; regenerable via scripts/striping_a1_loio.py;
 # the small striping_a1_loio_summary.csv IS tracked)
 reports/figures/striping_a1_loio_preds.csv
+# F-pilot bulk inputs + phase caches (GBs; the crops tar comes from Sherlock, the work dirs
+# are recomputable by scripts/f_pilot_crop.py; final figures/CSVs in reports/figures ARE tracked)
+reports/f_timing/pilot_crops.tar
+reports/f_timing/pilot_work/
+reports/f_timing/pilot_work_smoke/
 
 # Background-sweep logs
 logs/
