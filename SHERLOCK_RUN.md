@@ -395,6 +395,72 @@ run_f_timing.sbatch` keeps the projected `.map.cub`s (~36 GB scratch), then
 `python scripts/f_pilot_extract_crop.py` (map venv) windows the 7 crop frames to small I/F
 GeoTIFFs → tar → laptop `reports/f_timing/pilot_crops/` (analysis runs there on the local GPU).
 
+## Part F — F pilot leg B: ISIS processing for the training cohort
+
+Processes the ~40–80 CTX source frames that cover the 38-image training cohort so the
+laptop can re-embed training windows from calibrated I/F frames and run the LOIO skill
+gate (PLAN_StripingArtifact leg B).  CPU-only; same ISIS micromamba env as Part E.
+
+**Step 0 (laptop) — build the frame list:**
+```bash
+conda run -n geospatial python scripts/f_leg_b_frame_list.py
+# writes reports/f_leg_b/cohort_frame_list.csv   (unique EDR URLs)
+#         reports/f_leg_b/obs_frame_map.csv       (obs_id -> PRODUCT_ID pairs)
+#         reports/f_leg_b/cohort_obs_bounds.csv   (obs CTX-CRS window bounds)
+# prints estimated Sherlock wall-clock
+git add reports/f_leg_b/ && git commit -m "leg B frame list"
+```
+
+**Step 1 (Sherlock) — ISIS array job (~1 h wall on 24 tasks):**
+```bash
+cd ~/hirise2ctx && git pull
+mkdir -p logs
+sbatch run_f_leg_b.sbatch
+# watch:   tail -f logs/h2c-f-legb-*.out
+# result:  $SCRATCH/hirise2ctx/f_leg_b/*.map.cub  (one per frame, kept)
+```
+If the cohort frame count is much larger or smaller than ~50, adjust `--array=0-XX` in
+`run_f_leg_b.sbatch` to keep wall-clock ≤ 1 h (target: 2-3 frames per task).
+
+**Step 2 (Sherlock, MAP venv) — extract I/F crops:**
+```bash
+ml python/3.12.1
+source /home/groups/mlapotre/$USER/envs/hirise2ctx/bin/activate
+cd $HOME/hirise2ctx
+python scripts/f_leg_b_extract.py
+# writes $SCRATCH/hirise2ctx/f_leg_b/obs_crops/{obs_id}_{pid}_ifcrop.tif
+# prints total extracted + any missing cubes
+```
+
+**Step 3 — transfer crops back to laptop:**
+```bash
+# on Sherlock:
+tar cf obs_crops.tar -C $SCRATCH/hirise2ctx/f_leg_b obs_crops
+# OnDemand Files: download obs_crops.tar  (~few hundred MB)
+# on laptop:
+mkdir -p reports/f_leg_b
+cd reports/f_leg_b && tar xf ~/Downloads/obs_crops.tar
+```
+
+**Step 4 (laptop) — embed + LOIO gate:**
+```bash
+conda run --no-capture-output -n geospatial python -u scripts/f_leg_b_embed.py
+# smoke test: add --smoke (2 images)
+conda run -n geospatial python scripts/f_leg_b_loio.py
+# prints PASS/FAIL gate + Δ median AUC vs baseline
+```
+
+Failure modes (in addition to Part E modes):
+- **`_frames_{tile}.gpkg` missing for a tile** — `f_leg_b_frame_list.py` builds it from
+  the cached seammap. If a tile has neither gpkg nor seammap, that obs_id is skipped
+  and the script prints a warning; re-check `cache/ctx_tiles/`.
+- **`no valid overlap in cube`** during extract — that frame doesn't actually cover the
+  training image's CTX window (unusual; check the obs_frame_map.csv assignment).
+- **Embed step "all-zero composite"** — no `*_ifcrop.tif` files for that obs_id in
+  `reports/f_leg_b/obs_crops/`; confirm the tar transfer included that obs_id.
+
+---
+
 ## Going global later
 
 `scripts/map_region.py` is tile-list-driven, so global inference = feed the full Murray tile

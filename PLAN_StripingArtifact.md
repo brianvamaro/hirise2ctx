@@ -127,9 +127,13 @@ frames** that per-frame inference actually kills the blocks:
   built-in internal validation). Caveat: mosaic-trained head on F inputs is train/deploy
   mismatched — eta² (between-frame structure) is still the right readout; absolute calibration
   is NOT scored here.
-- **Leg B (skill-side, only if A passes):** project the source frames under the 38-image cohort,
-  re-embed training windows, re-bake head, **LOIO gate** (the A1-cycle machinery) → then the
-  full 907-frame regional build.
+- **Leg B (skill-side, real test — decided 2026-07-04):** project the source frames under the
+  38-image cohort, re-embed training windows with perframe normalization, re-bake head, **LOIO gate**
+  → then the full 907-frame regional build.  Scripts: `f_leg_b_frame_list.py` (laptop, builds frame
+  list + bounds CSVs), `run_f_leg_b.sbatch` + `f_leg_b_process.sh` (Sherlock ~1h wall / 24-task
+  array), `f_leg_b_extract.py` (Sherlock MAP venv, extracts I/F crops), `f_leg_b_embed.py` (laptop
+  GPU, embeds → `fang_embeddings_f/`), `f_leg_b_loio.py` (LOIO gate, same Δ ≥ −0.02 threshold as
+  A1 cycle).  See SHERLOCK_RUN.md Part F for the full step-by-step.
 - **Step 1 is a rerun of the timing job with cubes kept:** `KEEP_CUBES=1 sbatch
   run_f_timing.sbatch` (the first run deleted its cubes by default; ~3.7 h, ~36 GB scratch).
 - **✅ Leg A0 DONE (2026-07-03b, CPU):** crops extracted + aligned; calibrated frames' 24.9% level
