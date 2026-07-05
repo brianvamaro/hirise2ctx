@@ -4382,7 +4382,7 @@ identically** (train and test) for a fair Δ.
 
 **But the per-image Δ is strongly bimodal, not a uniform degradation** (`diag_per_image.csv`,
 probe `_f_leg_b_diag.py`):
-- 9 images IMPROVE, some sharply: ESP_055978 +0.155 (0.796→0.951), ESP_068483 +0.148,
+- 11 images IMPROVE, some sharply: ESP_055978 +0.155 (0.796→0.951), ESP_068483 +0.148,
   ESP_046959/076499/052576/042964 +0.05-0.06.
 - 8 images drop below 0.5 (anti-prediction): worst ESP_045550 −0.398 (0.784→0.386),
   ESP_046328 −0.397, ESP_054397 −0.286, ESP_069763/069669/059686 −0.22 to −0.27.

@@ -152,7 +152,7 @@ frames** that per-frame inference actually kills the blocks:
   strongly BIMODAL, and the perframe uint8 mapping (not F) is the suspect.** 81 cohort frames
   ISIS-processed on Sherlock (32-task array); 36/38 obs_ids re-embedded from calibrated crops
   (2 missing = one failed K04 frame). Median AUC 0.786→0.736, pooled PR-AUC 0.767→0.626 —
-  yet 9 images IMPROVE (up to +0.155, incl. project-best 0.951) while 8 drop below 0.5.
+  yet 11 images IMPROVE (up to +0.155, incl. project-best 0.951) while 8 drop below 0.5.
   Diagnostics (`_f_leg_b_diag.py` / `_f_leg_b_uint8_contrast.py` / `_f_leg_b_crop_stats.py`,
   `reports/f_leg_b/diag_*.csv`, figures `f_leg_b_diag_{scatter,gallery}.png`): composite
   mechanics null (coverage/overlap/n_crops; frame-mismatch anti-correlates); over-stretch
