@@ -9,6 +9,12 @@ import geopandas as gpd
 import pandas as pd
 
 SEAM_DIR = REPO / "cache" / "ctx_tiles"
+
+# SeamMap metadata corrections, verified against the PDS volume index
+# (_f_leg_b_fetch_true_incidence.py; DECISIONS 2026-07-05). The SeamMap value
+# 4.2759 is a decimal-shift of the true 42.76 — it collapsed ESP_053989/068483
+# under the minnaert mapping (cos^k division ~1.0 instead of ~0.83).
+OVERRIDES = {"P20_008839_2269_XI_46N046W": 42.76}
 om = pd.read_csv(REPO / "reports" / "f_leg_b" / "obs_frame_map.csv")
 
 crops_dir = REPO / "reports" / "f_leg_b" / "obs_crops"
@@ -33,7 +39,13 @@ for tile, g in need.groupby("tile"):
         continue
     fr = fr.set_index("PRODUCT_ID")
     for pid in g.PRODUCT_ID.unique():
-        if pid in fr.index:
+        if pid in OVERRIDES:
+            inc_rows.append(dict(tile=tile, PRODUCT_ID=pid,
+                                 incidence=OVERRIDES[pid]))
+            print(f"  OVERRIDE {pid}: seammap "
+                  f"{float(fr.loc[pid, cols[0]]) if pid in fr.index else float('nan'):.2f} "
+                  f"-> {OVERRIDES[pid]} (PDS index)")
+        elif pid in fr.index:
             inc_rows.append(dict(tile=tile, PRODUCT_ID=pid,
                                  incidence=float(fr.loc[pid, cols[0]])))
         else:
