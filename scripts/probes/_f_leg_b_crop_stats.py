@@ -1,4 +1,4 @@
-"""Per-crop I/F median/IQR for the leg B gallery images — is the crater/improver
+"""Per-crop I/F median/IQR for the leg B gallery images — is the collapsed/improver
 split explained by between-frame illumination deltas inside one composite?"""
 import sys
 from pathlib import Path

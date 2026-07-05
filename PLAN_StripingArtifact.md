@@ -157,7 +157,7 @@ frames** that per-frame inference actually kills the blocks:
   `reports/f_leg_b/diag_*.csv`, figures `f_leg_b_diag_{scatter,gallery}.png`): composite
   mechanics null (coverage/overlap/n_crops; frame-mismatch anti-correlates); over-stretch
   hypothesis REFUTED (F uint8 contrast pinned at IQR≈27.7 by construction, ratio ρ +0.09);
-  live correlate = composite I/F median ρ +0.35 → **DIM scenes crater = illumination, A0's
+  live correlate = composite I/F median ρ +0.35 → **DIM scenes collapse = illumination, A0's
   cos-i axis again**. Cheap iteration available WITHOUT Sherlock: re-embed with minnaert
   (best-motivated) and/or global-affine mapping (~1 h GPU each), re-gate.
   Full record: DECISIONS 2026-07-04b. **Iterate-vs-close-F deferred to Brian.**

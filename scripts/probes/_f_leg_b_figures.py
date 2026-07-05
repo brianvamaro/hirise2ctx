@@ -4,9 +4,9 @@ Fig 1 (f_leg_b_diag_scatter.png): per-image ΔAUC sorted bar chart + ΔAUC vs
 pre-normalization I/F IQR (log x, colored by I/F median) — the bimodal pattern
 and its contrast/illumination correlates.
 
-Fig 2 (f_leg_b_diag_gallery.png): for the 3 worst craters + 3 best improvers,
-the baseline mosaic window vs the F composite uint8 (identical 0-255 gray scale),
-full window + 512-px native-res zoom — over-stretch/noise amplification is
+Fig 2 (f_leg_b_diag_gallery.png): for the 3 worst collapsed images + 3 best
+improvers, the baseline mosaic window vs the F composite uint8 (identical 0-255
+gray scale), full window + 512-px native-res zoom — texture differences are
 directly visible.
 
 Run: conda run --no-capture-output -n geospatial python -u scripts/probes/_f_leg_b_figures.py
@@ -37,7 +37,7 @@ FIG = REPO / "reports" / "figures"
 LABELS_DIR = REPO / "dataset_v2" / "labels"
 DIAG = REPO / "reports" / "f_leg_b" / "diag_per_image.csv"
 
-CRATERS = ["ESP_045550_2180", "ESP_046328_2180", "ESP_069763_2235"]
+COLLAPSED = ["ESP_045550_2180", "ESP_046328_2180", "ESP_069763_2235"]
 IMPROVERS = ["ESP_055978_2270", "ESP_042964_2160", "ESP_046959_2225"]
 ZOOM = 512  # native-res zoom half-window (px)
 
@@ -66,7 +66,7 @@ def fig_scatter(df: pd.DataFrame) -> None:
                              xytext=(4, 3), textcoords="offset points")
     axes[1].set_xlabel("composite I/F median before normalization (illumination proxy)")
     axes[1].set_ylabel("Δ per-image AUC")
-    axes[1].set_title("DIM scenes crater (ρ=+0.35) — illumination is the live correlate;\n"
+    axes[1].set_title("DIM scenes collapse (ρ=+0.35) — illumination is the live correlate;\n"
                       "post-norm uint8 contrast is pinned at IQR≈27.7 for all (ratio ρ=+0.09, null)")
     plt.colorbar(sc, ax=axes[1], label="I/F IQR (concat crops)")
 
@@ -89,7 +89,7 @@ def load_pair(obs_id: str) -> tuple[np.ndarray, np.ndarray]:
 
 
 def fig_gallery(df: pd.DataFrame) -> None:
-    picks = CRATERS + IMPROVERS
+    picks = COLLAPSED + IMPROVERS
     aucs = df.set_index("obs_id")
     n = len(picks)
     fig, axes = plt.subplots(n, 4, figsize=(16, 3.6 * n))
@@ -103,7 +103,7 @@ def fig_gallery(df: pd.DataFrame) -> None:
         k = max(1, min(H, W) // 900)  # decimate full views for a sane figure size
 
         row = aucs.loc[obs]
-        kind = "CRATER" if obs in CRATERS else "IMPROVER"
+        kind = "COLLAPSED" if obs in COLLAPSED else "IMPROVER"
         panels = [
             (mosaic[::k, ::k], f"{obs}  [{kind}]\nmosaic (baseline)  AUC {row['auc_base']:.3f}"),
             (comp[::k, ::k], f"F composite (perframe)  AUC {row['auc_f']:.3f}"

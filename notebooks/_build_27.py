@@ -139,7 +139,7 @@ print("\\nbest 5:");   print(auc.tail(5).to_string(float_format=lambda x: f"{x:.
 
 # §3: diagnostics
 cells.append(md(
-    """## §3 — Diagnostics: what separates the craters from the improvers?
+    """## §3 — Diagnostics: what separates the collapsed images from the improvers?
 
 Three rounds (`scripts/probes/_f_leg_b_diag.py`, `_f_leg_b_crop_stats.py`,
 `_f_leg_b_uint8_contrast.py`):
@@ -147,13 +147,13 @@ Three rounds (`scripts/probes/_f_leg_b_diag.py`, `_f_leg_b_crop_stats.py`,
 1. **Composite mechanics: ruled out.** Coverage ≈ 100% on every image; number of crops and
    frame-overlap fraction are null vs ΔAUC (|ρ| < 0.07).
 2. **Between-frame illumination mismatch inside a composite: ruled out** (anti-correlates).
-   The improvers carry the big frame-median ratios (1.43–1.58×); the craters' frames agree
+   The improvers carry the big frame-median ratios (1.43–1.58×); the collapsed images' frames agree
    (1.02–1.30×). The last-write-wins composite + single normalization is not the killer.
 3. **Over-stretch hypothesis: REFUTED on real quantities.** The perframe mapping pins *every*
    F window at uint8 IQR 27–28 by construction (mosaic windows vary 19–57); the F/mosaic
    contrast ratio is null vs ΔAUC (ρ = +0.09).
 
-**Survivor: the composite I/F median (ρ = +0.35) — dim scenes crater, bright scenes improve.**
+**Survivor: the composite I/F median (ρ = +0.35) — dim scenes collapse, bright scenes improve.**
 That is an illumination axis: leg A0 measured per-frame I/F median ↔ cos(incidence) r = +0.83.
 The perframe level-shift removes the *level* difference but evidently not whatever changes in
 dim-scene *texture* relative to the mosaic's rendering of the same ground.
@@ -176,7 +176,7 @@ for _, r in df.iterrows():
                     fontsize=6, xytext=(4, 3), textcoords="offset points")
 ax.set_xlabel("composite I/F median before normalization (illumination proxy)")
 ax.set_ylabel("Δ per-image AUC")
-ax.set_title("DIM scenes crater (ρ=+0.35) — illumination is the live correlate")
+ax.set_title("DIM scenes collapse (ρ=+0.35) — illumination is the live correlate")
 plt.colorbar(sc, ax=ax, label="I/F IQR (concat crops)")
 fig.tight_layout()
 fig.savefig(FIG / "27_f_legb_median_scatter.png", dpi=110); plt.show()
@@ -186,12 +186,12 @@ fig.savefig(FIG / "27_f_legb_median_scatter.png", dpi=110); plt.show()
 cells.append(md(
     """## §4 — What the embedder saw: mosaic vs F composite
 
-3 worst craters (top) and 3 best improvers (bottom); each row = baseline mosaic window |
+3 worst collapsed images (top) and 3 best improvers (bottom); each row = baseline mosaic window |
 F perframe composite (identical 0–255 gray scale) | 512-px native-res zoom of each.
 Rendered by `scripts/probes/_f_leg_b_figures.py` from the actual embed code path
 (`f_leg_b_embed.composite_crops`).
 
-Note the crater F zooms are visibly texture-poor next to their mosaic counterparts, while the
+Note the collapsed images' F zooms are visibly texture-poor next to their mosaic counterparts, while the
 improver F windows look as good as the mosaic — even where they contain obvious brightness
 seams between frames (seams don't hurt; per-crop stats confirm).
 """))
@@ -205,9 +205,9 @@ plt.show()
 cells.append(code(
     """# per-crop I/F stats for the 6 gallery images (from _f_leg_b_crop_stats.py)
 stats = pd.DataFrame([
-    ("ESP_045550_2180", "CRATER",   -0.398, "F04_037242 / G19_025559", 1.25),
-    ("ESP_046328_2180", "CRATER",   -0.397, "D04_028658 / G20_026192", 1.30),
-    ("ESP_069763_2235", "CRATER",   -0.267, "K04_055123 / P02_002009", 1.02),
+    ("ESP_045550_2180", "COLLAPSED", -0.398, "F04_037242 / G19_025559", 1.25),
+    ("ESP_046328_2180", "COLLAPSED", -0.397, "D04_028658 / G20_026192", 1.30),
+    ("ESP_069763_2235", "COLLAPSED", -0.267, "K04_055123 / P02_002009", 1.02),
     ("ESP_055978_2270", "IMPROVER", +0.155, "B18_016498 / F04_037530", 1.43),
     ("ESP_042964_2160", "IMPROVER", +0.048, "B04_011277 / P20_008864", 1.58),
     ("ESP_046959_2225", "IMPROVER", +0.062, "J04_046537 / P16 / P17",  1.51),

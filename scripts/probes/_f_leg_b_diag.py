@@ -3,7 +3,7 @@
 For each obs_id: coverage fraction of the composite (finite crop pixels / window),
 number of crops, overlap fraction (pixels written by 2+ crops = seam risk), and the
 composite's pre-normalization I/F IQR (contrast).  Joined against per-image AUC from
-the LOIO gate run (baseline vs F) to see what separates the craters from the improvers.
+the LOIO gate run (baseline vs F) to see what separates the collapsed images from the improvers.
 
 Run: conda run --no-capture-output -n geospatial python -u scripts/probes/_f_leg_b_diag.py
 """

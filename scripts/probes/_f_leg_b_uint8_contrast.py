@@ -3,7 +3,7 @@
 For every embedded obs_id: build the F composite uint8 via the embed code path
 (f_leg_b_embed.composite_crops — actual last-write-wins canvas + single perframe
 normalization) and read the mosaic ctx_window uint8; compare their IQRs over the
-window's valid pixels.  Join per-image ΔAUC.  If craters have F-IQR << mosaic-IQR
+window's valid pixels.  Join per-image ΔAUC.  If collapsed images have F-IQR << mosaic-IQR
 while improvers match, the lost-texture-contrast story is confirmed on the real
 quantities (the earlier diag if_iqr concatenated crops, double-counting overlaps).
 """

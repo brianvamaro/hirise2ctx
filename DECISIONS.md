@@ -4390,17 +4390,18 @@ probe `_f_leg_b_diag.py`):
 **Diagnostics rule out composite mechanics:** coverage ≈ 100% on every image; overlap fraction
 and n_crops uncorrelated with ΔAUC (|ρ| < 0.07). Between-frame illumination mismatch inside a
 composite ANTI-correlates in the 6-image gallery sample (`_f_leg_b_crop_stats.py`: improvers
-carry the big frame-median ratios 1.43–1.58×, craters 1.02–1.30×) — the last-write-wins
+carry the big frame-median ratios 1.43–1.58×, collapsed images 1.02–1.30×) — the last-write-wins
 composite + single normalization is not the killer either.
 
 **Over-stretch hypothesis REFUTED on real quantities** (`_f_leg_b_uint8_contrast.py`,
 `diag_uint8_contrast.csv`): the perframe mapping pins every F window at uint8 IQR 27–28 by
 construction (mosaic windows vary 19–57), and the F/mosaic contrast ratio is null vs ΔAUC
 (ρ = +0.09). **The surviving correlate is the composite I/F median: ρ = +0.35 — DIM
-(high-incidence) scenes crater, bright scenes improve** — illumination again, exactly A0's
+(high-incidence) scenes collapse, bright scenes improve** — illumination again, exactly A0's
 cos-i axis. Figures: `f_leg_b_diag_scatter.png` (bimodal bars + median scatter),
-`f_leg_b_diag_gallery.png` (mosaic-vs-F windows + native-res zooms for 3 craters/3 improvers;
-crater F zooms visibly texture-poor vs their mosaic counterparts).
+`f_leg_b_diag_gallery.png` (mosaic-vs-F windows + native-res zooms for the 3 worst collapsed
+images / 3 best improvers; collapsed-image F zooms visibly texture-poor vs their mosaic
+counterparts).
 
 **Read:** F's calibrated frames carry usable signal (the improvers include some of the best AUCs
 in the whole project — 0.951, 0.934, 0.928) but the perframe mapping leaves an
