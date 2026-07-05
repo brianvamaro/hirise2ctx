@@ -299,6 +299,7 @@ def main() -> None:
             seen.add(obs_id)
             obs_ids.append(obs_id)
 
+    all_obs = list(obs_ids)   # constants are ALWAYS fitted on the full cohort
     if args.obs:
         obs_ids = [o for o in obs_ids if o in set(args.obs)]
     if args.smoke:
@@ -306,7 +307,7 @@ def main() -> None:
 
     print(f"{len(obs_ids)} obs_ids to embed  (mapping={args.mapping} -> {out_dir.name})",
           flush=True)
-    ctx = build_mapping_ctx(args.mapping, obs_ids)
+    ctx = build_mapping_ctx(args.mapping, all_obs)
     if args.fit_only:
         print("--fit-only: constants fitted, exiting before embedding.")
         return
