@@ -4360,6 +4360,49 @@ blocks without a head trained on calibrated-frame embeddings. The only real test
 (project ~40–80 cohort frames on Sherlock, re-embed with perframe normalization, re-bake head,
 LOIO gate). Decision on whether to proceed to leg B deferred to Brian.
 
+## 2026-07-04b — F pilot leg B (LOIO gate): FAIL at −0.0499 — but bimodal, and the mapping (not F itself) is the suspect
+
+**Pipeline (all shipped, SHERLOCK_RUN.md Part F):** `f_leg_b_frame_list.py` resolved **81 unique
+CTX frames** covering the 38-image cohort (94 obs×frame pairs; seammap-gpkg build for 10 uncached
+tiles). Sherlock 32-task array (`run_f_leg_b.sbatch` → `f_leg_b_process.sh`) ISIS-processed the
+frames; `f_leg_b_extract.py` produced **73 I/F crops covering 36/38 obs_ids** (ESP_066634_2210 +
+ESP_071093_2210 both depend on the single failed frame K04_054963_2209_XN_40N358W — check
+`status_*.csv` on scratch; recoverable). Laptop: `f_leg_b_embed.py` composited crops onto the
+mosaic grid, applied **perframe normalization** (composite median→125 / IQR→27.7 DN), embedded
+with the frozen Fang recipe → `dataset_v2/fang_embeddings_f/` (36 images, 100% valid tiles).
+`f_leg_b_loio.py` ran the pre-registered gate on the **common 36 images, both stores restricted
+identically** (train and test) for a fair Δ.
+
+**Gate (Δ median per-image AUC ≥ −0.02): FAIL — Δ = −0.0499** (A1 reference −0.024):
+
+| store | n_img | median AUC | mean AUC | frac ≥ 0.7 | pooled PR-AUC |
+|---|---|---|---|---|---|
+| baseline (mosaic) | 36 | **0.786** | 0.771 | 0.81 | 0.767 |
+| F (calibrated, perframe) | 36 | **0.736** | 0.695 | 0.58 | 0.626 |
+
+**But the per-image Δ is strongly bimodal, not a uniform degradation** (`diag_per_image.csv`,
+probe `_f_leg_b_diag.py`):
+- 9 images IMPROVE, some sharply: ESP_055978 +0.155 (0.796→0.951), ESP_068483 +0.148,
+  ESP_046959/076499/052576/042964 +0.05-0.06.
+- 8 images drop below 0.5 (anti-prediction): worst ESP_045550 −0.398 (0.784→0.386),
+  ESP_046328 −0.397, ESP_054397 −0.286, ESP_069763/069669/059686 −0.22 to −0.27.
+
+**Diagnostics rule out composite mechanics:** coverage ≈ 100% on every image; overlap fraction
+and n_crops uncorrelated with ΔAUC (|ρ| < 0.07). The live correlates are the composite's
+pre-normalization I/F stats: **if_median ρ = +0.35, if_iqr ρ = +0.24** — dim/flat scenes crater,
+bright/contrast-rich scenes improve. Mechanism hypothesis: forcing every composite to IQR = 27.7
+gives intrinsically flat scenes (I/F IQR 0.003–0.005) a ~10× harder stretch than contrast-rich
+ones (0.04–0.05), amplifying sensor/destriping noise into fake texture. NOT single-factor:
+ESP_052576/068483 improved despite tiny IQR, so illumination (if_median, cf. A0's cos-i finding)
+is entangled.
+
+**Read:** F's calibrated frames carry usable signal (the improvers include some of the best AUCs
+in the whole project — 0.951, 0.934, 0.928) but the **perframe uint8 mapping is destroying the
+flat-scene half of the cohort**. The cheap next iteration — re-embed with a GLOBAL fixed I/F→DN
+affine (preserves between-scene contrast; ctxcal already made frames physically comparable) and/or
+minnaert (k≈0.66–0.694 from A0/A, metadata-only) — needs **no new Sherlock work** (crops are on
+the laptop; ~1 h GPU per mapping). Decision on iterate-vs-close-F deferred to Brian.
+
 ## 2026-07-03b — F pilot leg A0 (CPU): calibrated frames differ by REAL illumination, not error
 
 `scripts/f_pilot_ifcheck.py` on the 7 aligned E8_N44 crop frames (`f_pilot_ifcheck.png` + CSVs):

@@ -148,6 +148,16 @@ frames** that per-frame inference actually kills the blocks:
   Perframe best (most like mosaic stretch); lambert worst (overcorrects cos i).
   Full record: DECISIONS 2026-07-04, `reports/figures/f_pilot_eta2_summary.csv`,
   `f_pilot_{affine,lambert,minnaert,perframe}.png`. **Decision on leg B deferred to Brian.**
+- **✅ Leg B LOIO gate DONE (2026-07-04b): FAIL — Δ median AUC −0.0499 (gate −0.02) — but
+  strongly BIMODAL, and the perframe uint8 mapping (not F) is the suspect.** 81 cohort frames
+  ISIS-processed on Sherlock (32-task array); 36/38 obs_ids re-embedded from calibrated crops
+  (2 missing = one failed K04 frame). Median AUC 0.786→0.736, pooled PR-AUC 0.767→0.626 —
+  yet 9 images IMPROVE (up to +0.155, incl. project-best 0.951) while 8 drop below 0.5.
+  Diagnostics (`_f_leg_b_diag.py`, `reports/f_leg_b/diag_per_image.csv`): coverage/overlap/
+  n_crops null; dim + flat scenes crater (if_median ρ +0.35, if_iqr ρ +0.24) → the forced
+  IQR→27.7 stretch over-amplifies flat scenes. Cheap iteration available WITHOUT Sherlock:
+  re-embed with global-affine and/or minnaert mapping (~1 h GPU each), re-gate.
+  Full record: DECISIONS 2026-07-04b. **Iterate-vs-close-F deferred to Brian.**
 
 ## NEXT SESSION — decision setup (collected; no decision taken 2026-06-20)
 
