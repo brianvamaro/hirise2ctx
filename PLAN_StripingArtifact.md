@@ -160,7 +160,16 @@ frames** that per-frame inference actually kills the blocks:
   live correlate = composite I/F median ρ +0.35 → **DIM scenes collapse = illumination, A0's
   cos-i axis again**. Cheap iteration available WITHOUT Sherlock: re-embed with minnaert
   (best-motivated) and/or global-affine mapping (~1 h GPU each), re-gate.
-  Full record: DECISIONS 2026-07-04b. **Iterate-vs-close-F deferred to Brian.**
+  Full record: DECISIONS 2026-07-04b.
+- **✅ Leg B mapping iteration DONE (2026-07-05): global −0.0387 / minnaert −0.0341 — both
+  FAIL; the mapping family has CONVERGED ≈ −0.034, short of the −0.02 bar.** Fixed stretches
+  cure all 4 perframe collapses; minnaert beats global on dim scenes as predicted. Found +
+  fixed a SeamMap metadata bug (P20_008839 incidence 4.2759 = decimal-shift of true 42.76,
+  verified vs PDS index; OVERRIDES in `_f_leg_b_incidence_check.py`). Residual floor suspects:
+  double-resampling blur / dim-scene stretch clipping (1 image) / calibrated noise character.
+  **Key unmeasured: retrained-head eta² on the E8_N44 pilot frames** — if block-free, −0.03
+  skill vs FULL artifact removal may beat A1's −0.024 for 28% reduction. DECISIONS 2026-07-05.
+  **Next-step decision (measure eta² / iterate / close F) deferred to Brian.**
 
 ## NEXT SESSION — decision setup (collected; no decision taken 2026-06-20)
 

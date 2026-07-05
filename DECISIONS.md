@@ -4360,6 +4360,43 @@ blocks without a head trained on calibrated-frame embeddings. The only real test
 (project ~40–80 cohort frames on Sherlock, re-embed with perframe normalization, re-bake head,
 LOIO gate). Decision on whether to proceed to leg B deferred to Brian.
 
+## 2026-07-05 — F leg B mapping iteration: global + minnaert both FAIL; gate converges at ≈ −0.034; SeamMap incidence typo found
+
+**Setup:** `f_leg_b_embed.py --mapping {global,minnaert}` (fixed pooled p2–p98 stretch; minnaert
+divides each crop by cos^k(i) first, incidence from the SeamMap gpkgs, k fitted from the 63
+frames' log-median vs log-cos-i), `f_leg_b_loio.py --f-store …` — same pre-registered gate
+(Δ median per-image AUC ≥ −0.02 vs mosaic baseline 0.786 on the common 36 images).
+
+**Results** (`mapping_compare_per_image.csv`):
+
+| mapping | Δ median AUC | below 0.5 | improvers | notes |
+|---|---|---|---|---|
+| perframe | −0.0499 | 8 | 11 | 2026-07-04b |
+| global (0.0713–0.1394) | −0.0387 | 1 | 11 | cures ALL 4 perframe collapses |
+| minnaert k=0.531 | −0.0301 | 3 | 15 | ran with a BOGUS incidence (below) |
+| minnaert k=0.580 (corrected) | −0.0341 | 2 | 14 | best honest fixed-stretch result |
+
+**SeamMap metadata bug (VERIFIED + fixed):** frame P20_008839_2269_XI_46N046W carries SeamMap
+INCIDENCE = 4.2759° — a **decimal-shift of the true 42.76°** (verified against the PDS mrox_0605
+volume index via `_f_leg_b_fetch_true_incidence.py`; CTX's ~3PM orbit cannot see i≈4°). It
+collapsed BOTH images it covers (ESP_068483 0.238, ESP_053989 0.344) in the first minnaert run.
+`OVERRIDES` table added to `_f_leg_b_incidence_check.py`. After correction ESP_068483 recovered
+fully (0.746) but ESP_053989 did NOT (0.274): it is the cohort's dimmest scene (I/F median 0.083)
+and after ÷cos^k ≈ 0.101 ≈ the stretch floor lo=0.1011, so ~half its pixels clip to black — the
+pooled-p2 floor concentrates all its clipping in the single dimmest scene.
+
+**Read:** the mapping family has converged. perframe's catastrophic mode (per-scene contrast
+pinning) is cured by any fixed stretch; illumination correction (minnaert) beats plain global on
+the dim scenes as predicted; the remaining ≈ −0.034 is mapping-independent within our family and
+plateaus well short of the −0.02 bar. Remaining suspects for the floor: (a) the F path's double
+bilinear resampling (cam2map + extract reproject) softening 5 m texture vs the mosaic, (b) the
+dim-scene clipping (one image, fixable with a wider stretch window, worth ≈ +0.005 median at
+most), (c) genuinely different calibrated-frame noise character. **Key unmeasured quantity:** F's
+eta² (block-killing) with a RETRAINED head — leg A only measured it with the mosaic-trained head
+(invalid). If retrained-F eta² ≈ block-free, −0.03 skill may be a fair price for removing the
+artifact entirely (A1's mosaic-side alternative was −0.024 for only a 28% eta² reduction).
+**Decision — iterate further / measure retrained-eta² / close F — deferred to Brian.**
+
 ## 2026-07-04b — F pilot leg B (LOIO gate): FAIL at −0.0499 — but bimodal, and the mapping (not F itself) is the suspect
 
 **Pipeline (all shipped, SHERLOCK_RUN.md Part F):** `f_leg_b_frame_list.py` resolved **81 unique
