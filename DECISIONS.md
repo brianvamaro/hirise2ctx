@@ -4388,20 +4388,27 @@ probe `_f_leg_b_diag.py`):
   ESP_046328 −0.397, ESP_054397 −0.286, ESP_069763/069669/059686 −0.22 to −0.27.
 
 **Diagnostics rule out composite mechanics:** coverage ≈ 100% on every image; overlap fraction
-and n_crops uncorrelated with ΔAUC (|ρ| < 0.07). The live correlates are the composite's
-pre-normalization I/F stats: **if_median ρ = +0.35, if_iqr ρ = +0.24** — dim/flat scenes crater,
-bright/contrast-rich scenes improve. Mechanism hypothesis: forcing every composite to IQR = 27.7
-gives intrinsically flat scenes (I/F IQR 0.003–0.005) a ~10× harder stretch than contrast-rich
-ones (0.04–0.05), amplifying sensor/destriping noise into fake texture. NOT single-factor:
-ESP_052576/068483 improved despite tiny IQR, so illumination (if_median, cf. A0's cos-i finding)
-is entangled.
+and n_crops uncorrelated with ΔAUC (|ρ| < 0.07). Between-frame illumination mismatch inside a
+composite ANTI-correlates in the 6-image gallery sample (`_f_leg_b_crop_stats.py`: improvers
+carry the big frame-median ratios 1.43–1.58×, craters 1.02–1.30×) — the last-write-wins
+composite + single normalization is not the killer either.
+
+**Over-stretch hypothesis REFUTED on real quantities** (`_f_leg_b_uint8_contrast.py`,
+`diag_uint8_contrast.csv`): the perframe mapping pins every F window at uint8 IQR 27–28 by
+construction (mosaic windows vary 19–57), and the F/mosaic contrast ratio is null vs ΔAUC
+(ρ = +0.09). **The surviving correlate is the composite I/F median: ρ = +0.35 — DIM
+(high-incidence) scenes crater, bright scenes improve** — illumination again, exactly A0's
+cos-i axis. Figures: `f_leg_b_diag_scatter.png` (bimodal bars + median scatter),
+`f_leg_b_diag_gallery.png` (mosaic-vs-F windows + native-res zooms for 3 craters/3 improvers;
+crater F zooms visibly texture-poor vs their mosaic counterparts).
 
 **Read:** F's calibrated frames carry usable signal (the improvers include some of the best AUCs
-in the whole project — 0.951, 0.934, 0.928) but the **perframe uint8 mapping is destroying the
-flat-scene half of the cohort**. The cheap next iteration — re-embed with a GLOBAL fixed I/F→DN
-affine (preserves between-scene contrast; ctxcal already made frames physically comparable) and/or
-minnaert (k≈0.66–0.694 from A0/A, metadata-only) — needs **no new Sherlock work** (crops are on
-the laptop; ~1 h GPU per mapping). Decision on iterate-vs-close-F deferred to Brian.
+in the whole project — 0.951, 0.934, 0.928) but the perframe mapping leaves an
+illumination-linked failure mode on the dim half of the cohort. The best-motivated next
+iteration is **minnaert** (cos-i correction, k≈0.66–0.694 from A0/A, metadata-only at deploy),
+with global-affine as the control; both re-use the crops already on the laptop — **no new
+Sherlock work, ~1 h GPU per mapping** (re-embed + re-gate). Decision on iterate-vs-close-F
+deferred to Brian.
 
 ## 2026-07-03b — F pilot leg A0 (CPU): calibrated frames differ by REAL illumination, not error
 
