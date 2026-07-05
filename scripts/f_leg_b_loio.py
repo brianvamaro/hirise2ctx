@@ -9,6 +9,11 @@ Gate: F's median per-image AUC must not drop materially vs baseline (≥ −0.02
 The A1 cycle measured Δ = −0.024 (marginal FAIL at −0.02 threshold).  F removes
 the normalization artifact at source, so the expectation is a smaller or zero penalty.
 
+Both stores are restricted to the obs_ids present in BOTH (fair Δ): images whose
+CTX frames failed ISIS/extract are dropped from train AND test on both sides
+(fang_columns_for_keys asserts on any key missing from a store, so unrestricted
+folds would crash — and an asymmetric cohort would bias the medians anyway).
+
 Run (laptop):
   conda run -n geospatial python scripts/f_leg_b_loio.py
 """
@@ -39,11 +44,35 @@ BASELINE = "fang_embeddings"
 F_STORE = "fang_embeddings_f"
 
 
-def run_store(store_name: str) -> pd.DataFrame:
+def restrict_fold(fold, avail: set[str]):
+    """Drop train/test rows whose obs_id is not in `avail`; None if no test rows left."""
+    from dataclasses import replace as dc_replace
+
+    mte = fold.keys_test["obs_id"].isin(avail).to_numpy()
+    if not mte.any():
+        return None
+    mtr = fold.keys_train["obs_id"].isin(avail).to_numpy()
+    return dc_replace(
+        fold,
+        X_train=fold.X_train[mtr],
+        y_train=fold.y_train[mtr].reset_index(drop=True),
+        groups_train=fold.groups_train[mtr],
+        keys_train=fold.keys_train[mtr].reset_index(drop=True),
+        X_test=fold.X_test[mte],
+        y_test=fold.y_test[mte].reset_index(drop=True),
+        groups_test=fold.groups_test[mte],
+        keys_test=fold.keys_test[mte].reset_index(drop=True),
+    )
+
+
+def run_store(store_name: str, avail: set[str]) -> pd.DataFrame:
     target = get_target(TARGET)
     store = load_fang_store(PX, pool=POOL, dataset_dir=DATASET_DIR, store_name=store_name)
     rows = []
     for fold in iter_loio_folds(SCHEME, scale_idx=SCALE_IDX, dataset_dir=DATASET_DIR):
+        fold = restrict_fold(fold, avail)
+        if fold is None:
+            continue  # held-out image absent from one of the stores
         f = augment_fold_with_fang(fold, px=PX, pool=POOL, dataset_dir=DATASET_DIR,
                                    replace=True, store=store)
         ytr = target.binarize(f.y_train).astype(np.float32)
@@ -83,10 +112,21 @@ def main() -> None:
               "Run f_leg_b_embed.py first to generate the F embeddings.")
         sys.exit(1)
 
+    def store_obs(name: str) -> set[str]:
+        return {p.name[: -len("_P96.npz")]
+                for p in (DATASET_DIR / name).glob("*_P96.npz")}
+
+    b_obs, f_obs = store_obs(BASELINE), store_obs(F_STORE)
+    avail = b_obs & f_obs
+    print(f"obs_ids: baseline {len(b_obs)}, F {len(f_obs)}, common {len(avail)}")
+    if b_obs - f_obs:
+        print(f"  missing from F (dropped from BOTH stores): "
+              f"{', '.join(sorted(b_obs - f_obs))}")
+
     allrows, results = [], {}
     for store in (BASELINE, F_STORE):
         print(f"\n=== LOIO: {store} ===", flush=True)
-        df = run_store(store)
+        df = run_store(store, avail)
         allrows.append(df)
         s, aucs = summarize(df, store)
         results[store] = (s, aucs)
