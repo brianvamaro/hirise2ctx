@@ -15,10 +15,12 @@ CTX frames failed ISIS/extract are dropped from train AND test on both sides
 folds would crash — and an asymmetric cohort would bias the medians anyway).
 
 Run (laptop):
-  conda run -n geospatial python scripts/f_leg_b_loio.py
+  conda run -n geospatial python scripts/f_leg_b_loio.py                                  # perframe
+  conda run -n geospatial python scripts/f_leg_b_loio.py --f-store fang_embeddings_f_minnaert
 """
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -41,7 +43,6 @@ TARGET = "fa_gt_1e-2"
 FIG = REPO / "reports" / "figures"
 GATE_DELTA = -0.02   # minimum acceptable Δ median AUC (same as A1 cycle)
 BASELINE = "fang_embeddings"
-F_STORE = "fang_embeddings_f"
 
 
 def restrict_fold(fold, avail: set[str]):
@@ -106,7 +107,15 @@ def summarize(df: pd.DataFrame, label: str) -> tuple[dict, np.ndarray]:
 
 
 def main() -> None:
-    f_dir = DATASET_DIR / F_STORE
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--f-store", default="fang_embeddings_f",
+                    help="F embedding store to gate (e.g. fang_embeddings_f_minnaert)")
+    args = ap.parse_args()
+    f_store = args.f_store
+    # output filenames: default store keeps the original names (notebook 27 reads them)
+    tag = "" if f_store == "fang_embeddings_f" else f_store.replace("fang_embeddings_f", "")
+
+    f_dir = DATASET_DIR / f_store
     if not f_dir.exists() or not any(f_dir.glob("*_P96.npz")):
         print(f"ERROR: {f_dir} is empty or missing.\n"
               "Run f_leg_b_embed.py first to generate the F embeddings.")
@@ -116,7 +125,7 @@ def main() -> None:
         return {p.name[: -len("_P96.npz")]
                 for p in (DATASET_DIR / name).glob("*_P96.npz")}
 
-    b_obs, f_obs = store_obs(BASELINE), store_obs(F_STORE)
+    b_obs, f_obs = store_obs(BASELINE), store_obs(f_store)
     avail = b_obs & f_obs
     print(f"obs_ids: baseline {len(b_obs)}, F {len(f_obs)}, common {len(avail)}")
     if b_obs - f_obs:
@@ -124,7 +133,7 @@ def main() -> None:
               f"{', '.join(sorted(b_obs - f_obs))}")
 
     allrows, results = [], {}
-    for store in (BASELINE, F_STORE):
+    for store in (BASELINE, f_store):
         print(f"\n=== LOIO: {store} ===", flush=True)
         df = run_store(store, avail)
         allrows.append(df)
@@ -133,12 +142,12 @@ def main() -> None:
 
     FIG.mkdir(parents=True, exist_ok=True)
     combined = pd.concat(allrows, ignore_index=True)
-    combined.to_csv(FIG / "f_leg_b_loio_preds.csv", index=False)
-    summ = pd.DataFrame([results[BASELINE][0], results[F_STORE][0]])
-    summ.to_csv(FIG / "f_leg_b_loio_summary.csv", index=False)
+    combined.to_csv(FIG / f"f_leg_b_loio_preds{tag}.csv", index=False)
+    summ = pd.DataFrame([results[BASELINE][0], results[f_store][0]])
+    summ.to_csv(FIG / f"f_leg_b_loio_summary{tag}.csv", index=False)
 
     b_s, b_aucs = results[BASELINE]
-    f_s, f_aucs = results[F_STORE]
+    f_s, f_aucs = results[f_store]
 
     print("\n=== SKILL GATE: baseline vs F ===")
     print(summ.to_string(index=False))
@@ -155,9 +164,9 @@ def main() -> None:
     else:
         print(f"\nGATE: FAIL — skill dropped by {delta_med:.4f} "
               f"(threshold {GATE_DELTA:+.2f})")
-        print("Investigate: check fraction of tiles with valid coverage in fang_embeddings_f/")
+        print(f"Investigate: check fraction of tiles with valid coverage in {f_store}/")
 
-    print(f"\nFull results: {FIG}/f_leg_b_loio_summary.csv")
+    print(f"\nFull results: {FIG}/f_leg_b_loio_summary{tag}.csv")
 
 
 if __name__ == "__main__":

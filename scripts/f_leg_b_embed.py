@@ -1,18 +1,26 @@
-"""F pilot leg B — laptop: embed calibrated-frame crops -> fang_embeddings_f NPZ files.
+"""F pilot leg B — laptop: embed calibrated-frame crops -> fang_embeddings_f* NPZ stores.
 
 For each training obs_id, composites the I/F crops transferred from Sherlock onto the
-CTX mosaic pixel grid, applies per-frame robust normalization (matching the 'perframe'
-mapping from leg A: median -> 125 DN, IQR -> 27.7 DN), and embeds with the frozen
-Fang-ViT at S=32 / P=96 / GeM pooling — the recipe used in fang_embeddings/.
+CTX mosaic pixel grid, converts I/F -> uint8 under the chosen --mapping, and embeds with
+the frozen Fang-ViT at S=32 / P=96 / GeM pooling — the recipe used in fang_embeddings/.
 
-Output matches the existing embedding format: dataset_v2/fang_embeddings_f/{obs}_P96.npz
-with arrays (ti, tj, valid, gem).  The LOIO gate script (f_leg_b_loio.py) reads from this
-store and compares skill against the baseline fang_embeddings/ store.
+Mappings (leg-A lineage; DECISIONS 2026-07-03b/04/04b):
+  perframe  per-composite robust norm: median -> 125 DN, IQR -> 27.7 DN
+            -> store fang_embeddings_f          (LOIO gate FAIL −0.0499, dim scenes collapse)
+  global    ONE fixed affine for all scenes: pooled p2–p98 over all crops -> 1..255
+            -> store fang_embeddings_f_global   (control: "calibrated frames need no norm")
+  minnaert  divide each crop by cos^k(incidence) first (k fitted from the crops,
+            incidence from reports/f_leg_b/frame_incidence.csv), then fixed pooled stretch
+            -> store fang_embeddings_f_minnaert (targets the leg-B illumination correlate)
+
+Output matches the existing embedding format: {store}/{obs}_P96.npz with arrays
+(ti, tj, valid, gem).  The LOIO gate script (f_leg_b_loio.py --f-store ...) reads a store
+and compares skill against the baseline fang_embeddings/ store.
 
 Run (laptop GPU, after transferring obs_crops from Sherlock):
   # expected layout: reports/f_leg_b/obs_crops/{obs_id}_{pid}_ifcrop.tif
-  conda run --no-capture-output -n geospatial python -u scripts/f_leg_b_embed.py
-  conda run --no-capture-output -n geospatial python -u scripts/f_leg_b_embed.py --smoke  # 2-img test
+  conda run --no-capture-output -n geospatial python -u scripts/f_leg_b_embed.py --mapping minnaert
+  conda run --no-capture-output -n geospatial python -u scripts/f_leg_b_embed.py --mapping global --smoke
 """
 from __future__ import annotations
 
@@ -37,7 +45,10 @@ from src.striping import A1_REF_MEDIAN, A1_REF_IQR
 CROPS_DIR = REPO / "reports" / "f_leg_b" / "obs_crops"
 LABELS_DIR = REPO / "dataset_v2" / "labels"
 FEATURES_DIR = REPO / "dataset_v2" / "features"
-OUT_DIR = REPO / "dataset_v2" / "fang_embeddings_f"
+INCIDENCE_CSV = REPO / "reports" / "f_leg_b" / "frame_incidence.csv"
+STORES = {"perframe": "fang_embeddings_f",
+          "global": "fang_embeddings_f_global",
+          "minnaert": "fang_embeddings_f_minnaert"}
 TILE_PX = 32      # S=32; context patch = 3*32 = 96 px
 BATCH = 96
 PX_M = 5.0        # native CTX resolution
@@ -61,16 +72,90 @@ def to_uint8_perframe(arr: np.ndarray) -> np.ndarray:
     return out
 
 
+def to_uint8_affine(arr: np.ndarray, lo: float, hi: float) -> np.ndarray:
+    """Fixed affine: I/F lo..hi -> 1..255 (0 reserved for nodata)."""
+    fin = np.isfinite(arr)
+    out = np.zeros(arr.shape, dtype=np.uint8)
+    out[fin] = np.clip((arr[fin] - lo) / max(hi - lo, 1e-9) * 254 + 1, 1, 255
+                       ).astype(np.uint8)
+    return out
+
+
+def _crop_pid(crop_path: Path, obs_id: str) -> str:
+    return crop_path.name[len(obs_id) + 1: -len("_ifcrop.tif")]
+
+
+def _crop_values(obs_ids: list[str]):
+    """Yield (pid, decimated finite positive I/F values) for every crop, one pass."""
+    for obs_id in obs_ids:
+        for p in sorted(CROPS_DIR.glob(f"{obs_id}_*_ifcrop.tif")):
+            with rasterio.open(p) as src:
+                a = src.read(1, out_shape=(max(1, src.height // 8),
+                                           max(1, src.width // 8))).astype(np.float32)
+            v = a[np.isfinite(a) & (a > 0)]
+            if v.size >= 100:
+                yield _crop_pid(p, obs_id), v
+
+
+def build_mapping_ctx(mapping: str, obs_ids: list[str]) -> dict:
+    """Fit the fixed constants a mapping needs, from the crops themselves.
+
+    global   -> {div: 1 per frame, lo, hi}: pooled p2–p98 of raw I/F over all crops
+    minnaert -> {k, div: cos^k(i) per frame, lo, hi}: k from log(frame median) vs
+                log(cos i), then pooled p2–p98 of the DIVIDED values
+    perframe -> {} (no constants)
+    """
+    if mapping == "perframe":
+        return {}
+
+    ctx: dict = {"div": {}}
+    if mapping == "minnaert":
+        import pandas as pd
+        inc = pd.read_csv(INCIDENCE_CSV)
+        cos_i = {r.PRODUCT_ID: float(np.cos(np.radians(r.incidence)))
+                 for r in inc.itertuples()}
+        # pass 1: per-frame median I/F (median over its crop medians) -> fit k
+        frame_med: dict[str, list[float]] = {}
+        for pid, v in _crop_values(obs_ids):
+            frame_med.setdefault(pid, []).append(float(np.median(v)))
+        pids = sorted(frame_med)
+        missing = [p for p in pids if p not in cos_i]
+        if missing:
+            raise KeyError(f"no incidence in {INCIDENCE_CSV} for: {missing}")
+        med = {p: float(np.median(frame_med[p])) for p in pids}
+        k = float(np.polyfit([np.log(cos_i[p]) for p in pids],
+                             [np.log(med[p]) for p in pids], 1)[0])
+        ctx["k"] = k
+        ctx["div"] = {p: cos_i[p] ** k for p in pids}
+        print(f"minnaert k = {k:.3f} (fit from {len(pids)} frames, "
+              f"incidence via {INCIDENCE_CSV.name})", flush=True)
+
+    # sampling pass with final divisors (global: divisor 1) -> pooled p2–p98
+    rng = np.random.default_rng(0)
+    samples, n_crops = [], 0
+    for pid, v in _crop_values(obs_ids):
+        v = v / ctx["div"].get(pid, 1.0)
+        samples.append(rng.choice(v, size=min(v.size, 200_000), replace=False))
+        n_crops += 1
+    lo, hi = np.percentile(np.concatenate(samples), [2, 98])
+    ctx["lo"], ctx["hi"] = float(lo), float(hi)
+    print(f"{mapping} stretch: I/F {ctx['lo']:.4f}..{ctx['hi']:.4f} "
+          f"(pooled p2–p98, {n_crops} crops)", flush=True)
+    return ctx
+
+
 # ------------------------------------------------------------------ composite
 
-def composite_crops(obs_id: str, row0: int, col0: int, H: int, W: int) -> np.ndarray:
+def composite_crops(obs_id: str, row0: int, col0: int, H: int, W: int,
+                    mapping: str = "perframe", ctx: dict | None = None) -> np.ndarray:
     """Composite all I/F crops for obs_id onto the mosaic pixel grid (H×W uint8).
 
     Where multiple frames overlap, the last one written wins (crops are sorted by
-    filename so the order is deterministic).  The composite is normalized as one
-    frame at the end — all crops of an obs_id share the same target statistics, so
-    seams between them are small and a single robust mapping is appropriate.
+    filename so the order is deterministic).  minnaert divides each crop by its
+    frame's cos^k(i) BEFORE compositing; the final I/F->uint8 conversion is
+    per-composite robust (perframe) or the fixed ctx[lo..hi] affine (global/minnaert).
     """
+    ctx = ctx or {}
     # NaN canvas: uncovered pixels must stay non-finite so they are EXCLUDED from
     # the median/IQR normalization stats (zeros would pollute them).
     canvas = np.full((H, W), np.nan, dtype=np.float32)
@@ -96,6 +181,9 @@ def composite_crops(obs_id: str, row0: int, col0: int, H: int, W: int) -> np.nda
         if fin.sum() < 50:
             continue
         arr[~fin] = np.nan
+        div = ctx.get("div", {}).get(_crop_pid(crop_path, obs_id), 1.0)
+        if div != 1.0:
+            arr = arr / div
 
         dst_if = np.full((H, W), np.nan, dtype=np.float32)
         reproject(source=arr, destination=dst_if,
@@ -107,17 +195,20 @@ def composite_crops(obs_id: str, row0: int, col0: int, H: int, W: int) -> np.nda
         new = np.isfinite(dst_if)
         canvas[new] = dst_if[new]
 
-    # Per-frame normalization of the composite (uncovered NaN pixels -> uint8 0)
+    # I/F -> uint8 (uncovered NaN pixels -> uint8 0)
     if not np.isfinite(canvas).any():
         return np.zeros((H, W), dtype=np.uint8)
-    return to_uint8_perframe(canvas)
+    if mapping == "perframe":
+        return to_uint8_perframe(canvas)
+    return to_uint8_affine(canvas, ctx["lo"], ctx["hi"])
 
 
 # ------------------------------------------------------------------ embed one image
 
-def embed_one(obs_id: str, embedder: FangEmbedder) -> bool:
+def embed_one(obs_id: str, embedder: FangEmbedder, out_dir: Path,
+              mapping: str, ctx: dict) -> bool:
     """Embed a single training image from its I/F crops.  Returns True on success."""
-    out_path = OUT_DIR / f"{obs_id}_P96.npz"
+    out_path = out_dir / f"{obs_id}_P96.npz"
     if out_path.exists():
         print(f"  {obs_id}: cached", flush=True)
         return True
@@ -140,7 +231,7 @@ def embed_one(obs_id: str, embedder: FangEmbedder) -> bool:
         H, W = ds.height, ds.width
 
     # Build composite uint8 window
-    window8 = composite_crops(obs_id, row0, col0, H, W)
+    window8 = composite_crops(obs_id, row0, col0, H, W, mapping=mapping, ctx=ctx)
     if not window8.any():
         print(f"  {obs_id}: all-zero composite (no crops found?); skipping", flush=True)
         return False
@@ -167,7 +258,7 @@ def embed_one(obs_id: str, embedder: FangEmbedder) -> bool:
     print(f"  {obs_id}: {len(ti)} tiles, {n_valid} valid "
           f"({n_valid / max(len(ti), 1):.0%})", flush=True)
 
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(out_path, ti=ti, tj=tj, valid=valid, gem=emb.astype(np.float32))
     return True
 
@@ -176,10 +267,15 @@ def embed_one(obs_id: str, embedder: FangEmbedder) -> bool:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--mapping", choices=sorted(STORES), default="perframe",
+                    help="I/F->uint8 mapping (selects the output store)")
     ap.add_argument("--smoke", action="store_true", help="embed only the first 2 obs_ids")
     ap.add_argument("--cpu", action="store_true")
     ap.add_argument("--obs", nargs="+", help="embed specific obs_ids only")
+    ap.add_argument("--fit-only", action="store_true",
+                    help="fit + print the mapping constants (CPU) and exit — no embedding")
     args = ap.parse_args()
+    out_dir = REPO / "dataset_v2" / STORES[args.mapping]
 
     crops = sorted({p.name.split("_")[0] + "_" + p.name.split("_")[1]
                     for p in CROPS_DIR.glob("*_ifcrop.tif")})
@@ -208,19 +304,25 @@ def main() -> None:
     if args.smoke:
         obs_ids = obs_ids[:2]
 
-    print(f"{len(obs_ids)} obs_ids to embed", flush=True)
+    print(f"{len(obs_ids)} obs_ids to embed  (mapping={args.mapping} -> {out_dir.name})",
+          flush=True)
+    ctx = build_mapping_ctx(args.mapping, obs_ids)
+    if args.fit_only:
+        print("--fit-only: constants fitted, exiting before embedding.")
+        return
     embedder = FangEmbedder.load(device="cpu" if args.cpu else None)
 
     ok = fail = 0
     for obs_id in obs_ids:
-        if embed_one(obs_id, embedder):
+        if embed_one(obs_id, embedder, out_dir, args.mapping, ctx):
             ok += 1
         else:
             fail += 1
 
     print(f"\nembedded: {ok}  failed/skipped: {fail}")
-    print(f"store: {OUT_DIR}")
-    print(f"\nnext: conda run -n geospatial python scripts/f_leg_b_loio.py")
+    print(f"store: {out_dir}")
+    print(f"\nnext: conda run -n geospatial python scripts/f_leg_b_loio.py "
+          f"--f-store {out_dir.name}")
 
 
 if __name__ == "__main__":
