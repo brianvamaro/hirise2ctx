@@ -4410,9 +4410,13 @@ per-image illumination effects in planetary ML ([Bickel et al. 2020](https://doi
   difference directions on pilot+cohort overlaps → project out top-k → retrain head.
 - **H3 consistency-regularized head** (1–2 days): loss += λ·(pred diff on co-located overlap
   tiles); sweep λ → skill-vs-η² Pareto; the overlap data is already on disk.
-- **H4 output-side seam-graph leveling (E)** (days; works WITHOUT overlap): per-frame offset (logit
-  domain) minimizing boundary discontinuities + smooth regional trend guard. Final polish
-  regardless of H1–H3; the one lever that also fixes frames with no overlapping partner.
+- **H4 overlap-constrained leveling of per-frame predictions** (days) *(corrected 2026-07-06 during
+  the PLAN review — originally mislabeled "= E, works without overlap", which would be the
+  RULED-OUT circular D)*: per-frame logit offsets solved on the overlap graph from **co-located
+  prediction disagreements** (same ground, two frames → artifact by construction, no geology
+  assumption) + smooth-trend guard. F-mode only; on the mosaic (a partition, no overlaps) leveling
+  degenerates to D and stays ruled out. No-overlap frames get graph-interpolated offsets, flagged
+  in H6.
 - **H5 stronger physics (Hapke/atmospheric EPF)**: LOW priority — headroom now known small (4%
   residual, mostly anomalous frames that H1 fixes empirically).
 - **H6 accept + per-frame provenance/confidence layer** (à la Dickson/Bickel): ship regardless.

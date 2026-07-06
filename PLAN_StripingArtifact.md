@@ -14,8 +14,11 @@ embedder with no per-frame normalization** maps each frame's radiometry to a dif
 **Evidence:** frames explain eta² 0.011 vs 0.002 null (89% tiles > null-95p); frame-mean choropleth
 reproduces the blocks after geology removed; effect is texture/contrast-driven (per-frame mean-DN
 Spearman only +0.14). **Why invisible before:** training windows ≈8 km inside one ~28 km frame + LOIO
-scores per-image=per-frame. **Mitigation (NOT done):** per-frame radiometric normalization before
-embedding; adjudicate by LOIO skill preserved + thermal ρ up. Full record: DECISIONS 2026-06-18d,
+scores per-image=per-frame. **Mitigation status (updated 2026-07-05):** a long campaign followed —
+A1 partial (28% ↓ / −0.024), F tested end-to-end and its input-mapping leg closed (skill PASS, η²
+FAIL), verdict review-amended → the live work plan is the **🟢 PHASE 2 docket** below. (Thermal ρ
+was RETIRED as mitigation adjudicator 2026-06-22 — LOIO skill + η² are the gates.) Full record:
+DECISIONS 2026-06-18d → 2026-07-05d,
 notebook 25 (rewritten), notebook 24 §2d, `src/striping.py`, `scripts/striping_frame_blocks.py`,
 [[regional_map_rectangular_artifact]]. **The §1–§6 below (vertical-stripe / seam-line plan) is
 SUPERSEDED — wrong feature; kept for method history only.**
@@ -87,7 +90,8 @@ THEMIS/TES thermal ρ ideally up** (external check). "Looks cleaner" alone is in
   the per-frame blocks — they are reduced but still visible (residual = shape/contrast/noise-character
   differences offset+gain can't capture + the frozen-ViT ceiling).
 - **NET: A1 = partial 28% reduction for −0.024 LOIO — real but not decisive. NO DECISION TAKEN.** Full
-  option space + pros/cons below.
+  option space + pros/cons below. *(Subsequent history: Brian chose "de-risk F first" 2026-07-02 →
+  F campaign 2026-07-02→05 → PHASE 2 docket. A1 remains the measured fallback throughout.)*
 - Note: m0/s0 measured on the *region* frames (deploy side); same constant used train+deploy so it
   doesn't bias the A/B — minor refinement = recompute over train∪region if A1 is adopted.
 
@@ -130,8 +134,8 @@ frames** that per-frame inference actually kills the blocks:
 - **Leg B (skill-side, real test — decided 2026-07-04):** project the source frames under the
   38-image cohort, re-embed training windows with perframe normalization, re-bake head, **LOIO gate**
   → then the full 907-frame regional build.  Scripts: `f_leg_b_frame_list.py` (laptop, builds frame
-  list + bounds CSVs), `run_f_leg_b.sbatch` + `f_leg_b_process.sh` (Sherlock ~1h wall / 24-task
-  array), `f_leg_b_extract.py` (Sherlock MAP venv, extracts I/F crops), `f_leg_b_embed.py` (laptop
+  list + bounds CSVs), `run_f_leg_b.sbatch` + `f_leg_b_process.sh` (Sherlock ~1h wall; shipped as a
+  32-task array), `f_leg_b_extract.py` (Sherlock MAP venv, extracts I/F crops), `f_leg_b_embed.py` (laptop
   GPU, embeds → `fang_embeddings_f/`), `f_leg_b_loio.py` (LOIO gate, same Δ ≥ −0.02 threshold as
   A1 cycle).  See SHERLOCK_RUN.md Part F for the full step-by-step.
 - **Step 1 is a rerun of the timing job with cubes kept:** `KEEP_CUBES=1 sbatch
@@ -190,7 +194,8 @@ frames** that per-frame inference actually kills the blocks:
   physics but not data-driven offsets. Untested-hypothesis docket (lit-reviewed, DECISIONS
   2026-07-05d): **H1** per-frame log-median centering (~1 h); **H2** embedding nuisance-subspace
   removal from overlap pairs (hours); **H3** consistency-regularized head, λ-sweep Pareto (1–2 d);
-  **H4** output-side seam-graph leveling = E (works without overlap; final polish regardless);
+  **H4** overlap-constrained leveling of per-frame predictions (F-mode; non-circular via co-located
+  overlap disagreement — the boundary-only variant = D stays ruled out);
   H5 stronger physics (low priority); H6 per-frame provenance/confidence layer (ship regardless).
   907-frame build stays paused pending H1–H3 → η² ≲ 0.05 at acceptable skill. **Docket → Brian.**
 
@@ -225,13 +230,14 @@ leveling. Full evidence + verified literature anchors: DECISIONS 2026-07-05d;
 | **H1** | per-frame **log-median centering** | anomalous frames (F02-class); residual level term | `f_leg_b_embed.py`: new mapping = minnaert ÷cos^k, then per-CROP subtract log-median → common DN center (fixed contrast scale from training pool); embed → gate → η² | ~1 h GPU | skill ≥ −0.02 AND η² < 0.14 (beat A1) |
 | **H2** | **embedding nuisance-subspace removal** | embedder amplification | co-located tile pairs across overlapping crops → embedding difference vectors → top-k PCA directions = frame-nuisance basis → project out of ALL embeddings → retrain head → gate + η²; sweep k ∈ {4, 16, 64} | hours, closed-form | η² drop at ≤ 0.01 skill cost |
 | **H3** | **consistency-regularized head** | embedder amplification (optimizes η² directly) | `DeployableHead.fit` loss += λ·MSE(pred_i, pred_j) on co-located overlap tiles; sweep λ → skill-vs-η² Pareto; pick knee | 1–2 days | Pareto point with η² ≲ 0.05 at skill ≥ −0.02 |
-| **H4** | **seam-graph leveling of the prediction map** (= option E) | whatever survives H1–H3; frames WITHOUT overlap | per-frame additive offset in logit domain, least-squares minimizing prediction discontinuity across SeamMap boundaries + smooth regional-trend guard (protects real gradients); apply to map GeoTIFFs post-hoc | days | blocks visually gone; validation-leg ρ not degraded |
+| **H4** | **overlap-constrained leveling of per-frame predictions** (F-mode only; ≠ D, ≠ E) | whatever survives H1–H3 | per-frame additive offset in logit domain, least-squares over **co-located prediction disagreements in frame-overlap regions** (same ground, two frames → the disagreement is artifact BY CONSTRUCTION; no geology assumption, so it sidesteps D's circularity) + smooth regional-trend guard; solved on the seam/overlap graph, applied post-hoc. **⚠ scope limit:** needs per-frame predictions with overlaps (the F deployment). Boundary-discontinuity-only leveling on the mosaic map (a partition, no overlaps) is **option D — RULED OUT (circular), stays ruled out**. Frames with no overlapping partner get interpolated offsets from the graph (flagged in H6). | days | blocks visually gone; validation-leg ρ not degraded |
 | H5 | stronger physics (Hapke/atmospheric EPF) | (little headroom left) | only if H1 leaves >5% level residual | — | — |
 | H6 | per-frame provenance/confidence layer | honesty | ship per-frame id + incidence + overlap-QA raster with any final map (Dickson-style) | small | — |
 
 **Decision rule:** if H1–H3 (or their combination) reach **η² ≲ 0.05 at skill ≥ −0.02**, the
 907-frame regional F build is back on the table (H4+H6 as polish). If not, fall back to the
-2026-07-05c options (ship A1 / accept + caveat), with H4 still applicable to the mosaic-based map.
+2026-07-05c options (ship A1 / accept + caveat). Note H4 does NOT transfer to the mosaic-based
+map — the mosaic is a partition (no overlaps), where leveling degenerates to the ruled-out D.
 
 **State: no docket item run yet.** Next action = H1.
 
@@ -276,10 +282,12 @@ D ruled out).
 | **A1-λ** — gentler A1 | shrink toward reference by λ<1 (partial normalize) | tunable skill-vs-artifact knob; could find a sweet spot | still partial; adds a hyperparameter to tune | cheap (re-bake sweep) |
 | **B2** — local contrast norm (frame-agnostic) | divisive local normalization; or **A1+B2 combo** | attacks the contrast/texture lever A1 leaves; no SeamMap at deploy; combo addresses offset(A1)+texture(B2) | smears seams; **amplifies noise in bland plains → false positives**; bigger input change → bigger skill risk | re-embed + re-bake (~1 h) |
 | **C** — radiometric augmentation | re-bake head on augmented embeddings (random offset/gain/contrast/gamma) | teaches invariance to the part A1 can't normalize away; **deploy unchanged (no SeamMap)**; generalises to other radiometric nuisances | **frozen-ViT ceiling → only partial** (head can't undo what the ViT entangled); N×K embedding cost; **prior W2 augmentation was harmful** (caution) | heavy (N×K re-embed) |
-| **D** — post-hoc de-block (output) ~~subtract each frame's mean detrended-abundance via the SeamMap~~ | **❌ RULED OUT (Brian, 2026-06-22)** | — | **CIRCULAR**: separating a frame's artifact offset from real geology requires a model of the abundance field — the very unknown the map exists to discover. Would assume regional structure, subtract frame-scale deviations from it, then present the result as a *discovery* of that structure. Especially poisonous for circum-Chryse megatsunami deposits (real coherent between-frame variation D could erase/manufacture). Poisson form doesn't escape it (assumes seam-steps are artifact; real geology may step at a seam). | — |
+| **D** — post-hoc de-block (output) ~~subtract each frame's mean detrended-abundance via the SeamMap~~ | **❌ RULED OUT (Brian, 2026-06-22)** | — | **CIRCULAR**: separating a frame's artifact offset from real geology requires a model of the abundance field — the very unknown the map exists to discover. Would assume regional structure, subtract frame-scale deviations from it, then present the result as a *discovery* of that structure. Especially poisonous for circum-Chryse megatsunami deposits (real coherent between-frame variation D could erase/manufacture). Poisson form doesn't escape it (assumes seam-steps are artifact; real geology may step at a seam). *(2026-07-06 note: PHASE 2's H4 is NOT D — it levels on **co-located overlap disagreement** in F-mode per-frame predictions, which is artifact by construction; the boundary-only form here stays ruled out.)* | — |
 | **E** — accept + disclose | document the residual as a partially-mitigable 5 m/px frame-radiometry limitation | honest; no further work; lean on coarse-scale + thermal results robust to it | the map still shows blocks; we *know* it's partly mitigable so "irreducible floor" would be over-claiming — frame it as "residual after A1/de-block" | none |
 | **A-meta** — illumination-metadata norm | normalize each frame from SeamMap **INCIDENCE / sub-solar geometry / local-time** (no pixel pass) | cheapest physically-grounded lever (≈0 marginal cost); metadata already cached for all 907 frames; scales free to global | only removes the illumination-correlated component; needs an abundance↔incidence model | very cheap |
+| | | | *(2026-07-06 note: A-meta was REALIZED inside F as the **minnaert** mapping — ÷cos^k(i), k=0.580, PDS incidence — and is part of the gate-passing log-minnaert recipe. Its measured reach: level residual 10.2%→4.0%; it does not touch the embedder-amplification floor.)* | |
 | **F** — per-source-frame inference | run the model on individual **`ctxcal`-calibrated CTX frames** (not the mosaic) + composite back (per Bickel 2025) | **highest ceiling** — removes the artifact *at source* (frames consistent to ±2%, Walter 2024); recovers low-freq radiometry + 12-bit; published deployment precedent | needs EDR→ISIS recalibration + **retrain head on source embeddings** (train/deploy parity); heaviest at **global** scale (~86k frames) | trivial (907 frames regional) → very heavy (global) |
+| | | | *(2026-07-06 outcome: F was TESTED 2026-07-02→05. The "±2%/removes-at-source" premise did NOT survive contact: skill gate PASS (+0.0067, log-minnaert) but η² 0.179 — input mapping alone leaves the embedder amplifying 1–4% residuals ~5–20×. The input-mapping leg is closed; F's fate now rides on the PHASE 2 invariance/leveling docket above.)* | |
 
 ### Recommended decision sequence (REVISED 2026-06-22 — thermal/D dropped)
 The decision is now a direct cost-vs-need judgement, not a thermal-gated sequence:
@@ -302,7 +310,12 @@ later only as an independent check on whatever final map is produced.
 `models/deployable_a1/`, `dataset_v2/fang_embeddings_a1/`, figs `striping_a1_*`/`26_frameblocks_*`,
 notebook 25, DECISIONS 2026-06-18d + 2026-06-19/20.
 
-## LITERATURE & DATA-ROUTE FINDINGS (2026-06-20) — research complete, NO decision
+## LITERATURE & DATA-ROUTE FINDINGS (2026-06-20) — research complete; decisions since: F chosen 2026-07-02, tested, → PHASE 2
+
+*(2026-07-06 note: a SECOND literature sweep (RRN/IR-MAD, HLS/BRDF harmonization, mosaic leveling,
+domain adaptation) grounds the PHASE 2 docket — see DECISIONS 2026-07-05d. Also, our own overlap
+measurements refined the Walter ±2% premise below: same-incidence pairs agree 1–3%, cross-incidence
+pairs 10–22% raw, 4% after minnaert — flat-field stability ≠ scene-level constancy.)*
 
 Comprehensive review; Brian provided 5 paywalled papers, **all read in full**. Five independent
 sources converge on the same diagnosis and sharpen the menu — especially **F** and a new low-cost
