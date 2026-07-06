@@ -179,13 +179,20 @@ frames** that per-frame inference actually kills the blocks:
   (trained on `fang_embeddings_f_minnaert_wl`) on the 7 E8_N44 pilot frames: η² **0.179 median /
   0.277 partition**, blocks VISIBLE in the choropleth. Only 9% below mosaic-raw 0.196, and WORSE
   than the near-free A1 (0.141). Overlap: 10.2% I/F → 20.4% prediction disagreement (embedder still
-  amplifies ~2×). **Root cause established:** the ~10% co-located I/F difference is PHYSICAL
-  (illumination/emission/phase/atmosphere; minnaert removes only incidence), not a mosaic artifact —
-  so calibrated per-frame inference cannot remove it. Skill-gate PASS and η² FAIL are different
-  failure modes (within-scene ranking vs cross-frame agreement). **The 907-frame regional build is
-  NOT justified; F is effectively CLOSED as a mitigation.** ESP_053989 fix now moot. DECISIONS
-  2026-07-05c, `f_pilot_minnaert_log.png`. **Fallback decision (ship A1 / pursue E / accept +
-  caveat) → Brian.**
+  amplifies ~2×). Skill-gate PASS and η² FAIL are different failure modes (within-scene ranking vs
+  cross-frame agreement). **The 907-frame regional build is NOT justified on this evidence.**
+  DECISIONS 2026-07-05c, `f_pilot_minnaert_log.png`.
+- **🔍 REVIEW 2026-07-05d (Brian request) — verdict AMENDED: "physical floor" was overstated; the
+  input-MAPPING leg is closed but the invariance/leveling axis was never tested.** Fact-check
+  (`_f_review_overlap_residual.py`): post-minnaert overlap disagreement is **4.0%** median (not
+  10%; worst pairs 0.7–4%), yet predictions differ 20.4% even where corrected I/F agrees <1% —
+  the **embedder amplifies 5–20×**, and one anomalous frame (F02, atmosphere/calibration) resists
+  physics but not data-driven offsets. Untested-hypothesis docket (lit-reviewed, DECISIONS
+  2026-07-05d): **H1** per-frame log-median centering (~1 h); **H2** embedding nuisance-subspace
+  removal from overlap pairs (hours); **H3** consistency-regularized head, λ-sweep Pareto (1–2 d);
+  **H4** output-side seam-graph leveling = E (works without overlap; final polish regardless);
+  H5 stronger physics (low priority); H6 per-frame provenance/confidence layer (ship regardless).
+  907-frame build stays paused pending H1–H3 → η² ≲ 0.05 at acceptable skill. **Docket → Brian.**
 
 ## NEXT SESSION — decision setup (collected; no decision taken 2026-06-20)
 

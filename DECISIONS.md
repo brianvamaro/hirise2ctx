@@ -4360,6 +4360,67 @@ blocks without a head trained on calibrated-frame embeddings. The only real test
 (project ~40–80 cohort frames on Sherlock, re-embed with perframe normalization, re-bake head,
 LOIO gate). Decision on whether to proceed to leg B deferred to Brian.
 
+## 2026-07-05d — REVIEW of the F verdict (Brian request): "physical floor" claim OVERSTATED; correction works on level, the embedder is the amplifier; 6 untested mitigation hypotheses cataloged (lit review)
+
+**Fact-check that revises 2026-07-05c** (`_f_review_overlap_residual.py`,
+`reports/f_leg_b/review_overlap_residual.csv`): the "~10% co-located I/F difference is physical
+and minnaert removes only incidence" claim measured the RAW overlaps. Post-minnaert the median
+pair disagreement is **4.0%** (10.2% raw), and the worst high-Δi pairs drop to **0.7–4%** — the
+photometric level correction largely WORKS. Yet predictions disagree 20.4% median even where
+corrected I/F agrees to <1% (P21~P22: 1.0%→20.5%; B03~P21: 0.8%→20.4%), and prediction
+disagreement anti-correlates with Δincidence (ρ=−0.33). Decomposition of the real floor:
+(a) a minority of ANOMALOUS frames — F02_036739's corrected residual stays 10–15% vs every
+partner (atmosphere/calibration; physics can't fix, data-driven per-frame offset can);
+(b) **embedder/head hypersensitivity — a 1–4% input residual becomes ~20% prediction difference
+(5–20× amplification), and our retrained head's loss contained NO cross-frame term**;
+(c) genuinely information-level components (shadow rendering, per-frame PSF/sharpness/haze,
+multi-year surface change) of unknown share. So "cannot be removed input-side" was too strong:
+what's true is that **radiometric MAPPING alone is insufficient**; the invariance/leveling axis
+was never tested.
+
+**What leg B tested vs never tested:** tested = 5 I/F→uint8 mappings + retraining with the
+UNCHANGED loss. Never tested = (i) data-driven per-frame level correction (per-frame log-median
+centering — the A1 move on calibrated frames, WITHOUT perframe's contrast pinning); (ii) any
+cross-frame consistency objective in head training (we have overlap tiles = free supervision);
+(iii) embedding-space frame-nuisance removal (CORAL-style / pair-difference subspace projection);
+(iv) output-side seam-graph leveling of the prediction map (option E, SeamMap polygons known);
+(v) fusion beyond the median composite (which already cuts η² 0.277→0.179).
+
+**Literature anchors (verified DOIs, `_f_litreview_queries*.py`):** data-driven relative
+radiometric normalization is the EO standard — PIF/IR-MAD ([Canty & Nielsen 2004](https://doi.org/10.1016/j.rse.2003.10.024),
+[2007](https://doi.org/10.1016/j.rse.2007.07.013); [Du, Teillet & Cihlar 2002](https://doi.org/10.1016/S0034-4257(02)00029-9));
+NASA's HLS harmonization ([Claverie et al. 2018](https://doi.org/10.1016/j.rse.2018.09.002)) with
+per-scene BRDF c-factor ([Roy et al. 2016](https://doi.org/10.1016/j.rse.2016.01.023)) is the
+canonical "make inputs agree before analysis" product; planetary precedent for per-image mosaic
+leveling = THEMIS ([Edwards et al. 2011](https://doi.org/10.1029/2010JE003755)); modern mosaic
+gain/offset network optimization ([Li et al. 2022](https://doi.org/10.1109/JSTARS.2022.3229392));
+domain adaptation for RS ([Tuia, Persello & Bruzzone 2016](https://doi.org/10.1109/MGRS.2016.2548504)),
+[Deep CORAL (Sun & Saenko 2016)](https://doi.org/10.1007/978-3-319-49409-8_35), planetary DA
+precedent ([Lagain-adjacent JSTARS 2022](https://doi.org/10.1109/JSTARS.2022.3156371)); CRISM
+photometry shows Mars photometric properties vary spatially → one global k is crude
+([Fernando et al. 2012](https://doi.org/10.1029/2012JE004194)); Murray mosaic philosophy is
+information-preserving + per-pixel provenance so USERS handle radiometric seams
+([Dickson et al. 2024](https://doi.org/10.1029/2024EA003555)); accept-and-covariate precedent for
+per-image illumination effects in planetary ML ([Bickel et al. 2020](https://doi.org/10.1109/JSTARS.2020.2991588)).
+
+**Hypothesis docket (cheap→expensive; each gated on skill + η²):**
+- **H1 per-frame log-median centering** (~1 h GPU, leg-B harness as-is): removes frame DC
+  data-driven (fixes F02-class anomalies), keeps contrast. Directly targets the level term of η².
+- **H2 embedding nuisance-subspace removal** (hours, closed-form): overlap-pair embedding
+  difference directions on pilot+cohort overlaps → project out top-k → retrain head.
+- **H3 consistency-regularized head** (1–2 days): loss += λ·(pred diff on co-located overlap
+  tiles); sweep λ → skill-vs-η² Pareto; the overlap data is already on disk.
+- **H4 output-side seam-graph leveling (E)** (days; works WITHOUT overlap): per-frame offset (logit
+  domain) minimizing boundary discontinuities + smooth regional trend guard. Final polish
+  regardless of H1–H3; the one lever that also fixes frames with no overlapping partner.
+- **H5 stronger physics (Hapke/atmospheric EPF)**: LOW priority — headroom now known small (4%
+  residual, mostly anomalous frames that H1 fixes empirically).
+- **H6 accept + per-frame provenance/confidence layer** (à la Dickson/Bickel): ship regardless.
+
+**Status: F verdict amended from "closed — cannot work" to "input-mapping-only leg closed;
+invariance/leveling legs (H1–H4) untested and cheap."** 907-frame build stays paused pending
+H1–H3 evidence of a path to η² ≲ 0.05 at acceptable skill. Decision on running the docket → Brian.
+
 ## 2026-07-05c — F leg B η² CONFIRMATION: FAIL — retrained head does NOT remove the artifact (η² 0.18, blocks visible). F does not achieve its purpose.
 
 **The decisive measurement leg A could not give (a head trained on F embeddings), now run.**
