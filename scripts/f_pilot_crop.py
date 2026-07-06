@@ -121,6 +121,16 @@ def to_uint8(arr: np.ndarray, lo: float, hi: float) -> np.ndarray:
     return out
 
 
+def to_uint8_log(arr: np.ndarray, lo: float, hi: float) -> np.ndarray:
+    """log-domain stretch: ln(I/F) lo..hi -> 1..255 (matches f_leg_b_embed --stretch-scale log)."""
+    out = np.zeros(arr.shape, dtype=np.uint8)
+    fin = np.isfinite(arr) & (arr > 0)
+    v = np.log(arr[fin])
+    llo, lhi = np.log(max(lo, 1e-6)), np.log(max(hi, 1e-6))
+    out[fin] = np.clip((v - llo) / (lhi - llo) * 254.0 + 1.0, 1, 255).astype(np.uint8)
+    return out
+
+
 def mapped_uint8(pid: str, mapping: str, ctx: dict) -> np.ndarray:
     arr = np.load(aligned_path(pid)).astype(np.float32)
     if mapping == "affine":
@@ -132,6 +142,11 @@ def mapped_uint8(pid: str, mapping: str, ctx: dict) -> np.ndarray:
     if mapping == "minnaert":
         lo, hi = ctx["minnaert_lohi"]
         return to_uint8(arr / ctx["minnaert_div"][pid], lo, hi)
+    if mapping == "minnaert_log":
+        # deploy recipe (leg B GATE PASS, DECISIONS 2026-07-05b): FIXED training k +
+        # log-domain stretch bounds, per-frame cos^k(i) divisor from this frame's incidence
+        lo, hi = ctx["log_lohi"]
+        return to_uint8_log(arr / ctx["minnaert_div"][pid], lo, hi)
     if mapping == "perframe":
         fin = np.isfinite(arr)
         med = float(np.median(arr[fin]))
@@ -314,6 +329,17 @@ def main():
     ap.add_argument("--smoke-size", type=int, default=0,
                     help="shrink the crop to N native px (multiple of 32; smoke test)")
     ap.add_argument("--cpu", action="store_true", help="force CPU embedding (GPU busy)")
+    # leg B eta2 confirmation: fixed deploy constants + a retrained head (DECISIONS 2026-07-05b)
+    ap.add_argument("--minnaert-k", type=float, default=None,
+                    help="FIXED Minnaert k for minnaert_log (training value, e.g. 0.580); "
+                         "if omitted, minnaert/minnaert_log fit k on the pilot frames")
+    ap.add_argument("--stretch-lohi", type=float, nargs=2, default=None,
+                    metavar=("LO", "HI"),
+                    help="FIXED I/F stretch bounds for minnaert_log (training p0.5–p99.5)")
+    ap.add_argument("--head-dir", default=None,
+                    help="load ONE deployable head from here instead of base+a1 "
+                         "(e.g. models/deployable_f_wl/<hash>)")
+    ap.add_argument("--head-name", default="f_wl", help="label for --head-dir head")
     args = ap.parse_args()
 
     pids = crop_pids()
@@ -348,11 +374,26 @@ def main():
         ctx["minnaert_div"] = {p: cos_i[p] ** k for p in pids}
         ctx["minnaert_lohi"] = pooled_percentiles(pids, divisor=ctx["minnaert_div"])
         print(f"minnaert k = {k:.3f} (fit from {len(pids)} frame medians)", flush=True)
+    if "minnaert_log" in args.mappings:
+        # DEPLOY recipe: FIXED training k + log stretch bounds applied to these frames
+        # (per-frame cos^k(i) uses each frame's own incidence). No fitting on the pilot.
+        if args.minnaert_k is None or args.stretch_lohi is None:
+            raise SystemExit("minnaert_log needs --minnaert-k and --stretch-lohi "
+                             "(the training constants; DECISIONS 2026-07-05b)")
+        k = float(args.minnaert_k)
+        ctx["minnaert_div"] = {p: cos_i[p] ** k for p in pids}
+        ctx["log_lohi"] = tuple(args.stretch_lohi)
+        print(f"minnaert_log: FIXED k={k:.3f}  log stretch I/F "
+              f"{args.stretch_lohi[0]:.4f}..{args.stretch_lohi[1]:.4f}", flush=True)
 
     embedder = FangEmbedder.load(device="cpu" if args.cpu else None)
-    heads = {"base": DeployableHead.load(BASE_HEAD)}
-    if A1_HEAD.exists():
-        heads["a1"] = DeployableHead.load(A1_HEAD)
+    if args.head_dir:
+        heads = {args.head_name: DeployableHead.load(Path(args.head_dir))}
+        print(f"head: {args.head_name} <- {args.head_dir}", flush=True)
+    else:
+        heads = {"base": DeployableHead.load(BASE_HEAD)}
+        if A1_HEAD.exists():
+            heads["a1"] = DeployableHead.load(A1_HEAD)
 
     for m in args.mappings:
         run_mapping(m, pids, ctx, embedder, heads)

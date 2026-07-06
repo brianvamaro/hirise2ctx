@@ -36,7 +36,8 @@ import src.modeling  # noqa: F401  -- Windows DLL bootstrap; must precede numpy
 import numpy as np
 
 from src.modeling.binary_target import get_target
-from src.modeling.loaders import augment_fold_with_fang, iter_loio_folds, load_fang_store
+from src.modeling.loaders import (fang_columns_for_keys, iter_loio_folds,
+                                   load_fang_store)
 from src.modeling.mlp_head import FROZEN_RECIPE, DeployableHead
 
 DATASET_DIR = REPO_ROOT / "dataset_v2"
@@ -56,15 +57,27 @@ def build_all_image_matrix(target_id: str, store_name: str = "fang_embeddings"):
     """
     target = get_target(target_id)
     store = load_fang_store(INPUT_PX, pool=POOL, dataset_dir=DATASET_DIR, store_name=store_name)
+    store_obs = set(store[0]["obs_id"].unique())   # some F stores omit images (failed frames)
     Xs, ys, gs = [], [], []
     obs_to_int: dict[str, int] = {}
+    skipped = []
+    # Union of per-fold TEST slices = each image once. We look up ONLY the test keys
+    # (not augment_fold_with_fang, which also joins the train side — every fold's train
+    # set contains the store-missing images and would trip the all-present assert).
     for fold in iter_loio_folds(SCHEME, scale_idx=SCALE_IDX, dataset_dir=DATASET_DIR):
-        f = augment_fold_with_fang(fold, px=INPUT_PX, pool=POOL, dataset_dir=DATASET_DIR,
-                                   replace=True, store=store)
-        Xs.append(f.X_test)
-        ys.append(target.binarize(f.y_test))
-        gs.append(f.groups_test)
-        obs_to_int = f.obs_to_int  # consistent across folds
+        held = set(fold.keys_test["obs_id"].unique())
+        if not held <= store_obs:                  # test image absent from this store
+            skipped.extend(sorted(held - store_obs))
+            continue
+        emb_test, _ = fang_columns_for_keys(fold.keys_test, INPUT_PX, pool=POOL,
+                                            dataset_dir=DATASET_DIR, store=store)
+        Xs.append(emb_test)
+        ys.append(target.binarize(fold.y_test))
+        gs.append(fold.groups_test)
+        obs_to_int = fold.obs_to_int  # consistent across folds
+    if skipped:
+        print(f"  skipped {len(skipped)} image(s) absent from {store_name}: "
+              f"{', '.join(skipped)}", flush=True)
     X = np.concatenate(Xs, axis=0)
     y = np.concatenate(ys, axis=0)
     groups = np.concatenate(gs, axis=0)
@@ -104,7 +117,11 @@ def main() -> int:
     print(f"\n  in-sample AUC (sanity only) = {auc:.4f}   "
           f"mean p|pos={p[y == 1].mean():.3f}  mean p|neg={p[y == 0].mean():.3f}")
     print(f"  recipe_hash={head.recipe_hash()}  model_hash={head.model_hash()[:16]}")
-    print(f"  [done] {time.monotonic() - t0:.0f} s -> {out_dir.relative_to(REPO_ROOT)}")
+    try:
+        shown = out_dir.resolve().relative_to(REPO_ROOT)
+    except ValueError:
+        shown = out_dir.resolve()
+    print(f"  [done] {time.monotonic() - t0:.0f} s -> {shown}")
 
     # Round-trip check: a freshly loaded head must reproduce predictions exactly.
     reloaded = DeployableHead.load(out_dir)
