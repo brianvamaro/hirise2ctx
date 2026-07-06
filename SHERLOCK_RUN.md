@@ -426,27 +426,31 @@ If the cohort frame count is much larger or smaller than ~50, adjust `--array=0-
 ```bash
 ml python/3.12.1
 source /home/groups/mlapotre/$USER/envs/hirise2ctx/bin/activate
-cd $HOME/hirise2ctx
-python scripts/f_leg_b_extract.py
-# writes $SCRATCH/hirise2ctx/f_leg_b/obs_crops/{obs_id}_{pid}_ifcrop.tif
+cd $HOME/hirise2ctx && git pull
+python scripts/f_leg_b_extract.py            # default --resampling cubic
+# writes $SCRATCH/hirise2ctx/f_leg_b/obs_crops_cubic/{obs_id}_{pid}_ifcrop.tif
 # prints total extracted + any missing cubes
 ```
+> 2026-07-05: the original run used bilinear (`obs_crops/`), which halved the crops'
+> Nyquist power vs the mosaic (blur_check.csv, HF ratio 0.40) — cubic is now the
+> default and writes to a resampling-specific dir so old crops can't be resume-skipped.
 
 **Step 3 — transfer crops back to laptop:**
 ```bash
 # on Sherlock:
-tar cf obs_crops.tar -C $SCRATCH/hirise2ctx/f_leg_b obs_crops
-# OnDemand Files: download obs_crops.tar  (~few hundred MB)
+tar cf obs_crops_cubic.tar -C $SCRATCH/hirise2ctx/f_leg_b obs_crops_cubic
+# OnDemand Files: download obs_crops_cubic.tar  (~2 GB)
 # on laptop:
 mkdir -p reports/f_leg_b
-cd reports/f_leg_b && tar xf ~/Downloads/obs_crops.tar
+cd reports/f_leg_b && tar xf ~/Downloads/obs_crops_cubic.tar
 ```
 
 **Step 4 (laptop) — embed + LOIO gate:**
 ```bash
-conda run --no-capture-output -n geospatial python -u scripts/f_leg_b_embed.py
-# smoke test: add --smoke (2 images)
-conda run -n geospatial python scripts/f_leg_b_loio.py
+conda run --no-capture-output -n geospatial python -u scripts/f_leg_b_embed.py \
+    --mapping minnaert --crops-dir obs_crops_cubic --store-suffix _c
+# smoke test: add --smoke (2 images); mappings: perframe / global / minnaert
+conda run -n geospatial python scripts/f_leg_b_loio.py --f-store fang_embeddings_f_minnaert_c
 # prints PASS/FAIL gate + Δ median AUC vs baseline
 ```
 

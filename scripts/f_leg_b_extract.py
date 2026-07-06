@@ -21,6 +21,7 @@ Run (Sherlock MAP venv):
 """
 from __future__ import annotations
 
+import argparse
 import csv
 import os
 from pathlib import Path
@@ -36,7 +37,11 @@ REPO = Path(__file__).resolve().parents[1]
 WORK = Path(os.environ.get("SCRATCH", "/tmp")) / "hirise2ctx" / "f_leg_b"
 OBS_MAP = REPO / "reports" / "f_leg_b" / "obs_frame_map.csv"
 BOUNDS_CSV = REPO / "reports" / "f_leg_b" / "cohort_obs_bounds.csv"
-OUT = WORK / "obs_crops"
+
+# cubic: the subpixel bilinear reproject here was halving the crops' Nyquist power
+# (blur_check.csv: HF ratio F/mosaic median 0.40) — cubic keeps ~0.85-0.9 amplitude.
+# Output dir is resampling-specific so resume-skip can't reuse old bilinear crops.
+RESAMPLING = {"cubic": Resampling.cubic, "bilinear": Resampling.bilinear}
 
 
 def load_bounds(csv_path: Path) -> dict:
@@ -50,7 +55,8 @@ def load_bounds(csv_path: Path) -> dict:
 
 
 def extract_crop(cub_path: Path, minx: float, miny: float,
-                 maxx: float, maxy: float, out_path: Path) -> bool:
+                 maxx: float, maxy: float, out_path: Path,
+                 resampling: Resampling = Resampling.cubic) -> bool:
     """Extract the given bounds from a projected ISIS cube into a GeoTIFF.
 
     Reprojects if needed (same CRS assumed for the matched mosaic projection).
@@ -84,7 +90,7 @@ def extract_crop(cub_path: Path, minx: float, miny: float,
               src_transform=src_transform, src_crs=src_crs,
               dst_transform=dst_transform, dst_crs=src_crs,
               src_nodata=np.nan,
-              dst_nodata=np.nan, resampling=Resampling.bilinear)
+              dst_nodata=np.nan, resampling=resampling)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     prof = {"driver": "GTiff", "dtype": "float32", "count": 1,
@@ -106,6 +112,14 @@ def extract_crop(cub_path: Path, minx: float, miny: float,
 
 
 def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--resampling", choices=sorted(RESAMPLING), default="cubic")
+    args = ap.parse_args()
+    resampling = RESAMPLING[args.resampling]
+    out_dir = WORK / ("obs_crops" if args.resampling == "bilinear"
+                      else f"obs_crops_{args.resampling}")
+    print(f"resampling: {args.resampling} -> {out_dir.name}")
+
     bounds = load_bounds(BOUNDS_CSV)
     print(f"{len(bounds)} obs_id bounds loaded")
 
@@ -128,20 +142,21 @@ def main() -> None:
             print(f"  {obs_id}: no bounds entry; skipping", flush=True)
             skip += 1
             continue
-        out = OUT / f"{obs_id}_{pid}_ifcrop.tif"
+        out = out_dir / f"{obs_id}_{pid}_ifcrop.tif"
         if out.exists():
             print(f"  {obs_id}_{pid}: already done — skipped", flush=True)
             skip += 1
             continue
-        if extract_crop(cub, bd["minx"], bd["miny"], bd["maxx"], bd["maxy"], out):
+        if extract_crop(cub, bd["minx"], bd["miny"], bd["maxx"], bd["maxy"], out,
+                        resampling=resampling):
             ok += 1
         else:
             print(f"  {obs_id} / {pid}: no valid overlap in cube", flush=True)
             fail += 1
 
     print(f"\nextracted: {ok}  skipped: {skip}  failed/no-overlap: {fail}")
-    print(f"obs_crops dir: {OUT}")
-    print(f"\nnext: tar cf obs_crops.tar -C {WORK} obs_crops && scp back to laptop")
+    print(f"crops dir: {out_dir}")
+    print(f"\nnext: tar cf {out_dir.name}.tar -C {WORK} {out_dir.name} && scp back to laptop")
 
 
 if __name__ == "__main__":

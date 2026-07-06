@@ -42,7 +42,7 @@ from rasterio.warp import reproject, Resampling
 from src.fm_embeddings import FangEmbedder
 from src.striping import A1_REF_MEDIAN, A1_REF_IQR
 
-CROPS_DIR = REPO / "reports" / "f_leg_b" / "obs_crops"
+CROPS_DIR = REPO / "reports" / "f_leg_b" / "obs_crops"   # switched by --crops-dir
 LABELS_DIR = REPO / "dataset_v2" / "labels"
 FEATURES_DIR = REPO / "dataset_v2" / "features"
 INCIDENCE_CSV = REPO / "reports" / "f_leg_b" / "frame_incidence.csv"
@@ -97,12 +97,13 @@ def _crop_values(obs_ids: list[str]):
                 yield _crop_pid(p, obs_id), v
 
 
-def build_mapping_ctx(mapping: str, obs_ids: list[str]) -> dict:
+def build_mapping_ctx(mapping: str, obs_ids: list[str],
+                      pcts: tuple[float, float] = (2.0, 98.0)) -> dict:
     """Fit the fixed constants a mapping needs, from the crops themselves.
 
-    global   -> {div: 1 per frame, lo, hi}: pooled p2–p98 of raw I/F over all crops
+    global   -> {div: 1 per frame, lo, hi}: pooled p{lo}–p{hi} of raw I/F over all crops
     minnaert -> {k, div: cos^k(i) per frame, lo, hi}: k from log(frame median) vs
-                log(cos i), then pooled p2–p98 of the DIVIDED values
+                log(cos i), then pooled p{lo}–p{hi} of the DIVIDED values
     perframe -> {} (no constants)
     """
     if mapping == "perframe":
@@ -137,10 +138,10 @@ def build_mapping_ctx(mapping: str, obs_ids: list[str]) -> dict:
         v = v / ctx["div"].get(pid, 1.0)
         samples.append(rng.choice(v, size=min(v.size, 200_000), replace=False))
         n_crops += 1
-    lo, hi = np.percentile(np.concatenate(samples), [2, 98])
+    lo, hi = np.percentile(np.concatenate(samples), list(pcts))
     ctx["lo"], ctx["hi"] = float(lo), float(hi)
     print(f"{mapping} stretch: I/F {ctx['lo']:.4f}..{ctx['hi']:.4f} "
-          f"(pooled p2–p98, {n_crops} crops)", flush=True)
+          f"(pooled p{pcts[0]:g}–p{pcts[1]:g}, {n_crops} crops)", flush=True)
     return ctx
 
 
@@ -274,8 +275,18 @@ def main() -> None:
     ap.add_argument("--obs", nargs="+", help="embed specific obs_ids only")
     ap.add_argument("--fit-only", action="store_true",
                     help="fit + print the mapping constants (CPU) and exit — no embedding")
+    ap.add_argument("--stretch-pcts", nargs=2, type=float, default=[2.0, 98.0],
+                    metavar=("LO", "HI"),
+                    help="pooled stretch percentiles (global/minnaert; default 2 98)")
+    ap.add_argument("--store-suffix", default="",
+                    help="append to the store name (e.g. _w for a stretch variant)")
+    ap.add_argument("--crops-dir", default=None,
+                    help="crops dir under reports/f_leg_b/ (e.g. obs_crops_cubic)")
     args = ap.parse_args()
-    out_dir = REPO / "dataset_v2" / STORES[args.mapping]
+    if args.crops_dir:
+        global CROPS_DIR
+        CROPS_DIR = REPO / "reports" / "f_leg_b" / args.crops_dir
+    out_dir = REPO / "dataset_v2" / (STORES[args.mapping] + args.store_suffix)
 
     crops = sorted({p.name.split("_")[0] + "_" + p.name.split("_")[1]
                     for p in CROPS_DIR.glob("*_ifcrop.tif")})
@@ -307,7 +318,7 @@ def main() -> None:
 
     print(f"{len(obs_ids)} obs_ids to embed  (mapping={args.mapping} -> {out_dir.name})",
           flush=True)
-    ctx = build_mapping_ctx(args.mapping, all_obs)
+    ctx = build_mapping_ctx(args.mapping, all_obs, pcts=tuple(args.stretch_pcts))
     if args.fit_only:
         print("--fit-only: constants fitted, exiting before embedding.")
         return
