@@ -33,6 +33,17 @@ def code(t):
 cells = []
 
 cells.append(md(
+    """> **⚠️ 2026-07-05d amendment (post-review).** The §4 "F closed / physical floor" verdict was
+> **partially overstated**: the 10.2% overlap disagreement quoted below is the RAW value — after
+> the minnaert correction it is **4.0%** (worst pairs 0.7–4%), yet predictions still differ ~20%
+> even where corrected inputs agree to <1%. The real floor = embedder amplification (no
+> cross-frame loss term) + one anomalous frame — both addressable. The **input-mapping leg**
+> remains closed, but a Phase-2 invariance & leveling docket (H1–H6) is now open:
+> PLAN_StripingArtifact "PHASE 2", DECISIONS 2026-07-05d,
+> `reports/f_leg_b/review_overlap_residual.csv`. Everything else in this notebook stands.
+"""))
+
+cells.append(md(
     """# 28 — F verdict: skill preserved, artifact NOT removed → F closed
 
 **The question F was meant to answer.** The regional abundance map shows a rectangular

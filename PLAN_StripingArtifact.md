@@ -194,7 +194,48 @@ frames** that per-frame inference actually kills the blocks:
   H5 stronger physics (low priority); H6 per-frame provenance/confidence layer (ship regardless).
   907-frame build stays paused pending H1–H3 → η² ≲ 0.05 at acceptable skill. **Docket → Brian.**
 
-## NEXT SESSION — decision setup (collected; no decision taken 2026-06-20)
+## 🟢 PHASE 2 (opened 2026-07-05d, Brian-approved) — invariance & leveling docket (H1–H6)
+
+**This section is the live work plan.** Context: the F input-mapping leg is closed (five mappings;
+log-minnaert best, skill-gate PASS +0.0067 but η² 0.179 — DECISIONS 2026-07-05b/c). The 2026-07-05d
+review then AMENDED the "physical floor" verdict: post-minnaert overlap disagreement is only
+**4.0%** (not 10%), the **embedder amplifies 1–4% input residuals into ~20% prediction
+disagreement** (its loss has no cross-frame term), and one anomalous frame (F02, atmosphere/
+calibration) resists physics but not data-driven offsets. The untested axis = invariance +
+leveling. Full evidence + verified literature anchors: DECISIONS 2026-07-05d;
+`reports/f_leg_b/review_overlap_residual.csv`.
+
+**Shared measurement harness (all hypotheses reuse it):**
+- **Skill gate**: `scripts/f_leg_b_loio.py --f-store <store>` — Δ median per-image AUC ≥ −0.02 vs
+  mosaic baseline 0.786 (36 common images).
+- **η² test**: train head `scripts/train_deployable_head.py --store-name <store> --out models/<dir>`
+  then `scripts/f_pilot_crop.py --mappings minnaert_log --minnaert-k 0.580 --stretch-lohi 0.0965
+  0.2374 --head-dir models/<dir>/<hash>` on the 7 E8_N44 pilot frames (aligned crops cached in
+  `reports/f_timing/pilot_work/aligned/`). Baselines: mosaic raw **0.196** / A1 **0.141** / current
+  F **0.179** / target **≲ 0.03–0.05**.
+- **Inputs on disk**: 73 bilinear I/F crops `reports/f_leg_b/obs_crops/` (36/38 obs); best store
+  `dataset_v2/fang_embeddings_f_minnaert_wl` (k=0.580, log stretch I/F 0.0965–0.2374, PDS
+  incidence `reports/f_leg_b/frame_incidence.csv`); overlap-pair ground truth = multi-crop obs
+  (see `obs_frame_map.csv`) + the 7 pilot frames (15 pairs).
+
+**The docket (run in order; each gated on skill + η² before the next):**
+
+| # | hypothesis | targets | how (concrete) | cost | success looks like |
+|---|---|---|---|---|---|
+| **H1** | per-frame **log-median centering** | anomalous frames (F02-class); residual level term | `f_leg_b_embed.py`: new mapping = minnaert ÷cos^k, then per-CROP subtract log-median → common DN center (fixed contrast scale from training pool); embed → gate → η² | ~1 h GPU | skill ≥ −0.02 AND η² < 0.14 (beat A1) |
+| **H2** | **embedding nuisance-subspace removal** | embedder amplification | co-located tile pairs across overlapping crops → embedding difference vectors → top-k PCA directions = frame-nuisance basis → project out of ALL embeddings → retrain head → gate + η²; sweep k ∈ {4, 16, 64} | hours, closed-form | η² drop at ≤ 0.01 skill cost |
+| **H3** | **consistency-regularized head** | embedder amplification (optimizes η² directly) | `DeployableHead.fit` loss += λ·MSE(pred_i, pred_j) on co-located overlap tiles; sweep λ → skill-vs-η² Pareto; pick knee | 1–2 days | Pareto point with η² ≲ 0.05 at skill ≥ −0.02 |
+| **H4** | **seam-graph leveling of the prediction map** (= option E) | whatever survives H1–H3; frames WITHOUT overlap | per-frame additive offset in logit domain, least-squares minimizing prediction discontinuity across SeamMap boundaries + smooth regional-trend guard (protects real gradients); apply to map GeoTIFFs post-hoc | days | blocks visually gone; validation-leg ρ not degraded |
+| H5 | stronger physics (Hapke/atmospheric EPF) | (little headroom left) | only if H1 leaves >5% level residual | — | — |
+| H6 | per-frame provenance/confidence layer | honesty | ship per-frame id + incidence + overlap-QA raster with any final map (Dickson-style) | small | — |
+
+**Decision rule:** if H1–H3 (or their combination) reach **η² ≲ 0.05 at skill ≥ −0.02**, the
+907-frame regional F build is back on the table (H4+H6 as polish). If not, fall back to the
+2026-07-05c options (ship A1 / accept + caveat), with H4 still applicable to the mosaic-based map.
+
+**State: no docket item run yet.** Next action = H1.
+
+## NEXT SESSION — decision setup (collected; no decision taken 2026-06-20) — ⚠️ SUPERSEDED by PHASE 2 above
 
 **Where we are:** cause = CTX source-frame radiometry (proven). A1 (per-frame offset+gain) is built
 and measured: it **partially** mitigates (28% eta² down) at a small skill cost (−0.024). The artifact
