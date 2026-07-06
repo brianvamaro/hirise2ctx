@@ -169,7 +169,13 @@ frames** that per-frame inference actually kills the blocks:
   double-resampling blur / dim-scene stretch clipping (1 image) / calibrated noise character.
   **Key unmeasured: retrained-head eta² on the E8_N44 pilot frames** — if block-free, −0.03
   skill vs FULL artifact removal may beat A1's −0.024 for 28% reduction. DECISIONS 2026-07-05.
-  **Next-step decision (measure eta² / iterate / close F) deferred to Brian.**
+- **✅✅ Leg B GATE PASSED (2026-07-05b): minnaert + LOG stretch = Δ median +0.0067** (first PASS;
+  F now EXCEEDS mosaic 0.786→0.793, pooled PR-AUC +0.017). Log domain (ln I/F = level-independent
+  texture DN) is the lever — biggest improvers in the cohort (ESP_068483 +0.235, ESP_069763 +0.119).
+  **Cubic resampling REFUTED** (−0.027, worse than bilinear): the HF-texture deficit is not the cap.
+  Caveats: mean still < baseline (ESP_053989 minnaert-specific inversion 0.167, diagnose before
+  regional); **eta² with retrained head STILL unmeasured** (F's actual purpose). DECISIONS 2026-07-05b.
+  **Next-step decision (confirm eta² / fix ESP_053989 / head-rebuild + 907-frame regional) → Brian.**
 
 ## NEXT SESSION — decision setup (collected; no decision taken 2026-06-20)
 

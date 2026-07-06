@@ -4360,6 +4360,49 @@ blocks without a head trained on calibrated-frame embeddings. The only real test
 (project ~40–80 cohort frames on Sherlock, re-embed with perframe normalization, re-bake head,
 LOIO gate). Decision on whether to proceed to leg B deferred to Brian.
 
+## 2026-07-05b — F leg B GATE PASSED: minnaert + LOG stretch = Δ median +0.0067 (first PASS); cubic refuted; log domain is the lever
+
+**The gate is cleared.** `f_leg_b_embed.py --mapping minnaert --stretch-pcts 0.5 99.5
+--stretch-scale log` (store `fang_embeddings_f_minnaert_wl`) then `f_leg_b_loio.py`:
+
+| variant | Δ median AUC | Δ pooled PR-AUC | mean | win/loss | <0.5 |
+|---|---|---|---|---|---|
+| perframe | −0.0499 | −0.141 | 0.695 | 11/25 | 8 |
+| global | −0.0387 | — | 0.741 | 11/25 | 1 |
+| minnaert p2–98 | −0.0341 | — | 0.736 | 14/22 | 2 |
+| minnaert wide linear | −0.0236 | −0.024 | 0.753 | 16/20 | 2 |
+| minnaert wide **cubic** | −0.0270 | −0.041 | 0.742 | 17/19 | 2 |
+| **minnaert wide LOG** | **+0.0067** | **+0.0170** | 0.747 | 18/18 | 3 |
+
+**PASS on the pre-registered metric** (Δ median per-image AUC ≥ −0.02): F now EXCEEDS the mosaic
+baseline (0.786 → 0.793) and improves pooled PR-AUC (+0.017). Log-stretch produces the biggest
+improvers in the cohort: ESP_068483 0.611→0.846, ESP_069763 0.713→0.832, ESP_059421 0.716→0.840,
+ESP_076499 0.849→0.936, ESP_055978 0.796→0.946. Rationale for log: surface texture is
+multiplicative contrast, so ln(I/F) gives every scene a level-independent texture-DN budget — the
+representation the FM's 8-bit pretraining wants.
+
+**Cubic resampling REFUTED as the lever.** minnaert wide with cubic extract resampling (store
+`_cubic`, from `obs_crops_cubic/`) scored −0.0270 — WORSE than the bilinear wide-linear −0.0236.
+So the ~40%-HF-texture deficit measured earlier (`blur_check.csv`) is NOT what caps skill; the
+I/F→uint8 *domain* (linear vs log) is. The blur hypothesis is closed; cubic will not be pursued.
+
+**Honest caveats (two, both non-fatal):**
+1. **Mean AUC still below baseline** (0.747 vs 0.771) because ESP_053989 is badly INVERTED (0.167).
+   This is a **minnaert-specific** failure: ESP_053989 = 0.775 under global (no cos^k), 0.15–0.27
+   under every minnaert variant. Its two frames (i=42.76°, 46.32°) get cos^0.58 divisors 0.847 vs
+   0.826 — a ~2.5% step that global doesn't apply. So the illumination correction itself breaks
+   this one image; the median is robust to it but the mean is not. Diagnose before the regional run
+   (candidate: per-composite single divisor, or drop cos^k when a composite spans a Δi step).
+2. **eta² (block-killing) with the retrained head is STILL unmeasured.** The skill gate proves F
+   does not LOSE skill; it does not yet prove F REMOVES the artifact (F's entire purpose). Leg A
+   measured eta² only with the mosaic-trained head (invalid). This is the one remaining confirmation
+   before committing to the 907-frame regional build.
+
+**Recipe if it holds:** minnaert (k=0.580, incidence from PDS volume indexes — `_f_leg_b_pds_incidence.py`),
+pooled p0.5–p99.5 log stretch, bilinear extract. Stores/CSVs: `fang_embeddings_f_minnaert_wl`,
+`reports/f_leg_b/variant_summary.csv`, `reports/figures/f_leg_b_loio_{preds,summary}_minnaert_wl.csv`.
+**Next-step decision (confirm eta² / fix ESP_053989 / go to head-rebuild+regional) → Brian.**
+
 ## 2026-07-05 — F leg B mapping iteration: global + minnaert both FAIL; gate converges at ≈ −0.034; SeamMap incidence typo found
 
 **Setup:** `f_leg_b_embed.py --mapping {global,minnaert}` (fixed pooled p2–p98 stretch; minnaert
