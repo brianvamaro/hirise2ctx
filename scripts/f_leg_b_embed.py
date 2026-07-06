@@ -72,11 +72,21 @@ def to_uint8_perframe(arr: np.ndarray) -> np.ndarray:
     return out
 
 
-def to_uint8_affine(arr: np.ndarray, lo: float, hi: float) -> np.ndarray:
-    """Fixed affine: I/F lo..hi -> 1..255 (0 reserved for nodata)."""
+def to_uint8_affine(arr: np.ndarray, lo: float, hi: float,
+                    log: bool = False) -> np.ndarray:
+    """Fixed stretch: I/F lo..hi -> 1..255 (0 reserved for nodata).
+
+    log=True stretches ln(I/F) instead — texture amplitude (multiplicative surface
+    contrast) then maps to a level-independent number of DN, so dim scenes are not
+    pinned against the floor with their texture quantized away.
+    """
     fin = np.isfinite(arr)
     out = np.zeros(arr.shape, dtype=np.uint8)
-    out[fin] = np.clip((arr[fin] - lo) / max(hi - lo, 1e-9) * 254 + 1, 1, 255
+    v = arr[fin]
+    if log:
+        v = np.log(np.maximum(v, 1e-6))
+        lo, hi = np.log(max(lo, 1e-6)), np.log(max(hi, 1e-6))
+    out[fin] = np.clip((v - lo) / max(hi - lo, 1e-9) * 254 + 1, 1, 255
                        ).astype(np.uint8)
     return out
 
@@ -201,7 +211,8 @@ def composite_crops(obs_id: str, row0: int, col0: int, H: int, W: int,
         return np.zeros((H, W), dtype=np.uint8)
     if mapping == "perframe":
         return to_uint8_perframe(canvas)
-    return to_uint8_affine(canvas, ctx["lo"], ctx["hi"])
+    return to_uint8_affine(canvas, ctx["lo"], ctx["hi"],
+                           log=ctx.get("scale") == "log")
 
 
 # ------------------------------------------------------------------ embed one image
@@ -282,6 +293,9 @@ def main() -> None:
                     help="append to the store name (e.g. _w for a stretch variant)")
     ap.add_argument("--crops-dir", default=None,
                     help="crops dir under reports/f_leg_b/ (e.g. obs_crops_cubic)")
+    ap.add_argument("--stretch-scale", choices=("linear", "log"), default="linear",
+                    help="fixed-stretch domain (global/minnaert); log = level-"
+                         "independent texture DN, unpins dim scenes from the floor")
     args = ap.parse_args()
     if args.crops_dir:
         global CROPS_DIR
@@ -319,6 +333,8 @@ def main() -> None:
     print(f"{len(obs_ids)} obs_ids to embed  (mapping={args.mapping} -> {out_dir.name})",
           flush=True)
     ctx = build_mapping_ctx(args.mapping, all_obs, pcts=tuple(args.stretch_pcts))
+    if args.mapping != "perframe":
+        ctx["scale"] = args.stretch_scale
     if args.fit_only:
         print("--fit-only: constants fitted, exiting before embedding.")
         return
