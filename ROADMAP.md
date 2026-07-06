@@ -3,14 +3,14 @@
 Single map of every `PLAN_*.md` and meta-doc, with current status and the supersession chain.
 `CLAUDE.md` is the project spec; `DECISIONS.md` is the authoritative running log (exact dates,
 commits, numbers). The `PLAN_*.md` files sit between them — architecture-level plans for each phase.
-*Last reorganized 2026-06-19; statuses refreshed 2026-07-04.*
+*Last reorganized 2026-06-19; statuses refreshed 2026-07-05.*
 
 ## 🟢 ACTIVE plans (current work)
 
 | Plan | What it is | Status |
 |---|---|---|
 | [PLAN_RegionalMap.md](PLAN_RegionalMap.md) | Regional circum-Chryse abundance map + thermal/Rodriguez-2016 validation legs (first real off-HiRISE deployment of the frozen head + CalibrationLayer) | **ACTIVE** — map shipped (26 tiles, Sherlock); MOLA leg done; THEMIS night-IR leg-1 done but weak (ρ ≈ +0.07); remaining thermal legs wait for the **final (post-mitigation) map** |
-| [PLAN_StripingArtifact.md](PLAN_StripingArtifact.md) | The regional-map rectangular-block artifact: cause + mitigation | **ACTIVE** — cause SOLVED 2026-06-18d (CTX source-frame radiometry); A1 prototype measured **partial** (28% eta² ↓ / −0.024 LOIO); D ruled out (circular), thermal retired as referee → decision = **F vs E**; Brian chose **de-risk F first**: EDR resolver SOLVED 2026-07-02 (`src/ctx_edr.py`, no planetarypy); **timing test DONE 2026-07-03** (10/10 frames, 22 min/frame, regional ≈333 CPU-h); **leg A0 DONE** (I/F spread = real illumination, Minnaert k≈0.66 → 4 input mappings); **leg A eta² DONE 2026-07-04 (FAIL)** — all 4 mappings worse than raw mosaic baseline (best: perframe 0.233 vs 0.196; target ≲0.03) — cause = **train/deploy mismatch**, not fundamental F failure (DECISIONS 2026-07-04, notebook 26). **Decision on leg B pending Brian**: project ~40–80 cohort frames on Sherlock, re-embed with perframe norm, re-bake head, LOIO gate |
+| [PLAN_StripingArtifact.md](PLAN_StripingArtifact.md) | The regional-map rectangular-block artifact: cause + mitigation | **PAUSED FOR WRITE-UP 2026-07-05** — cause SOLVED 2026-06-18d (CTX source-frame radiometry); A1 measured **partial** (28% eta² ↓ / −0.024 LOIO); **F fully tested and CLOSED**: leg A FAIL (train/deploy mismatch, notebook 26) → leg B retrain on 81 Sherlock-calibrated cohort frames: mapping family iterated to a **skill-gate PASS** (minnaert + log stretch, Δ median **+0.0067**, DECISIONS 2026-07-05b) but the decisive **retrained-head η² test FAILED** (0.179 median, blocks visible; dominated by near-free A1 0.141; DECISIONS 2026-07-05c, notebooks 27–28). Root cause = **physical** ~10% co-located I/F difference (illumination/emission/phase/atmosphere) amplified ~2× by the embedder → per-frame calibrated inference cannot remove striping; 907-frame regional build NOT justified. **Open fallback decision (ship A1 / accept + caveat / output-side E) deferred — write-up first** |
 
 ## ✅ CLOSED / SHIPPED plans (chronological program arc)
 
