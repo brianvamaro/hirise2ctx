@@ -4360,6 +4360,50 @@ blocks without a head trained on calibrated-frame embeddings. The only real test
 (project ~40–80 cohort frames on Sherlock, re-embed with perframe normalization, re-bake head,
 LOIO gate). Decision on whether to proceed to leg B deferred to Brian.
 
+## 2026-07-05c — F leg B η² CONFIRMATION: FAIL — retrained head does NOT remove the artifact (η² 0.18, blocks visible). F does not achieve its purpose.
+
+**The decisive measurement leg A could not give (a head trained on F embeddings), now run.**
+`f_pilot_crop.py --mappings minnaert_log --minnaert-k 0.580 --stretch-lohi 0.0965 0.2374
+--head-dir models/deployable_f_wl/<hash>` — the 7 E8_N44 overlapping pilot frames, log-minnaert
+mapping (the GATE-PASSING recipe, fixed training constants), predicted with the head trained on
+`fang_embeddings_f_minnaert_wl`. Head via `train_deployable_head.py --store-name …_wl` (36 imgs,
+in-sample AUC 0.956).
+
+**η² on the E8_N44 crop (baselines: mosaic raw 0.196 / A1 0.141 / target ≲ 0.03):**
+
+| composite | η² (retrained F head) |
+|---|---|
+| partition | 0.277 |
+| partition_eroded | 0.278 |
+| **median (deploy-relevant)** | **0.179** |
+
+**Blocks are visibly present** in the frame-mean choropleth (`f_pilot_minnaert_log.png`, right
+panel — sharp per-frame level jumps). Overlap disagreement: I/F median |ratio−1| = **10.2%**
+(unchanged from A0), prediction |diff| = **20.4%** — the embedder still AMPLIFIES the residual
+between-frame I/F difference ~2×, exactly as in leg A.
+
+**Verdict — F does NOT solve the striping artifact.** The retrained head barely moves η² (median
+0.179 vs mosaic-raw 0.196 = 9% reduction) and is WORSE than the near-free A1 mosaic-side fix
+(0.141, 28% reduction). Retraining fixed the *skill* (gate PASS +0.0067) but not the *artifact*,
+because they are different failure modes: the gate measures within-scene rich/poor ranking; η²
+measures same-ground agreement ACROSS frames. The head was trained on within-image ranking, so it
+never learned between-frame invariance — and it CANNOT, because the inputs themselves still differ.
+
+**Root cause (now firmly established):** the ~10% co-located I/F disagreement is **physical** —
+illumination (minnaert removes only the incidence part; emission/phase/atmosphere remain), not a
+mosaic-construction artifact. ctxcal + minnaert + log-stretch do not remove it. Any texture
+embedder amplifies a 10% input difference into ~20% prediction difference → η² ~0.18. The artifact
+has an **irreducible input-side floor ~η² 0.14** (what A1's aggressive per-frame offset+gain
+reaches); F's photometric model (incidence-only) doesn't even reach that. **The striping artifact
+cannot be removed by swapping the mosaic for calibrated per-frame inference.**
+
+**Implication:** the 907-frame regional ISIS build (~333 CPU-h) is NOT justified — its sole
+rationale was artifact removal, and F does not deliver it. The skill-gate PASS is real but moot for
+this purpose. **F is effectively closed as a striping mitigation.** Decision on the fallback
+(ship A1 as the mitigation / pursue E / accept the artifact with a documented caveat) → Brian.
+NOTE: this also makes the ESP_053989 minnaert-inversion fix moot (was next in the queue).
+Artifacts: `reports/figures/f_pilot_minnaert_log.png`, `f_pilot_eta2_summary.csv` (minnaert_log row).
+
 ## 2026-07-05b — F leg B GATE PASSED: minnaert + LOG stretch = Δ median +0.0067 (first PASS); cubic refuted; log domain is the lever
 
 **The gate is cleared.** `f_leg_b_embed.py --mapping minnaert --stretch-pcts 0.5 99.5

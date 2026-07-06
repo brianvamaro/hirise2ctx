@@ -175,7 +175,17 @@ frames** that per-frame inference actually kills the blocks:
   **Cubic resampling REFUTED** (−0.027, worse than bilinear): the HF-texture deficit is not the cap.
   Caveats: mean still < baseline (ESP_053989 minnaert-specific inversion 0.167, diagnose before
   regional); **eta² with retrained head STILL unmeasured** (F's actual purpose). DECISIONS 2026-07-05b.
-  **Next-step decision (confirm eta² / fix ESP_053989 / head-rebuild + 907-frame regional) → Brian.**
+- **❌ Leg B η² CONFIRMATION (2026-07-05c): FAIL — F does NOT remove the artifact.** Retrained head
+  (trained on `fang_embeddings_f_minnaert_wl`) on the 7 E8_N44 pilot frames: η² **0.179 median /
+  0.277 partition**, blocks VISIBLE in the choropleth. Only 9% below mosaic-raw 0.196, and WORSE
+  than the near-free A1 (0.141). Overlap: 10.2% I/F → 20.4% prediction disagreement (embedder still
+  amplifies ~2×). **Root cause established:** the ~10% co-located I/F difference is PHYSICAL
+  (illumination/emission/phase/atmosphere; minnaert removes only incidence), not a mosaic artifact —
+  so calibrated per-frame inference cannot remove it. Skill-gate PASS and η² FAIL are different
+  failure modes (within-scene ranking vs cross-frame agreement). **The 907-frame regional build is
+  NOT justified; F is effectively CLOSED as a mitigation.** ESP_053989 fix now moot. DECISIONS
+  2026-07-05c, `f_pilot_minnaert_log.png`. **Fallback decision (ship A1 / pursue E / accept +
+  caveat) → Brian.**
 
 ## NEXT SESSION — decision setup (collected; no decision taken 2026-06-20)
 
