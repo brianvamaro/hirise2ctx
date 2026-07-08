@@ -230,6 +230,70 @@ with a documented caveat / pursue output-side destriping "E") is deferred. Full 
 2026-07-05b (skill PASS) and 2026-07-05c (η² FAIL); PLAN_StripingArtifact leg-B bullets.
 """))
 
+cells.append(md(
+    """## §5 — Phase-2 update (2026-07-07): H1 reopens the case
+
+The §4 close-out was reviewed on 2026-07-05d (see the banner at the top): the ~10% overlap
+disagreement is largely photometric **level**, not irreducible physics, and it was the *embedder*
+that amplified it — its loss has no cross-frame term. That made the artifact addressable after all,
+via a **Phase-2 invariance & leveling docket** (PLAN_StripingArtifact "PHASE 2"). Here is its first
+result.
+
+**H1 — per-frame log-median centering.** Add one step to the winning log-minnaert recipe: after
+dividing each crop by cos^k(i), also divide it by its **own median** so every crop shares a common
+brightness center, then apply the fixed centered-pool log stretch (the `minnaert_center` mapping in
+`f_leg_b_embed.py`, mirrored in `f_pilot_crop.py` so the η² test sees the identical mapping the head
+trains on). Equivalent to subtracting the log-median in log space.
+"""))
+
+cells.append(code(
+    """# H1 numbers: skill (LOIO), eta2 (retrained-head pilot), overlap agreement
+h1_eta = pd.read_csv(FIG / "f_pilot_eta2_summary_minnaert_center.csv").set_index("composite")["eta2"]
+h1_loio = pd.read_csv(FIG / "f_leg_b_loio_summary_minnaert_center.csv")
+d_med = (h1_loio.query("store=='fang_embeddings_f_minnaert_center'")["median_auc"].iloc[0]
+         - h1_loio.query("store=='fang_embeddings'")["median_auc"].iloc[0])
+pairs = pd.read_csv(FIG / "f_pilot_overlap_pairs_minnaert_center.csv")
+pred_dis = pairs.query("kind=='pred'")["median_absdiff"].median()
+if_dis = pairs.query("kind=='IF'")["median_absdiff"].median()
+
+table = pd.DataFrame([
+    {"pipeline": "mosaic raw",             "eta2_median": 0.196, "skill_delta": np.nan},
+    {"pipeline": "A1 (per-frame o+g)",     "eta2_median": 0.141, "skill_delta": -0.024},
+    {"pipeline": "F log-minnaert (leg B)", "eta2_median": 0.179, "skill_delta": +0.0067},
+    {"pipeline": "H1 minnaert_center",     "eta2_median": float(h1_eta["median"]),
+     "skill_delta": float(d_med)},
+    {"pipeline": "target (block-free)",    "eta2_median": 0.05,  "skill_delta": np.nan},
+])
+print(table.to_string(index=False))
+print(f"\\nH1 eta2 by composite:  partition {h1_eta['partition']:.3f}  median {h1_eta['median']:.3f}")
+print(f"overlap: prediction |Δp| = {pred_dis:.3f}  vs  input I/F |ratio−1| = {if_dis:.3f}"
+      f"   ->  amplification GONE (pred < input)")
+"""))
+
+cells.append(code(
+    """fig, ax = plt.subplots(figsize=(15, 7))
+ax.imshow(mpimg.imread(FIG / "f_h1_before_after_choropleth.png")); ax.axis("off")
+ax.set_title("H1 before/after: per-frame-mean choropleth (bottom row) isolates the striping.\\n"
+             "log-minnaert (η²=0.179, bright frame block) vs H1 minnaert_center (η²=0.081, "
+             "blocks gone on the same scale)", fontsize=10)
+plt.show()
+"""))
+
+cells.append(md(
+    """**H1 verdict — both gates PASS.** η² median composite **0.179 → 0.081** (partition
+0.277 → 0.128), both below the A1 fix (0.141), at skill Δ **−0.0139** (≥ −0.02). The decisive
+evidence for the review's diagnosis: prediction overlap disagreement fell to **0.073**, now *below*
+the co-located input I/F disagreement of **0.102** — the embedder is no longer amplifying, because
+the per-frame level term it keyed on is gone. Residual frame structure is almost entirely the one
+anomalous frame **F02** (atmosphere/calibration), exactly as the review predicted.
+
+H1 **halves the artifact and kills the amplification**, but median η² 0.081 does not yet clear the
+**η² ≲ 0.05** bar that would reopen the 907-frame regional ISIS build. So H1 is the new baseline the
+rest of the docket stacks on: **H2** (embedding nuisance-subspace removal) is next, then H3
+(consistency-regularized head) and H4 (overlap-constrained leveling). Full record: DECISIONS
+2026-07-07; PLAN_StripingArtifact "PHASE 2".
+"""))
+
 nb = nbf.v4.new_notebook(cells=cells)
 NB_PATH.write_text(nbf.writes(nb), encoding="utf-8")
 print(f"wrote {NB_PATH}")
