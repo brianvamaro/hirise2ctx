@@ -1,7 +1,8 @@
 """H1 before/after figure: the frame-block artifact, log-minnaert F vs H1 (minnaert_center).
 
 Builds a 2x2 comparison from the CACHED pilot predictions (no GPU) on the 7 E8_N44 frames:
-  row 1  median composite (the deploy-style abundance map)
+  row 1  median composite (deploy-style map; value = P(boulder-rich), fa > 1e-2 —
+          the raw classifier probability, NOT the CalibrationLayer-adjusted abundance)
   row 2  per-frame-mean choropleth (each frame painted its mean prediction — the artifact,
           isolated: flat within a frame, jumps at seams == the striping)
   col A  F log-minnaert  (leg B, eta2 median 0.179)
@@ -79,11 +80,12 @@ def main() -> None:
         med, chor, _, e = data[m]
         im0 = ax[0, c].imshow(med, cmap="magma", vmax=vmax)
         ax[0, c].set_title(f"{title}\nmedian composite", fontsize=11)
-        plt.colorbar(im0, ax=ax[0, c], fraction=0.046, label="abundance")
+        plt.colorbar(im0, ax=ax[0, c], fraction=0.046, label="P(boulder-rich)  [fa > 1e-2]")
         im1 = ax[1, c].imshow(chor, cmap="magma", vmax=vmax)
         ax[1, c].set_title(f"frame-mean choropleth — η² (median comp.) = {e:.3f}",
                            fontsize=11)
-        plt.colorbar(im1, ax=ax[1, c], fraction=0.046, label="frame-mean abundance")
+        plt.colorbar(im1, ax=ax[1, c], fraction=0.046,
+                     label="frame-mean P(boulder-rich)")
         for a in (ax[0, c], ax[1, c]):
             a.set_xticks([]); a.set_yticks([])
     fig.suptitle("Striping artifact on the E8_N44 crop — H1 (per-frame log-median centering) "

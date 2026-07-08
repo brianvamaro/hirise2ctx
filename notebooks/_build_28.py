@@ -244,6 +244,12 @@ dividing each crop by cos^k(i), also divide it by its **own median** so every cr
 brightness center, then apply the fixed centered-pool log stretch (the `minnaert_center` mapping in
 `f_leg_b_embed.py`, mirrored in `f_pilot_crop.py` so the η² test sees the identical mapping the head
 trains on). Equivalent to subtracting the log-median in log space.
+
+*(Map value = **P(boulder-rich)**, i.e. P(fraction-area > 1e-2) — the raw classifier probability
+the frozen head outputs. The pilot deliberately skips the `CalibrationLayer` (isotonic +
+quantile-match) that the regional map in notebook 24 applies to convert P(rich) → calibrated
+abundance; η² measures between-frame variance, which any monotone calibration preserves, so the
+verdict is unaffected.)*
 """))
 
 cells.append(code(
