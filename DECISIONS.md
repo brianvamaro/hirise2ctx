@@ -4379,7 +4379,9 @@ B), centered pool stretch I/F **0.8400–1.1170** (pooled p0.5–99.5, 73 crops)
   minnaert_center --minnaert-k 0.580 --stretch-lohi 0.8400 1.1170` on the 7 E8_N44 frames:
   **η² median composite = 0.081** (was 0.179 for log-minnaert F; A1 = 0.141; mosaic raw = 0.196),
   partition = **0.128** (was 0.277). Both beat A1's 0.141 → H1's own gate (η² < 0.14 at skill
-  ≥ −0.02) **PASS**. `f_pilot_minnaert_center.png`.
+  ≥ −0.02) **PASS**. `f_pilot_minnaert_center.png`; before/after choropleth (log-minnaert vs H1,
+  from cached preds) = `f_h1_before_after_choropleth.png` (`scripts/f_h1_compare_fig.py`) —
+  the bright frame block in log-minnaert is gone in H1 on the same abundance scale.
 - **Root-cause confirmation (the point of the review)**: prediction overlap disagreement fell to
   **0.073** median |Δp| — now *below* the co-located input I/F disagreement of 0.102. The embedder
   is no longer amplifying; centering removed the per-frame **level** term the review (2026-07-05d)
