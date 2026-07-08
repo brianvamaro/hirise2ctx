@@ -1,0 +1,11 @@
+=== train deployable head (fa_gt_1e-2, batch=4096) ===
+  skipped 2 image(s) absent from fang_embeddings_f_minnaert_center: ESP_066634_2210, ESP_071093_2210
+  matrix: X=(153663, 768)  pos_rate=0.3530  images=36  nan_rows=0
+  seed 0: train n=140206 (35 imgs), inner-val=ESP_017355_2260 n=13457
+  seed 1: train n=151099 (35 imgs), inner-val=ESP_042964_2160 n=2564
+  seed 2: train n=147370 (35 imgs), inner-val=ESP_045139_2270 n=6293
+
+  in-sample AUC (sanity only) = 0.9609   mean p|pos=0.841  mean p|neg=0.168
+  recipe_hash=86c51a5dca220f63  model_hash=2eaf5df663dc0c56
+  [done] 88 s -> models\deployable_f_center\86c51a5dca220f63
+  save/load round-trip max |dp| = 1.39e-07 (OK)

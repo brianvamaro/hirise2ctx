@@ -4360,6 +4360,36 @@ blocks without a head trained on calibrated-frame embeddings. The only real test
 (project ~40–80 cohort frames on Sherlock, re-embed with perframe normalization, re-bake head,
 LOIO gate). Decision on whether to proceed to leg B deferred to Brian.
 
+## 2026-07-07 — PHASE 2 H1 (per-frame log-median centering): BOTH GATES PASS — η² 0.179→0.081, embedder amplification KILLED
+
+First item of the PLAN_StripingArtifact PHASE 2 docket. **H1 = log-minnaert (k=0.580) + a
+per-crop median centering step** (÷cos^k, then ÷ this crop's own median → common center, then
+the FIXED centered-pool log stretch). Implemented as a new `minnaert_center` mapping in
+`scripts/f_leg_b_embed.py` (and a mirror in `scripts/f_pilot_crop.py` so the η² test applies the
+identical mapping the head trains on — the leg-A train/deploy-mismatch guard). Equivalent to H1's
+"subtract log-median" because `log(x/median)=log(x)−log(median)`. Constants: k=0.580 (same as leg
+B), centered pool stretch I/F **0.8400–1.1170** (pooled p0.5–99.5, 73 crops).
+
+- **Skill gate PASS**: store `dataset_v2/fang_embeddings_f_minnaert_center` (36 obs) → LOIO
+  Δ median per-image AUC = **−0.0139** (≥ −0.02); pooled PR-AUC **+0.0296**. (Slightly below plain
+  log-minnaert's +0.0067 — centering costs a little within-scene ranking, still passes.)
+  `reports/figures/f_leg_b_loio_summary_minnaert_center.csv`.
+- **η² PASS** (the decisive test): head retrained on the centered store
+  (`models/deployable_f_center/86c51a5dca220f63`, 88 s) → `f_pilot_crop.py --mappings
+  minnaert_center --minnaert-k 0.580 --stretch-lohi 0.8400 1.1170` on the 7 E8_N44 frames:
+  **η² median composite = 0.081** (was 0.179 for log-minnaert F; A1 = 0.141; mosaic raw = 0.196),
+  partition = **0.128** (was 0.277). Both beat A1's 0.141 → H1's own gate (η² < 0.14 at skill
+  ≥ −0.02) **PASS**. `f_pilot_minnaert_center.png`.
+- **Root-cause confirmation (the point of the review)**: prediction overlap disagreement fell to
+  **0.073** median |Δp| — now *below* the co-located input I/F disagreement of 0.102. The embedder
+  is no longer amplifying; centering removed the per-frame **level** term the review (2026-07-05d)
+  identified. Residual worst pairs all involve **F02** (the anomalous frame, review-flagged): e.g.
+  B03~F02 0.157, F02~P18 0.110; non-F02 pairs are 0.016–0.093.
+- **Verdict**: H1 halves the artifact and kills the amplification, but median η² 0.081 does **not**
+  yet clear the 907-frame-reopening bar (η² ≲ 0.05). Per the docket, H2 (embedding
+  nuisance-subspace removal) stacks on the centered store next. Logs:
+  `reports/f_leg_b/h1_{embed,gate,trainhead,eta2}.log`.
+
 ## 2026-07-05d — REVIEW of the F verdict (Brian request): "physical floor" claim OVERSTATED; correction works on level, the embedder is the amplifier; 6 untested mitigation hypotheses cataloged (lit review)
 
 **Fact-check that revises 2026-07-05c** (`_f_review_overlap_residual.py`,

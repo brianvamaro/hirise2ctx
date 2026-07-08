@@ -1,0 +1,27 @@
+7 frames, mappings: ['minnaert_center'], size 15008px
+minnaert(k=0.580) log stretch I/F 0.8400..1.1170
+head: f_wl <- models/deployable_f_center/86c51a5dca220f63
+[minnaert_center] B03_010683_2290_XI_49N351W: 39131 tiles
+[minnaert_center] F02_036739_2274_XN_47N351W: 53486 tiles
+[minnaert_center] J02_045627_2256_XI_45N349W: 78406 tiles
+[minnaert_center] P18_008046_2253_XN_45N350W: 52474 tiles
+[minnaert_center] P21_009338_2253_XN_45N350W: 100546 tiles
+[minnaert_center] P22_009549_2289_XN_48N351W: 9502 tiles
+[minnaert_center] P22_009694_2267_XN_46N350W: 83967 tiles
+[minnaert_center] wrote C:\Users\brian\Documents\PhD\HiRiseToCTXBoulders\hirise2ctx\reports\f_timing\pilot_work\preds_minnaert_center.npz
+wrote C:\Users\brian\Documents\PhD\HiRiseToCTXBoulders\hirise2ctx\reports\figures\f_pilot_minnaert_center.png
+C:\Users\brian\Documents\PhD\HiRiseToCTXBoulders\hirise2ctx\scripts\f_pilot_crop.py:232: RuntimeWarning: Mean of empty slice
+  m = np.nanmean(b, axis=(1, 3)).astype(np.float32)
+
+=== F PILOT eta² (baselines: mosaic raw 0.196 / A1 0.141) ===
+        mapping head        composite   eta2  n_cells  n_frames
+minnaert_center f_wl        partition 0.1281   216793         7
+minnaert_center f_wl partition_eroded 0.1281   215003         7
+minnaert_center f_wl           median 0.0809   216801         7
+
+=== overlap agreement (kind=IF rows: median|ratio-1| vs the ±2% claim) ===
+kind  mapping          head
+IF    -                -       0.1019
+pred  minnaert_center  f_wl    0.0733
+
+full tables: C:\Users\brian\Documents\PhD\HiRiseToCTXBoulders\hirise2ctx\reports\figures\f_pilot_eta2_summary.csv, C:\Users\brian\Documents\PhD\HiRiseToCTXBoulders\hirise2ctx\reports\figures\f_pilot_overlap_pairs.csv

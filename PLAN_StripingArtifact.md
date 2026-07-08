@@ -227,7 +227,8 @@ leveling. Full evidence + verified literature anchors: DECISIONS 2026-07-05d;
 
 | # | hypothesis | targets | how (concrete) | cost | success looks like |
 |---|---|---|---|---|---|
-| **H1** | per-frame **log-median centering** | anomalous frames (F02-class); residual level term | `f_leg_b_embed.py`: new mapping = minnaert ÷cos^k, then per-CROP subtract log-median → common DN center (fixed contrast scale from training pool); embed → gate → η² | ~1 h GPU | skill ≥ −0.02 AND η² < 0.14 (beat A1) |
+| **H1 ✅ DONE 2026-07-07 — PASS** | per-frame **log-median centering** | anomalous frames (F02-class); residual level term | `f_leg_b_embed.py`: new mapping `minnaert_center` = minnaert ÷cos^k, then ÷ per-CROP median → common center, FIXED centered-pool log stretch (I/F 0.84–1.12); mirror in `f_pilot_crop.py` (train/deploy match) | ~1 h GPU | skill ≥ −0.02 AND η² < 0.14 (beat A1) |
+| | *result* | | **skill Δ −0.0139 PASS · η² median 0.081 / partition 0.128 (was F 0.179/0.277; A1 0.141) PASS · pred overlap 0.073 < input 0.102 → embedder amplification KILLED.** Halves artifact, but η² 0.081 not yet ≤ 0.05 reopening bar → H2 stacks next. DECISIONS 2026-07-07; `f_pilot_minnaert_center.png` | | store `fang_embeddings_f_minnaert_center`, head `models/deployable_f_center/86c51a5dca220f63` |
 | **H2** | **embedding nuisance-subspace removal** | embedder amplification | co-located tile pairs across overlapping crops → embedding difference vectors → top-k PCA directions = frame-nuisance basis → project out of ALL embeddings → retrain head → gate + η²; sweep k ∈ {4, 16, 64} | hours, closed-form | η² drop at ≤ 0.01 skill cost |
 | **H3** | **consistency-regularized head** | embedder amplification (optimizes η² directly) | `DeployableHead.fit` loss += λ·MSE(pred_i, pred_j) on co-located overlap tiles; sweep λ → skill-vs-η² Pareto; pick knee | 1–2 days | Pareto point with η² ≲ 0.05 at skill ≥ −0.02 |
 | **H4** | **overlap-constrained leveling of per-frame predictions** (F-mode only; ≠ D, ≠ E) | whatever survives H1–H3 | per-frame additive offset in logit domain, least-squares over **co-located prediction disagreements in frame-overlap regions** (same ground, two frames → the disagreement is artifact BY CONSTRUCTION; no geology assumption, so it sidesteps D's circularity) + smooth regional-trend guard; solved on the seam/overlap graph, applied post-hoc. **⚠ scope limit:** needs per-frame predictions with overlaps (the F deployment). Boundary-discontinuity-only leveling on the mosaic map (a partition, no overlaps) is **option D — RULED OUT (circular), stays ruled out**. Frames with no overlapping partner get interpolated offsets from the graph (flagged in H6). | days | blocks visually gone; validation-leg ρ not degraded |
@@ -239,7 +240,9 @@ leveling. Full evidence + verified literature anchors: DECISIONS 2026-07-05d;
 2026-07-05c options (ship A1 / accept + caveat). Note H4 does NOT transfer to the mosaic-based
 map — the mosaic is a partition (no overlaps), where leveling degenerates to the ruled-out D.
 
-**State: no docket item run yet.** Next action = H1.
+**State: H1 DONE (2026-07-07) — both gates PASS (η² 0.179→0.081, amplification killed), but not
+yet at the η² ≤ 0.05 reopening bar.** Next action = H2 (embedding nuisance-subspace removal),
+stacked on the centered store `fang_embeddings_f_minnaert_center`.
 
 ## NEXT SESSION — decision setup (collected; no decision taken 2026-06-20) — ⚠️ SUPERSEDED by PHASE 2 above
 

@@ -41,6 +41,16 @@ cells.append(md(
 > remains closed, but a Phase-2 invariance & leveling docket (H1–H6) is now open:
 > PLAN_StripingArtifact "PHASE 2", DECISIONS 2026-07-05d,
 > `reports/f_leg_b/review_overlap_residual.csv`. Everything else in this notebook stands.
+>
+> **⚠️ 2026-07-07 update — Phase-2 H1 (per-frame log-median centering) DONE, both gates PASS.**
+> Adding a per-crop median-centering step to the log-minnaert recipe (`minnaert_center` mapping)
+> cut η² median composite **0.179 → 0.081** (partition 0.277 → 0.128, both below the A1 fix at
+> 0.141) at skill Δ −0.0139, and — the decisive point — dropped prediction overlap disagreement to
+> **0.073**, now *below* the 0.102 input I/F disagreement. **The embedder amplification the review
+> predicted is gone**; residual structure is almost entirely the one anomalous frame (F02). H1
+> halves the artifact but does not yet reach the η² ≲ 0.05 reopening bar, so the docket continues
+> at H2 (embedding nuisance-subspace removal). See DECISIONS 2026-07-07,
+> `reports/figures/f_pilot_minnaert_center.png`.
 """))
 
 cells.append(md(

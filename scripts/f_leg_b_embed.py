@@ -12,6 +12,11 @@ Mappings (leg-A lineage; DECISIONS 2026-07-03b/04/04b):
   minnaert  divide each crop by cos^k(incidence) first (k fitted from the crops,
             incidence from reports/f_leg_b/frame_incidence.csv), then fixed pooled stretch
             -> store fang_embeddings_f_minnaert (targets the leg-B illumination correlate)
+  minnaert_center  H1 (PLAN_StripingArtifact PHASE 2): minnaert ÷cos^k, THEN divide each
+            crop by its OWN median so every crop shares a common center, then the fixed
+            pooled LOG stretch (contrast scale fitted on the centered pool). Kills the
+            residual per-frame level term (F02-class anomalous frames) that survives
+            minnaert -> store fang_embeddings_f_minnaert_center
 
 Output matches the existing embedding format: {store}/{obs}_P96.npz with arrays
 (ti, tj, valid, gem).  The LOIO gate script (f_leg_b_loio.py --f-store ...) reads a store
@@ -48,7 +53,8 @@ FEATURES_DIR = REPO / "dataset_v2" / "features"
 INCIDENCE_CSV = REPO / "reports" / "f_leg_b" / "frame_incidence.csv"
 STORES = {"perframe": "fang_embeddings_f",
           "global": "fang_embeddings_f_global",
-          "minnaert": "fang_embeddings_f_minnaert"}
+          "minnaert": "fang_embeddings_f_minnaert",
+          "minnaert_center": "fang_embeddings_f_minnaert_center"}
 TILE_PX = 32      # S=32; context patch = 3*32 = 96 px
 BATCH = 96
 PX_M = 5.0        # native CTX resolution
@@ -120,7 +126,9 @@ def build_mapping_ctx(mapping: str, obs_ids: list[str],
         return {}
 
     ctx: dict = {"div": {}}
-    if mapping == "minnaert":
+    center = mapping == "minnaert_center"
+    ctx["center"] = center
+    if mapping in ("minnaert", "minnaert_center"):
         import pandas as pd
         inc = pd.read_csv(INCIDENCE_CSV)
         cos_i = {r.PRODUCT_ID: float(np.cos(np.radians(r.incidence)))
@@ -146,6 +154,8 @@ def build_mapping_ctx(mapping: str, obs_ids: list[str],
     samples, n_crops = [], 0
     for pid, v in _crop_values(obs_ids):
         v = v / ctx["div"].get(pid, 1.0)
+        if center:                       # per-crop log-median centering (H1)
+            v = v / float(np.median(v))
         samples.append(rng.choice(v, size=min(v.size, 200_000), replace=False))
         n_crops += 1
     lo, hi = np.percentile(np.concatenate(samples), list(pcts))
@@ -195,6 +205,8 @@ def composite_crops(obs_id: str, row0: int, col0: int, H: int, W: int,
         div = ctx.get("div", {}).get(_crop_pid(crop_path, obs_id), 1.0)
         if div != 1.0:
             arr = arr / div
+        if ctx.get("center"):            # H1: divide by this crop's own median so
+            arr = arr / float(np.nanmedian(arr))   # every crop shares a common center
 
         dst_if = np.full((H, W), np.nan, dtype=np.float32)
         reproject(source=arr, destination=dst_if,
@@ -334,7 +346,8 @@ def main() -> None:
           flush=True)
     ctx = build_mapping_ctx(args.mapping, all_obs, pcts=tuple(args.stretch_pcts))
     if args.mapping != "perframe":
-        ctx["scale"] = args.stretch_scale
+        # minnaert_center (H1) builds on log-minnaert, the passing mapping -> force log
+        ctx["scale"] = "log" if args.mapping == "minnaert_center" else args.stretch_scale
     if args.fit_only:
         print("--fit-only: constants fitted, exiting before embedding.")
         return

@@ -1,0 +1,4 @@
+mapping,head,composite,eta2,n_cells,n_frames
+minnaert_center,f_wl,partition,0.1281,216793,7
+minnaert_center,f_wl,partition_eroded,0.1281,215003,7
+minnaert_center,f_wl,median,0.0809,216801,7

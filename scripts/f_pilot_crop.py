@@ -147,6 +147,15 @@ def mapped_uint8(pid: str, mapping: str, ctx: dict) -> np.ndarray:
         # log-domain stretch bounds, per-frame cos^k(i) divisor from this frame's incidence
         lo, hi = ctx["log_lohi"]
         return to_uint8_log(arr / ctx["minnaert_div"][pid], lo, hi)
+    if mapping == "minnaert_center":
+        # H1 (PLAN_StripingArtifact PHASE 2): minnaert_log + per-frame median centering.
+        # MUST mirror f_leg_b_embed minnaert_center exactly (÷cos^k, then ÷ this frame's
+        # OWN median, then the FIXED centered-space log stretch) — else train/deploy
+        # mismatch (the leg-A failure mode). Stretch bounds = training centered pool.
+        lo, hi = ctx["log_lohi"]
+        d = arr / ctx["minnaert_div"][pid]
+        d = d / float(np.nanmedian(d))
+        return to_uint8_log(d, lo, hi)
     if mapping == "perframe":
         fin = np.isfinite(arr)
         med = float(np.median(arr[fin]))
@@ -374,16 +383,18 @@ def main():
         ctx["minnaert_div"] = {p: cos_i[p] ** k for p in pids}
         ctx["minnaert_lohi"] = pooled_percentiles(pids, divisor=ctx["minnaert_div"])
         print(f"minnaert k = {k:.3f} (fit from {len(pids)} frame medians)", flush=True)
-    if "minnaert_log" in args.mappings:
+    if "minnaert_log" in args.mappings or "minnaert_center" in args.mappings:
         # DEPLOY recipe: FIXED training k + log stretch bounds applied to these frames
         # (per-frame cos^k(i) uses each frame's own incidence). No fitting on the pilot.
+        # minnaert_center additionally centers per-frame by median (H1) — same k/bounds
+        # source, bounds are the CENTERED training pool (~0.84..1.12) for that mapping.
         if args.minnaert_k is None or args.stretch_lohi is None:
-            raise SystemExit("minnaert_log needs --minnaert-k and --stretch-lohi "
-                             "(the training constants; DECISIONS 2026-07-05b)")
+            raise SystemExit("minnaert_log/minnaert_center need --minnaert-k and "
+                             "--stretch-lohi (the training constants; DECISIONS 2026-07-05b/d)")
         k = float(args.minnaert_k)
         ctx["minnaert_div"] = {p: cos_i[p] ** k for p in pids}
         ctx["log_lohi"] = tuple(args.stretch_lohi)
-        print(f"minnaert_log: FIXED k={k:.3f}  log stretch I/F "
+        print(f"minnaert(k={k:.3f}) log stretch I/F "
               f"{args.stretch_lohi[0]:.4f}..{args.stretch_lohi[1]:.4f}", flush=True)
 
     embedder = FangEmbedder.load(device="cpu" if args.cpu else None)
