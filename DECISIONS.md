@@ -4391,6 +4391,18 @@ B), centered pool stretch I/F **0.8400–1.1170** (pooled p0.5–99.5, 73 crops)
   yet clear the 907-frame-reopening bar (η² ≲ 0.05). Per the docket, H2 (embedding
   nuisance-subspace removal) stacks on the centered store next. Logs:
   `reports/f_leg_b/h1_{embed,gate,trainhead,eta2}.log`.
+- **F02 anomaly confirmed radiometric** (`scripts/probes/_f02_diagnose.py`,
+  `reports/f_leg_b/h1_f02_diagnose.log`): the dominant residual block after H1 is frame
+  `F02_036739_2274` (the top-center block in the choropleth). Fitting `log(median I/F) = k·log(cos i)
+  + b` across the 7 pilot frames, **F02 is −0.114 in log (z = −2.23) below the photometric line** —
+  ~11% darker than its incidence predicts; all 6 other frames are within ±0.05 (±0.5σ). Even
+  minnaert-corrected it is the darkest (0.116 vs 0.130–0.138). Geometry is unremarkable (incidence
+  50.9° mid-pack, emission 9.6° near-nadir); it was acquired **2014** vs **2008** for the cluster it
+  overlaps → atmosphere (dust/haze) or calibration-epoch offset, NOT geometry/geology. Consequence:
+  F02 gets the **highest** frame-mean P(rich) (0.222 vs ≤0.173) yet overlaps frames predicting
+  ≤0.07 over the SAME ground → co-located disagreement is artifact by construction. This is the
+  per-frame level offset **H4 (overlap-constrained leveling) is built to absorb**. (Metric note:
+  the pilot maps are raw **P(boulder-rich)**, P(fa>1e-2), not CalibrationLayer abundance.)
 
 ## 2026-07-05d — REVIEW of the F verdict (Brian request): "physical floor" claim OVERSTATED; correction works on level, the embedder is the amplifier; 6 untested mitigation hypotheses cataloged (lit review)
 
