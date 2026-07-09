@@ -1,0 +1,24 @@
+minnaert_center: k=0.58, log stretch I/F 0.8400..1.1170
+  B03_010683_2290_XI_49N351W: 218089 valid tiles
+  F02_036739_2274_XN_47N351W: 218089 valid tiles
+  J02_045627_2256_XI_45N349W: 218089 valid tiles
+  P18_008046_2253_XN_45N350W: 218089 valid tiles
+  P21_009338_2253_XN_45N350W: 218089 valid tiles
+  P22_009549_2289_XN_48N351W: 218089 valid tiles
+  P22_009694_2267_XN_46N350W: 218089 valid tiles
+[center] k=0  η² partition 0.1281  median 0.0809  pred_overlap 0.0738
+[h2_k4] k=4  η² partition 0.1104  median 0.0715  pred_overlap 0.0911
+[h2_k16] k=16  η² partition 0.1492  median 0.0798  pred_overlap 0.1235
+[h2_k64] k=64  η² partition 0.1307  median 0.0403  pred_overlap 0.1094
+C:\Users\brian\Documents\PhD\HiRiseToCTXBoulders\hirise2ctx\scripts\f_pilot_crop.py:232: RuntimeWarning: Mean of empty slice
+  m = np.nanmean(b, axis=(1, 3)).astype(np.float32)
+
+=== H2 η² SWEEP (baselines: mosaic raw 0.196 / A1 0.141 / H1 0.081 med, 0.128 part) ===
+ label  k  partition  median  pred_overlap
+center  0     0.1281  0.0809        0.0738
+ h2_k4  4     0.1104  0.0715        0.0911
+h2_k16 16     0.1492  0.0798        0.1235
+h2_k64 64     0.1307  0.0403        0.1094
+
+input I/F overlap |ratio-1| = 0.1019  (H1 pred_overlap was 0.073; amplification killed if pred_overlap <= this)
+wrote C:\Users\brian\Documents\PhD\HiRiseToCTXBoulders\hirise2ctx\reports\figures\f_h2_eta2_choropleth.png

@@ -1,0 +1,39 @@
+........................................................................ [ 19%]
+........................................................................ [ 39%]
+........................................................................ [ 59%]
+........................................................................ [ 78%]
+........................................................................ [ 98%]
+......                                                                   [100%]
+============================== warnings summary ===============================
+src\config.py:230
+tests/test_manifest.py::test_manifest_loads_with_required_columns
+  C:\Users\brian\Documents\PhD\HiRiseToCTXBoulders\hirise2ctx\src\config.py:230: DeprecationWarning: C:\Users\brian\Documents\PhD\HiRiseToCTXBoulders\hirise2ctx\config.yaml: labeling.{context_patch_px, features} are deprecated; Stage 4b reads from the top-level `features:` block instead. Remove the deprecated labeling.* keys to silence this warning.
+    _validate(raw, p)
+
+tests/test_ctx_edr.py::test_frames_in_crop_matches_a1_payoff_site
+  C:\Users\brian\anaconda3\envs\geospatial\Lib\site-packages\pyogrio\__init__.py:7: DeprecationWarning: The 'shapely.geos' module is deprecated, and will be removed in a future version. All attributes of 'shapely.geos' are available directly from the top-level 'shapely' namespace (since shapely 2.0.0).
+    import shapely.geos  # noqa: F401
+
+tests/test_labeling.py::test_detection_filter_min_size_drops_small_diameters
+  C:\Users\brian\Documents\PhD\HiRiseToCTXBoulders\hirise2ctx\src\labeling.py:110: UserWarning: Geometry is in a geographic CRS. Results from 'area' are likely incorrect. Use 'GeoSeries.to_crs()' to re-project geometries to a projected CRS before this operation.
+  
+    diam = 2.0 * np.sqrt(gdf.geometry.area.to_numpy() / np.pi)
+
+tests/test_reliability.py::test_far_scores_higher_than_near[<lambda>1]
+  C:\Users\brian\anaconda3\envs\geospatial\Lib\site-packages\threadpoolctl.py:1226: RuntimeWarning: 
+  Found Intel OpenMP ('libiomp') and LLVM OpenMP ('libomp') loaded at
+  the same time. Both libraries are known to be incompatible and this
+  can cause random crashes or deadlocks on Linux when loaded in the
+  same Python program.
+  Using threadpoolctl may cause crashes or deadlocks. For more
+  information and possible workarounds, please see
+      https://github.com/joblib/threadpoolctl/blob/master/multiple_openmp.md
+  
+    warnings.warn(msg, RuntimeWarning)
+
+tests/test_validation_retrieve.py::test_seam_lon_from_central_meridian
+  C:\Users\brian\anaconda3\envs\geospatial\Lib\site-packages\pyproj\crs\crs.py:1295: UserWarning: You will likely lose important projection information when converting to a PROJ string from another format. See: https://proj.org/faq.html#what-is-the-best-format-for-describing-coordinate-reference-systems
+    proj = self._crs.to_proj4(version=version)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+366 passed, 21 deselected, 6 warnings in 29.99s

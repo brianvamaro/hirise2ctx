@@ -4360,6 +4360,56 @@ blocks without a head trained on calibrated-frame embeddings. The only real test
 (project ~40–80 cohort frames on Sherlock, re-embed with perframe normalization, re-bake head,
 LOIO gate). Decision on whether to proceed to leg B deferred to Brian.
 
+## 2026-07-09 — PHASE 2 H2 (embedding nuisance-subspace removal): FAIL — linear subspace is NOT the artifact axis
+
+Second PLAN_StripingArtifact PHASE 2 item, stacked on the H1 centered store. **Premise:** two
+frames imaging the SAME ground should embed to the same point, so a co-located tile's embedding
+difference `d = e_i − e_j` is pure frame-nuisance (radiometry/illumination/epoch, zero geology).
+Collect many `d`, PCA them, and the top-k directions are a nuisance basis `N`; project it out of
+every embedding (`e ← e − (e·N)Nᵀ`), retrain the head, re-gate. Implemented as an optional
+`nuisance_basis` pre-transform baked into `DeployableHead` (applied identically in fit/predict,
+persisted with the weights → travels to deploy via `load`, so the η² path needs no extra
+plumbing — the H1 train/deploy-parity lesson made structural). +4 unit tests (suite **366**).
+
+- **Basis** (`scripts/f_h2_nuisance.py`, `reports/f_leg_b/h2_nuisance_basis.npz`): built from the
+  **28 multi-crop TRAINING obs** (not the 7 pilot frames the η² test scores — so `N` is learned
+  independently of the artifact test set, no circularity). Each source frame embedded separately
+  under `minnaert_center`; **47 within-obs frame pairs, 174 963 co-located difference vectors**.
+  The nuisance really is low-rank: **top-4 directions = 84.2%** of between-frame embedding-difference
+  variance, top-16 = 89.7%, top-64 = 94.2%.
+- **η² sweep** (`scripts/f_h2_eta2.py`, `f_h2_eta2_summary.csv`, `f_h2_eta2_choropleth.png`; pilot
+  frames embedded once, heads `models/deployable_f_h2_k{4,16,64}/86c51a5dca220f63`). The k=0 center
+  head reproduces H1 exactly (partition 0.128 / median 0.081 / overlap 0.073 → parity confirmed):
+
+  | k | skill Δ med AUC (vs mosaic) | gate | partition η² | median η² | pred overlap |Δp| |
+  |---|---|---|---|---|---|
+  | 0 (H1) | −0.0139 | PASS | 0.128 | 0.081 | **0.073** |
+  | 4 | **−0.0026** | PASS | 0.110 | 0.072 | 0.091 |
+  | 16 | −0.0510 | FAIL | 0.149 | 0.080 | 0.124 |
+  | 64 | −0.1223 | FAIL | 0.131 | 0.040 | 0.109 |
+
+- **Verdict = FAIL to reopen; refuted as the lever.** Two decisive facts: (1) **even k=64 — which
+  removes 94% of the between-frame embedding-difference variance — leaves partition η² at 0.131**,
+  essentially H1's 0.128. The frame-block artifact in *predictions* is NOT aligned with the
+  directions of largest between-frame embedding *difference*; removing "where embeddings differ most
+  across frames" does not remove "where predictions differ by frame." (2) **pred-overlap |Δp| rises
+  at every k** (0.073 → 0.09–0.12) — the opposite of the goal; the retrained head, deprived of those
+  directions, re-keys on residual frame-correlated structure and co-located predictions disagree
+  *more*. Skill collapses monotonically with k (−0.003 → −0.051 → −0.122): large-k projection eats
+  geology-informative directions with no η² payoff. Only k=4 survives the skill gate (Δ −0.0026,
+  even a hair better than H1, pooled PR +0.039) and gives a marginal partition drop 0.128→0.110, but
+  it is nowhere near the η² ≲ 0.05 bar and *worsens* overlap → not adopted. Choropleth: the per-frame
+  blocks (incl. the dark **F02** block) persist visually at all k.
+- **Interpretation:** the between-frame embedding variance is diffusely entangled with geology across
+  many dims (the frozen ViT mixes them nonlinearly), not confined to a low-rank subspace separable by
+  a fixed linear projection. This specifically motivates the remaining docket: **H3** (consistency-
+  regularized head — optimize prediction agreement on overlaps *directly* in the loss, in-head/
+  nonlinear, since a fixed linear subspace is the wrong instrument) and **H4** (overlap-constrained
+  leveling — the blocks persist as per-frame level offsets in *prediction* space, esp. F02, which is
+  exactly what H4 removes post-hoc). H1 stays the operating baseline. Logs:
+  `reports/f_leg_b/h2_{nuisance,eta2,pytest}.log`, `h2_loio` via
+  `f_leg_b_loio_summary_minnaert_center_h2_k{4,16,64}.csv`.
+
 ## 2026-07-07 — PHASE 2 H1 (per-frame log-median centering): BOTH GATES PASS — η² 0.179→0.081, embedder amplification KILLED
 
 First item of the PLAN_StripingArtifact PHASE 2 docket. **H1 = log-minnaert (k=0.580) + a

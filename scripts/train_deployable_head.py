@@ -93,6 +93,11 @@ def main() -> int:
     ap.add_argument("--out", default=str(REPO_ROOT / "models" / "deployable"))
     ap.add_argument("--store-name", default="fang_embeddings",
                     help="embedding store dir name (e.g. fang_embeddings_a1 for the A1 variant)")
+    ap.add_argument("--nuisance-basis", default=None,
+                    help="H2: npz with a 'basis' (768, N) array; its first --nuisance-k "
+                         "columns are projected out of every embedding before the scaler")
+    ap.add_argument("--nuisance-k", type=int, default=0,
+                    help="H2: number of nuisance directions to remove (0 = none)")
     args = ap.parse_args()
 
     print(f"=== train deployable head ({args.target}, batch={args.batch}) ===", flush=True)
@@ -102,8 +107,15 @@ def main() -> int:
     print(f"  matrix: X={X.shape}  pos_rate={float(y.mean()):.4f}  images={n_img}  "
           f"nan_rows={int(np.isnan(X).any(axis=1).sum())}", flush=True)
 
+    basis = None
+    if args.nuisance_basis and args.nuisance_k > 0:
+        basis = np.load(args.nuisance_basis)["basis"][:, :args.nuisance_k]
+        print(f"  H2: removing top-{args.nuisance_k} nuisance directions "
+              f"({Path(args.nuisance_basis).name})", flush=True)
+
     recipe = dict(FROZEN_RECIPE, target_id=args.target)
-    head = DeployableHead(seeds=tuple(args.seeds), batch=args.batch, recipe=recipe)
+    head = DeployableHead(seeds=tuple(args.seeds), batch=args.batch, recipe=recipe,
+                          nuisance_basis=basis)
     head.fit(X, y, groups=groups, obs_to_int=obs_to_int, verbose=True)
 
     out_dir = Path(args.out) / head.recipe_hash()

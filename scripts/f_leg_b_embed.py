@@ -168,13 +168,20 @@ def build_mapping_ctx(mapping: str, obs_ids: list[str],
 # ------------------------------------------------------------------ composite
 
 def composite_crops(obs_id: str, row0: int, col0: int, H: int, W: int,
-                    mapping: str = "perframe", ctx: dict | None = None) -> np.ndarray:
+                    mapping: str = "perframe", ctx: dict | None = None,
+                    only_pid: str | None = None) -> np.ndarray:
     """Composite all I/F crops for obs_id onto the mosaic pixel grid (H×W uint8).
 
     Where multiple frames overlap, the last one written wins (crops are sorted by
     filename so the order is deterministic).  minnaert divides each crop by its
     frame's cos^k(i) BEFORE compositing; the final I/F->uint8 conversion is
     per-composite robust (perframe) or the fixed ctx[lo..hi] affine (global/minnaert).
+
+    ``only_pid`` restricts the composite to a SINGLE source frame (H2 nuisance-basis
+    build: per-frame embeddings for co-located overlap pairs). Every pixel then gets
+    that one frame's per-crop normalization — identical to how it would be treated in
+    the full composite where it happened to win — so the per-frame embeddings match
+    the composite embeddings the projection is later applied to.
     """
     ctx = ctx or {}
     # NaN canvas: uncovered pixels must stay non-finite so they are EXCLUDED from
@@ -182,6 +189,8 @@ def composite_crops(obs_id: str, row0: int, col0: int, H: int, W: int,
     canvas = np.full((H, W), np.nan, dtype=np.float32)
 
     crops = sorted(CROPS_DIR.glob(f"{obs_id}_*_ifcrop.tif"))
+    if only_pid is not None:
+        crops = [p for p in crops if _crop_pid(p, obs_id) == only_pid]
     if not crops:
         return np.zeros((H, W), dtype=np.uint8)
 

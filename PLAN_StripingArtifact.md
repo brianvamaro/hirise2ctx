@@ -229,7 +229,8 @@ leveling. Full evidence + verified literature anchors: DECISIONS 2026-07-05d;
 |---|---|---|---|---|---|
 | **H1 ✅ DONE 2026-07-07 — PASS** | per-frame **log-median centering** | anomalous frames (F02-class); residual level term | `f_leg_b_embed.py`: new mapping `minnaert_center` = minnaert ÷cos^k, then ÷ per-CROP median → common center, FIXED centered-pool log stretch (I/F 0.84–1.12); mirror in `f_pilot_crop.py` (train/deploy match) | ~1 h GPU | skill ≥ −0.02 AND η² < 0.14 (beat A1) |
 | | *result* | | **skill Δ −0.0139 PASS · η² median 0.081 / partition 0.128 (was F 0.179/0.277; A1 0.141) PASS · pred overlap 0.073 < input 0.102 → embedder amplification KILLED.** Halves artifact, but η² 0.081 not yet ≤ 0.05 reopening bar → H2 stacks next. DECISIONS 2026-07-07; `f_pilot_minnaert_center.png` | | store `fang_embeddings_f_minnaert_center`, head `models/deployable_f_center/86c51a5dca220f63` |
-| **H2** | **embedding nuisance-subspace removal** | embedder amplification | co-located tile pairs across overlapping crops → embedding difference vectors → top-k PCA directions = frame-nuisance basis → project out of ALL embeddings → retrain head → gate + η²; sweep k ∈ {4, 16, 64} | hours, closed-form | η² drop at ≤ 0.01 skill cost |
+| **H2 ❌ DONE 2026-07-09 — FAIL** | **embedding nuisance-subspace removal** | embedder amplification | co-located tile pairs across overlapping crops → embedding difference vectors → top-k PCA directions = frame-nuisance basis → project out of ALL embeddings → retrain head → gate + η²; sweep k ∈ {4, 16, 64} | hours, closed-form | η² drop at ≤ 0.01 skill cost |
+| | *result* | | **FAIL — linear subspace is not the artifact axis.** Basis from 28 multi-crop TRAINING obs (47 pairs / 174 963 co-located diffs; top-4 = 84.2% of between-frame embedding-diff variance). But **even k=64 (94% of that variance removed) leaves partition η² 0.131 ≈ H1's 0.128**, and pred-overlap \|Δp\| *rises* 0.073→0.09–0.12 (co-located predictions disagree MORE). Skill collapses monotonically (Δ vs mosaic: k4 −0.003 PASS, k16 −0.051, k64 −0.122). Only k4 survives skill (marginal partition 0.128→0.110, still ≫0.05, overlap worse) → not adopted. Blocks (incl. F02) persist in the choropleth. ⇒ between-frame embedding variance is diffusely entangled with geology, not a fixed low-rank subspace → linear projection is the wrong instrument. Projection baked into `DeployableHead(nuisance_basis=…)` (+4 tests, suite 366). DECISIONS 2026-07-09; `scripts/f_h2_{nuisance,eta2}.py`, `f_h2_eta2_{summary.csv,choropleth.png}` | | H1 stays the baseline; H3/H4 next |
 | **H3** | **consistency-regularized head** | embedder amplification (optimizes η² directly) | `DeployableHead.fit` loss += λ·MSE(pred_i, pred_j) on co-located overlap tiles; sweep λ → skill-vs-η² Pareto; pick knee | 1–2 days | Pareto point with η² ≲ 0.05 at skill ≥ −0.02 |
 | **H4** | **overlap-constrained leveling of per-frame predictions** (F-mode only; ≠ D, ≠ E) | whatever survives H1–H3 | per-frame additive offset in logit domain, least-squares over **co-located prediction disagreements in frame-overlap regions** (same ground, two frames → the disagreement is artifact BY CONSTRUCTION; no geology assumption, so it sidesteps D's circularity) + smooth regional-trend guard; solved on the seam/overlap graph, applied post-hoc. **⚠ scope limit:** needs per-frame predictions with overlaps (the F deployment). Boundary-discontinuity-only leveling on the mosaic map (a partition, no overlaps) is **option D — RULED OUT (circular), stays ruled out**. Frames with no overlapping partner get interpolated offsets from the graph (flagged in H6). **Motivating case: F02** (post-H1 residual block) is −2.23σ darker than incidence predicts, 2014 vs 2008 epoch, over-predicts P(rich) 0.222 vs ≤0.07 on the same ground it overlaps → a pure radiometric offset (DECISIONS 2026-07-07, `_f02_diagnose.py`). | days | blocks visually gone; validation-leg ρ not degraded |
 | H5 | stronger physics (Hapke/atmospheric EPF) | (little headroom left) | only if H1 leaves >5% level residual | — | — |
@@ -240,9 +241,15 @@ leveling. Full evidence + verified literature anchors: DECISIONS 2026-07-05d;
 2026-07-05c options (ship A1 / accept + caveat). Note H4 does NOT transfer to the mosaic-based
 map — the mosaic is a partition (no overlaps), where leveling degenerates to the ruled-out D.
 
-**State: H1 DONE (2026-07-07) — both gates PASS (η² 0.179→0.081, amplification killed), but not
-yet at the η² ≤ 0.05 reopening bar.** Next action = H2 (embedding nuisance-subspace removal),
-stacked on the centered store `fang_embeddings_f_minnaert_center`.
+**State: H1 DONE (2026-07-07, PASS — η² 0.179→0.081); H2 DONE (2026-07-09, FAIL — linear
+nuisance-subspace removal does not reduce partition η² at any k and worsens overlap; refuted as
+the lever).** H1 remains the operating baseline (median η² 0.081, still above the 0.05 reopening
+bar). **Next action = H3** (consistency-regularized head: add λ·MSE(pred_i, pred_j) on co-located
+overlap tiles to `DeployableHead.fit`, sweep λ for the skill-vs-η² Pareto) — the in-head/nonlinear
+instrument H2's failure points to — and/or **H4** (overlap-constrained per-frame prediction
+leveling, which directly removes the persistent F02-class level offsets). The H2 co-located
+overlap-pair machinery (`scripts/f_h2_nuisance.py` per-frame embeddings; the pilot embedding cache
+in `f_h2_eta2.py`) is reusable for H3's consistency loss.
 
 ## NEXT SESSION — decision setup (collected; no decision taken 2026-06-20) — ⚠️ SUPERSEDED by PHASE 2 above
 

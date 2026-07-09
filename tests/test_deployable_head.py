@@ -156,3 +156,60 @@ def test_recipe_hash_is_config_only():
     assert a.recipe_hash() == b.recipe_hash()
     c = DeployableHead(seeds=(0, 1, 2), dropout=0.5)
     assert c.recipe_hash() != a.recipe_hash()
+
+
+# ----------------------------------------------------------------------------
+# DeployableHead H2 nuisance-subspace projection
+# ----------------------------------------------------------------------------
+
+
+def _orthonormal_basis(d, k, seed=7):
+    q, _ = np.linalg.qr(np.random.default_rng(seed).standard_normal((d, k)))
+    return q[:, :k].astype(np.float32)
+
+
+def test_project_removes_its_own_directions_and_is_idempotent():
+    N = _orthonormal_basis(EMBED_DIM, 4)
+    head = DeployableHead(seeds=(0,), nuisance_basis=N)
+    X = np.random.default_rng(0).standard_normal((50, EMBED_DIM)).astype(np.float32)
+    Xp = head._project(X)
+    # projected data has zero component along every basis vector
+    assert np.allclose(Xp @ N, 0.0, atol=1e-4)
+    # idempotent: projecting again changes nothing
+    np.testing.assert_allclose(head._project(Xp), Xp, rtol=0, atol=1e-5)
+
+
+def test_project_passes_nan_rows_through():
+    N = _orthonormal_basis(EMBED_DIM, 4)
+    head = DeployableHead(seeds=(0,), nuisance_basis=N)
+    X = np.random.default_rng(1).standard_normal((10, EMBED_DIM)).astype(np.float32)
+    X[0] = np.nan
+    Xp = head._project(X)
+    assert np.isnan(Xp[0]).all()          # NaN row untouched (no NaN-spread)
+    assert np.isfinite(Xp[1:]).all()
+
+
+def test_project_none_is_identity():
+    head = DeployableHead(seeds=(0,))
+    X = np.random.default_rng(2).standard_normal((8, EMBED_DIM)).astype(np.float32)
+    np.testing.assert_array_equal(head._project(X), X)
+
+
+def test_nuisance_basis_survives_save_load(tmp_path):
+    N = _orthonormal_basis(EMBED_DIM, 4)
+    X, y, groups = _synthetic(n=600, n_groups=4)
+    head = DeployableHead(seeds=(0, 1), batch=256, epochs=8, nuisance_basis=N)
+    head.fit(X, y, groups=groups, verbose=False)
+    p = head.predict(X)
+    out = tmp_path / "deploy_h2"
+    head.save(out)
+    assert (out / "nuisance_basis.npy").exists()
+    reloaded = DeployableHead.load(out)
+    assert reloaded.nuisance_basis is not None
+    np.testing.assert_array_equal(reloaded.nuisance_basis, N)
+    np.testing.assert_allclose(reloaded.predict(X), p, rtol=0, atol=1e-6)
+    assert reloaded.model_hash() == head.model_hash()
+    # A head with a basis differs from one without (model_hash folds in the basis).
+    plain = DeployableHead(seeds=(0, 1), batch=256, epochs=8)
+    plain.fit(X, y, groups=groups, verbose=False)
+    assert plain.model_hash() != head.model_hash()

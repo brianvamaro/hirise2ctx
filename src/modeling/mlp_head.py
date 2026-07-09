@@ -295,16 +295,38 @@ class DeployableHead:
     def __init__(self, seeds: tuple[int, ...] = (0, 1, 2), hidden=DEFAULT_HIDDEN,
                  dropout: float = DEFAULT_DROPOUT, epochs: int = 60, batch: int = 4096,
                  lr: float = 1e-3, weight_decay: float = 1e-4, patience: int = 8,
-                 recipe: dict | None = None) -> None:
+                 recipe: dict | None = None, nuisance_basis: np.ndarray | None = None) -> None:
         self.seeds = tuple(seeds)
         self.hidden = tuple(hidden)
         self.dropout = dropout
         self.epochs, self.batch, self.lr = epochs, batch, lr
         self.weight_decay, self.patience = weight_decay, patience
         self.recipe = dict(recipe or FROZEN_RECIPE)
+        # H2 (PLAN_StripingArtifact PHASE 2): optional frame-nuisance subspace removed
+        # from the embeddings BEFORE the scaler. N is (EMBED_DIM, k) with orthonormal
+        # columns; projection X <- X - (X @ N) @ N.T is applied identically in fit and
+        # predict, so it travels to deploy via load() -> train/deploy parity for free.
+        self.nuisance_basis = (None if nuisance_basis is None
+                               else np.asarray(nuisance_basis, dtype=np.float32))
         self._members: list[MLPClassifierHead] = []
         self._train_obs_ids: list[str] = []
         self._trained_at: str | None = None
+
+    def _project(self, X: np.ndarray) -> np.ndarray:
+        """Remove the frame-nuisance subspace (H2). No-op if no basis is set.
+
+        Only finite rows are projected; all-NaN invalid-tile rows pass through
+        unchanged for the FeatureScaler to median-impute downstream.
+        """
+        if self.nuisance_basis is None:
+            return X
+        N = self.nuisance_basis
+        out = np.array(X, dtype=np.float32, copy=True)
+        fin = np.isfinite(out).all(axis=1)
+        if fin.any():
+            Xf = out[fin]
+            out[fin] = Xf - (Xf @ N) @ N.T
+        return out
 
     def _member(self, seed: int) -> MLPClassifierHead:
         return MLPClassifierHead(
@@ -314,7 +336,7 @@ class DeployableHead:
 
     def fit(self, X, y, *, groups, obs_to_int: dict[str, int] | None = None,
             verbose: bool = True) -> "DeployableHead":
-        X = np.asarray(X, dtype=np.float32)
+        X = self._project(np.asarray(X, dtype=np.float32))
         y = np.asarray(y).astype(np.float32)
         groups = np.asarray(groups)
         unique = np.unique(groups)
@@ -342,7 +364,8 @@ class DeployableHead:
     def predict(self, X) -> np.ndarray:
         if not self._members:
             raise RuntimeError("DeployableHead.predict before fit/load")
-        acc = np.zeros(np.asarray(X).shape[0], dtype=np.float64)
+        X = self._project(np.asarray(X, dtype=np.float32))
+        acc = np.zeros(X.shape[0], dtype=np.float64)
         for head in self._members:
             acc += head.predict(X)
         return acc / len(self._members)
@@ -361,7 +384,10 @@ class DeployableHead:
         return hashlib.sha256(blob).hexdigest()[:16]
 
     def model_hash(self) -> str:
-        return hash_bytes("|".join(h.model_hash() for h in self._members).encode())
+        blob = "|".join(h.model_hash() for h in self._members).encode()
+        if self.nuisance_basis is not None:
+            blob += self.nuisance_basis.tobytes()
+        return hash_bytes(blob)
 
     # ---- persistence ----
     def save(self, path) -> None:
@@ -369,6 +395,8 @@ class DeployableHead:
         path.mkdir(parents=True, exist_ok=True)
         for s, head in zip(self.seeds, self._members):
             head.save(path / f"seed{s}")
+        if self.nuisance_basis is not None:
+            np.save(path / "nuisance_basis.npy", self.nuisance_basis)
         card = {
             "name": self.name, "seeds": list(self.seeds), "hidden": list(self.hidden),
             "dropout": self.dropout, "epochs": self.epochs, "batch": self.batch,
@@ -376,6 +404,8 @@ class DeployableHead:
             "recipe": self.recipe, "recipe_hash": self.recipe_hash(),
             "model_hash": self.model_hash(), "n_train_images": len(self._train_obs_ids),
             "train_obs_ids": self._train_obs_ids, "trained_at_iso": self._trained_at,
+            "nuisance_k": (None if self.nuisance_basis is None
+                           else int(self.nuisance_basis.shape[1])),
         }
         (path / "recipe.json").write_text(json.dumps(card, indent=2), encoding="utf-8")
 
@@ -383,10 +413,13 @@ class DeployableHead:
     def load(cls, path) -> "DeployableHead":
         path = Path(path)
         card = json.loads((path / "recipe.json").read_text(encoding="utf-8"))
+        basis_path = path / "nuisance_basis.npy"
+        basis = np.load(basis_path) if basis_path.exists() else None
         head = cls(seeds=tuple(card["seeds"]), hidden=tuple(card["hidden"]),
                    dropout=card["dropout"], epochs=card["epochs"], batch=card["batch"],
                    lr=card["lr"], weight_decay=card["weight_decay"],
-                   patience=card["patience"], recipe=card.get("recipe"))
+                   patience=card["patience"], recipe=card.get("recipe"),
+                   nuisance_basis=basis)
         head._members = []
         for s in head.seeds:
             m = head._member(s)

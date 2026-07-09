@@ -1,0 +1,102 @@
+minnaert k = 0.580 (fit from 63 frames, incidence via frame_incidence.csv)
+minnaert_center stretch: I/F 0.8400..1.1170 (pooled p0.5–p99.5, 73 crops)
+28 multi-crop obs (65 frames)
+    ESP_017355_2260 B19_016999_2240_XN_44N343W: 13457/13457 valid tiles
+    ESP_017355_2260 P14_006635_2267_XN_46N343W: 13457/13457 valid tiles
+  ESP_017355_2260: cumulative 1 pairs / 13457 co-located diffs
+    ESP_042964_2160 B04_011277_2168_XN_36N006W: 2564/2564 valid tiles
+    ESP_042964_2160 P20_008864_2167_XN_36N007W: 2564/2564 valid tiles
+  ESP_042964_2160: cumulative 2 pairs / 16021 co-located diffs
+    ESP_045550_2180 F04_037242_2195_XI_39N042W: 3019/3019 valid tiles
+    ESP_045550_2180 G19_025559_2173_XN_37N042W: 3019/3019 valid tiles
+  ESP_045550_2180: cumulative 3 pairs / 19040 co-located diffs
+    ESP_045983_2270 B18_016643_2264_XI_46N345W: 2468/2468 valid tiles
+    ESP_045983_2270 F04_037530_2282_XN_48N345W: 2468/2468 valid tiles
+  ESP_045983_2270: cumulative 4 pairs / 21508 co-located diffs
+    ESP_046328_2180 D04_028658_2168_XI_36N043W: 1869/1869 valid tiles
+    ESP_046328_2180 G20_026192_2167_XI_36N043W: 1869/1869 valid tiles
+  ESP_046328_2180: cumulative 5 pairs / 23377 co-located diffs
+    ESP_046959_2225 J04_046537_2219_XI_41N351W: 4156/4156 valid tiles
+    ESP_046959_2225 P16_007255_2202_XN_40N350W: 4156/4156 valid tiles
+    ESP_046959_2225 P17_007756_2202_XI_40N351W: 4156/4156 valid tiles
+  ESP_046959_2225: cumulative 8 pairs / 35845 co-located diffs
+    ESP_048688_2085 D13_032284_2086_XN_28N039W: 1370/1370 valid tiles
+    ESP_048688_2085 G03_019546_2085_XN_28N039W: 1370/1370 valid tiles
+    ESP_048688_2085 G04_019757_2085_XN_28N039W: 1370/1370 valid tiles
+  ESP_048688_2085: cumulative 11 pairs / 39955 co-located diffs
+    ESP_049242_2115 G01_018544_2131_XN_33N043W: 2420/2420 valid tiles
+    ESP_049242_2115 J12_049598_2115_XN_31N043W: 2420/2420 valid tiles
+  ESP_049242_2115: cumulative 12 pairs / 42375 co-located diffs
+    ESP_051943_2270 B05_011685_2274_XI_47N347W: 2711/2711 valid tiles
+    ESP_051943_2270 J01_045139_2268_XI_46N346W: 2711/2711 valid tiles
+  ESP_051943_2270: cumulative 13 pairs / 45086 co-located diffs
+    ESP_053989_2260 P16_007112_2234_XI_43N046W: 2761/2761 valid tiles
+    ESP_053989_2260 P20_008839_2269_XI_46N046W: 2761/2761 valid tiles
+    ESP_053989_2260 P21_009406_2268_XI_46N047W: 2761/2761 valid tiles
+  ESP_053989_2260: cumulative 16 pairs / 53369 co-located diffs
+    ESP_054000_2255 B04_011329_2241_XI_44N347W: 3535/3535 valid tiles
+    ESP_054000_2255 P16_007123_2241_XN_44N347W: 3535/3535 valid tiles
+  ESP_054000_2255: cumulative 17 pairs / 56904 co-located diffs
+    ESP_054134_2265 F02_036662_2282_XN_48N048W: 3611/3611 valid tiles
+    ESP_054134_2265 P15_006967_2281_XN_48N048W: 3611/3611 valid tiles
+  ESP_054134_2265: cumulative 18 pairs / 60515 co-located diffs
+    ESP_054397_2105 G19_025532_2122_XN_32N024W: 6086/6086 valid tiles
+    ESP_054397_2105 J04_046446_2092_XN_29N024W: 6086/6086 valid tiles
+  ESP_054397_2105: cumulative 19 pairs / 66601 co-located diffs
+    ESP_054622_2240 F03_037084_2219_XN_41N048W: 5099/5099 valid tiles
+    ESP_054622_2240 G22_026746_2219_XN_41N049W: 5099/5099 valid tiles
+  ESP_054622_2240: cumulative 20 pairs / 71700 co-located diffs
+    ESP_055017_2055 B11_014047_2054_XN_25N030W: 3079/3079 valid tiles
+    ESP_055017_2055 P21_009300_2049_XI_24N029W: 3079/3079 valid tiles
+  ESP_055017_2055: cumulative 21 pairs / 74779 co-located diffs
+    ESP_055253_2245 B21_017751_2248_XN_44N355W: 2596/2596 valid tiles
+    ESP_055253_2245 F03_036937_2251_XI_45N355W: 2596/2596 valid tiles
+    ESP_055253_2245 G02_019030_2250_XI_45N354W: 2596/2596 valid tiles
+    ESP_055253_2245 P22_009681_2243_XI_44N355W: 2596/2596 valid tiles
+  ESP_055253_2245: cumulative 27 pairs / 90355 co-located diffs
+    ESP_055690_2200 F04_037242_2195_XI_39N042W: 4916/4916 valid tiles
+    ESP_055690_2200 G19_025770_2207_XN_40N042W: 4916/4916 valid tiles
+  ESP_055690_2200: cumulative 28 pairs / 95271 co-located diffs
+    ESP_055978_2270 B18_016498_2264_XI_46N345W: 5487/5487 valid tiles
+    ESP_055978_2270 F04_037530_2282_XN_48N345W: 5487/5487 valid tiles
+  ESP_055978_2270: cumulative 29 pairs / 100758 co-located diffs
+    ESP_059421_2170 B20_017567_2157_XI_35N009W: 4570/4570 valid tiles
+    ESP_059421_2170 G19_025650_2167_XN_36N009W: 4570/4570 valid tiles
+    ESP_059421_2170 P13_006135_2174_XN_37N010W: 4570/4570 valid tiles
+  ESP_059421_2170: cumulative 32 pairs / 114468 co-located diffs
+    ESP_059686_2235 P02_002009_2242_XN_44N046W: 4355/4355 valid tiles
+    ESP_059686_2235 P13_006189_2246_XN_44N045W: 4355/4355 valid tiles
+  ESP_059686_2235: cumulative 33 pairs / 118823 co-located diffs
+    ESP_063429_2240 F22_044480_2251_XI_45N352W: 2102/2102 valid tiles
+    ESP_063429_2240 P17_007611_2238_XN_43N352W: 2102/2102 valid tiles
+  ESP_063429_2240: cumulative 34 pairs / 120925 co-located diffs
+    ESP_064510_2260 B18_016643_2264_XI_46N345W: 4503/4503 valid tiles
+    ESP_064510_2260 G18_025425_2271_XI_47N346W: 4503/4503 valid tiles
+  ESP_064510_2260: cumulative 35 pairs / 125428 co-located diffs
+    ESP_068402_2240 D05_029144_2242_XN_44N353W: 5936/5936 valid tiles
+    ESP_068402_2240 P15_006965_2224_XN_42N352W: 5936/5936 valid tiles
+    ESP_068402_2240 P17_007611_2238_XN_43N352W: 5936/5936 valid tiles
+  ESP_068402_2240: cumulative 38 pairs / 143236 co-located diffs
+    ESP_069669_2220 G20_025953_2199_XN_39N359W: 4428/4428 valid tiles
+    ESP_069669_2220 P21_009101_2208_XN_40N359W: 4428/4428 valid tiles
+  ESP_069669_2220: cumulative 39 pairs / 147664 co-located diffs
+    ESP_069763_2235 K04_055123_2233_XN_43N046W: 4309/4309 valid tiles
+    ESP_069763_2235 P02_002009_2242_XN_44N046W: 4309/4309 valid tiles
+  ESP_069763_2235: cumulative 40 pairs / 151973 co-located diffs
+    ESP_071699_2260 G18_025425_2271_XI_47N346W: 3012/3012 valid tiles
+    ESP_071699_2260 J01_045139_2268_XI_46N346W: 3012/3012 valid tiles
+    ESP_071699_2260 P18_007914_2270_XN_47N346W: 3012/3012 valid tiles
+  ESP_071699_2260: cumulative 43 pairs / 161009 co-located diffs
+    ESP_076499_1160 F07_038348_1175_XN_62S337W: 6607/6607 valid tiles
+    ESP_076499_1160 F13_041012_1178_XN_62S338W: 6607/6607 valid tiles
+  ESP_076499_1160: cumulative 44 pairs / 167616 co-located diffs
+    ESP_076565_2215 G21_026533_2220_XN_42N354W: 2449/2449 valid tiles
+    ESP_076565_2215 J02_045535_2217_XI_41N354W: 2449/2449 valid tiles
+    ESP_076565_2215 J04_046168_2212_XI_41N354W: 2449/2449 valid tiles
+  ESP_076565_2215: cumulative 47 pairs / 174963 co-located diffs
+
+nuisance basis: 47 pairs, 174963 co-located diffs, total diff variance 23.722
+  top- 4 directions capture  84.2% of between-frame embedding-difference variance
+  top-16 directions capture  89.7% of between-frame embedding-difference variance
+  top-64 directions capture  94.2% of between-frame embedding-difference variance
+wrote C:\Users\brian\Documents\PhD\HiRiseToCTXBoulders\hirise2ctx\reports\f_leg_b\h2_nuisance_basis.npz

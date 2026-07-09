@@ -66,7 +66,8 @@ def restrict_fold(fold, avail: set[str]):
     )
 
 
-def run_store(store_name: str, avail: set[str]) -> pd.DataFrame:
+def run_store(store_name: str, avail: set[str],
+              nuisance_basis: np.ndarray | None = None) -> pd.DataFrame:
     target = get_target(TARGET)
     store = load_fang_store(PX, pool=POOL, dataset_dir=DATASET_DIR, store_name=store_name)
     rows = []
@@ -78,7 +79,8 @@ def run_store(store_name: str, avail: set[str]) -> pd.DataFrame:
                                    replace=True, store=store)
         ytr = target.binarize(f.y_train).astype(np.float32)
         yte = target.binarize(f.y_test).astype(int)
-        head = DeployableHead(recipe=dict(target_id=TARGET))
+        head = DeployableHead(recipe=dict(target_id=TARGET),
+                              nuisance_basis=nuisance_basis)
         head.fit(f.X_train, ytr, groups=f.groups_train, obs_to_int=f.obs_to_int,
                  verbose=False)
         p = head.predict(f.X_test)
@@ -110,10 +112,24 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--f-store", default="fang_embeddings_f",
                     help="F embedding store to gate (e.g. fang_embeddings_f_minnaert)")
+    ap.add_argument("--nuisance-basis", default=None,
+                    help="H2: npz with a 'basis' (768, N) array; its first --nuisance-k "
+                         "columns are projected out of the F-store head (baseline is left raw)")
+    ap.add_argument("--nuisance-k", type=int, default=0,
+                    help="H2: number of nuisance directions to remove from the F store")
+    ap.add_argument("--tag-suffix", default="",
+                    help="append to output CSV names (keep k-sweep runs distinct)")
     args = ap.parse_args()
     f_store = args.f_store
     # output filenames: default store keeps the original names (notebook 27 reads them)
     tag = "" if f_store == "fang_embeddings_f" else f_store.replace("fang_embeddings_f", "")
+    tag += args.tag_suffix
+
+    basis = None
+    if args.nuisance_basis and args.nuisance_k > 0:
+        basis = np.load(args.nuisance_basis)["basis"][:, :args.nuisance_k]
+        print(f"H2: F-store head removes top-{args.nuisance_k} nuisance directions "
+              f"({Path(args.nuisance_basis).name})")
 
     f_dir = DATASET_DIR / f_store
     if not f_dir.exists() or not any(f_dir.glob("*_P96.npz")):
@@ -135,7 +151,9 @@ def main() -> None:
     allrows, results = [], {}
     for store in (BASELINE, f_store):
         print(f"\n=== LOIO: {store} ===", flush=True)
-        df = run_store(store, avail)
+        # H2 projection applies ONLY to the F store; the mosaic baseline stays raw
+        # (its embeddings live in a different space — the nuisance basis is F-derived).
+        df = run_store(store, avail, nuisance_basis=basis if store == f_store else None)
         allrows.append(df)
         s, aucs = summarize(df, store)
         results[store] = (s, aucs)

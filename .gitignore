@@ -55,6 +55,9 @@ reports/figures/striping_a1_loio_preds.csv
 reports/f_timing/pilot_crops.tar
 reports/f_timing/pilot_work/
 reports/f_timing/pilot_work_smoke/
+# H2 per-frame embedding cache (540M; recomputable by scripts/f_h2_nuisance.py — the
+# summary h2_nuisance_basis.npz IS tracked)
+reports/f_leg_b/h2_frame_emb/
 
 # Background-sweep logs
 logs/
