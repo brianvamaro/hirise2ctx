@@ -140,11 +140,23 @@ class MLPClassifierHead:
     lr: float = 1e-3
     weight_decay: float = 1e-4
     patience: int = 8
+    lambda_consistency: float = 0.0   # H3: weight on the co-located overlap MSE penalty
     scaler: FeatureScaler = field(default_factory=FeatureScaler, repr=False)
     _net: object = field(default=None, init=False, repr=False)
     _d_in: int | None = field(default=None, init=False, repr=False)
 
-    def fit(self, X, y, *, groups=None, eval_set=None) -> None:
+    def fit(self, X, y, *, groups=None, eval_set=None, consistency_pairs=None) -> None:
+        """Train the BCE MLP; optionally add the H3 consistency penalty.
+
+        `consistency_pairs = (Ea, Eb)` are RAW (un-scaled) co-located overlap tile
+        embeddings: row k of Ea and Eb are the same ground seen through two
+        overlapping source frames. When `lambda_consistency > 0`, each minibatch adds
+        `lambda_consistency * mean((sigmoid(net(Ea)) - sigmoid(net(Eb)))**2)` over a
+        random pair subsample — penalizing the head for predicting different
+        P(rich) on the same ground (the embedder-amplification target, optimized
+        directly in-head; PLAN_StripingArtifact PHASE 2 H3). The pairs are scaled
+        with the fitted train scaler here so callers pass raw embeddings.
+        """
         import torch
         import torch.nn as nn
 
@@ -167,6 +179,13 @@ class MLPClassifierHead:
         yt = torch.from_numpy(yv).to(device)
         n = Xt.shape[0]
 
+        # H3 consistency pairs: scale with the fitted train scaler, pin to device.
+        Ca = Cb = None
+        if consistency_pairs is not None and self.lambda_consistency > 0:
+            Ea, Eb = consistency_pairs
+            Ca = torch.from_numpy(self.scaler.apply(np.asarray(Ea, dtype=np.float32))).to(device)
+            Cb = torch.from_numpy(self.scaler.apply(np.asarray(Eb, dtype=np.float32))).to(device)
+
         Xv_t = yv_t = None
         if eval_set is not None:
             Xv_raw, yv_raw = eval_set
@@ -181,6 +200,12 @@ class MLPClassifierHead:
                 idx = perm[i: i + self.batch]
                 opt.zero_grad(set_to_none=True)
                 loss = loss_fn(self._net(Xt[idx]).squeeze(-1), yt[idx])
+                if Ca is not None:
+                    m = Ca.shape[0]
+                    cidx = torch.randint(0, m, (min(self.batch, m),), device=device)
+                    pa = torch.sigmoid(self._net(Ca[cidx]).squeeze(-1))
+                    pb = torch.sigmoid(self._net(Cb[cidx]).squeeze(-1))
+                    loss = loss + self.lambda_consistency * ((pa - pb) ** 2).mean()
                 loss.backward()
                 opt.step()
             if Xv_t is not None:
@@ -226,6 +251,7 @@ class MLPClassifierHead:
         (path / "meta.json").write_text(json.dumps({
             "name": self.name, "seed": self.seed, "hidden": list(self.hidden),
             "dropout": self.dropout, "d_in": self._d_in, "batch": self.batch,
+            "lambda_consistency": self.lambda_consistency,
         }, indent=2), encoding="utf-8")
 
     def load(self, path) -> None:
@@ -237,6 +263,7 @@ class MLPClassifierHead:
         self.dropout = meta["dropout"]
         self._d_in = meta["d_in"]
         self.batch = meta.get("batch", self.batch)
+        self.lambda_consistency = meta.get("lambda_consistency", 0.0)
         self.scaler = FeatureScaler.from_arrays(np.load(path / "scaler.npz"))
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._net = build_mlp(self._d_in, self.hidden, self.dropout).to(device)
@@ -295,13 +322,17 @@ class DeployableHead:
     def __init__(self, seeds: tuple[int, ...] = (0, 1, 2), hidden=DEFAULT_HIDDEN,
                  dropout: float = DEFAULT_DROPOUT, epochs: int = 60, batch: int = 4096,
                  lr: float = 1e-3, weight_decay: float = 1e-4, patience: int = 8,
-                 recipe: dict | None = None, nuisance_basis: np.ndarray | None = None) -> None:
+                 recipe: dict | None = None, nuisance_basis: np.ndarray | None = None,
+                 lambda_consistency: float = 0.0) -> None:
         self.seeds = tuple(seeds)
         self.hidden = tuple(hidden)
         self.dropout = dropout
         self.epochs, self.batch, self.lr = epochs, batch, lr
         self.weight_decay, self.patience = weight_decay, patience
         self.recipe = dict(recipe or FROZEN_RECIPE)
+        # H3 (PLAN_StripingArtifact PHASE 2): weight on the co-located overlap
+        # consistency penalty added to each member's training loss (0 = off).
+        self.lambda_consistency = float(lambda_consistency)
         # H2 (PLAN_StripingArtifact PHASE 2): optional frame-nuisance subspace removed
         # from the embeddings BEFORE the scaler. N is (EMBED_DIM, k) with orthonormal
         # columns; projection X <- X - (X @ N) @ N.T is applied identically in fit and
@@ -332,16 +363,28 @@ class DeployableHead:
         return MLPClassifierHead(
             name=f"{self.name}_seed{seed}", seed=seed, hidden=self.hidden,
             dropout=self.dropout, epochs=self.epochs, batch=self.batch, lr=self.lr,
-            weight_decay=self.weight_decay, patience=self.patience)
+            weight_decay=self.weight_decay, patience=self.patience,
+            lambda_consistency=self.lambda_consistency)
 
     def fit(self, X, y, *, groups, obs_to_int: dict[str, int] | None = None,
-            verbose: bool = True) -> "DeployableHead":
+            consistency_pairs=None, verbose: bool = True) -> "DeployableHead":
         X = self._project(np.asarray(X, dtype=np.float32))
         y = np.asarray(y).astype(np.float32)
         groups = np.asarray(groups)
         unique = np.unique(groups)
         if unique.size < 2:
             raise ValueError("DeployableHead.fit needs >= 2 distinct image groups for inner-val rotation")
+
+        # H3 consistency pairs (raw embeddings): project out the nuisance basis too,
+        # identically to X, so pairs and features live in the same space.
+        pairs = None
+        if consistency_pairs is not None and self.lambda_consistency > 0:
+            Ea, Eb = consistency_pairs
+            pairs = (self._project(np.asarray(Ea, dtype=np.float32)),
+                     self._project(np.asarray(Eb, dtype=np.float32)))
+            if verbose:
+                print(f"  H3: consistency λ={self.lambda_consistency} on "
+                      f"{pairs[0].shape[0]} co-located overlap pairs", flush=True)
 
         int_to_obs = {v: k for k, v in (obs_to_int or {}).items()}
         self._members = []
@@ -355,7 +398,7 @@ class DeployableHead:
                 print(f"  seed {s}: train n={int(tr_mask.sum())} ({unique.size - 1} imgs), "
                       f"inner-val={vname} n={int(val_mask.sum())}", flush=True)
             head.fit(X[tr_mask], y[tr_mask], groups=groups[tr_mask],
-                     eval_set=(X[val_mask], y[val_mask]))
+                     eval_set=(X[val_mask], y[val_mask]), consistency_pairs=pairs)
             self._members.append(head)
         self._train_obs_ids = sorted(int_to_obs.get(int(c), str(c)) for c in unique)
         self._trained_at = _dt.datetime.now(_dt.timezone.utc).isoformat()
@@ -406,6 +449,7 @@ class DeployableHead:
             "train_obs_ids": self._train_obs_ids, "trained_at_iso": self._trained_at,
             "nuisance_k": (None if self.nuisance_basis is None
                            else int(self.nuisance_basis.shape[1])),
+            "lambda_consistency": self.lambda_consistency,
         }
         (path / "recipe.json").write_text(json.dumps(card, indent=2), encoding="utf-8")
 
@@ -419,7 +463,8 @@ class DeployableHead:
                    dropout=card["dropout"], epochs=card["epochs"], batch=card["batch"],
                    lr=card["lr"], weight_decay=card["weight_decay"],
                    patience=card["patience"], recipe=card.get("recipe"),
-                   nuisance_basis=basis)
+                   nuisance_basis=basis,
+                   lambda_consistency=card.get("lambda_consistency", 0.0))
         head._members = []
         for s in head.seeds:
             m = head._member(s)

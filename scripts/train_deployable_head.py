@@ -98,6 +98,11 @@ def main() -> int:
                          "columns are projected out of every embedding before the scaler")
     ap.add_argument("--nuisance-k", type=int, default=0,
                     help="H2: number of nuisance directions to remove (0 = none)")
+    ap.add_argument("--consistency-pairs", default=None,
+                    help="H3: npz from f_h3_pairs.py with 'ea'/'eb' co-located "
+                         "overlap embedding pairs for the consistency penalty")
+    ap.add_argument("--lambda-consistency", type=float, default=0.0,
+                    help="H3: weight on the co-located overlap MSE penalty (0 = off)")
     args = ap.parse_args()
 
     print(f"=== train deployable head ({args.target}, batch={args.batch}) ===", flush=True)
@@ -113,10 +118,19 @@ def main() -> int:
         print(f"  H2: removing top-{args.nuisance_k} nuisance directions "
               f"({Path(args.nuisance_basis).name})", flush=True)
 
+    pairs = None
+    if args.consistency_pairs and args.lambda_consistency > 0:
+        z = np.load(args.consistency_pairs)
+        pairs = (z["ea"], z["eb"])
+        print(f"  H3: consistency λ={args.lambda_consistency} on {pairs[0].shape[0]} "
+              f"co-located overlap pairs ({Path(args.consistency_pairs).name})", flush=True)
+
     recipe = dict(FROZEN_RECIPE, target_id=args.target)
     head = DeployableHead(seeds=tuple(args.seeds), batch=args.batch, recipe=recipe,
-                          nuisance_basis=basis)
-    head.fit(X, y, groups=groups, obs_to_int=obs_to_int, verbose=True)
+                          nuisance_basis=basis,
+                          lambda_consistency=args.lambda_consistency)
+    head.fit(X, y, groups=groups, obs_to_int=obs_to_int,
+             consistency_pairs=pairs, verbose=True)
 
     out_dir = Path(args.out) / head.recipe_hash()
     head.save(out_dir)

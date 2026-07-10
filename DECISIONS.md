@@ -4410,6 +4410,60 @@ plumbing — the H1 train/deploy-parity lesson made structural). +4 unit tests (
   `reports/f_leg_b/h2_{nuisance,eta2,pytest}.log`, `h2_loio` via
   `f_leg_b_loio_summary_minnaert_center_h2_k{4,16,64}.csv`.
 
+## 2026-07-09b — PHASE 2 H3 (consistency-regularized head): FAIL to reopen — artifact removal and skill sit on ONE monotone axis
+
+Third PLAN_StripingArtifact PHASE 2 item, stacked on the H1 centered store — the in-head/nonlinear
+instrument H2's failure pointed to. **Premise:** H2 showed the artifact is not a fixed low-rank
+*linear* subspace, so instead of projecting embeddings, optimize prediction *agreement* on the
+overlaps **directly**. Add a consistency penalty to the head's training loss:
+`loss += λ·mean((sigmoid(net(e_i)) − sigmoid(net(e_j)))²)` over co-located overlap tile pairs
+(same ground seen through two frames → any predicted-P(rich) difference is artifact by
+construction). Implemented as `lambda_consistency` on `MLPClassifierHead`/`DeployableHead`
+(random pair minibatch per step; scaled by the fitted train scaler; λ=0 is bit-for-bit the
+un-regularized fit). Pairs from `scripts/f_h3_pairs.py` = the SAME 28 multi-crop TRAINING obs as
+H2 (47 frame-pairs / 174 963 co-located tile-pairs, subsampled to 40 000; independent of the 7
+pilot frames the η² test scores → no circularity). +3 unit tests (suite **369**).
+
+- **η² sweep** (`scripts/f_h2_eta2.py` reused, heads `models/deployable_f_h3_lam{3,10,30,100}`) +
+  **skill gate** (`scripts/f_leg_b_loio.py --lambda-consistency`, F-store only, mosaic baseline
+  0.786) → Pareto (`scripts/f_h3_pareto.py`, `f_h3_pareto.{csv,png}`):
+
+  | λ | partition η² | median η² | pred overlap |Δp| | skill Δ med AUC | gate | pooled PR-AUC |
+  |---|---|---|---|---|---|---|
+  | 0 (H1) | 0.128 | 0.081 | 0.074 | −0.0139 | PASS | 0.796 |
+  | 3 | 0.126 | 0.068 | 0.057 | −0.0174 | PASS | 0.756 |
+  | 10 | 0.102 | 0.052 | 0.048 | −0.0364 | FAIL | 0.702 |
+  | 30 | 0.093 | 0.064 | 0.041 | −0.0401 | FAIL | 0.646 |
+  | 100 | **0.035** | **0.036** | **0.031** | −0.0771 | FAIL | 0.621 |
+
+- **Verdict = FAIL to reopen; no Pareto point clears both gates.** Unlike H2, the penalty DOES work
+  on η²: it drops **monotonically** with λ, and at λ=100 partition η² **0.035 crosses the 0.05
+  reopening bar** with pred-overlap 0.031 < input I/F 0.102 (amplification genuinely killed, not
+  masked). But artifact-reduction and skill lie on **one monotone axis** — the penalty flattens the
+  frame blocks by **compressing the head's global dynamic range** (in-sample p|pos 0.785→0.631,
+  p|neg 0.207→0.396; median composite goes uniformly bright in the choropleth), so skill falls in
+  lockstep (pooled PR-AUC 0.796→0.621). The Pareto (`f_h3_pareto.png`) is a straight monotone
+  trade-off: the skill gate (−0.02) is crossed between λ=3 and λ=10; the η² bar (0.05) only at
+  λ=100. **The two acceptable regions never overlap** — the knee is λ≈3, where skill barely passes
+  (Δ −0.0174) but partition η² is essentially unchanged (0.128→0.126). To reach η²≤0.05 costs
+  Δ −0.077.
+- **Interpretation (H2 + H3 together):** the per-frame block variance in *predictions* is not
+  separable from geological signal by ANY instrument tried — neither a fixed linear subspace of the
+  embedding (H2) nor an in-head nonlinear consistency objective (H3). The frozen ViT entangles
+  frame-radiometry with texture so tightly that suppressing cross-frame prediction disagreement
+  necessarily suppresses genuine cross-scene ranking. **H1 (per-frame log-median centering, η²
+  0.081) stays the operating baseline.** The one untested lever is **H4** — overlap-constrained
+  *post-hoc* per-frame additive leveling of predictions (least-squares offsets on the frame-overlap
+  graph), which removes the residual F02-class level offset WITHOUT touching within-frame ranking,
+  so it cannot collapse dynamic range the way a training-time penalty does. Logs:
+  `reports/f_leg_b/h3_loio_lam{3,10,30,100}.log`; η² sweep preserved as
+  `f_h2_eta2_summary_h3.csv` / `f_h2_eta2_choropleth_h3.png` (`f_h2_eta2.py` writes the generic
+  name, which stays H2's evidence). 169M pairs npz gitignored (recomputable via `f_h3_pairs.py`).
+- **Brian ruling (2026-07-09, for H4's design):** **combined levers count toward the reopening
+  bar** — η² ≲ 0.05 at skill ≥ −0.02 reached by a *stack* (e.g. H1 centering + H4 post-hoc
+  leveling) reopens the 907-frame build; no single lever needs to hit it alone. (Resolves the open
+  question staged in `PLAN_H4_Leveling.md` §6.)
+
 ## 2026-07-07 — PHASE 2 H1 (per-frame log-median centering): BOTH GATES PASS — η² 0.179→0.081, embedder amplification KILLED
 
 First item of the PLAN_StripingArtifact PHASE 2 docket. **H1 = log-minnaert (k=0.580) + a

@@ -1,0 +1,92 @@
+H3: F-store head trained with consistency λ=10.0 on 40000 co-located overlap pairs (h3_consistency_pairs.npz)
+obs_ids: baseline 38, F 36, common 36
+  missing from F (dropped from BOTH stores): ESP_066634_2210, ESP_071093_2210
+
+=== LOIO: fang_embeddings ===
+  [fang_embeddings] ESP_017355_2260: n=13457 pos=8408 AUC=0.806
+  [fang_embeddings] ESP_042964_2160: n=2564 pos=201 AUC=0.880
+  [fang_embeddings] ESP_045139_2270: n=6293 pos=4559 AUC=0.908
+  [fang_embeddings] ESP_045390_2215: n=2538 pos=277 AUC=0.832
+  [fang_embeddings] ESP_045550_2180: n=3019 pos=2045 AUC=0.784
+  [fang_embeddings] ESP_045878_2235: n=7313 pos=253 AUC=0.872
+  [fang_embeddings] ESP_045983_2270: n=2468 pos=326 AUC=0.571
+  [fang_embeddings] ESP_046328_2180: n=1869 pos=534 AUC=0.752
+  [fang_embeddings] ESP_046959_2225: n=4156 pos=1060 AUC=0.843
+  [fang_embeddings] ESP_047976_2020: n=3259 pos=5 AUC=0.885
+  [fang_embeddings] ESP_048688_2085: n=1370 pos=35 AUC=0.750
+  [fang_embeddings] ESP_049242_2115: n=2420 pos=318 AUC=0.739
+  [fang_embeddings] ESP_051943_2270: n=2711 pos=146 AUC=0.899
+  [fang_embeddings] ESP_052576_2250: n=4755 pos=1254 AUC=0.825
+  [fang_embeddings] ESP_053989_2260: n=2761 pos=2201 AUC=0.873
+  [fang_embeddings] ESP_054000_2255: n=3535 pos=715 AUC=0.670
+  [fang_embeddings] ESP_054134_2265: n=3611 pos=3075 AUC=0.786
+  [fang_embeddings] ESP_054397_2105: n=6086 pos=90 AUC=0.711
+  [fang_embeddings] ESP_054622_2240: n=5099 pos=4970 AUC=0.804
+  [fang_embeddings] ESP_055017_2055: n=3079 pos=79 AUC=0.755
+  [fang_embeddings] ESP_055055_2255: n=4397 pos=215 AUC=0.884
+  [fang_embeddings] ESP_055253_2245: n=2596 pos=146 AUC=0.465
+  [fang_embeddings] ESP_055690_2200: n=4916 pos=119 AUC=0.789
+  [fang_embeddings] ESP_055978_2270: n=5487 pos=95 AUC=0.796
+  [fang_embeddings] ESP_059421_2170: n=4570 pos=201 AUC=0.716
+  [fang_embeddings] ESP_059686_2235: n=4355 pos=3263 AUC=0.671
+  [fang_embeddings] ESP_063429_2240: n=2102 pos=1144 AUC=0.717
+  [fang_embeddings] ESP_064510_2260: n=4503 pos=1263 AUC=0.766
+  [fang_embeddings] ESP_068402_2240: n=5936 pos=726 AUC=0.786
+  [fang_embeddings] ESP_068483_2280: n=5297 pos=4275 AUC=0.611
+  [fang_embeddings] ESP_069669_2220: n=4428 pos=82 AUC=0.690
+  [fang_embeddings] ESP_069763_2235: n=4309 pos=4060 AUC=0.713
+  [fang_embeddings] ESP_071699_2260: n=3012 pos=1513 AUC=0.816
+  [fang_embeddings] ESP_076499_1160: n=6607 pos=2928 AUC=0.849
+  [fang_embeddings] ESP_076565_2215: n=2449 pos=313 AUC=0.689
+  [fang_embeddings] ESP_076723_2265: n=6336 pos=3353 AUC=0.867
+
+=== LOIO: fang_embeddings_f_minnaert_center ===
+  [fang_embeddings_f_minnaert_center] ESP_017355_2260: n=13457 pos=8408 AUC=0.547
+  [fang_embeddings_f_minnaert_center] ESP_042964_2160: n=2564 pos=201 AUC=0.880
+  [fang_embeddings_f_minnaert_center] ESP_045139_2270: n=6293 pos=4559 AUC=0.899
+  [fang_embeddings_f_minnaert_center] ESP_045390_2215: n=2538 pos=277 AUC=0.729
+  [fang_embeddings_f_minnaert_center] ESP_045550_2180: n=3019 pos=2045 AUC=0.794
+  [fang_embeddings_f_minnaert_center] ESP_045878_2235: n=7313 pos=253 AUC=0.838
+  [fang_embeddings_f_minnaert_center] ESP_045983_2270: n=2468 pos=326 AUC=0.444
+  [fang_embeddings_f_minnaert_center] ESP_046328_2180: n=1869 pos=534 AUC=0.747
+  [fang_embeddings_f_minnaert_center] ESP_046959_2225: n=4156 pos=1060 AUC=0.726
+  [fang_embeddings_f_minnaert_center] ESP_047976_2020: n=3259 pos=5 AUC=0.806
+  [fang_embeddings_f_minnaert_center] ESP_048688_2085: n=1370 pos=35 AUC=0.466
+  [fang_embeddings_f_minnaert_center] ESP_049242_2115: n=2420 pos=318 AUC=0.532
+  [fang_embeddings_f_minnaert_center] ESP_051943_2270: n=2711 pos=146 AUC=0.905
+  [fang_embeddings_f_minnaert_center] ESP_052576_2250: n=4755 pos=1254 AUC=0.833
+  [fang_embeddings_f_minnaert_center] ESP_053989_2260: n=2761 pos=2201 AUC=0.807
+  [fang_embeddings_f_minnaert_center] ESP_054000_2255: n=3535 pos=715 AUC=0.633
+  [fang_embeddings_f_minnaert_center] ESP_054134_2265: n=3611 pos=3075 AUC=0.779
+  [fang_embeddings_f_minnaert_center] ESP_054397_2105: n=6086 pos=90 AUC=0.618
+  [fang_embeddings_f_minnaert_center] ESP_054622_2240: n=5099 pos=4970 AUC=0.704
+  [fang_embeddings_f_minnaert_center] ESP_055017_2055: n=3079 pos=79 AUC=0.470
+  [fang_embeddings_f_minnaert_center] ESP_055055_2255: n=4397 pos=215 AUC=0.859
+  [fang_embeddings_f_minnaert_center] ESP_055253_2245: n=2596 pos=146 AUC=0.391
+  [fang_embeddings_f_minnaert_center] ESP_055690_2200: n=4916 pos=119 AUC=0.767
+  [fang_embeddings_f_minnaert_center] ESP_055978_2270: n=5487 pos=95 AUC=0.973
+  [fang_embeddings_f_minnaert_center] ESP_059421_2170: n=4570 pos=201 AUC=0.749
+  [fang_embeddings_f_minnaert_center] ESP_059686_2235: n=4355 pos=3263 AUC=0.750
+  [fang_embeddings_f_minnaert_center] ESP_063429_2240: n=2102 pos=1144 AUC=0.699
+  [fang_embeddings_f_minnaert_center] ESP_064510_2260: n=4503 pos=1263 AUC=0.467
+  [fang_embeddings_f_minnaert_center] ESP_068402_2240: n=5936 pos=726 AUC=0.601
+  [fang_embeddings_f_minnaert_center] ESP_068483_2280: n=5297 pos=4275 AUC=0.786
+  [fang_embeddings_f_minnaert_center] ESP_069669_2220: n=4428 pos=82 AUC=0.492
+  [fang_embeddings_f_minnaert_center] ESP_069763_2235: n=4309 pos=4060 AUC=0.755
+  [fang_embeddings_f_minnaert_center] ESP_071699_2260: n=3012 pos=1513 AUC=0.842
+  [fang_embeddings_f_minnaert_center] ESP_076499_1160: n=6607 pos=2928 AUC=0.855
+  [fang_embeddings_f_minnaert_center] ESP_076565_2215: n=2449 pos=313 AUC=0.700
+  [fang_embeddings_f_minnaert_center] ESP_076723_2265: n=6336 pos=3353 AUC=0.857
+
+=== SKILL GATE: baseline vs F ===
+                            store  n_img  median_auc  mean_auc  frac_ge_0p7  pooled_pr_auc
+                  fang_embeddings     36    0.786003  0.771404     0.805556       0.766827
+fang_embeddings_f_minnaert_center     36    0.749558  0.713844     0.666667       0.701696
+
+Δ median per-image AUC (F − baseline) = -0.0364  (A1 reference: −0.024)
+Δ pooled PR-AUC                        = -0.0651
+
+GATE: FAIL — skill dropped by -0.0364 (threshold -0.02)
+Investigate: check fraction of tiles with valid coverage in fang_embeddings_f_minnaert_center/
+
+Full results: C:\Users\brian\Documents\PhD\HiRiseToCTXBoulders\hirise2ctx\reports\figures/f_leg_b_loio_summary_minnaert_center_h3_lam10.csv

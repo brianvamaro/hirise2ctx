@@ -67,7 +67,8 @@ def restrict_fold(fold, avail: set[str]):
 
 
 def run_store(store_name: str, avail: set[str],
-              nuisance_basis: np.ndarray | None = None) -> pd.DataFrame:
+              nuisance_basis: np.ndarray | None = None,
+              consistency_pairs=None, lambda_consistency: float = 0.0) -> pd.DataFrame:
     target = get_target(TARGET)
     store = load_fang_store(PX, pool=POOL, dataset_dir=DATASET_DIR, store_name=store_name)
     rows = []
@@ -80,9 +81,10 @@ def run_store(store_name: str, avail: set[str],
         ytr = target.binarize(f.y_train).astype(np.float32)
         yte = target.binarize(f.y_test).astype(int)
         head = DeployableHead(recipe=dict(target_id=TARGET),
-                              nuisance_basis=nuisance_basis)
+                              nuisance_basis=nuisance_basis,
+                              lambda_consistency=lambda_consistency)
         head.fit(f.X_train, ytr, groups=f.groups_train, obs_to_int=f.obs_to_int,
-                 verbose=False)
+                 consistency_pairs=consistency_pairs, verbose=False)
         p = head.predict(f.X_test)
         obs = f.keys_test["obs_id"].to_numpy()
         keep = np.isfinite(p) & np.isfinite(yte)
@@ -117,6 +119,11 @@ def main() -> None:
                          "columns are projected out of the F-store head (baseline is left raw)")
     ap.add_argument("--nuisance-k", type=int, default=0,
                     help="H2: number of nuisance directions to remove from the F store")
+    ap.add_argument("--consistency-pairs", default=None,
+                    help="H3: npz from f_h3_pairs.py with 'ea'/'eb' co-located overlap "
+                         "pairs; applied to the F-store head only (baseline stays raw)")
+    ap.add_argument("--lambda-consistency", type=float, default=0.0,
+                    help="H3: weight on the co-located overlap MSE penalty (0 = off)")
     ap.add_argument("--tag-suffix", default="",
                     help="append to output CSV names (keep k-sweep runs distinct)")
     args = ap.parse_args()
@@ -130,6 +137,14 @@ def main() -> None:
         basis = np.load(args.nuisance_basis)["basis"][:, :args.nuisance_k]
         print(f"H2: F-store head removes top-{args.nuisance_k} nuisance directions "
               f"({Path(args.nuisance_basis).name})")
+
+    pairs = None
+    if args.consistency_pairs and args.lambda_consistency > 0:
+        z = np.load(args.consistency_pairs)
+        pairs = (z["ea"], z["eb"])
+        print(f"H3: F-store head trained with consistency λ={args.lambda_consistency} on "
+              f"{pairs[0].shape[0]} co-located overlap pairs "
+              f"({Path(args.consistency_pairs).name})")
 
     f_dir = DATASET_DIR / f_store
     if not f_dir.exists() or not any(f_dir.glob("*_P96.npz")):
@@ -151,9 +166,14 @@ def main() -> None:
     allrows, results = [], {}
     for store in (BASELINE, f_store):
         print(f"\n=== LOIO: {store} ===", flush=True)
-        # H2 projection applies ONLY to the F store; the mosaic baseline stays raw
-        # (its embeddings live in a different space — the nuisance basis is F-derived).
-        df = run_store(store, avail, nuisance_basis=basis if store == f_store else None)
+        # H2 projection / H3 consistency apply ONLY to the F store; the mosaic
+        # baseline stays raw (its embeddings live in a different space, and the
+        # consistency pairs / nuisance basis are both F-derived).
+        is_f = store == f_store
+        df = run_store(store, avail,
+                       nuisance_basis=basis if is_f else None,
+                       consistency_pairs=pairs if is_f else None,
+                       lambda_consistency=args.lambda_consistency if is_f else 0.0)
         allrows.append(df)
         s, aucs = summarize(df, store)
         results[store] = (s, aucs)

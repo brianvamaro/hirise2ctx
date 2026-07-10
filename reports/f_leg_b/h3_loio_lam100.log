@@ -1,0 +1,18 @@
+  [fang_embeddings_f_minnaert_center] ESP_069763_2235: n=4309 pos=4060 AUC=0.617
+  [fang_embeddings_f_minnaert_center] ESP_071699_2260: n=3012 pos=1513 AUC=0.834
+  [fang_embeddings_f_minnaert_center] ESP_076499_1160: n=6607 pos=2928 AUC=0.838
+  [fang_embeddings_f_minnaert_center] ESP_076565_2215: n=2449 pos=313 AUC=0.675
+  [fang_embeddings_f_minnaert_center] ESP_076723_2265: n=6336 pos=3353 AUC=0.813
+
+=== SKILL GATE: baseline vs F ===
+                            store  n_img  median_auc  mean_auc  frac_ge_0p7  pooled_pr_auc
+                  fang_embeddings     36    0.786003  0.771404     0.805556       0.766827
+fang_embeddings_f_minnaert_center     36    0.708910  0.686719     0.527778       0.620929
+
+Δ median per-image AUC (F − baseline) = -0.0771  (A1 reference: −0.024)
+Δ pooled PR-AUC                        = -0.1459
+
+GATE: FAIL — skill dropped by -0.0771 (threshold -0.02)
+Investigate: check fraction of tiles with valid coverage in fang_embeddings_f_minnaert_center/
+
+Full results: C:\Users\brian\Documents\PhD\HiRiseToCTXBoulders\hirise2ctx\reports\figures/f_leg_b_loio_summary_minnaert_center_h3_lam100.csv

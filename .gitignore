@@ -72,3 +72,5 @@ scripts/probes/*.log
 .vscode/
 .DS_Store
 Thumbs.db
+# H3 consistency pairs (169M; recomputable via scripts/f_h3_pairs.py from the h2_frame_emb cache)
+reports/f_leg_b/h3_consistency_pairs.npz

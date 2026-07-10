@@ -213,3 +213,57 @@ def test_nuisance_basis_survives_save_load(tmp_path):
     plain = DeployableHead(seeds=(0, 1), batch=256, epochs=8)
     plain.fit(X, y, groups=groups, verbose=False)
     assert plain.model_hash() != head.model_hash()
+
+
+# ----------------------------------------------------------------------------
+# DeployableHead H3 consistency-regularized training
+# ----------------------------------------------------------------------------
+
+
+def _consistency_pairs(X, n=200, seed=5):
+    """Co-located overlap pairs: same tile + a small frame-nuisance perturbation."""
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, X.shape[0], size=n)
+    ea = X[idx]
+    eb = ea + 0.3 * rng.standard_normal(ea.shape).astype(np.float32)  # "other frame"
+    return ea, eb
+
+
+def test_lambda_zero_ignores_pairs_exactly():
+    # λ=0 must reproduce the un-regularized fit bit-for-bit even if pairs are passed.
+    X, y, groups = _synthetic(n=600, n_groups=4)
+    pairs = _consistency_pairs(X)
+    base = DeployableHead(seeds=(0, 1), batch=256, epochs=8, lambda_consistency=0.0)
+    base.fit(X, y, groups=groups, consistency_pairs=pairs, verbose=False)
+    ref = DeployableHead(seeds=(0, 1), batch=256, epochs=8)
+    ref.fit(X, y, groups=groups, verbose=False)
+    np.testing.assert_allclose(base.predict(X), ref.predict(X), rtol=0, atol=1e-6)
+
+
+def test_consistency_penalty_changes_weights_and_shrinks_pair_gap():
+    # λ>0 should change the fit AND reduce disagreement on the co-located pairs.
+    X, y, groups = _synthetic(n=600, n_groups=4)
+    pairs = _consistency_pairs(X)
+    plain = DeployableHead(seeds=(0, 1), batch=256, epochs=25, lambda_consistency=0.0)
+    plain.fit(X, y, groups=groups, verbose=False)
+    reg = DeployableHead(seeds=(0, 1), batch=256, epochs=25, lambda_consistency=5.0)
+    reg.fit(X, y, groups=groups, consistency_pairs=pairs, verbose=False)
+    # Predictions differ (the penalty did something).
+    assert not np.allclose(plain.predict(X), reg.predict(X), atol=1e-3)
+    # The regularized head disagrees LESS across the co-located pairs.
+    ea, eb = pairs
+    gap = lambda h: float(np.mean(np.abs(h.predict(ea) - h.predict(eb))))
+    assert gap(reg) < gap(plain)
+
+
+def test_lambda_consistency_survives_save_load(tmp_path):
+    X, y, groups = _synthetic(n=500, n_groups=4)
+    pairs = _consistency_pairs(X)
+    head = DeployableHead(seeds=(0, 1), batch=256, epochs=8, lambda_consistency=3.0)
+    head.fit(X, y, groups=groups, consistency_pairs=pairs, verbose=False)
+    p = head.predict(X)
+    out = tmp_path / "deploy_h3"
+    head.save(out)
+    reloaded = DeployableHead.load(out)
+    assert reloaded.lambda_consistency == 3.0
+    np.testing.assert_allclose(reloaded.predict(X), p, rtol=0, atol=1e-6)
