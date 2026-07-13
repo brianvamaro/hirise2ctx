@@ -323,3 +323,23 @@ subsequent work → [PLAN_StripingArtifact.md](PLAN_StripingArtifact.md) (cause 
 source-frame radiometry; mitigation decision F-vs-E pending the Sherlock ISIS timing de-risk).
 **The remaining quantitative thermal legs resume on whichever final map the mitigation decision
 produces.**
+
+**UPDATE 2026-07-13 — validation-leg relaunch staged for the post-mitigation map.** The mitigation
+arc has converged: PHASE-2 H1+H4 (per-frame centering + overlap leveling) is the first stack to
+reach the reopening bar, and the 907-frame per-frame build is planned in
+[PLAN_FBuild.md](PLAN_FBuild.md) (gated on its §0 checklist). When that map ships, the parked legs
+resume **on it** (mosaic map kept as the comparison object). Pre-declared so we don't interpret
+after the fact:
+- **Leg 1 (THEMIS night-IR ρ) relaunch expectation:** leg-1 on the mosaic map was WEAK (ρ ≈ +0.07).
+  The leveled map removes the frame-block variance that plausibly diluted it, so ρ *may* improve —
+  but **the pre-declared gate stays "not degraded"** (the PHASE-2 §3.2 wording); any improvement is
+  reported as observational, not claimed as a mitigation win (thermal-ρ was retired as a mitigation
+  referee 2026-06-22 — underpowered; that ruling stands).
+- **Leg 2 (quantitative TI):** product = THEMIS Fergason `.cub` (DECISIONS 2026-06-18); the
+  **multi-tile fetch is still a TODO** (extend `validation_retrieve` mosaicking; ISIS `.cub` read
+  via rasterio/GDAL works per the leg-2 spike). TES `nmap2003` stays unusable (rendered RGB, not
+  physical TI) — **open decision: source a physical TES TI product + a DCI dust mask, or run leg 2
+  on THEMIS TI alone with a dust caveat.**
+- **Legs 3–5** (boundary profile, LOIO truth anchor, generalization/specificity) run as specified in
+  §2/§9 phase 4–5, unchanged — leg 4 in its corrected LOIO form (commit 5016275); leg 5's
+  specificity read gets the far-south highlands tiles the 26-tile box included on purpose.

@@ -269,7 +269,10 @@ skill instrument DONE (2026-07-09b) — PASS:** applying the offsets costs Δ po
 preserved, confirmed on real LOIO predictions (⚠ leg-B graph is fragmented, 21 components, so mostly
 within-obs; deploy-faithful per-frame LOIO deferred to the build). **Next action = the THEMIS-ρ
 validation leg on the leveled pilot map (last §3.1 check), then the reopening call / build-prep
-(§5 verify items: overlap-graph connectivity, H1 deploy-statistic).** If H4 is ultimately judged
+(§5 verify items: overlap-graph connectivity ✅ 2026-07-11 — ONE component; H1 deploy-statistic
+pending; ESP_053989 recheck under `minnaert_center` — its minnaert-inversion fix was declared moot
+2026-07-05c *because F was closed*, which F reopening voids). The build itself is planned in
+[PLAN_FBuild.md](PLAN_FBuild.md) (2026-07-13), gated on its §0 checklist.** If H4 is ultimately judged
 insufficient, fall back to the 2026-07-05c options (ship A1 / accept + caveat with H6 provenance
 layer). H4 machinery: `scripts/f_h4_level.py` (pilot) + `scripts/f_h4_legb.py` (leg-B skill).
 

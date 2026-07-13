@@ -104,6 +104,10 @@ last (only if 1–2 pass).
 
 ## 5. Scale-up sketch — the 907-frame build contingency (pre-planning only)
 
+> **2026-07-13: promoted to an executable plan — [PLAN_FBuild.md](PLAN_FBuild.md)** (stages A–D,
+> pre-declared trend-guard method, acceptance gates, verify items, open questions). This section
+> stays as the original sketch; the build-prep verify items below are mirrored in PLAN_FBuild §0.
+
 If the reopening bar is met, the regional F build parameters (all previously verified, DECISIONS
 2026-07-02/03): 907 frames / 26 tiles (1,371 footprint polygons), ISIS ≈ 22 min/frame ⇒ ≈333 CPU-h
 serial, embarrassingly parallel ≈10.4 h on Sherlock arrays; ~3.2 TB scratch if all kept; EDR

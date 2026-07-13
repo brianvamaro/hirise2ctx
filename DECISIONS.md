@@ -4573,6 +4573,42 @@ tiles per PRODUCT_ID, unioned across tiles, built the frame-adjacency graph.
 - **Verify item 2 (H1 centering-statistic stability: per-crop vs per-frame median) still PENDING**
   — part B never ran; it's minutes of local file reads once resources free up.
 
+## 2026-07-13 — Planning session: PLAN_FBuild opened (907-frame build now executable-planned); validation-leg relaunch staged; ESP_053989 "moot" ruling reversed; housekeeping
+
+Project review (Brian asked "anything that needs planning?") → three gaps closed, no computation run
+(CPU still held by BoulderNet):
+
+1. **[PLAN_FBuild.md](PLAN_FBuild.md) opened (DRAFT)** — PLAN_H4_Leveling §5 ("pre-planning only")
+   promoted to an executable build plan: §0 reopening-call checklist (part B / ESP_053989 /
+   THEMIS-ρ / Brian), Stage A ISIS 907 frames (≈333 CPU-h, retention ≤1.5 TB peak), Stage B
+   per-frame `minnaert_center` inference (~25–40 GPU-h estimate, sizing probe V1; centering
+   statistic keyed to part B's answer with both variants pre-declared), Stage C H4 solve on the
+   3,584-edge graph **with the trend-guard method pre-declared before any offsets are seen**
+   (spatial block-permutation significance + metadata-vs-geology attribution — at 907 frames a
+   3-param plane has chance R² ~0.3%, so the test the 7-frame pilot couldn't run becomes powered),
+   Stage D mean-of-leveled-logits composite + H6 provenance layers + 5 pre-declared acceptance
+   gates (incl. the deploy-faithful per-frame LOIO spot-check the leg-B approximation deferred).
+   Open questions for Brian in §7 (Stage-B venue, scratch retention, trend-guard ambiguous branch,
+   tile order).
+2. **ESP_053989 moot-reversal (build-prep item P4).** DECISIONS 2026-07-05c declared the
+   minnaert-inversion fix moot *because F was closed*; H1+H4 reaching the reopening bar voids that
+   premise. Whether H1's centering rescued the image (its failure was pooled-stretch floor clipping,
+   which centering plausibly fixes) is UNVERIFIED — check its per-image AUC in
+   `f_leg_b_loio_preds_minnaert_center.csv` when CPU frees; if still inverted, diagnose before the
+   build (candidates in 2026-07-05b caveat 1). Recorded in PLAN_StripingArtifact PHASE-2 state +
+   PLAN_FBuild §0.
+3. **PLAN_RegionalMap 2026-07-13 refresh** — the parked validation legs are staged to relaunch on
+   the F-build map: leg-1 gate stays "not degraded" (improvement reported observationally only —
+   the 2026-06-22 thermal-referee retirement stands); leg-2 = THEMIS Fergason TI multi-tile fetch
+   (still TODO) with an open decision on a physical TES TI + DCI dust-mask source; legs 3–5
+   unchanged (leg 4 in corrected LOIO form).
+4. **Housekeeping:** H4 milestone committed (`e94b7df`, 21 files — pilot + leg-B + build-prep A had
+   been sitting uncommitted); ROADMAP now indexes PLAN_H4_Leveling + PLAN_FBuild as their own rows;
+   README status/next-priorities brought current (was "H3 in flight / H4 staged"); duplicate scratch
+   log `reports/figures/_h4_buildprep.log` removed (curated copy lives at
+   `reports/f_leg_b/h4_buildprep_graph.log`); branch pushed (was 7 commits ahead); memory index
+   trimmed under its size limit.
+
 ## 2026-07-07 — PHASE 2 H1 (per-frame log-median centering): BOTH GATES PASS — η² 0.179→0.081, embedder amplification KILLED
 
 First item of the PLAN_StripingArtifact PHASE 2 docket. **H1 = log-minnaert (k=0.580) + a

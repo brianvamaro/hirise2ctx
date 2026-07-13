@@ -27,9 +27,12 @@ for session state. The arc since the v1-reportable wrap:
   ISIS-calibrated source frames, notebooks 26–28) closed the input-mapping leg (skill PASS, eta² FAIL)
   → the Brian-approved **Phase-2 docket H1–H6**: **H1** per-frame log-median centering **PASS**
   (eta² 0.179 → 0.081, embedder amplification killed), **H2** linear nuisance-subspace removal
-  **FAIL/refuted**, **H3** consistency-regularized head in flight, **H4** overlap leveling staged
-  ([PLAN_H4_Leveling.md](PLAN_H4_Leveling.md)). eta² ≲ 0.05 at skill ≥ −0.02 reopens the 907-frame
-  regional build.
+  **FAIL/refuted**, **H3** consistency-regularized head **FAIL** (eta² and skill collapse on one
+  axis), **H4** overlap leveling **PASS** on the pilot + leg-B
+  ([PLAN_H4_Leveling.md](PLAN_H4_Leveling.md)): partition eta² 0.128 → 0.0505, held-out edge-CV
+  disagreement halved, skill preserved by construction. **H1+H4 is the first stack to reach the
+  reopening bar** (eta² ≲ 0.05 at skill ≥ −0.02); the 907-frame build is planned in
+  [PLAN_FBuild.md](PLAN_FBuild.md), gated on its §0 checklist.
 
 **v1-reportable wrap (2026-06-03):** Stage 7 compositional analysis landed at "modest empirical
 support for transported provenance over crater-ejecta-locally-sourced; surface-maturity alternative
@@ -87,14 +90,15 @@ because its polygon bbox straddles a Murray Lab tile boundary (see
 cohort with COLOR.JP2 + LBL on disk but never had Stage 4 run; it is excluded
 from Stage 7 (cohort 36 of 37 colour-eligible).
 
-**Next priorities:** finish the **Phase-2 docket** ([PLAN_StripingArtifact.md](PLAN_StripingArtifact.md)
-"PHASE 2"): **H3** consistency-regularized head (λ-sweep Pareto, in flight) → **H4** overlap-constrained
-leveling ([PLAN_H4_Leveling.md](PLAN_H4_Leveling.md), staged). If the docket reaches eta² ≲ 0.05 at
-skill ≥ −0.02, the **907-frame regional F build** reopens (timing 2026-07-03: 22 min/frame ≈ 333 CPU-h,
-embarrassingly parallel on Sherlock); otherwise fall back to shipping the A1 map + caveat. Then the
-remaining validation legs on the final map (THEMIS/TES thermal;
-[PLAN_RegionalMap.md](PLAN_RegionalMap.md)). Parked: Stage-7 Tier 3, Path A model bank. (Live session
-state = the `project_state_*` memory notes; `HANDOFF_NEXT_SESSION.md` is stale.)
+**Next priorities:** clear the **reopening-call checklist** ([PLAN_FBuild.md](PLAN_FBuild.md) §0):
+build-prep part B (H1 centering-statistic stability, `f_h4_buildprep.py`, waiting on free CPU) +
+the ESP_053989 recheck under `minnaert_center` + the THEMIS-ρ leg on the leveled pilot map → Brian's
+reopening call. If YES → execute **PLAN_FBuild** (the 907-frame regional F build: ≈333 CPU-h ISIS +
+~25–40 GPU-h, one to two Sherlock days); if NO → fall back to shipping the A1 map + caveat + H6
+provenance. Then the parked validation legs resume on the final map
+([PLAN_RegionalMap.md](PLAN_RegionalMap.md), 2026-07-13 refresh note). Parked: Stage-7 Tier 3,
+Path A model bank. (Live session state = the `project_state_*` memory notes;
+`HANDOFF_NEXT_SESSION.md` is stale.)
 
 ## Setup
 
