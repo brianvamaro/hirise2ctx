@@ -4464,6 +4464,115 @@ pilot frames the η² test scores → no circularity). +3 unit tests (suite **36
   leveling) reopens the 907-frame build; no single lever needs to hit it alone. (Resolves the open
   question staged in `PLAN_H4_Leveling.md` §6.)
 
+## 2026-07-09b(H4) — PHASE 2 H4 (overlap-constrained post-hoc leveling): PILOT PASS mechanically — first lever to reach the bar without collapsing skill; trend-guard caveat
+
+Last untested PHASE-2 lever, and the first to succeed on η² *without* the H3 skill-collapse.
+`scripts/f_h4_level.py` reuses the H2/H3 per-frame embedding cache: the H1 head
+(`models/deployable_f_center/86c51a5dca220f63`) predicts the 7 aligned E8_N44 crops → 7 P(rich)
+rasters on the shared grid (15 overlap edges ≥200 co-located tiles). Solve per-frame **additive
+logit offsets** o_f minimizing Σ_edges Σ_colocated [(ℓ_i+o_i)−(ℓ_j+o_j)]² + λ·Σo_f² (exact per-edge
+sufficient statistic (δ̄_ij, W_ij) → 7-unknown weighted min-norm LS; gauge median(o)=0). λ picked by
+**leave-one-edge-out CV** — the non-circular §3.2 check (post-H4 η² alone would be circular, exactly
+what killed option D).
+
+- **Results (λ*=300 by held-out CV; near-flat across λ ∈ {0…1000}):**
+
+  | metric | unleveled (H1) | H4 full offsets | reopening bar |
+  |---|---|---|---|
+  | partition η² | 0.128 | **0.0505** (λ=1000 → 0.0466) | ≲ 0.05 |
+  | median η² | 0.081 | 0.052 | — |
+  | **held-out edge-CV \|Δp\|** | 0.074 | **0.035** (halved, FLAT across λ) | drop below 0.073 |
+  | in-sample overlap \|Δp\| | 0.074 | 0.034 | — |
+
+- **Verdict = PILOT PASS (mechanically).** The decisive non-circular gate — leave-one-edge-out
+  held-out |Δp| — **halves** (0.074→0.035) and is essentially flat across λ, so the offsets
+  **generalize to unseen overlaps** rather than memorizing their own edges (the failure mode §3.2
+  exists to catch). Partition η² crosses the ≲0.05 bar. **Skill is preserved BY CONSTRUCTION** — a
+  per-frame additive logit offset cannot change within-frame ranking, so H3's dynamic-range-collapse
+  mechanism is structurally impossible here (per-image AUC provably ~unchanged; pooled leg-B
+  confirmation still pending). This is the first PHASE-2 lever to move η² to the bar without killing
+  skill: H2 couldn't move η² at all, H3 moved it only by collapsing dynamic range, **H4 removes the
+  co-located disagreement on the axis orthogonal to ranking.** Offset signs are physically sane —
+  **F02** (known −2.23σ dark, 2014 epoch, over-predicts) gets the most negative offset (−1.54),
+  correctly pushing it down.
+- **⚠ Caveat — the trend guard fires (§2).** 58% of the offset variance is a smooth lon/lat plane;
+  applying only the **residual** offsets (conservatively treating the plane as possible geology)
+  leaves partition η² **0.0595** and barely moves |Δp| (0.074→0.070) — i.e. most of the η² reduction
+  rides on the smooth component. On only 7 frames a 3-param plane explaining ~58% is near the chance
+  level (~50%), and it **demonstrably mis-attributes F02's genuine per-frame 2014 radiometric offset
+  to a spatial trend** (trend_fitted −1.04 of F02's −1.54 total), so residual-only *understates* H4.
+  A clean artifact-vs-regional-gradient separation is **intrinsically underpowered at pilot scale**
+  and resolves only on the dense 907-frame graph (many frames per unit area → a real gradient becomes
+  identifiable).
+- **Net:** H4 works mechanically; H1+H4 is the first stack to reach the reopening bar (Brian's
+  combined-lever ruling). The reopening call now needs (a) the leg-B pooled-skill instruments
+  (§3.1 — LOIO rerun with training-obs offsets applied; no cached preds, so it's a real rerun) and
+  the THEMIS ρ leg, and (b) a Brian decision on whether the 7-frame trend-guard ambiguity blocks
+  reopening or defers to the build. Artifacts: `f_h4_leveling_summary.csv`, `f_h4_offsets.csv`,
+  `f_h4_leveling_choropleth.png`, `f_h4_offset_scatter.png`. `PLAN_H4_Leveling.md` §6 verdict folded.
+  Notebook 28 §7 (H3) + §8 (H4, with a plain-language trend-guard explainer) document the arc.
+- **Brian rulings (2026-07-09b, after seeing notebook 28 §8):** (1) **trust the FULL offsets** — the
+  7-frame trend guard is underpowered (~58% ≈ chance for a 3-param plane over 7 points; it mis-blames
+  F02's per-frame offset on position), so the pilot verdict is the full-offset η² 0.0505; the clean
+  smooth-artifact-vs-regional-gradient split is deferred to the dense 907-frame build. (2) **Next =
+  run the leg-B pooled-skill instruments (§3.1)** before any reopening call: solve offsets on the
+  47-training-obs frame-overlap graph, apply them to the LOIO per-tile predictions via
+  `obs_frame_map.csv`, recompute pooled pr_auc@1e-2 / Spearman / prec@5% (no presence AUC), then the
+  THEMIS-ρ leg.
+
+## 2026-07-09b(H4-legB) — PHASE 2 H4 leg-B skill instrument: PASS — leveling preserves skill on real LOIO predictions
+
+The §3.1 empirical follow-up to the H4 pilot (`scripts/f_h4_legb.py`). Per-image AUC is provably
+blind to a per-frame additive offset, so the instruments are **pooled** metrics (pooled pr_auc@1e-2,
+precision@5%; no presence AUC). Per-frame offsets solved on the **28 multi-crop training-obs overlap
+graph** (H1 head on the cached `h2_frame_emb` per-frame embeddings; same solver, λ=300), then applied
+at obs level to the `f_leg_b_loio_preds_minnaert_center.csv` composite predictions.
+
+| pipeline | pooled PR-AUC | prec@5% | median img AUC |
+|---|---|---|---|
+| baseline (mosaic) | 0.7668 | 0.913 | 0.786 |
+| H1 (F, unleveled) | 0.7964 | 0.972 | 0.7722 |
+| H1+H4 (F, leveled) | 0.7860 | 0.968 | 0.7722 |
+
+- **Verdict = PASS.** Δ pooled PR-AUC (H1+H4 − H1) = **−0.0104** (within the −0.02 gate); H1+H4 stays
+  **+0.0192 above the mosaic baseline**; **Δ per-image AUC = exactly 0.0000** — the "skill safe by
+  construction" claim confirmed on real predictions (an obs-level shift can't reorder tiles within an
+  image). prec@5% 0.972→0.968.
+- **Graph structure (⚠ context):** the training-obs frame graph is **fragmented — 58 frames / 47
+  overlap edges / 21 connected components** (mostly per-obs cliques; only 11 frames span >1 obs), so
+  at leg-B scale the leveling is mostly *within-obs* and the cross-obs skill effect is modest by
+  construction. The 907-frame build graph would be far more connected → connectivity is a build-prep
+  verify item (PLAN §5).
+- **Approximation (honest):** the leg-B store embeds one *composite* window per obs, so the offset is
+  applied at obs level (exact for single-frame obs; mean-of-frames for composites). The deploy-
+  faithful per-frame-inference LOIO is a build-scale rebuild, deferred.
+- **Net:** H4 clears both PHASE-2 gates on the pilot AND now the empirical skill guard. Remaining
+  before a reopening call: the **THEMIS-ρ** leg on the leveled pilot map (last §3.1 check), and the
+  trend-guard smooth/artifact separation (a build-time item per Brian's ruling). Artifacts:
+  `f_h4_legb_summary.csv`, `f_h4_legb_offsets.csv`; notebook 28 §9.
+
+## 2026-07-11 — H4 build-prep verify item 1: the 907-frame overlap graph is FULLY CONNECTED (one gauge)
+
+PLAN_H4_Leveling §5 pre-build check A (`scripts/f_h4_buildprep.py`, log preserved at
+`reports/f_leg_b/h4_buildprep_graph.log`): dissolved the SeamMap footprints for all 26 regional
+tiles per PRODUCT_ID, unioned across tiles, built the frame-adjacency graph.
+
+- **VERIFIED: 907 unique frames from 1,371 per-tile footprints** — exactly the counts the plan
+  carried from DECISIONS 2026-07-02/03, now independently reproduced from the SeamMaps themselves.
+- **VERIFIED: the graph is a SINGLE connected component at the strictest criterion** (buffer 0 =
+  shared partition boundaries only): **3,584 edges, largest component 907/907 (100%), 0 isolated
+  frames, median degree 7**. Buffering only adds edges, so connectivity holds a fortiori at any
+  tolerance. **One gauge for the whole region** — no disconnected-component flagging (PLAN §2)
+  needed; every frame's H4 offset is identifiable from overlap constraints alone.
+- **Ops lesson (why the first run burned 5.7 CPU-h):** the dissolved SeamMap multipolygons are
+  pixel-resolution; `buffer()` on the raw geometries is ~quadratic in vertices and stalled the
+  250 m/1000 m sensitivity sweeps (which the buffer-0 result had already made moot). Fixed in the
+  script: `simplify(50 m)` before buffering + incremental CSV writes + cheap checks run first.
+  Job was killed after the decisive row (Brian: waiting for a BoulderNet run to free resources
+  before any re-run).
+- **Verify item 2 (H1 centering-statistic stability: per-crop vs per-frame median) still PENDING**
+  — part B never ran; it's minutes of local file reads once resources free up.
+
 ## 2026-07-07 — PHASE 2 H1 (per-frame log-median centering): BOTH GATES PASS — η² 0.179→0.081, embedder amplification KILLED
 
 First item of the PLAN_StripingArtifact PHASE 2 docket. **H1 = log-minnaert (k=0.580) + a

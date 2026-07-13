@@ -11,7 +11,7 @@ won't touch the code (collaborators, reviewers, committee members) see
 
 ## Status
 
-**Current phase (2026-06): regional deployment + artifact mitigation.** See
+**Current phase (2026-07): regional deployment + striping-artifact Phase 2 (invariance & leveling).** See
 [ROADMAP.md](ROADMAP.md) for the full plan index and the live `project_state_*` memory notes
 for session state. The arc since the v1-reportable wrap:
 - **Foundation-model recipe frozen** ([PLAN_FM.md](PLAN_FM.md)): Fang-ViT embeddings + 3-seed MLP
@@ -21,9 +21,15 @@ for session state. The arc since the v1-reportable wrap:
 - **Regional map** ([PLAN_RegionalMap.md](PLAN_RegionalMap.md)): 26-tile circum-Chryse abundance
   map on Sherlock GPUs (`scripts/map_region.py`), validated vs MOLA shoreline + THEMIS/TES thermal
   (legs in progress). Notebook 24.
-- **Striping artifact SOLVED + mitigation in progress** ([PLAN_StripingArtifact.md](PLAN_StripingArtifact.md)):
-  the regional-map rectangular blocks are **CTX source-frame radiometry** (notebook 25); the **A1**
-  per-frame normalization prototype is under test (skill gate −0.024 median AUC; eta² payoff pending).
+- **Striping artifact SOLVED + mitigation in Phase 2** ([PLAN_StripingArtifact.md](PLAN_StripingArtifact.md)):
+  the regional-map rectangular blocks are **CTX source-frame radiometry** (notebook 25). A1
+  (per-frame normalization) = partial (28% eta² ↓ at −0.024 skill). The **F campaign** (inference on
+  ISIS-calibrated source frames, notebooks 26–28) closed the input-mapping leg (skill PASS, eta² FAIL)
+  → the Brian-approved **Phase-2 docket H1–H6**: **H1** per-frame log-median centering **PASS**
+  (eta² 0.179 → 0.081, embedder amplification killed), **H2** linear nuisance-subspace removal
+  **FAIL/refuted**, **H3** consistency-regularized head in flight, **H4** overlap leveling staged
+  ([PLAN_H4_Leveling.md](PLAN_H4_Leveling.md)). eta² ≲ 0.05 at skill ≥ −0.02 reopens the 907-frame
+  regional build.
 
 **v1-reportable wrap (2026-06-03):** Stage 7 compositional analysis landed at "modest empirical
 support for transported provenance over crater-ejecta-locally-sourced; surface-maturity alternative
@@ -75,19 +81,20 @@ needs Tier 3." Paper-Methods writeups in [docs/](docs/).
 | Provenance disambiguation Tier 3 (CRISM/HiRISE upstream source comparison) | open — decisive transport-vs-maturity test | [docs/compositional.md §8](docs/compositional.md) |
 | Stage 7e (Atwood-Stone & McEwen 2013 dust index + pixel-level shadow masking) | open | [docs/compositional.md §8](docs/compositional.md) |
 
-**362 pytest pass** (fast suite; +A1/striping + EDR-resolver tests). ESP_057469_2215 is excluded from Stage 4 / 4b / 5 sweeps
+**366 pytest pass** (fast suite; +A1/striping + EDR-resolver + nuisance-basis tests). ESP_057469_2215 is excluded from Stage 4 / 4b / 5 sweeps
 because its polygon bbox straddles a Murray Lab tile boundary (see
 [DECISIONS.md](DECISIONS.md) 2026-05-22 entry). ESP_046803_2325 is in the v2
 cohort with COLOR.JP2 + LBL on disk but never had Stage 4 run; it is excluded
 from Stage 7 (cohort 36 of 37 colour-eligible).
 
-**Next priorities:** the **F pilot** (per-source-frame inference on the 7 timed E8_N44 crop
-frames — leg A eta² GPU run via `scripts/f_pilot_crop.py`, then leg B LOIO re-gate;
-[PLAN_StripingArtifact.md](PLAN_StripingArtifact.md); timing test DONE 2026-07-03: 22 min/frame,
-regional ≈ 333 CPU-h) — then the F-vs-E call, the regional rebuild if F, and the validation legs
-(THEMIS/TES thermal on the final map; [PLAN_RegionalMap.md](PLAN_RegionalMap.md)). Parked: Stage-7 Tier 3,
-Path A model bank. (Live session state = the `project_state_*` memory notes; `HANDOFF_NEXT_SESSION.md`
-is stale.)
+**Next priorities:** finish the **Phase-2 docket** ([PLAN_StripingArtifact.md](PLAN_StripingArtifact.md)
+"PHASE 2"): **H3** consistency-regularized head (λ-sweep Pareto, in flight) → **H4** overlap-constrained
+leveling ([PLAN_H4_Leveling.md](PLAN_H4_Leveling.md), staged). If the docket reaches eta² ≲ 0.05 at
+skill ≥ −0.02, the **907-frame regional F build** reopens (timing 2026-07-03: 22 min/frame ≈ 333 CPU-h,
+embarrassingly parallel on Sherlock); otherwise fall back to shipping the A1 map + caveat. Then the
+remaining validation legs on the final map (THEMIS/TES thermal;
+[PLAN_RegionalMap.md](PLAN_RegionalMap.md)). Parked: Stage-7 Tier 3, Path A model bank. (Live session
+state = the `project_state_*` memory notes; `HANDOFF_NEXT_SESSION.md` is stale.)
 
 ## Setup
 

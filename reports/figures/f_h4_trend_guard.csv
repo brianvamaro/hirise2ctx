@@ -1,0 +1,2 @@
+lambda_star,baseline_partition_eta2,baseline_median_eta2,baseline_dp,full_partition_eta2,full_median_eta2,full_heldout_cv_dp,resid_partition_eta2,resid_median_eta2,resid_dp,smooth_plane_frac,trend_guard_fires
+300.0,0.1281,0.0809,0.0738,0.0505,0.052,0.0351,0.0595,0.0678,0.07,0.5842,True

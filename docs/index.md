@@ -21,6 +21,8 @@ care about how the results were produced but won't necessarily touch the code.
 Planned future documents (not yet written):
 
 - `data_release.md` — A short, citeable description of the released dataset version (manifest, ObsId list, pipeline commit hash, schema reference) for use when the data is shared externally.
+- `fm_deployment.md` — *(queued 2026-07-09)* Methods + results for everything after the 2026-06-04 writeups: the frozen foundation-model recipe (Fang-ViT embeddings + `mlp_ens3` head, [PLAN_FM.md](../PLAN_FM.md)), the `DeployableHead` + `CalibrationLayer` productization ([PLAN_Calibration.md](../PLAN_Calibration.md)), and the 26-tile circum-Chryse regional map with its MOLA/THEMIS validation legs ([PLAN_RegionalMap.md](../PLAN_RegionalMap.md), notebook 24). The existing [modeling.md](modeling.md) predates all of this.
+- `striping_artifact.md` — *(queued 2026-07-09; **write once the Phase-2 docket verdict lands** — the ending decides which map ships)* The CTX source-frame radiometry artifact end-to-end: discovery + cause (notebook 25), A1 mitigation, the F source-frame campaign (notebooks 26–28), and the Phase-2 invariance & leveling docket H1–H6 ([PLAN_StripingArtifact.md](../PLAN_StripingArtifact.md), [PLAN_H4_Leveling.md](../PLAN_H4_Leveling.md)). This is the first documented failure mode of mosaic-trained texture models and likely a paper section of its own.
 
 ## When to read what
 

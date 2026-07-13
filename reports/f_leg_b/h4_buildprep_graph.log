@@ -1,0 +1,30 @@
+=== A. overlap graph at scale (26 tiles) ===
+  E-12_N32: 71 frames
+  E-12_N36: 81 frames
+  E-12_N40: 62 frames
+  E-12_N44: 58 frames
+  E-8_N32: 54 frames
+  E-8_N36: 50 frames
+  E-8_N40: 39 frames
+  E-8_N44: 32 frames
+  E-4_N32: 51 frames
+  E-4_N36: 58 frames
+  E-4_N40: 59 frames
+  E-4_N44: 31 frames
+  E0_N32: 64 frames
+  E0_N36: 74 frames
+  E0_N40: 47 frames
+  E0_N44: 33 frames
+  E4_N32: 52 frames
+  E4_N36: 61 frames
+  E4_N40: 57 frames
+  E4_N44: 48 frames
+  E8_N32: 66 frames
+  E8_N36: 46 frames
+  E8_N40: 53 frames
+  E8_N44: 31 frames
+  E12_N44: 56 frames
+  E16_N44: 37 frames
+
+907 unique frames from 1371 per-tile footprints (plan expected ~907 / 1,371)
+  buffer      0 m: 3584 edges, 1 components, largest 907/907 (100.0%), isolated 0, median degree 7

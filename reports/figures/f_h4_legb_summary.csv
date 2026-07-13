@@ -1,0 +1,4 @@
+pipeline,pooled_pr_auc,precision@5%,median_img_auc,n_img
+baseline (mosaic),0.7668,0.9127,0.786,36
+"H1 (F, unleveled)",0.7964,0.972,0.7722,36
+"H1+H4 (F, leveled)",0.786,0.9682,0.7722,36
