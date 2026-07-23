@@ -4609,6 +4609,68 @@ Project review (Brian asked "anything that needs planning?") → three gaps clos
    `reports/f_leg_b/h4_buildprep_graph.log`); branch pushed (was 7 commits ahead); memory index
    trimmed under its size limit.
 
+## 2026-07-14 — Reopening-call checklist cleared: build-prep part B (P2) + ESP_053989 (P4) + THEMIS-ρ (P3) all PASS
+
+BoulderNet freed the machine (CPU ~30%, GPU idle), so the three PENDING §0 items ran (all local,
+minutes). **P1–P4 are now green; only P5 (Brian's call) remains.**
+
+- **P2 — H1 centering-statistic stability = STABLE** (`f_h4_buildprep.py` part B,
+  `reports/figures/f_h4_buildprep_median_stability.csv`). Within-frame ln-median drift is small vs
+  the between-frame spread H1 removes: pilot 3×3 worst **0.0397 (15%)**, cross-crop worst **0.0564
+  (22%)** against a between-frame yardstick of 0.256 (H1 log-stretch width 0.285). Worst cross-crop
+  pair = G18_025425/ESP_071699. Verdict STABLE (worst < 0.25·between) ⇒ the pre-declared PLAN_FBuild
+  §3 branch resolves to the **per-frame median** centering statistic (not the per-lat-band fallback).
+- **P4 — ESP_053989 recovered** (`_tmp` pandas check on `f_leg_b_loio_preds_minnaert_center.csv`,
+  per-store). Under `minnaert_center` its per-image AUC is **0.884** (mosaic baseline 0.873) — the
+  ~0.2 inversion that the 2026-07-05c "moot" ruling assumed is **gone** (H1 centering fixed the
+  stretch-floor clipping). The moot-reversal resolves cleanly: **no separate inversion fix needed
+  before the build.** (Context, not a blocker: the centered store's worst image is now ESP_055253
+  at 0.355 — already the weakest at 0.465 on the mosaic — and centering degrades a few images
+  [ESP_064510 −0.235, ESP_069669 −0.185], moving pooled median per-image AUC 0.786→0.772 = the
+  known H1 skill Δ −0.0139; these are pre-existing weak scenes, not a new failure.)
+- **P3 — THEMIS night-IR ρ not degraded = PASS** (`scripts/f_h4_themis.py`,
+  `reports/figures/f_h4_themis_rho.{csv,png}`). Leg-1 harness rerun on the H4-leveled pilot map
+  (committed offsets, λ*=300; embeddings cached; THEMIS from `cache_v2/validation/`, reprojected onto
+  the pilot 160 m CTX grid). Median composite ρ(P(rich), THEMIS) **0.068 → 0.137 (Δ +0.069)**;
+  partition 0.066 → 0.147 (Δ +0.081) over ~218k co-valid tiles. Leveling STRENGTHENS the thermal
+  correlation, doesn't degrade it. The unleveled ρ **0.068 matches the regional leg-1 +0.07**,
+  validating the harness. (THEMIS mosaic stores scaled brightness-temp DN 1–255, not K; Spearman is
+  rank-based so unaffected.)
+- **Adversarial review of the whole H1+H4 reopening case** (6 skeptics + adjudicator; workflow
+  `fbuild-reopening-adversarial-review`). **Verdict = YELLOW — reopen with guards.** All 5 completed
+  lenses independently returned `reopen_with_guard` (none a clean blocker, none a clean green). One
+  root cause compounds four of them: the η²=0.0505 PASS holds only under **full** offsets —
+  residual-only is 0.0595 (FAILS) — and at n=7 the pilot cannot separate "removed an artifact" from
+  "absorbed a real regional gradient." Sharpest new finding (F02/magnitude lens): **corr(offset,
+  frame-mean P(rich)) = −0.941**, corr(offset, radiometric-z) = +0.52 (wrong sign) → H4 is flattening
+  between-frame means wholesale, a direct risk to a contrast map. Offset energy 85% in 3 of 7 frames
+  (J02 +1.71 = 34.5%, F02 −1.54 = 27.9%, P22_009549 −1.39 = 22.8%); only F02 physically vetted, and
+  J02 (largest) sits on a radiometrically-NORMAL frame (z −0.19). Two framing objections (0.0505 vs
+  0.05; "combined levers count") were checked and **survive** — not real threats.
+- **Leave-one-FRAME-out CV run in response** (`scripts/f_h4_lofo.py`, `reports/figures/f_h4_lofo.csv`)
+  — the honest generalization instrument the plan never pre-declared (edge-CV is near in-sample on
+  the over-determined graph). Predict each held-out frame's offset from its overlaps with the other 6,
+  score its held-out seam agreement + η². Result: **held-out |Δp| generalizes cleanly** (median
+  0.0365, vs unleveled 0.0738, ≈ the in-sample 0.035), but **η² generalization is MARGINAL** — median
+  LOFO η² 0.049, worst-frame 0.0634 (B03 held out), just over a 0.06 guard, driven by the two
+  least-pinned large offsets (J02 pred-err 0.49 on only 3 edges; B03 0.33). Cross-check: drop-frame η²
+  reproduces the review's probe exactly (B03 0.0804 / F02 0.0802 / P21 0.0857). Read: the build's
+  median-degree-7 graph (vs pilot ~4) should pin these offsets better, so LOFO supports reopen-with-
+  guards; J02 is the frame to vet.
+- **Deploy-faithful per-frame cross-frame skill probe — PASS** (`scripts/f_h4_legb_perframe.py`,
+  `reports/figures/f_h4_legb_perframe.csv`; Brian chose "one more cheap probe first"). Converts
+  PLAN_FBuild §5 gate #5 to pre-spend: builds the build's true Stage-D composite (**mean of leveled
+  logits**) from the cached per-frame logits + per-tile labels (fractional_area>1e-2, scale_idx==2),
+  vs leg-B's obs-level mean-shift, over the 28 multi-frame training obs (113,475 tiles). **Δ_deploy
+  (leveled − unleveled) = −0.0007** (gate ≥ −0.02) — the per-frame build composite preserves skill.
+  **approx_err (leveled − leg-B obs-level) = +0.0000** across all 28 obs (each with divergent frame
+  offsets, std>0.05) → leg-B's −0.0104 was a FAITHFUL measure, not the understated lower bound the
+  review feared. (Absolute pr_auc 0.920 is in-sample-optimistic — these obs trained the fixed head —
+  but Δ_deploy and approx_err cancel the head and are the gate quantities.) **Net: the skill-instrument
+  lens concern is retired pre-build; the generalization concern is narrowed to the two under-pinned
+  large offsets (J02, B03) that the dense build graph is expected to fix. Reopening posture:
+  reopen-with-guards, both pre-spend probes green.**
+
 ## 2026-07-07 — PHASE 2 H1 (per-frame log-median centering): BOTH GATES PASS — η² 0.179→0.081, embedder amplification KILLED
 
 First item of the PLAN_StripingArtifact PHASE 2 docket. **H1 = log-minnaert (k=0.580) + a

@@ -1,0 +1,4 @@
+composite,pooled_pr_auc,precision@5%
+p_unlev,0.9203,0.997
+p_lev,0.9196,0.9959
+p_legb,0.9196,0.9959

@@ -16,12 +16,43 @@ H1+H4 already clears the numeric bar on the pilot (partition η² 0.0505, held-o
 | # | item | status | where |
 |---|---|---|---|
 | P1 | Build-prep part A — 907-frame graph connectivity | ✅ **VERIFIED 2026-07-11**: ONE component at buffer 0, 3,584 edges, median degree 7 → one gauge | `f_h4_buildprep.py`, DECISIONS 2026-07-11 |
-| P2 | Build-prep part B — H1 centering-statistic stability (per-crop vs per-frame ln-median: B1 sub-window drift, B2 cross-window range vs yardsticks 0.22 / 0.285) | ⚠ **PENDING** — minutes of local CPU, blocked on the BoulderNet run | `f_h4_buildprep.py` part B |
-| P3 | THEMIS-ρ leg on the leveled pilot map — last pre-declared §3.2 check (ρ **not degraded** vs the unleveled H1 pilot; leg-1 harness rerun) | ⚠ **PENDING** | PLAN_H4_Leveling §3.2 #2 |
-| P4 | **ESP_053989 recheck under `minnaert_center`** — the minnaert-inversion fix was declared moot 2026-07-05c *because F was closed*; F reopening voids that. Verify its per-image AUC in `f_leg_b_loio_preds_minnaert_center.csv` recovered from the ~0.2 inversion (H1's centering plausibly fixed the stretch-floor clipping; unverified). If still inverted → diagnose before the build (candidate fixes in DECISIONS 2026-07-05b caveat 1) | ⚠ **PENDING** — two-minute pandas check | added 2026-07-13 |
-| P5 | Brian makes the reopening call on P1–P4 | ⚠ **PENDING** | AskUserQuestion |
+| P2 | Build-prep part B — H1 centering-statistic stability (per-crop vs per-frame ln-median: B1 sub-window drift, B2 cross-window range vs yardsticks 0.22 / 0.285) | ✅ **STABLE 2026-07-14**: within-frame drift worst 0.056 (22% of the 0.256 between-frame spread) → **per-frame median** centering for the build | `f_h4_buildprep.py` part B, DECISIONS 2026-07-14 |
+| P3 | THEMIS-ρ leg on the leveled pilot map — last pre-declared §3.2 check (ρ **not degraded** vs the unleveled H1 pilot; leg-1 harness rerun) | ✅ **PASS 2026-07-14**: median-composite ρ 0.068→0.137 (Δ +0.069), not degraded (strengthened); unleveled 0.068 matches regional leg-1 +0.07 | `scripts/f_h4_themis.py`, DECISIONS 2026-07-14 |
+| P4 | **ESP_053989 recheck under `minnaert_center`** — the minnaert-inversion fix was declared moot 2026-07-05c *because F was closed*; F reopening voids that. Verify its per-image AUC in `f_leg_b_loio_preds_minnaert_center.csv` recovered from the ~0.2 inversion (H1's centering plausibly fixed the stretch-floor clipping; unverified). If still inverted → diagnose before the build (candidate fixes in DECISIONS 2026-07-05b caveat 1) | ✅ **RECOVERED 2026-07-14**: per-image AUC 0.884 (mosaic 0.873); inversion gone → no separate fix needed | DECISIONS 2026-07-14 |
+| P5 | Brian makes the reopening call on P1–P4 | ⚠ **PENDING** — P1–P4 all green; adversarial review staged to inform it | AskUserQuestion |
 
 If the call is NO → fall back to 2026-07-05c (ship the A1 mosaic map + caveat + H6 provenance).
+
+### 0.1 Adversarial review + pre-spend probes (2026-07-15)
+
+Before committing 1–2 Sherlock days, the H1+H4 reopening case was adversarially stress-tested
+(workflow `fbuild-reopening-adversarial-review`; DECISIONS 2026-07-15) → **YELLOW: reopen with
+guards.** No blocker; the four "serious" lenses share one root cause — at n=7 the pilot cannot
+separate "removed an artifact" from "absorbed a real regional gradient" (η²=0.0505 PASS holds only
+under full offsets; residual-only 0.0595 fails). Two cheap pre-spend probes were run in response,
+**both green**:
+
+- **Leave-one-FRAME-out CV** (`scripts/f_h4_lofo.py`) — the honest generalization instrument (edge-CV
+  is near in-sample on the over-determined graph): held-out |Δp| generalizes (median 0.0365 vs
+  unleveled 0.0738), η² marginal (median 0.049, worst-frame 0.063), fragility isolated to the two
+  least-pinned large offsets (J02, B03) — expected to improve on the median-degree-7 build graph.
+- **Deploy-faithful per-frame skill** (`scripts/f_h4_legb_perframe.py`) — the build's mean-of-leveled-
+  logits composite preserves skill (Δ_deploy −0.0007) and leg-B's obs-level approximation was faithful
+  (approx_err +0.0000). Gate #5's skill concern is retired pre-build.
+
+**Guards promoted to HARD ABORTS for the build (from review + probes):**
+1. **Stage-C attribution must BIND** (§4.3): if the smooth offset field correlates with geology
+   proxies (MOLA/THEMIS) rather than epoch/incidence metadata → **mandated fallback to residual-only**;
+   do NOT let an "ambiguous" verdict silently default to full offsets.
+2. **Early stopping rule:** at the first ~50–100 leveled frames, recompute leave-one-FRAME-out η² and
+   **abort to the A1 fallback if > ~0.06** (Stage A/B are checkpointed, so this is free insurance).
+3. **Physically vet the two large under-pinned offsets** J02 (+1.71, on a radiometrically-normal
+   frame, LOFO pred-err 0.49) and P22_009549 (−1.39) before trusting the η² reduction — 85% of the
+   pilot's η² drop rides on 3 frames and only F02 has a documented physical story.
+4. **Watch the mean-flattening signature:** report corr(offset, frame-mean P(rich)) at 907 scale
+   (pilot −0.94); if it stays strongly negative with |o|>1 on radiometrically-normal frames, that is
+   wholesale contrast-erasure → trigger a magnitude cap / per-frame anomaly gate.
+5. Keep §5 gates 1–5 pre-declared; make gate 3 (THEMIS-ρ) per-frame abundance-fidelity where feasible.
 
 ## 1. Product definition — what the build ships
 
