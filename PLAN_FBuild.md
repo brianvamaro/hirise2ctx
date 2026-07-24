@@ -101,6 +101,15 @@ All parameters previously verified (DECISIONS 2026-07-02/03; SHERLOCK_RUN Parts 
   service resolved names cached from the timing run) → `ctxcal` → `ctxevenodd` → `cam2map` onto the
   CTX CRS at 5 m/px. **≈22 min/frame ⇒ ≈333 CPU-h serial; embarrassingly parallel ≈10.4 h on a
   32-task array.**
+- **Stage-A robustness (sizing-probe findings 2026-07-24 — fold both into `f_leg_b_process.sh`
+  before the 907 array):** (1) **Kernel completeness** — `spiceinit web=no` needs each frame's
+  weekly reconstructed CK/SPK locally, and the July mirror is INCOMPLETE for 2018+ dates (2/5 probe
+  frames failed on missing `mro_sc_psp_18xxxx.bc`). Fetch the full kernel set for all 907 dates
+  (`f_fetch_kernels.sh` harvests names from the failed-run log, or a full `downloadIsisData mro`);
+  treat a residual missing-kernel `spiceinit_fail` as a hole to patch + H6-flag, not a silent drop.
+  (2) **Conditional `ctxevenodd`** — summed frames (`SpatialSumming > 1`) make ctxevenodd error
+  (benign; they have no even/odd artifact), so skip it for those and project the calibrated cube
+  (fixed in `f_timing_test.sh`; mirror into the build worker).
 - **Scratch (~3.2 TB if everything kept):** keep only the `.map.cub` (or convert to windowed
   GeoTIFF) + delete EDR/intermediate cubes per-frame as each finishes (the timing kit already
   measures per-step sizes). Retention target ≤ 1.5 TB peak.

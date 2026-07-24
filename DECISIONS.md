@@ -4801,6 +4801,16 @@ was on PATH but failed at dynamic-link time). Also learned: `setup_isis_env.sh` 
 `mroctx2isis` *existing*, so it silently no-ops on a broken-but-present env — a rebuild must
 `micromamba env remove -n isis` first. Env now green; probe resubmitted.
 
+**First probe run (5 frames): 2/5 ok, 3 benign failures diagnosed → 2 Stage-A robustness fixes.**
+P16_007374 (5-tile long track, the V5 target) and P01_001440 processed clean to cubes (map 4.35 GB /
+0.57 GB; P16 cam2map 1476 s ≈ 25 min, total 28 min — confirms the ~22 min/frame / 333 CPU-h model).
+Failures: **K05/K01 `spiceinit_fail`** = missing 2018 CK kernels (`mro_sc_psp_180508_180514.bc`,
+`mro_sc_psp_180116_180122.bc`) — the mirror is incomplete for recent dates, so the build needs a
+complete kernel fetch; **G09 `evenodd_fail`** = summed image (`SpatialSumming>1`, ctxevenodd
+inapplicable) — benign. Fixes: (a) run `f_fetch_kernels.sh` on the probe log for the missing CKs;
+(b) `f_timing_test.sh` now skips ctxevenodd when SpatialSumming>1. Both promoted to PLAN_FBuild §2
+Stage-A requirements. Re-running the probe after both.
+
 ## 2026-07-07 — PHASE 2 H1 (per-frame log-median centering): BOTH GATES PASS — η² 0.179→0.081, embedder amplification KILLED
 
 First item of the PLAN_StripingArtifact PHASE 2 docket. **H1 = log-minnaert (k=0.580) + a

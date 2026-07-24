@@ -50,8 +50,20 @@ tail -n +2 "$LIST" | while IFS= read -r line; do
     # is still useful once per new frame set: its log names the kernels to fetch.
     [ "$status" = ok ] && { ts=$(step spiceinit spiceinit from="$pid.cub" web="${SPICE_WEB:-no}") || status=spiceinit_fail; }
     [ "$status" = ok ] && { tc=$(step ctxcal ctxcal from="$pid.cub" to="$pid.cal.cub") || status=ctxcal_fail; }
-    [ "$status" = ok ] && { te=$(step ctxevenodd ctxevenodd from="$pid.cal.cub" to="$pid.eo.cub") || status=evenodd_fail; }
-    [ "$status" = ok ] && { tm=$(step cam2map cam2map from="$pid.eo.cub" to="$pid.map.cub" map="$MAP" pixres=map) || status=cam2map_fail; }
+    # ctxevenodd applies ONLY to unsummed frames; SpatialSumming>1 images make it error out
+    # ("... no even/odd noise problems if the SpatialSumming is greater than one") -- benign, they
+    # have no even/odd artifact. Skip it for those and project the calibrated cube directly
+    # (DECISIONS 2026-07-24, G09_021601 in the sizing probe).
+    map_in="$pid.cal.cub"; te=0
+    if [ "$status" = ok ]; then
+        sm=$(getkey from="$pid.cal.cub" grpname=Instrument keyword=SpatialSumming 2>/dev/null || echo 1)
+        if [ "$sm" = "1" ]; then
+            te=$(step ctxevenodd ctxevenodd from="$pid.cal.cub" to="$pid.eo.cub") && map_in="$pid.eo.cub" || status=evenodd_fail
+        else
+            echo "    SpatialSumming=$sm -> skip ctxevenodd (not applicable to summed images)"
+        fi
+    fi
+    [ "$status" = ok ] && { tm=$(step cam2map cam2map from="$map_in" to="$pid.map.cub" map="$MAP" pixres=map) || status=cam2map_fail; }
     tt=$(echo "$(now) - $T0" | bc)
     mmb=$(echo "scale=1; $(stat -c%s "$pid.map.cub" 2>/dev/null || echo 0)/1000000" | bc)
     echo "$pid,$mb,$td,$ti,$ts,$tc,$te,$tm,$tt,$mmb,$status" >> "$OUT"
