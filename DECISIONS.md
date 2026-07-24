@@ -4753,11 +4753,17 @@ numbers mix a pilot-crop scale and a regional detrended-residual scale, and A1's
 - **F-build (H1+H4, pilot)**: η² 0.0505; held-out |Δp| 0.035; pooled PR Δ −0.0104 / deploy Δ −0.0007;
   THEMIS ρ 0.068→0.137. Cost ~333 CPU-h ISIS + ~25–40 GPU-h.
 
-PLAN_FBuild status → APPROVED/EXECUTING; ROADMAP refreshed. **Next = frame-list build
-(`region_frame_list.csv` + `frame_tile_map.csv`) + the V1/V5 sizing probe on a handful of full frames**
-(V5 = the audit's within-frame incidence-ramp check → decides per-frame vs per-row `cos^k(i)` before
-the array). §7 execution open questions (Stage-B venue, scratch retention, tile order) to surface at
-the first Sherlock session.
+PLAN_FBuild status → APPROVED/EXECUTING; ROADMAP refreshed.
+
+**Stage 0 DONE 2026-07-23** (`scripts/f_build_framelist.py` → `reports/figures/region_frame_list.csv`
++ `frame_tile_map.csv`): **907 unique frames / 1,371 frame×tile rows — exact match to plan**; EDR URLs
+resolved 907/907 (deterministic template, no network), VOLUME_IDs consistent across tiles, 366 frames
+span >1 tile (max 5). SeamMap incidence carried but flagged UNTRUSTED (V2 resolves it from PDS volume
+indexes before Stage B). Per-tile counts 31–81 frames.
+
+**Next = the V1/V5 sizing probe on a handful of full frames** (V5 = the audit's within-frame
+incidence-ramp check → decides per-frame vs per-row `cos^k(i)` before the array). §7 execution open
+questions (Stage-B venue, scratch retention, tile order) to surface at the first Sherlock session.
 
 ## 2026-07-07 — PHASE 2 H1 (per-frame log-median centering): BOTH GATES PASS — η² 0.179→0.081, embedder amplification KILLED
 
