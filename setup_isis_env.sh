@@ -48,15 +48,26 @@ eval "$("$MAMBA_ROOT/bin/micromamba" shell hook -s bash)"
 #    registered-but-empty env behind (hit 2026-07-02), and `create -y` on it just re-runs the
 #    transaction from the package cache.
 if [ ! -x "$MAMBA_ROOT/envs/isis/bin/mroctx2isis" ]; then
-    # thread caps via env vars: current micromamba has no --download-threads CLI flag
+    # thread caps via env vars: current micromamba has no --download-threads CLI flag.
+    # Versions PINNED (DECISIONS 2026-07-24): an unpinned solve drifted to a combo that broke
+    # (see the csm soname patch below); isis 10.0.0 + csm 3.1.0 is the verified-working pair.
     MAMBA_DOWNLOAD_THREADS=1 MAMBA_EXTRACT_THREADS=1 \
-        micromamba create -y -n isis -c usgs-astrogeology -c conda-forge isis
+        micromamba create -y -n isis -c usgs-astrogeology -c conda-forge isis=10.0.0 csm=3.1.0
 fi
 # activate with nounset OFF: the env's bundled activate.d hooks (e.g. libpdal-core) reference
 # unset vars like PDAL_DRIVER_PATH and abort the script under `set -u`
 set +u; micromamba activate isis; set -u
 export ISISROOT="$CONDA_PREFIX"
 echo "ISIS $(head -1 "$ISISROOT/version" 2>/dev/null || echo '?') at $ISISROOT"
+
+# 2b) csm packaging gap (DECISIONS 2026-07-24): csm 3.1.0 ships libcsmapi.so and
+#     libcsmapi.so.3.0.3 (a valid ELF) but NOT the libcsmapi.so.3 SONAME link that isis 10.0.0's
+#     binaries link against, so every ISIS app dies at load with
+#     "libcsmapi.so.3: cannot open shared object file". Recreate the missing link (idempotent).
+if [ -f "$CONDA_PREFIX/lib/libcsmapi.so.3.0.3" ] && [ ! -e "$CONDA_PREFIX/lib/libcsmapi.so.3" ]; then
+    ln -s libcsmapi.so.3.0.3 "$CONDA_PREFIX/lib/libcsmapi.so.3"
+    echo "patched missing libcsmapi.so.3 soname link (csm 3.1.0 packaging gap)"
+fi
 
 # 3) ISIS data. spiceinit runs with web=yes (no local SPICE kernels needed), so we only need
 #    the small non-kernel areas: `base` (leap seconds, templates, ~GBs) and the MRO calibration
@@ -87,5 +98,12 @@ fi
 for app in mroctx2isis spiceinit ctxcal ctxevenodd cam2map; do
     command -v "$app" >/dev/null || { echo "ERROR: $app not on PATH" >&2; exit 1; }
 done
+# LOAD test, not just PATH (DECISIONS 2026-07-24): a half-extracted env or the csm soname gap
+# above passes `command -v` yet dies at dynamic-link time. Catch unresolved libs loudly here.
+if ldd "$(command -v mroctx2isis)" | grep -qi 'not found'; then
+    echo "ERROR: mroctx2isis has unresolved shared libraries:" >&2
+    ldd "$(command -v mroctx2isis)" | grep -i 'not found' >&2
+    exit 1
+fi
 echo "OK -- ISIS ready. ISISDATA=$ISISDATA_DIR"
 echo "next: sbatch run_f_timing.sbatch"

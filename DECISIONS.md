@@ -4776,6 +4776,31 @@ incidence is fine for it.
 scratch) + V5 per-frame-vs-per-row verdict. §7 execution open questions (Stage-B venue, scratch
 retention, tile order) to surface at the first Sherlock session.
 
+## 2026-07-24 — F-build Stage-0 probe: Sherlock ISIS env rebuild (csm soname gap) before the sizing run
+
+Submitting the V1/V5 sizing probe (`run_f_build_probe.sbatch`) surfaced that the July ISIS
+micromamba env under `$GROUP_HOME/$USER/micromamba` was **gone** (group-home cleanup in the
+intervening 3 weeks; `$SCRATCH/isisdata` — 283 GB incl. the full kernel mirror — survived, so no
+data re-download). Rebuilding via `setup_isis_env.sh` then failed at `mroctx2isis` load with
+**`libcsmapi.so.3: cannot open shared object file`**.
+
+Root cause: the current channel combo **isis 10.0.0 (usgs-astrogeology) + csm 3.1.0 (conda-forge)**
+ships `libcsmapi.so` + `libcsmapi.so.3.0.3` (a valid ELF, `file`-confirmed) but **not** the
+`libcsmapi.so.3` SONAME symlink isis links against — a csm packaging gap. (Red herring en route: a
+first symlink attempt hit `file too short`; a clean `env remove` + `clean -a` + single-thread
+recreate produced a byte-identical file, proving it intact — the issue was only the missing link,
+not corruption.) Fix: `ln -s libcsmapi.so.3.0.3 $CONDA_PREFIX/lib/libcsmapi.so.3` → ISIS loads (the
+`cannot connect to X server` it then prints on no-arg invocation is the healthy GUI-launch path,
+irrelevant to the arg-driven pipeline).
+
+Hardened `setup_isis_env.sh` so a future rebuild can't repeat this: (1) **pin `isis=10.0.0
+csm=3.1.0`** (unpinned solve drift is what changed the combo); (2) idempotently **create the
+`libcsmapi.so.3` symlink** after env build; (3) smoke test now runs a real **`ldd … | grep 'not
+found'` LOAD check**, not just `command -v` (the old check passed the broken env because the binary
+was on PATH but failed at dynamic-link time). Also learned: `setup_isis_env.sh` is gated on
+`mroctx2isis` *existing*, so it silently no-ops on a broken-but-present env — a rebuild must
+`micromamba env remove -n isis` first. Env now green; probe resubmitted.
+
 ## 2026-07-07 — PHASE 2 H1 (per-frame log-median centering): BOTH GATES PASS — η² 0.179→0.081, embedder amplification KILLED
 
 First item of the PLAN_StripingArtifact PHASE 2 docket. **H1 = log-minnaert (k=0.580) + a
