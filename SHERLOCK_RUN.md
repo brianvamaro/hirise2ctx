@@ -465,6 +465,52 @@ Failure modes (in addition to Part E modes):
 
 ---
 
+## Part G — F build sizing probe (PLAN_FBuild V1 + V5)
+
+Before committing the 907-frame array, run 5 representative frames end-to-end to (V1) size the
+array and (V5) decide per-frame vs per-row `cos^k(i)` (the audit 2026-07-23 within-frame incidence
+ramp). Reuses the Part E ISIS timing kit; same ISIS micromamba env.
+
+**Step 0 (laptop) — build the manifests + pick the 5 frames:**
+```bash
+conda run -n geospatial python scripts/f_build_framelist.py       # region_frame_list.csv (907) + frame_tile_map.csv (done 2026-07-23)
+conda run -n geospatial python scripts/f_build_sizing_frames.py   # reports/f_build/sizing_frame_list.csv (5 frames, FPS over incidence/year/n_tiles)
+git add reports/figures/region_frame_list.csv reports/figures/frame_tile_map.csv reports/f_build/ && git commit -m "fbuild manifests + sizing frames"
+```
+
+**Step 1 (Sherlock) — ISIS on the 5 frames, keeping the projected cubes (~15–20 min):**
+```bash
+cd ~/hirise2ctx && git pull && mkdir -p logs
+sbatch run_f_build_probe.sbatch
+# result: $SCRATCH/hirise2ctx/f_build_probe/timing.csv  +  {pid}.map.cub  (KEEP_CUBES=1)
+```
+
+**Step 2 (Sherlock) — cubes → GeoTIFF, transfer to the GPU box:**
+```bash
+cd $SCRATCH/hirise2ctx/f_build_probe
+for c in *.map.cub; do gdal_translate -of GTiff "$c" "${c%.cub}.tif"; done   # ISIS3 driver
+tar cf fbuild_probe.tar timing.csv *.map.tif
+# OnDemand Files: download fbuild_probe.tar; on the laptop:
+mkdir -p reports/f_build/probe_cubes && tar xf ~/Downloads/fbuild_probe.tar -C reports/f_build/probe_cubes
+```
+
+**Step 3 (GPU: laptop RTX 5070 or a Sherlock L40S) — measure V1 + V5:**
+```bash
+conda run --no-capture-output -n geospatial python -u scripts/f_build_sizing_probe.py \
+    --frames-dir reports/f_build/probe_cubes \
+    --timing-csv reports/f_build/probe_cubes/timing.csv
+# writes reports/figures/fbuild_sizing_probe.csv + prints:
+#   V1 -> tiles/frame, s/frame, 907-frame tile count + GPU-h + ISIS CPU-h + peak scratch
+#   V5 -> per-frame within-frame ramp % (measured vs geometry-predicted) + the verdict:
+#         <~0.5% keep per-frame cos^k(i); >=~1% switch Stage B to per-row cos^k(i(lat)) FIRST
+```
+(RTX 5070 → L40S s/frame scaling ≈ 1.0; refine `--gpu-scale` from a parity window if needed.)
+
+**Then:** fold the V5 verdict into PLAN_FBuild §3 (scalar vs per-row) and the V1 numbers into the
+array `--array=` sizing, and proceed to Stage A on all 907 (`run_f_leg_b.sbatch` pattern, scaled).
+
+---
+
 ## Going global later
 
 `scripts/map_region.py` is tile-list-driven, so global inference = feed the full Murray tile

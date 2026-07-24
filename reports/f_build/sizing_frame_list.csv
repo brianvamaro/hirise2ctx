@@ -1,0 +1,6 @@
+PRODUCT_ID,VOLUME_ID,edr_url,inc_sel,year,n_tiles,tiles
+P16_007374_2183_XI_38N000W,MROX_0435,https://planetarydata.jpl.nasa.gov/img/data/mro/ctx/mrox_0435/data/P16_007374_2183_XI_38N000W.IMG,42.439,2008,5,E-4_N32;E-4_N36;E-4_N40;E0_N32;E0_N36
+K05_055227_2175_XN_37N004W,MROX_3101,https://planetarydata.jpl.nasa.gov/img/data/mro/ctx/mrox_3101/data/K05_055227_2175_XN_37N004W.IMG,57.32,2018,4,E-4_N32;E-4_N36;E-8_N32;E-8_N36
+K01_053803_2165_XI_36N010W,MROX_3026,https://planetarydata.jpl.nasa.gov/img/data/mro/ctx/mrox_3026/data/K01_053803_2165_XI_36N010W.IMG,41.118,2018,2,E-12_N32;E-12_N36
+G09_021601_2267_XI_46N346W,MROX_1306,https://planetarydata.jpl.nasa.gov/img/data/mro/ctx/mrox_1306/data/G09_021601_2267_XI_46N346W.IMG,80.84,2011,1,E12_N44
+P01_001440_2174_XI_37N358W,MROX_0010,https://planetarydata.jpl.nasa.gov/img/data/mro/ctx/mrox_0010/data/P01_001440_2174_XI_37N358W.IMG,48.85,2006,1,E0_N36

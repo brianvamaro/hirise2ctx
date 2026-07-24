@@ -4761,9 +4761,20 @@ resolved 907/907 (deterministic template, no network), VOLUME_IDs consistent acr
 span >1 tile (max 5). SeamMap incidence carried but flagged UNTRUSTED (V2 resolves it from PDS volume
 indexes before Stage B). Per-tile counts 31–81 frames.
 
-**Next = the V1/V5 sizing probe on a handful of full frames** (V5 = the audit's within-frame
-incidence-ramp check → decides per-frame vs per-row `cos^k(i)` before the array). §7 execution open
-questions (Stage-B venue, scratch retention, tile order) to surface at the first Sherlock session.
+**Sizing-probe kit SET UP 2026-07-23** (`scripts/f_build_sizing_frames.py` selector +
+`scripts/f_build_sizing_probe.py` V1/V5 measurement + `run_f_build_probe.sbatch` + SHERLOCK_RUN
+Part G; `f_timing_test.sh` parameterized via `FRAME_LIST` so it can point at the sizing list without
+clobbering the timing list). 5 representative frames selected (`reports/f_build/sizing_frame_list.csv`,
+FPS over incidence/year/n_tiles): **P16_007374** (5 tiles, inc 42°, 2008 — longest track, the V5
+target), **K05_055227** (4, 57°, 2018), **K01_053803** (2, 41°, 2018), **G09_021601** (1, 81°
+grazing — V5 photometric stress), **P01_001440** (1, 49°, 2006 — earliest epoch). V5's residual-ramp
+measurement is slope-invariant to the per-frame `cos^k(i)` constant, so the untrusted SeamMap
+incidence is fine for it.
+
+**PENDING = run Stage-A ISIS on Sherlock** (`sbatch run_f_build_probe.sbatch`, KEEP_CUBES=1) → cubes
+→ GeoTIFF → **Stage-B `f_build_sizing_probe.py` on a GPU** → V1 array size (tiles/frame, GPU-h, CPU-h,
+scratch) + V5 per-frame-vs-per-row verdict. §7 execution open questions (Stage-B venue, scratch
+retention, tile order) to surface at the first Sherlock session.
 
 ## 2026-07-07 — PHASE 2 H1 (per-frame log-median centering): BOTH GATES PASS — η² 0.179→0.081, embedder amplification KILLED
 

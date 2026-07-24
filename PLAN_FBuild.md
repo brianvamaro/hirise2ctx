@@ -243,11 +243,11 @@ and the pooled-skill instruments) producing:
 
 | # | item | when |
 |---|---|---|
-| V1 | **Sizing probe:** embed 5 representative frames end-to-end (Stage B) on one GPU → measure tiles/frame + s/frame → size the array before submitting 907 | first Sherlock session |
+| V1 | **Sizing probe:** embed 5 representative frames end-to-end (Stage B) on one GPU → measure tiles/frame + s/frame → size the array before submitting 907. **Kit built 2026-07-23**: `f_build_sizing_frames.py` (selects 5) → `run_f_build_probe.sbatch` (Stage A, KEEP_CUBES) → `f_build_sizing_probe.py` (Stage B); runbook SHERLOCK_RUN Part G | first Sherlock session |
 | V2 | **Incidence table completeness:** PDS volume-index incidence resolved for all 907 (the P20_008839 typo class); fail loudly on gaps | frame-list build |
 | V3 | **Parity gate:** one pilot frame (E8_N44) through the full build path must reproduce the pilot's per-tile logits (the map_region parity-check pattern) | before the array |
 | V4 | **Stage-A failure census** vs the graph: recompute components with failed frames removed; if >1 component, per-component gauge + H6 flags | after Stage A |
-| V5 | **Within-frame incidence-ramp check** (audit 2026-07-23 `genuine-risk`): on 3–5 full 3–4° frames, measure the residual top-vs-bottom I/F trend after the H1 mapping. <~0.5% → per-frame `cos^k(i)` scalar OK (close as expected-by-design); ≥~1% → switch Stage B to the per-row `cos^k(i(lat))` divisor **before** the array | Stage B sizing probe (with V1) |
+| V5 | **Within-frame incidence-ramp check** (audit 2026-07-23 `genuine-risk`): on 3–5 full 3–4° frames, measure the residual top-vs-bottom I/F trend after the H1 mapping. <~0.5% → per-frame `cos^k(i)` scalar OK (close as expected-by-design); ≥~1% → switch Stage B to the per-row `cos^k(i(lat))` divisor **before** the array | Stage B sizing probe (with V1); kit built 2026-07-23 — SHERLOCK_RUN Part G |
 | V6 | **Minnaert-k re-fit + sensitivity** (audit 2026-07-23): re-fit k on the 907-frame cohort (log-median vs log-cos i); report final-map partition η² sensitivity over k ∈ [0.55, 0.70]. Expected flat (centering cancels the per-frame constant); fail loudly if not | frame-list build |
 
 ## 7. Open questions (Brian — surface via AskUserQuestion at execution, not pre-decided)

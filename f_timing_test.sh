@@ -10,7 +10,9 @@
 set -uo pipefail   # NOT -e: one bad frame must not kill the test; failures are data here.
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
-LIST="$REPO/reports/f_timing/frame_list.csv"
+# FRAME_LIST env overrides the default (the F-build sizing probe points it at
+# reports/f_build/sizing_frame_list.csv without clobbering the timing list).
+LIST="${FRAME_LIST:-$REPO/reports/f_timing/frame_list.csv}"
 WORK="${1:-${SCRATCH:-/tmp}/hirise2ctx/f_timing}"
 OUT="$WORK/timing.csv"
 MAP="$REPO/f_equirect.map"
