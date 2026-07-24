@@ -4730,6 +4730,35 @@ Net: audit is a GREEN on correctness with a punch-list, not a blocker. P5 reopen
 it was; the within-frame-ramp check (V5) is the one item that should run at the Stage-B sizing probe
 before the 907-frame array. Workflow transcript under the session's `workflows/` dir.
 
+## 2026-07-23b — REOPENING CALL MADE: reopen-with-guards (P5 ✅) + head-to-head comparison vs mosaic + A1 mandated
+
+Brian's P5 decision on the PLAN_FBuild §0 checklist (P1–P4 green; adversarial review YELLOW →
+reopen-with-guards; two pre-spend probes green; H1/H4 code audit 2026-07-23 green): **REOPEN the
+907-frame F build, with guards.** Added standing requirement: the build must produce a **head-to-head
+comparison of the F-build vs the existing mosaic-path map and the A1 fallback, on both quality and
+run-cost** — so the ship-vs-fallback call rests on evidence, not sunk cost. Folded into PLAN_FBuild as
+deliverable 6 + **§5.1** (`f_map_compare`: quality table [partition η², THEMIS-ρ, pooled
+pr_auc@1e-2/prec@5%, held-out edge-CV, visual] recomputed for all maps on ONE common footprint + a
+run-cost ledger; a preliminary three-way read wired into the §0.1 early-stop checkpoint at 50–100
+frames).
+
+**Baseline scorecard on record** (Explore sweep; to be re-scored apples-to-apples by §5.1 — today's η²
+numbers mix a pilot-crop scale and a regional detrended-residual scale, and A1's THEMIS-ρ is missing):
+- **Mosaic-path** (26 tiles): pilot-crop η² 0.196 / regional detrended frame-block η² ~0.011; median
+  per-image AUC 0.790, pooled PR-AUC 0.777; THEMIS ρ +0.07 (weak); blocks VISIBLE. Cost ~13–19 L40S-h
+  / ~2–3 h wall.
+- **A1** (per-frame normalization): pilot-crop η² 0.141 (28% ↓); median AUC 0.766 (Δ −0.024) / pooled
+  PR 0.771 (Δ −0.007); THEMIS ρ NOT on record (gap §5.1 closes); blocks partially flattened, still
+  visible. Cost ≈ 14-min post-hoc re-embed + re-bake (no re-inference).
+- **F-build (H1+H4, pilot)**: η² 0.0505; held-out |Δp| 0.035; pooled PR Δ −0.0104 / deploy Δ −0.0007;
+  THEMIS ρ 0.068→0.137. Cost ~333 CPU-h ISIS + ~25–40 GPU-h.
+
+PLAN_FBuild status → APPROVED/EXECUTING; ROADMAP refreshed. **Next = frame-list build
+(`region_frame_list.csv` + `frame_tile_map.csv`) + the V1/V5 sizing probe on a handful of full frames**
+(V5 = the audit's within-frame incidence-ramp check → decides per-frame vs per-row `cos^k(i)` before
+the array). §7 execution open questions (Stage-B venue, scratch retention, tile order) to surface at
+the first Sherlock session.
+
 ## 2026-07-07 — PHASE 2 H1 (per-frame log-median centering): BOTH GATES PASS — η² 0.179→0.081, embedder amplification KILLED
 
 First item of the PLAN_StripingArtifact PHASE 2 docket. **H1 = log-minnaert (k=0.580) + a

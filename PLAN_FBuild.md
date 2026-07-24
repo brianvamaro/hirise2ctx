@@ -1,6 +1,11 @@
 # PLAN_FBuild — the 907-frame regional F build (per-frame inference + H1 centering + H4 leveling)
 
-> **STATUS: DRAFT 2026-07-13 — staged ahead of the reopening call.** This promotes
+> **STATUS: APPROVED — EXECUTING (2026-07-23).** Brian's reopening call = **reopen-with-guards**,
+> with an added standing requirement: the build must produce a **head-to-head comparison of the
+> F-build vs the existing mosaic-path map and the A1 fallback, on both quality and run-cost** (§5.1).
+> §0 P1–P5 are all cleared. First executable step = frame-list build + the V1/V5 sizing probe.
+>
+> _(Original)_ **DRAFT 2026-07-13 — staged ahead of the reopening call.** This promotes
 > [PLAN_H4_Leveling.md](PLAN_H4_Leveling.md) §5 ("pre-planning only") into an executable plan so the
 > build can start the day the call lands. **Execution is gated on §0.** Written while build-prep
 > part B waits on free CPU; nothing here depends on its answer except the §3 centering statistic
@@ -19,9 +24,10 @@ H1+H4 already clears the numeric bar on the pilot (partition η² 0.0505, held-o
 | P2 | Build-prep part B — H1 centering-statistic stability (per-crop vs per-frame ln-median: B1 sub-window drift, B2 cross-window range vs yardsticks 0.22 / 0.285) | ✅ **STABLE 2026-07-14**: within-frame drift worst 0.056 (22% of the 0.256 between-frame spread) → **per-frame median** centering for the build | `f_h4_buildprep.py` part B, DECISIONS 2026-07-14 |
 | P3 | THEMIS-ρ leg on the leveled pilot map — last pre-declared §3.2 check (ρ **not degraded** vs the unleveled H1 pilot; leg-1 harness rerun) | ✅ **PASS 2026-07-14**: median-composite ρ 0.068→0.137 (Δ +0.069), not degraded (strengthened); unleveled 0.068 matches regional leg-1 +0.07 | `scripts/f_h4_themis.py`, DECISIONS 2026-07-14 |
 | P4 | **ESP_053989 recheck under `minnaert_center`** — the minnaert-inversion fix was declared moot 2026-07-05c *because F was closed*; F reopening voids that. Verify its per-image AUC in `f_leg_b_loio_preds_minnaert_center.csv` recovered from the ~0.2 inversion (H1's centering plausibly fixed the stretch-floor clipping; unverified). If still inverted → diagnose before the build (candidate fixes in DECISIONS 2026-07-05b caveat 1) | ✅ **RECOVERED 2026-07-14**: per-image AUC 0.884 (mosaic 0.873); inversion gone → no separate fix needed | DECISIONS 2026-07-14 |
-| P5 | Brian makes the reopening call on P1–P4 | ⚠ **PENDING** — P1–P4 all green; adversarial review staged to inform it | AskUserQuestion |
+| P5 | Brian makes the reopening call on P1–P4 | ✅ **REOPEN 2026-07-23** (Brian) — reopen-with-guards; added requirement: head-to-head comparison vs the mosaic-path map + the A1 fallback on quality AND run-cost (§5.1) | — |
 
-If the call is NO → fall back to 2026-07-05c (ship the A1 mosaic map + caveat + H6 provenance).
+If a HARD-ABORT guard trips mid-build (§0.1) → fall back to 2026-07-05c (ship the A1 mosaic map +
+caveat + H6 provenance); §5.1 is the instrument that makes that ship-vs-fallback call on evidence.
 
 ### 0.1 Adversarial review + pre-spend probes (2026-07-15)
 
@@ -75,6 +81,10 @@ mosaic-path map. Deliverables:
    (gate 4) is H1-only vs H1+H4, and keeping it on disk makes the trend-guard call (§4.3) reversible
    without a Sherlock re-run. Also emit the **residual-only** composite (offsets minus the smooth
    plane) as the §4.3 conservative variant.
+6. **Comparison scorecard (§5.1)** — a head-to-head table + figure of the F-build vs the mosaic-path
+   map and the A1 fallback, on quality (artifact η², THEMIS-ρ, pooled skill, visual) **and** run-cost,
+   all recomputed on a common footprint. Mandated by Brian 2026-07-23; it is the evidence the
+   ship-vs-fallback call rests on.
 
 **Non-goals:** no global build (26 tiles only); no re-freeze of the recipe (head stays
 `models/deployable_f_center/86c51a5dca220f63` unless a §7 open question rules otherwise); the
@@ -201,6 +211,33 @@ interpolate its offset from graph neighbors (inverse-distance on frame centers) 
      want; the gate just confirms it is not distorting the abundance scale.
 - Then **hand off to PLAN_RegionalMap** — the parked validation legs 2–5 resume on THIS map
   (see the 2026-07-13 refresh note there).
+
+### 5.1 Comparison scorecard vs mosaic + A1 (mandated by Brian 2026-07-23)
+
+The build is only worth its cost if it beats the cheap A1 fallback; the mosaic-path map is the
+un-mitigated reference. Ship an `f_map_compare` harness (reuses the η² scorer
+`f_h2_eta2`/`src/striping`, the THEMIS leg-1 harness `f_h4_themis.py`, the notebook-24 choropleth,
+and the pooled-skill instruments) producing:
+
+- **Quality table — every metric recomputed on the SAME common footprint/grid.** *(Critical: the
+  numbers on record today mix a pilot-crop scale [mosaic 0.196 / A1 0.141 / H1+H4 0.0505] with a
+  regional detrended-residual scale [mosaic frame-block η² ~0.011]; the comparison must re-score all
+  maps on one grid so the columns are apples-to-apples.)* Rows = {mosaic-path, A1, F-build H1-only,
+  F-build H1+H4, F-build residual-only}. Columns:
+  - **partition η²** over frame footprints (artifact),
+  - **THEMIS night-IR ρ** on the common block (geology fidelity — A1's ρ is *not on record*, a known
+    gap this closes),
+  - **pooled pr_auc@1e-2 / prec@5%** on the common validation footprint (no presence AUC),
+  - **held-out edge-CV |Δp|** where defined (F-build variants),
+  - **visual** choropleth panel (blocks present → gone).
+- **Run-cost ledger** per map (GPU-h, CPU-h, wall-clock, tiles/frames). Starting numbers on record:
+  mosaic ~13–19 L40S-h / ~2–3 h wall (26 tiles); A1 ≈ a ~14-min post-hoc re-embed + re-bake (no
+  re-inference); F-build ~333 CPU-h ISIS + ~25–40 GPU-h (§8). The ledger prices the quality gain.
+- **Decision framing:** the F-build must materially beat A1 on artifact η² **and** not lose on
+  THEMIS-ρ / pooled skill to justify its cost; if not, A1 remains the shipped product. Wire a
+  *preliminary* three-way read into the §0.1 early-stop checkpoint (first 50–100 leveled frames) so a
+  weak F-build is caught before the full spend. Lands in
+  `reports/figures/fbuild_vs_mosaic_vs_a1.{csv,png}` + `docs/striping_artifact.md` + a DECISIONS entry.
 
 ## 6. Verify-at-runtime items (beyond §0)
 
