@@ -68,6 +68,13 @@ mosaic-path map. Deliverables:
 3. **Offset table** `o_f` for all 907 frames + the trend-guard decomposition report (§4).
 4. The **mosaic map stays on disk** as the comparison object (the before/after figure is a headline
    deliverable of `docs/striping_artifact.md`, queued in docs/index.md).
+5. **H1-only (pre-leveling) composite GeoTIFF** — the un-leveled counterpart of deliverable 1, saved
+   as a first-class artifact. It falls out for free (Stage C emits only the offset *table*; leveling
+   is applied at composite time, so re-running Stage D with `o_f = 0` yields the pre-H4 map) and is
+   *required* anyway — gate 2 scores against "the unleveled value," the before/after choropleth
+   (gate 4) is H1-only vs H1+H4, and keeping it on disk makes the trend-guard call (§4.3) reversible
+   without a Sherlock re-run. Also emit the **residual-only** composite (offsets minus the smooth
+   plane) as the §4.3 conservative variant.
 
 **Non-goals:** no global build (26 tiles only); no re-freeze of the recipe (head stays
 `models/deployable_f_center/86c51a5dca220f63` unless a §7 open question rules otherwise); the
@@ -100,6 +107,20 @@ Train/deploy-matched H1 recipe (`minnaert_center`, DECISIONS 2026-07-07):
   indexes (`frame_incidence.csv` machinery + the `OVERRIDES` table — the P20_008839 decimal-shift
   class of SeamMap bug is why we do NOT trust SeamMap incidence); then ÷ per-frame ln-median
   (centering); then the FIXED centered-pool log stretch (ratio 0.84–1.12) → uint8.
+- **Within-frame incidence ramp (build-only risk; audit 2026-07-23, `genuine-risk`).** The pilot
+  crop is a ~1.3° window so incidence is ~constant, but full 907 frames span 3–4° latitude → a real
+  ~2% top-to-bottom I/F ramp that a single per-frame `cos^k(i)` scalar does **not** remove — and that
+  **neither H1 nor H4 can touch** (both are per-frame *DC* operators; η² sees only *between*-frame
+  variance, so a within-frame ramp would render as a smooth abundance gradient inside each frame block
+  and never register in the reopening metric). **Fix:** a **per-row `cos^k(i(lat))` divisor** from
+  each frame's N/S incidence endpoints (incidence ~linear in latitude; the ISIS `phocube`/`caminfo`
+  incidence band is available post-`cam2map`). Decide via §6 V5 — if the residual post-H1 ramp on a
+  few full frames is <~0.5% the scalar is fine and this closes as expected-by-design.
+- **Minnaert k (hygiene, audit 2026-07-23).** k = 0.580 is the frozen training-cohort fit; the
+  pilot's own 7 frames fit 0.694. This is train/deploy-correct **and** first-order harmless — a
+  global-k error is a per-frame constant that per-frame median centering removes *exactly*
+  (`d/median(d)` cancels the `cos(i_f)^(k*−k)` factor). Still, re-fit k on the 907-frame cohort and
+  report η² sensitivity over k ∈ [0.55, 0.70] (§6 V6) to close it on paper.
 - **Centering statistic — pre-declared on part B's answer:** if B1/B2 drift ≪ the between-frame
   spread (0.22) → **per-frame** median (one number per frame, metadata-like, cleanest). Else →
   **per-latitude-band-within-frame** median (CTX frames are long in latitude; a banded median absorbs
@@ -130,7 +151,10 @@ circularity argument):**
 2. **Significance by spatial permutation:** re-assign offsets among frames while preserving the
    spatial autocorrelation scale (block-permutation over ~4° cells), 1,000 draws → null R²
    distribution. The pilot's 58% was ≈ chance for 7 frames; at 907 frames chance R² for a 3-param
-   plane is ~0.3%, so this test has real power.
+   plane is ~0.3%, so this test has real power. (The pilot `trend_guard`'s `frac > 0.5` flag + the
+   "SIGNIFICANT" print is **not** a significance test — R² ~ Beta(1,2) at n=7 fires 25% under pure
+   noise, and the observed 0.58 has p ≈ 0.17; it is a non-load-bearing reporting flag, superseded
+   here by the permutation p-value. Audit 2026-07-23.)
 3. **Attribution, not deletion:** if the smooth component is significant, do NOT silently add it
    back. Test it against *independent* axes: epoch/instrument metadata (acquisition year, Ls,
    incidence — artifact-side) vs geology proxies (MOLA elevation, THEMIS night-IR — geology-side).
@@ -154,7 +178,11 @@ interpolate its offset from graph neighbors (inverse-distance on frame centers) 
   per tile → H6 overlap-QA raster.
 - **Acceptance gates on the final map (pre-declared):**
   1. **Partition η² over frame footprints ≤ ~0.05** on the full block (the original bar; now
-     non-circular company: gate 2).
+     non-circular company: gate 2) — and it is **partition, not median-composite** that is scored
+     against the bar (the median blends across seams and is scored against single-owner labels, so it
+     deflates; audit 2026-07-23). Report it against the **rotation-null geological floor**
+     (`eta2_rotation_null`, already in `src/striping.py`): at 907 frames the roll is no longer
+     confounded by a few dominant blocks, so the bar reads as floor-plus-margin, not a bare constant.
   2. **Held-out edge-CV |Δp|** (the 5% held-out edge sample) materially below the unleveled value —
      the non-circular instrument that carried the pilot.
   3. **THEMIS night-IR ρ not degraded** vs the mosaic map on the same block (leg-1 harness).
@@ -163,7 +191,14 @@ interpolate its offset from graph neighbors (inverse-distance on frame centers) 
   5. **Deploy-faithful LOIO spot-check:** the leg-B skill numbers used an obs-level approximation;
      on the build, per-frame inference over the cohort footprint is available for free → recompute
      pooled pr_auc@1e-2 / prec@5% (no presence AUC) on the true per-frame path for the 36 common
-     images. Gate: within −0.02 of the H1 leg-B values.
+     images. Gate: within −0.02 of the H1 leg-B values. NB "skill safe by construction" is a
+     *within-image* identity (per-image AUC Δ = 0); cross-image/pooled skill is this empirical gate.
+  6. **Calibrated-abundance fidelity (audit 2026-07-23):** the additive logit offset *does* move the
+     abundance **values** through the nonlinear `CalibrationLayer` (isotonic + quantile-match), which
+     the raw-P gates never see. Where H4 composes with the CalibrationLayer, check per-bin RMSE /
+     marginal-L1 on calibrated abundance (`compression_metrics` in `src/calibration.py`). Monotone
+     calibrators preserve ranking, so only absolute values move — the cross-frame level correction we
+     want; the gate just confirms it is not distorting the abundance scale.
 - Then **hand off to PLAN_RegionalMap** — the parked validation legs 2–5 resume on THIS map
   (see the 2026-07-13 refresh note there).
 
@@ -175,6 +210,8 @@ interpolate its offset from graph neighbors (inverse-distance on frame centers) 
 | V2 | **Incidence table completeness:** PDS volume-index incidence resolved for all 907 (the P20_008839 typo class); fail loudly on gaps | frame-list build |
 | V3 | **Parity gate:** one pilot frame (E8_N44) through the full build path must reproduce the pilot's per-tile logits (the map_region parity-check pattern) | before the array |
 | V4 | **Stage-A failure census** vs the graph: recompute components with failed frames removed; if >1 component, per-component gauge + H6 flags | after Stage A |
+| V5 | **Within-frame incidence-ramp check** (audit 2026-07-23 `genuine-risk`): on 3–5 full 3–4° frames, measure the residual top-vs-bottom I/F trend after the H1 mapping. <~0.5% → per-frame `cos^k(i)` scalar OK (close as expected-by-design); ≥~1% → switch Stage B to the per-row `cos^k(i(lat))` divisor **before** the array | Stage B sizing probe (with V1) |
+| V6 | **Minnaert-k re-fit + sensitivity** (audit 2026-07-23): re-fit k on the 907-frame cohort (log-median vs log-cos i); report final-map partition η² sensitivity over k ∈ [0.55, 0.70]. Expected flat (centering cancels the per-frame constant); fail loudly if not | frame-list build |
 
 ## 7. Open questions (Brian — surface via AskUserQuestion at execution, not pre-decided)
 

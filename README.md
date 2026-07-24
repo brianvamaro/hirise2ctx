@@ -30,7 +30,8 @@ for session state. The arc since the v1-reportable wrap:
   **FAIL/refuted**, **H3** consistency-regularized head **FAIL** (eta² and skill collapse on one
   axis), **H4** overlap leveling **PASS** on the pilot + leg-B
   ([PLAN_H4_Leveling.md](PLAN_H4_Leveling.md)): partition eta² 0.128 → 0.0505, held-out edge-CV
-  disagreement halved, skill preserved by construction. **H1+H4 is the first stack to reach the
+  disagreement halved, within-image skill preserved by construction (pooled Δ PR-AUC −0.0104, inside
+  the −0.02 gate). **H1+H4 is the first stack to reach the
   reopening bar** (eta² ≲ 0.05 at skill ≥ −0.02); the 907-frame build is planned in
   [PLAN_FBuild.md](PLAN_FBuild.md), gated on its §0 checklist.
 

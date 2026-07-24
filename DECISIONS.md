@@ -4671,6 +4671,65 @@ minutes). **P1–P4 are now green; only P5 (Brian's call) remains.**
   large offsets (J02, B03) that the dense build graph is expected to fix. Reopening posture:
   reopen-with-guards, both pre-spend probes green.**
 
+## 2026-07-23 — Adversarial code+methodology audit of H1+H4: methods SOUND, one genuine build-risk (within-frame incidence ramp) + doc/hygiene items folded into PLAN_FBuild
+
+Brian asked for an independent read on whether H1/H4 are reasonable / have mistakes. Ran a
+code-review workflow (`h1-h4-method-audit`, 14 agents, 3 lenses — numerical / statistical / physical
+— reading `f_pilot_crop.py` H1 mapping, `f_h4_level.py` solver, `f_h2_eta2.py` scoring, `src/striping.py`
+eta2; every non-nit finding adversarially adjudicated against the actual code + re-derived math).
+**Verdict: the levers are correct and the pilot conclusion survives scrutiny; 17/18 findings resolve
+`expected-by-design`, 1 is a genuine build-scale risk. No pilot number moved; reopening posture
+unchanged (reopen-with-guards).**
+
+- **Confirmed correct.** The H4 solver was checked against a brute-force minimizer of the literal
+  per-tile objective (match <1e-2 at multiple λ; ANOVA gradient = finite differences). **Sign is
+  right** — an over-predicting frame is pushed down; F02's −1.54 is consistent, and its offset is
+  predicted from the *other* frames' overlaps to within 0.004 (a genuine per-frame level, not a
+  self-fit). The per-edge sufficient statistic (δ̄=mean(ℓ_j−ℓ_i), W=tile count) and gauge
+  (median-subtraction) are exact; Tikhonov barely bites (edge weights ≫ λ). H1 is a defensible
+  near-nadir photometric normalization; the retrained-head + re-applied-mapping is a **legitimate
+  train/deploy match, not a leak** (η² is scored on held-out frame geometry, not labels); circularity
+  is genuinely handled (held-out edge-CV uses edges never in the fit).
+
+- **THE ONE GENUINE RISK — within-frame incidence ramp (build-only).** The Minnaert correction uses
+  **one incidence scalar per frame** (`cos^k(i)`). The pilot crop is a ~1.3° window (ramp <~0.8%, so
+  the pilot PASS is insulated), but full 907 frames span 3–4° latitude → a real ~2% top-to-bottom I/F
+  ramp. **Both H1 and H4 are per-frame DC operators and cannot touch a within-frame gradient**, and
+  partition η² sees only *between*-frame variance — so the ramp would render as a smooth abundance
+  gradient inside each frame block and **never register in the reopening metric**. Same hazard class
+  as the original artifact (small radiometric variation × amplifying embedder). **Folded into
+  PLAN_FBuild:** §3 per-row `cos^k(i(lat))` divisor (from each frame's N/S incidence endpoints, or
+  ISIS `phocube`) + **V5** gate (measure residual ramp on a few full frames; <~0.5% → scalar OK,
+  ≥~1% → switch to per-row before the array).
+
+- **Doc / hygiene items (all `expected-by-design`; forward-looking fixes made):**
+  1. **k = 0.580 vs pilot-fit 0.694** — harmless: a global-k error is a per-frame constant that
+     per-frame median centering removes *exactly* (`d/median(d)` cancels `cos(i_f)^(k*−k)`). Added
+     **V6** (re-fit k on 907 + η² sensitivity over k∈[0.55,0.70]).
+  2. **"Skill safe by construction"** rescoped to **within-image ranking** (per-image AUC Δ=0); the
+     cross-image/pooled effect is the empirical −0.0104 (gate 5). README line scoped; PLAN gate 5
+     note added. (DECISIONS 2026-07-09b already carried the "pooled confirmation pending" qualifier.)
+  3. **trend_guard `frac>0.5` "SIGNIFICANT" print is NOT a significance test** — R²~Beta(1,2) at n=7
+     fires 25% under noise (observed 0.58 → p≈0.17); non-load-bearing (λ/offsets don't depend on it).
+     PLAN §4.2 notes it; build uses the pre-declared permutation p-value.
+  4. **Partition η² is the headline metric, not median-composite** (the median blends across seams and
+     is scored against single-owner labels → deflates; they converge after leveling). PLAN gate 1
+     states the convention + adds the **rotation-null geological floor** (`eta2_rotation_null`).
+  5. **Calibrated-abundance values move** through the nonlinear CalibrationLayer even though ranking
+     is preserved → new **gate 6** (per-bin RMSE / marginal-L1 via `compression_metrics`) where H4
+     composes with the CalibrationLayer.
+  6. Also shipping the **H1-only (pre-leveling) composite GeoTIFF** + residual-only variant as
+     first-class PLAN_FBuild §1 deliverables (free from the saved per-frame logits; makes the
+     trend-guard call reversible without a Sherlock re-run).
+
+- **Number correction (already right, confirmed):** worst leave-one-FRAME-out η² = **0.0634** (B03),
+  not 0.0857 — 0.0857 is the cruder *drop-frame* probe (P21). DECISIONS 2026-07-14 already states this
+  correctly; the audit's own reviewer had briefly conflated them.
+
+Net: audit is a GREEN on correctness with a punch-list, not a blocker. P5 reopening call stands where
+it was; the within-frame-ramp check (V5) is the one item that should run at the Stage-B sizing probe
+before the 907-frame array. Workflow transcript under the session's `workflows/` dir.
+
 ## 2026-07-07 — PHASE 2 H1 (per-frame log-median centering): BOTH GATES PASS — η² 0.179→0.081, embedder amplification KILLED
 
 First item of the PLAN_StripingArtifact PHASE 2 docket. **H1 = log-minnaert (k=0.580) + a
