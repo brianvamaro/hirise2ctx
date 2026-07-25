@@ -511,6 +511,57 @@ array `--array=` sizing, and proceed to Stage A on all 907 (`run_f_leg_b.sbatch`
 
 ---
 
+## Part H — F build Stage A: ISIS on all 907 region frames (PLAN_FBuild §2)
+
+Calibrate + project every region frame to `{PRODUCT_ID}.map.cub`. Reuses the leg-B array worker
+(`f_leg_b_process.sh`, now `FRAME_LIST`-parameterized + summed-frame-safe) via
+`run_f_region_stagea.sbatch`. CPU-only; resumable (skips frames whose cube exists). Probe-confirmed
+cost ~200–330 CPU-h ⇒ ~7–9 h wall on 32 tasks. Scratch is ample (100 TB), so all 907 cubes are kept.
+
+**Step 0 (laptop) — the frame list is already built + committed:**
+```bash
+# reports/figures/region_frame_list.csv (907) came from scripts/f_build_framelist.py (2026-07-23).
+# nothing to do unless it changed; just make sure Sherlock has it via git pull below.
+```
+
+**Step 1 (Sherlock) — first pass:**
+```bash
+cd ~/hirise2ctx && git pull && mkdir -p logs
+sbatch run_f_region_stagea.sbatch
+# watch:  squeue --me ;  tail -f logs/h2c-region-A-*_*.out
+```
+
+**Step 2 — census the results** (per-task status CSVs):
+```bash
+cd $SCRATCH/hirise2ctx/f_region
+cat status_*.csv | awk -F, 'NR>1 && $1!="product_id"{n++; c[$11]++} END{print n" frames:"; for(k in c) print "  "k": "c[k]}'
+ls *.map.cub | wc -l    # cubes produced so far
+```
+
+**Step 3 — fill the SPICE kernel gap and resume** (the July mirror lacks some 2018+ CKs; the
+first pass logs exactly which by name):
+```bash
+cat $SCRATCH/hirise2ctx/f_region/isis_*.log > /tmp/region_isis.log
+cd ~/hirise2ctx && bash f_fetch_kernels.sh /tmp/region_isis.log   # fetches the named CK/SPK
+sbatch run_f_region_stagea.sbatch                                 # resumes; fills spiceinit_fail holes
+```
+Repeat Steps 2–3 until the census is clean or only a genuinely-unrecoverable handful remain (a few
+failures out of 907 is expected — leg B saw 1/81; the graph's median degree 7 means an isolated
+missing frame costs coverage, not the gauge). **Record the final failure list** — those tiles get
+patched with the mosaic + flagged in the H6 provenance layer (§V4), not blocked on.
+
+**Failure modes seen in the probe (all handled):**
+- `spiceinit_fail` "Spice file does not exist [...ck/mro_sc_psp_YYMMDD...]" — missing kernel → Step 3.
+- `evenodd_fail` — should no longer occur: the worker now skips `ctxevenodd` when `SpatialSumming>1`
+  (you'll see `SpatialSumming=N -> skip ctxevenodd` in the log) and projects the calibrated cube.
+- `download_fail` (instant, 0-byte) — transient PDS hiccup (NOT quota; scratch is 0.5/100 TB); the
+  `--retry`/`--retry-delay` usually rides it out, and a resume re-tries the frame.
+
+**When Stage A is clean → Stage B** (embed + infer, per-row `cos^k(i(lat))` mapping): that's the next
+build stage (needs V2 incidence-for-907 + V3 parity first). Cubes stay on scratch as its input.
+
+---
+
 ## Going global later
 
 `scripts/map_region.py` is tile-list-driven, so global inference = feed the full Murray tile

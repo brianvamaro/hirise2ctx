@@ -13,7 +13,9 @@
 set -uo pipefail   # NOT -e: one bad frame must not abort the task
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
-LIST="$REPO/reports/f_leg_b/cohort_frame_list.csv"
+# FRAME_LIST env overrides the default (the 907-frame region Stage A points it at
+# reports/figures/region_frame_list.csv via run_f_region_stagea.sbatch).
+LIST="${FRAME_LIST:-$REPO/reports/f_leg_b/cohort_frame_list.csv}"
 WORK="${1:-${SCRATCH:-/tmp}/hirise2ctx/f_leg_b}"
 MAP="$REPO/f_equirect.map"
 TASK_ID="${TASK_ID:-0}"
@@ -66,10 +68,20 @@ tail -n +2 "$LIST" | tr -d '\r' | while IFS= read -r line; do
             ts=$(step spiceinit spiceinit from="$pid.cub" web="${SPICE_WEB:-no}") || status=spiceinit_fail; }
         [ "$status" = ok ] && {
             tc=$(step ctxcal ctxcal from="$pid.cub" to="$pid.cal.cub") || status=ctxcal_fail; }
+        # ctxevenodd only applies to unsummed frames; SpatialSumming>1 makes it error out
+        # (benign -- summed images have no even/odd artifact). Skip it for those and project the
+        # calibrated cube directly (DECISIONS 2026-07-24, G09_021601 in the sizing probe).
+        map_in="$pid.cal.cub"
         [ "$status" = ok ] && {
-            te=$(step ctxevenodd ctxevenodd from="$pid.cal.cub" to="$pid.eo.cub") || status=evenodd_fail; }
+            sm=$(getkey from="$pid.cal.cub" grpname=Instrument keyword=SpatialSumming 2>/dev/null || echo 1)
+            if [ "$sm" = "1" ]; then
+                te=$(step ctxevenodd ctxevenodd from="$pid.cal.cub" to="$pid.eo.cub") \
+                    && map_in="$pid.eo.cub" || status=evenodd_fail
+            else
+                echo "    SpatialSumming=$sm -> skip ctxevenodd"
+            fi; }
         [ "$status" = ok ] && {
-            tm=$(step cam2map cam2map from="$pid.eo.cub" to="$pid.map.cub" \
+            tm=$(step cam2map cam2map from="$map_in" to="$pid.map.cub" \
                  map="$MAP" pixres=map) || status=cam2map_fail; }
         tt=$(echo "$(now) - $T0" | bc)
         mmb=$(echo "scale=1; $(stat -c%s "$pid.map.cub" 2>/dev/null || echo 0)/1000000" | bc)

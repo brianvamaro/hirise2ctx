@@ -4829,6 +4829,25 @@ Corrected probe:
 Net: both pre-array unknowns resolved — the build is sized (≈33 L40S-h + ~200–330 CPU-h, on plan) and
 Stage B's mapping is finalized (per-row cos^k(i(lat)) + conditional ctxevenodd + complete kernels).
 
+## 2026-07-25 — F build Stage A kit ready (907-frame ISIS array)
+
+Built the Stage-A execution kit (laptop/repo; runs on Sherlock). Stage A = ISIS-calibrate + project
+all 907 region frames to `{PRODUCT_ID}.map.cub` (Stage B's input).
+- **Worker:** reused the proven leg-B array worker `f_leg_b_process.sh` — parameterized its LIST via
+  `FRAME_LIST` and folded in the summed-frame fix (skip `ctxevenodd` when `SpatialSumming > 1`,
+  project the calibrated cube) so it is now the single build worker (PLAN §2 mandate satisfied).
+- **Array:** `run_f_region_stagea.sbatch` → `FRAME_LIST=reports/figures/region_frame_list.csv`,
+  `WORK=$SCRATCH/hirise2ctx/f_region`, 32 tasks / 12 h, resumable (skips existing cubes; 0-63/6 h
+  option noted). Probe cost ~200–330 CPU-h → ~7–9 h wall.
+- **Kernel-gap flow (self-healing):** the first pass `spiceinit_fail`s on the 2018+ frames the July
+  mirror lacks and LOGS the names; `cat $SCRATCH/hirise2ctx/f_region/isis_*.log | f_fetch_kernels.sh`
+  fetches them by name (proven on the probe), then re-submit resumes and fills the holes. Runbook =
+  SHERLOCK_RUN Part H (submit → census → harvest → resume; final unrecoverable handful → H6
+  mosaic-patch per V4, not blocked). Scratch ample (100 TB) → keep all 907 cubes.
+
+Next after Stage A: **V2** (PDS incidence for all 907 — now load-bearing since per-row `cos^k(i(lat))`
+needs each frame's N/S endpoints) + **V3** parity gate, then **Stage B**.
+
 ## 2026-07-07 — PHASE 2 H1 (per-frame log-median centering): BOTH GATES PASS — η² 0.179→0.081, embedder amplification KILLED
 
 First item of the PLAN_StripingArtifact PHASE 2 docket. **H1 = log-minnaert (k=0.580) + a
