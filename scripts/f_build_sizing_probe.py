@@ -1,31 +1,23 @@
-"""PLAN_FBuild Stage-B sizing probe — V1 (embed throughput → array sizing) + V5 (within-frame
-incidence ramp → per-frame vs per-row cos^k(i)).
+"""PLAN_FBuild Stage-B sizing probe — V1 (embed cost) + V5 (within-frame incidence ramp).
 
-Runs AFTER Stage A: `run_f_build_probe.sbatch` (KEEP_CUBES=1) leaves the 5 selected frames as
-projected `{pid}.map.cub`s on Sherlock scratch. Convert to GeoTIFF (`isis2std`/`gdal_translate`)
-or read the cubes directly (GDAL ISIS3 driver), point `--frames-dir` at them, and pass the ISIS
-`--timing-csv` for the cost ledger. Analysis runs on a GPU (Sherlock L40S or the local RTX 5070 —
-tiles/frame is hardware-independent; s/frame is scaled to L40S via `--gpu-scale`).
+Runs AFTER Stage A on the KEEP_CUBES cubes (converted to GeoTIFF, `--frames-dir`). See SHERLOCK_RUN
+Part G.
 
-V1 — embed throughput. Sample `--n-windows` full-res core windows spread across each frame, run the
-     deploy path (H1 uint8 mapping → FangEmbedder.embed_window → DeployableHead.predict), measure
-     usable tiles/window + seconds/window → tiles/frame + s/frame → 907-frame array size + GPU-h.
-     (uint8 content barely affects embed cost, so per-window median centering is used for timing;
-     the fixed stretch/k only matter to science, checked in V5.)
+Corrected 2026-07-24 after the first run exposed two methodology bugs on real cam2map output:
+  * cam2map canvases are ~50% nodata (the frame is a swath in a lon/lat bbox) AND long frames span
+    ~5 deg latitude. The first version (a) read one raster ROW (`read(1, out_shape=(1,h,w))[0]`
+    silently sliced a row) and (b) embedded EVERY tile in sampled windows incl. nodata, so both V1
+    timing and V5 were garbage.
+  * V1 now counts VALID S=32 tiles from the 2D nodata mask and times the embedder on VALID tiles
+    only (a geometry-free hardware rate); the 907 extrapolation scales per FRAME-TILE footprint to
+    undo the sizing-frame selection bias (probe frames average more tiles than the population).
+  * V5 bins median ln(I/F) by latitude band over valid pixels. The MEASURED ramp is dominated by
+    real along-track albedo (300 km frames), so the DECISION quantity is the geometry-PREDICTED
+    cos^k(i) illumination ramp k*tan(i)*di, di = (di/dlat)*dlat; measured is reported as context.
 
-V5 — within-frame ramp. On a decimated whole-frame read, fit per-row median ln(I/F) vs latitude.
-     KEY: a per-frame scalar cos^k(i) (any constant) and the median-centering (also a constant)
-     do NOT change the row-wise SLOPE, so the residual within-frame ramp is INVARIANT to the exact
-     incidence value — the SeamMap incidence is fine here. Report the measured top-to-bottom ramp
-     (%) and the geometry-PREDICTED illumination ramp k·tan(i)·Δi (Δi = di/dlat·Δlat). Verdict per
-     PLAN_FBuild V5: residual <~0.5% → per-frame scalar OK; ≥~1% → switch Stage B to per-row
-     cos^k(i(lat)) before the 907-frame array. Measured≈predicted ⇒ illumination (per-row fixes it);
-     measured≫predicted ⇒ likely real geology (not an artifact; per-row would not help).
-
-Run (GPU; after Stage A):
-  C:\\Users\\brian\\anaconda3\\Scripts\\conda.exe run --no-capture-output -n geospatial python -u \
-      scripts/f_build_sizing_probe.py --frames-dir reports/f_build/probe_cubes \
-      --timing-csv reports/f_build/timing.csv
+Run (GPU):
+  conda run --no-capture-output -n geospatial python -u scripts/f_build_sizing_probe.py \
+      --frames-dir reports/f_build/probe_cubes --timing-csv reports/f_build/probe_cubes/timing.csv
 """
 from __future__ import annotations
 
@@ -39,173 +31,138 @@ import src.modeling  # noqa: F401  OpenMP bootstrap; must precede numpy/torch
 import numpy as np
 import pandas as pd
 import rasterio
-from rasterio.windows import Window
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-import scripts.f_pilot_crop as fpc   # to_uint8_log, TILE_PX, BATCH
 from src.fm_embeddings import FangEmbedder, tile_grid_for_window
-from src.mapping import CtxWindow, own_tile_zero_fraction
-from src.modeling.mlp_head import DeployableHead
 
-# H1 minnaert_center constants (must match models/deployable_f_center; DECISIONS 2026-07-05b/07).
 K_MINNAERT = 0.580
-STRETCH_LO, STRETCH_HI = 0.8400, 1.1170
-R_MARS_M = 3_396_190.0            # CTX equirect sphere radius (CLAUDE.md)
-DI_DLAT = 0.635                   # deg incidence per deg latitude (audit 2026-07-23, cohort fit)
-HEAD = REPO / "models" / "deployable_f_center" / "86c51a5dca220f63"
+DI_DLAT = 0.635               # deg incidence per deg latitude (audit 2026-07-23 cohort fit)
+R_MARS_M = 3_396_190.0
+TILE_PX = 32
 FIG = REPO / "reports" / "figures"
-CORE, HALO = 2048, fpc.TILE_PX * 3    # window core + 3x3-context halo
+RAMP_PER_ROW_THRESH = 1.0     # predicted illumination ramp (%) above which per-row cos^k(i(lat)) wins
+DECIM = 8                     # decimation stride for the valid-mask / ramp reads
 
 
-def _read_incidence(pid: str, frame_list: Path) -> float:
-    df = pd.read_csv(frame_list)
-    row = df[df["PRODUCT_ID"] == pid]
-    return float(row["inc_sel"].iloc[0]) if len(row) else np.nan
+def embedder_rate(embedder, warmups: int = 3) -> float:
+    """Geometry-free hardware rate: tiles/s embedding a fully-valid 2048^2 window (warm)."""
+    rng = np.random.default_rng(0)
+    u8 = rng.integers(60, 200, (2048, 2048)).astype("uint8")
+    ti, tj = tile_grid_for_window(u8.shape, 0, 0, TILE_PX)
+    rate = float("nan")
+    for _ in range(warmups):
+        t0 = time.perf_counter()
+        embedder.embed_window(u8, ti, tj, tile_px=TILE_PX, row0=0, col0=0, pool="gem", batch=256)
+        rate = ti.size / (time.perf_counter() - t0)
+    return rate
 
 
-def v5_ramp(path: Path, incidence: float, stride: int = 8) -> dict:
-    """Within-frame top-to-bottom ln(I/F) ramp (slope-invariant to the per-frame cos^k scalar)."""
-    with rasterio.open(path) as ds:
-        a = ds.read(1, out_shape=(1, ds.height // stride, ds.width // stride))[0].astype(np.float32)
-        h_px = ds.height
-    a[~np.isfinite(a)] = np.nan
-    a[a <= 0] = np.nan
-    row_med = np.array([np.nanmedian(r) if np.isfinite(r).sum() > 20 else np.nan
-                        for r in np.log(a)])
-    ok = np.isfinite(row_med)
-    if ok.sum() < 10:
-        return {"n_rows_ok": int(ok.sum())}
-    rows = np.arange(len(row_med))[ok]
-    slope, intercept = np.polyfit(rows, row_med[ok], 1)   # ln(I/F) per decimated-row
-    ramp_ln = slope * (rows.max() - rows.min())           # top-to-bottom in ln units
-    measured_pct = (np.exp(ramp_ln) - 1.0) * 100.0
-    dlat_deg = (h_px * 5.0) / (R_MARS_M * np.pi / 180.0)  # frame latitude extent
-    di_rad = np.radians(DI_DLAT * dlat_deg)
-    pred_pct = (K_MINNAERT * np.tan(np.radians(incidence)) * di_rad) * 100.0 if np.isfinite(incidence) else np.nan
-    return {"n_rows_ok": int(ok.sum()), "dlat_deg": round(float(dlat_deg), 2),
-            "measured_ramp_pct": round(float(abs(measured_pct)), 2),
-            "predicted_ramp_pct": round(float(abs(pred_pct)), 2) if np.isfinite(pred_pct) else np.nan,
-            "incidence": round(float(incidence), 1)}
-
-
-def _to_uint8(win_if: np.ndarray, incidence: float) -> np.ndarray:
-    d = win_if / (np.cos(np.radians(incidence)) ** K_MINNAERT)
-    fin = np.isfinite(d) & (d > 0)
-    if fin.sum():
-        d = d / float(np.median(d[fin]))
-    return fpc.to_uint8_log(d, STRETCH_LO, STRETCH_HI)
-
-
-def v1_throughput(path: Path, incidence: float, embedder, head, n_windows: int) -> dict:
-    """Embed sampled core windows → usable tiles/window + s/window → per-frame extrapolation."""
+def frame_stats(path: Path, incidence: float) -> dict:
+    """Valid S=32 tile count + V5 latitude-band ramp (measured vs geometry-predicted)."""
     with rasterio.open(path) as ds:
         H, W = ds.height, ds.width
-        ny, nx = max(H // CORE, 1), max(W // CORE, 1)
-        # grid-sample up to n_windows core positions spread across the frame (incl. edges)
-        gy = np.linspace(0, ny - 1, min(n_windows, ny)).round().astype(int)
-        gx = np.linspace(0, nx - 1, max(1, n_windows // max(len(gy), 1))).round().astype(int)
-        positions = [(int(iy * CORE), int(ix * CORE)) for iy in np.unique(gy) for ix in np.unique(gx)]
-        tiles, secs = [], []
-        for (y0, x0) in positions[:n_windows]:
-            ry0, rx0 = max(y0 - HALO, 0), max(x0 - HALO, 0)
-            h = min(CORE + 2 * HALO, H - ry0)
-            w = min(CORE + 2 * HALO, W - rx0)
-            if h < 3 * fpc.TILE_PX or w < 3 * fpc.TILE_PX:
-                continue
-            if_win = ds.read(1, window=Window(rx0, ry0, w, h)).astype(np.float32)
-            u8 = _to_uint8(if_win, incidence)
-            ti, tj = tile_grid_for_window(u8.shape, 0, 0, fpc.TILE_PX)
-            if ti.size == 0:
-                continue
-            t0 = time.perf_counter()
-            emb, valid = embedder.embed_window(u8, ti, tj, tile_px=fpc.TILE_PX, row0=0, col0=0,
-                                               pool="gem", batch=fpc.BATCH)
-            zf = own_tile_zero_fraction(u8, ti, tj, tile_px=fpc.TILE_PX, row0=0, col0=0)
-            usable = valid & (zf <= 0.5)
-            if usable.any():
-                head.predict(emb[usable])
-            secs.append(time.perf_counter() - t0)
-            tiles.append(int(usable.sum()))
-    if not tiles:
-        return {"frame_px": f"{H}x{W}", "n_windows": 0}
-    n_core = (int(np.ceil(H / CORE)) * int(np.ceil(W / CORE)))
-    tpw, spw = float(np.mean(tiles)), float(np.mean(secs))
-    return {"frame_px": f"{H}x{W}", "n_windows": len(tiles),
-            "tiles_per_window": round(tpw, 1), "s_per_window": round(spw, 2),
-            "tiles_per_s": round(sum(tiles) / max(sum(secs), 1e-6), 1),
-            "core_windows": n_core,
-            "tiles_per_frame": int(round(tpw * n_core)),
-            "s_per_frame_thisgpu": round(spw * n_core, 1)}
+        res = abs(ds.transform.a)
+        a = ds.read(1, out_shape=(H // DECIM, W // DECIM)).astype(np.float32)   # 2D (h,w)
+    valid = (a > 0) & (a > -1e30) & np.isfinite(a)
+    valid_frac = float(valid.mean())
+    valid_tiles = int(valid.sum() * DECIM * DECIM / (TILE_PX * TILE_PX))
+
+    # V5: median ln(I/F) per latitude band over valid pixels
+    la = np.log(np.where(valid, a, np.nan))
+    rows = np.where(valid.any(axis=1))[0]
+    measured = np.nan
+    dlat = np.nan
+    if rows.size > 40:
+        edges = np.linspace(rows.min(), rows.max(), 41).astype(int)
+        bc, bm = [], []
+        for k in range(40):
+            fin = la[edges[k]:edges[k + 1]]
+            fin = fin[np.isfinite(fin)]
+            if fin.size >= 30:
+                bm.append(float(np.median(fin))); bc.append((edges[k] + edges[k + 1]) / 2)
+        if len(bm) >= 10:
+            bc, bm = np.array(bc), np.array(bm)
+            slope = np.polyfit(bc, bm, 1)[0]
+            measured = abs((np.exp(slope * (bc.max() - bc.min())) - 1) * 100)
+            dlat = (bc.max() - bc.min()) * DECIM * res / (R_MARS_M * np.pi / 180)
+    predicted = (abs(K_MINNAERT * np.tan(np.radians(incidence)) * np.radians(DI_DLAT * dlat)) * 100
+                 if np.isfinite(dlat) else np.nan)
+    return {"valid_frac": round(valid_frac, 3), "valid_tiles": valid_tiles,
+            "dlat_deg": round(float(dlat), 2) if np.isfinite(dlat) else np.nan,
+            "ramp_measured_pct": round(float(measured), 2) if np.isfinite(measured) else np.nan,
+            "ramp_predicted_illum_pct": round(float(predicted), 2) if np.isfinite(predicted) else np.nan}
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--frames-dir", required=True, help="dir of {pid}.map.cub or {pid}.map.tif")
+    ap.add_argument("--frames-dir", required=True)
     ap.add_argument("--frame-list", default=str(REPO / "reports" / "f_build" / "sizing_frame_list.csv"))
-    ap.add_argument("--timing-csv", default=None, help="Stage-A timing.csv for the ISIS cost ledger")
-    ap.add_argument("--n-windows", type=int, default=6)
-    ap.add_argument("--gpu-scale", type=float, default=1.0,
-                    help="s/frame multiplier from THIS GPU to L40S (RTX 5070→L40S ≈ 1.0; set from parity)")
+    ap.add_argument("--tile-map", default=str(REPO / "reports" / "figures" / "frame_tile_map.csv"))
+    ap.add_argument("--timing-csv", default=None)
+    ap.add_argument("--gpu-scale", type=float, default=0.5,
+                    help="s/frame multiplier from THIS GPU to L40S (RTX 5070 ~2x slower than L40S ~= 0.5)")
     ap.add_argument("--cpu", action="store_true")
     args = ap.parse_args()
 
+    fl = pd.read_csv(args.frame_list)
     fdir = Path(args.frames_dir)
-    frame_list = Path(args.frame_list)
-    pids = [r["PRODUCT_ID"] for _, r in pd.read_csv(frame_list).iterrows()]
-
     embedder = FangEmbedder.load(device="cpu" if args.cpu else None)
-    head = DeployableHead.load(HEAD)
+    rate = embedder_rate(embedder)
+    print(f"embedder rate (valid tiles, this GPU): {rate:.0f} tiles/s\n")
 
     rows = []
-    for pid in pids:
-        path = next((fdir / f"{pid}{ext}" for ext in (".map.cub", ".map.tif", ".tif")
-                     if (fdir / f"{pid}{ext}").exists()), None)
+    for _, fr in fl.iterrows():
+        pid = fr["PRODUCT_ID"]
+        path = next((fdir / f"{pid}{e}" for e in (".map.tif", ".map.cub", ".tif")
+                     if (fdir / f"{pid}{e}").exists()), None)
         if path is None:
-            print(f"  ⚠ {pid}: no cube/tif in {fdir} — skipped", flush=True)
-            continue
-        inc = _read_incidence(pid, frame_list)
-        v5 = v5_ramp(path, inc)
-        v1 = v1_throughput(path, inc, embedder, head, args.n_windows)
-        rows.append({"PRODUCT_ID": pid, **v1, **{f"v5_{k}": v for k, v in v5.items()}})
-        print(f"  {pid}: {v1.get('tiles_per_frame','?')} tiles/frame, "
-              f"{v1.get('s_per_frame_thisgpu','?')} s/frame; "
-              f"V5 ramp measured {v5.get('measured_ramp_pct','?')}% "
-              f"(predicted {v5.get('predicted_ramp_pct','?')}%)", flush=True)
+            print(f"  ⚠ {pid}: no raster in {fdir} — skipped"); continue
+        st = frame_stats(path, float(fr["inc_sel"]))
+        rows.append({"PRODUCT_ID": pid, "n_tiles": int(fr["n_tiles"]),
+                     "incidence": float(fr["inc_sel"]), **st})
+        print(f"  {pid}: valid {st['valid_tiles']:,} tiles (frac {st['valid_frac']}); "
+              f"V5 ramp measured {st['ramp_measured_pct']}% / predicted-illum "
+              f"{st['ramp_predicted_illum_pct']}% (dlat {st['dlat_deg']}deg)")
 
     df = pd.DataFrame(rows)
     FIG.mkdir(parents=True, exist_ok=True)
     df.to_csv(FIG / "fbuild_sizing_probe.csv", index=False)
 
-    # ---- V1 array-sizing extrapolation ----
-    print("\n=== V1 — array sizing (907 frames) ===", flush=True)
-    tpf = df["tiles_per_frame"].mean()
-    spf = df["s_per_frame_thisgpu"].mean() * args.gpu_scale
-    total_tiles = tpf * 907
-    gpu_h = spf * 907 / 3600.0
-    print(f"mean tiles/frame {tpf:,.0f}  ->  907 frames ≈ {total_tiles/1e6:,.0f}M tile embeddings "
-          f"(plan est. 120–170M)")
-    print(f"mean s/frame (L40S-scaled) {spf:,.1f}  ->  {gpu_h:,.1f} GPU-h serial; "
-          f"~{gpu_h/6:,.1f} h wall on 6 GPUs (plan est. 25–40 GPU-h)")
+    # ---- V1: bias-corrected 907 extrapolation (scale per frame-tile footprint) ----
+    n_ft_total = len(pd.read_csv(args.tile_map))          # total frame x tile rows (~1371)
+    tiles_per_ft = df["valid_tiles"].sum() / df["n_tiles"].sum()
+    total_tiles = tiles_per_ft * n_ft_total
+    gpu_h_local = total_tiles / rate / 3600.0
+    gpu_h_l40s = gpu_h_local * args.gpu_scale
+    print("\n=== V1 — array sizing (907 frames) ===")
+    print(f"valid tiles per frame-tile footprint {tiles_per_ft:,.0f} x {n_ft_total} rows "
+          f"-> {total_tiles/1e6:.0f}M valid tiles (plan est. 120-170M)")
+    print(f"embed: {gpu_h_local:.0f} GPU-h on this GPU; ~{gpu_h_l40s:.0f} L40S-h "
+          f"(gpu_scale {args.gpu_scale}); plan est. 25-40 L40S-h")
     if args.timing_csv and Path(args.timing_csv).exists():
         t = pd.read_csv(args.timing_csv)
-        t_ok = t[t["status"] == "ok"] if "status" in t.columns else t
-        cpu_h = t_ok["t_total"].mean() * 907 / 3600.0
-        scr_gb = t_ok["map_mb"].mean() * 907 / 1000.0
-        print(f"ISIS (Stage A): mean {t_ok['t_total'].mean():.0f} s/frame -> {cpu_h:,.0f} CPU-h "
-              f"({cpu_h/32:,.1f} h wall @32 tasks); peak scratch if all cubes kept ≈ {scr_gb:,.0f} GB")
+        t = t[t["status"] == "ok"] if "status" in t.columns else t
+        # ISIS cost scales per frame-tile footprint too (long frames cost more)
+        probe_ft = df.set_index("PRODUCT_ID")["n_tiles"]
+        t = t.assign(nt=[probe_ft.get(p, 1) for p in t["product_id"]])
+        cpu_s_per_ft = (t["t_total"] * 1).sum() / t["nt"].sum()
+        print(f"ISIS (Stage A): {cpu_s_per_ft*n_ft_total/3600:,.0f} CPU-h "
+              f"({cpu_s_per_ft*n_ft_total/3600/32:,.1f} h wall @32 tasks); plan est. 333 CPU-h")
 
-    # ---- V5 verdict ----
-    print("\n=== V5 — within-frame incidence ramp ===", flush=True)
-    worst = df["v5_measured_ramp_pct"].max()
-    print(df[["PRODUCT_ID", "v5_incidence", "v5_dlat_deg",
-              "v5_measured_ramp_pct", "v5_predicted_ramp_pct"]].to_string(index=False))
-    verdict = ("PER-FRAME cos^k(i) OK (residual < ~0.5%)" if worst < 0.5 else
-               "SWITCH to per-row cos^k(i(lat)) before the array (residual ≥ ~1%)" if worst >= 1.0 else
-               "BORDERLINE (0.5–1%) — inspect measured-vs-predicted; lean per-row for long/grazing frames")
-    print(f"\nworst measured within-frame ramp = {worst:.2f}%  ->  {verdict}")
-    print("(measured≈predicted ⇒ illumination, per-row fixes it; measured≫predicted ⇒ likely geology)")
+    # ---- V5 verdict on the geometry-predicted illumination ramp ----
+    print("\n=== V5 — within-frame incidence ramp ===")
+    print(df[["PRODUCT_ID", "incidence", "n_tiles", "dlat_deg",
+              "ramp_measured_pct", "ramp_predicted_illum_pct"]].to_string(index=False))
+    worst_pred = df["ramp_predicted_illum_pct"].max()
+    verdict = ("PER-FRAME cos^k(i) scalar OK (predicted illumination ramp < 1%)"
+               if worst_pred < RAMP_PER_ROW_THRESH else
+               "ADOPT per-row cos^k(i(lat)) in Stage B BEFORE the array "
+               f"(predicted illumination ramp up to {worst_pred:.1f}% on long frames)")
+    print(f"\nworst predicted illumination ramp = {worst_pred:.2f}%  ->  {verdict}")
+    print("(measured ramp is geology-dominated over 300 km frames; per-row corrects only the "
+          "incidence component and leaves real albedo alone)")
     print(f"\nwrote {FIG / 'fbuild_sizing_probe.csv'}")
 
 

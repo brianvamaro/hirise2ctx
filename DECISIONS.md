@@ -4811,6 +4811,24 @@ inapplicable) — benign. Fixes: (a) run `f_fetch_kernels.sh` on the probe log f
 (b) `f_timing_test.sh` now skips ctxevenodd when SpatialSumming>1. Both promoted to PLAN_FBuild §2
 Stage-A requirements. Re-running the probe after both.
 
+**Probe COMPLETE 2026-07-24 (corrected methodology) — V1 on-plan, V5 → per-row.** Re-run got 4/5
+frames (K05/K01 passed spiceinit after the kernel fetch; G09 = transient PDS download fail, NOT quota
+— scratch is 0.5/100 TB, so cube retention is a non-issue for the build). Two methodology bugs in the
+first `f_build_sizing_probe.py` (both fixed + committed): a `read(1, out_shape=(1,h,w))[0]` that
+silently sliced ONE raster row (broke V5, gave a bogus 0.3% valid frac), and a V1 that embedded every
+tile in sampled windows incl. the ~50%-nodata canvas (cam2map frames are swaths in big lon/lat bboxes).
+Corrected probe:
+- **V1 ✅ on plan:** embedder **688 tiles/s** (RTX 5070); **~162M valid S=32 tiles** (counting non-nodata
+  tiles, footprint-scaled to undo the probe's long-frame selection bias — frames 43–75% valid) →
+  **≈33 L40S-h** (25–40 plan); ISIS ~200–330 CPU-h.
+- **V5 → PER-ROW `cos^k(i(lat))` ADOPTED:** geometry-predicted illumination ramp **5.1%** (K05, 57°) /
+  3.0% (P16, long) ≫ the 1% bar. (Raw measured ramp 6–46% is real along-track albedo over 300 km
+  frames; per-row corrects only the incidence component, leaves geology.) PLAN_FBuild §3 mapping
+  updated to per-row; §6 V1/V5 rows closed. Artifact `reports/figures/fbuild_sizing_probe.csv`.
+
+Net: both pre-array unknowns resolved — the build is sized (≈33 L40S-h + ~200–330 CPU-h, on plan) and
+Stage B's mapping is finalized (per-row cos^k(i(lat)) + conditional ctxevenodd + complete kernels).
+
 ## 2026-07-07 — PHASE 2 H1 (per-frame log-median centering): BOTH GATES PASS — η² 0.179→0.081, embedder amplification KILLED
 
 First item of the PLAN_StripingArtifact PHASE 2 docket. **H1 = log-minnaert (k=0.580) + a

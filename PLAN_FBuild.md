@@ -122,10 +122,12 @@ All parameters previously verified (DECISIONS 2026-07-02/03; SHERLOCK_RUN Parts 
 
 Train/deploy-matched H1 recipe (`minnaert_center`, DECISIONS 2026-07-07):
 
-- **Mapping per frame:** I/F ÷ cos^k(i), **k = 0.580**, incidence per frame from the PDS volume
-  indexes (`frame_incidence.csv` machinery + the `OVERRIDES` table — the P20_008839 decimal-shift
-  class of SeamMap bug is why we do NOT trust SeamMap incidence); then ÷ per-frame ln-median
-  (centering); then the FIXED centered-pool log stretch (ratio 0.84–1.12) → uint8.
+- **Mapping per frame:** I/F ÷ cos^k(i(**lat**)), **k = 0.580**, using a **per-row incidence field**
+  (V5 verdict 2026-07-24 — the per-frame scalar leaves a 3–5% within-frame ramp on long frames; build
+  the field by linearly interpolating each frame's N/S incidence endpoints vs latitude). Endpoints from
+  the PDS volume indexes (`frame_incidence.csv` machinery + the `OVERRIDES` table — the P20_008839
+  decimal-shift class of SeamMap bug is why we do NOT trust SeamMap incidence); then ÷ per-frame
+  ln-median (centering); then the FIXED centered-pool log stretch (ratio 0.84–1.12) → uint8.
 - **Within-frame incidence ramp (build-only risk; audit 2026-07-23, `genuine-risk`).** The pilot
   crop is a ~1.3° window so incidence is ~constant, but full 907 frames span 3–4° latitude → a real
   ~2% top-to-bottom I/F ramp that a single per-frame `cos^k(i)` scalar does **not** remove — and that
@@ -133,8 +135,11 @@ Train/deploy-matched H1 recipe (`minnaert_center`, DECISIONS 2026-07-07):
   variance, so a within-frame ramp would render as a smooth abundance gradient inside each frame block
   and never register in the reopening metric). **Fix:** a **per-row `cos^k(i(lat))` divisor** from
   each frame's N/S incidence endpoints (incidence ~linear in latitude; the ISIS `phocube`/`caminfo`
-  incidence band is available post-`cam2map`). Decide via §6 V5 — if the residual post-H1 ramp on a
-  few full frames is <~0.5% the scalar is fine and this closes as expected-by-design.
+  incidence band is available post-`cam2map`). **V5 RAN 2026-07-24 → per-row ADOPTED** (above): the
+  geometry-predicted illumination ramp reached **5.1%** (K05, 57°) / 3.0% (P16, long-track) — well
+  above the 1% bar — so the per-row divisor is the build default, not the scalar. (The raw measured
+  top-to-bottom ramp is larger [6–46%] but geology-dominated over 300 km frames; per-row corrects only
+  the incidence component and leaves real albedo alone.)
 - **Minnaert k (hygiene, audit 2026-07-23).** k = 0.580 is the frozen training-cohort fit; the
   pilot's own 7 frames fit 0.694. This is train/deploy-correct **and** first-order harmless — a
   global-k error is a per-frame constant that per-frame median centering removes *exactly*
@@ -147,9 +152,11 @@ Train/deploy-matched H1 recipe (`minnaert_center`, DECISIONS 2026-07-07):
 - **Embedding + head:** frozen Fang recipe (GeM p=3, S=32) + `DeployableHead`
   `models/deployable_f_center/86c51a5dca220f63` → per-frame P(rich) in **logit** domain (H4 operates
   on logits; sigmoid only at composite time).
-- **Sizing (to verify with a probe, §6 V1):** the 26-tile mosaic was ~57M tiles; per-frame inference
-  re-embeds every overlap, and with median degree 7 the overlap multiplicity is plausibly ~2–3× →
-  **~120–170M tile embeddings ≈ 25–40 L40S-h**, fanned by the existing `run_region_array.sbatch`
+- **Sizing — V1 CONFIRMED 2026-07-24:** ~120–170M was the estimate; the probe measured **~162M valid
+  S=32 tiles** (counting only non-nodata tiles per frame, scaled per frame-tile footprint to undo the
+  probe's long-frame selection bias). At the RTX-5070 embedder rate **688 tiles/s** → ~65 GPU-h local,
+  **≈33 L40S-h** (gpu_scale 0.5) — squarely in the **25–40 L40S-h** plan estimate. ISIS Stage A
+  ~200–330 CPU-h (probe-measured, footprint-scaled). Fanned by the existing `run_region_array.sbatch`
   pattern (per-frame outputs are race-free). Checkpoint per frame.
 - **Storage:** per-frame logit rasters at S=32 tile resolution (160 m) are small (~kB–MB each);
   keep all 907 — they are the input to Stage C and the H6 QA layers.
@@ -252,11 +259,11 @@ and the pooled-skill instruments) producing:
 
 | # | item | when |
 |---|---|---|
-| V1 | **Sizing probe:** embed 5 representative frames end-to-end (Stage B) on one GPU → measure tiles/frame + s/frame → size the array before submitting 907. **Kit built 2026-07-23**: `f_build_sizing_frames.py` (selects 5) → `run_f_build_probe.sbatch` (Stage A, KEEP_CUBES) → `f_build_sizing_probe.py` (Stage B); runbook SHERLOCK_RUN Part G | first Sherlock session |
+| V1 | **Sizing probe** (kit: `f_build_sizing_frames.py` → `run_f_build_probe.sbatch` → `f_build_sizing_probe.py`; SHERLOCK_RUN Part G). ✅ **DONE 2026-07-24**: ~162M valid S=32 tiles → **≈33 L40S-h** (on the 25–40 plan) at 688 t/s (RTX 5070); ISIS ~200–330 CPU-h. 4/5 frames processed (G09 transient download fail); scratch confirmed ample (100 TB). | done |
 | V2 | **Incidence table completeness:** PDS volume-index incidence resolved for all 907 (the P20_008839 typo class); fail loudly on gaps | frame-list build |
 | V3 | **Parity gate:** one pilot frame (E8_N44) through the full build path must reproduce the pilot's per-tile logits (the map_region parity-check pattern) | before the array |
 | V4 | **Stage-A failure census** vs the graph: recompute components with failed frames removed; if >1 component, per-component gauge + H6 flags | after Stage A |
-| V5 | **Within-frame incidence-ramp check** (audit 2026-07-23 `genuine-risk`): on 3–5 full 3–4° frames, measure the residual top-vs-bottom I/F trend after the H1 mapping. <~0.5% → per-frame `cos^k(i)` scalar OK (close as expected-by-design); ≥~1% → switch Stage B to the per-row `cos^k(i(lat))` divisor **before** the array | Stage B sizing probe (with V1); kit built 2026-07-23 — SHERLOCK_RUN Part G |
+| V5 | **Within-frame incidence-ramp check** (audit 2026-07-23 `genuine-risk`). ✅ **DONE 2026-07-24 → PER-ROW ADOPTED**: geometry-predicted illumination ramp reached **5.1%** (K05, 57°) / 3.0% (P16, long) — above the 1% bar → Stage B uses the per-row `cos^k(i(lat))` divisor (§3), not the scalar. (Raw measured ramp 6–46% is geology-dominated over 300 km frames; per-row corrects only the incidence part.) | done |
 | V6 | **Minnaert-k re-fit + sensitivity** (audit 2026-07-23): re-fit k on the 907-frame cohort (log-median vs log-cos i); report final-map partition η² sensitivity over k ∈ [0.55, 0.70]. Expected flat (centering cancels the per-frame constant); fail loudly if not | frame-list build |
 
 ## 7. Open questions (Brian — surface via AskUserQuestion at execution, not pre-decided)
