@@ -181,12 +181,17 @@ def main() -> int:
         out_npz = out_dir / f"{pid}.npz"
         if out_npz.exists():
             continue
-        # prefer .map.tif: GDAL's ISIS3 driver SIGSEGVs on large windowed reads of .map.cub, so the
-        # build reads GeoTIFFs (run_f_region_tif.sbatch converts them). DECISIONS 2026-07-27.
-        cube = next((cubes / f"{pid}{e}" for e in (".map.tif", ".tif", ".map.cub")
+        # GeoTIFF ONLY: GDAL's ISIS3 driver SIGSEGVs on large windowed reads of .map.cub, so the
+        # build reads the .map.tif from run_f_region_tif.sbatch (DECISIONS 2026-07-27). Refuse the
+        # cube (a clear error beats a segfault).
+        cube = next((cubes / f"{pid}{e}" for e in (".map.tif", ".tif")
                      if (cubes / f"{pid}{e}").exists()), None)
-        if cube is None or pid not in inc.index:
-            print(f"  ⚠ {pid}: cube or incidence missing -> skip", flush=True)
+        if cube is None:
+            print(f"  ⚠ {pid}: no .map.tif in {cubes} — run run_f_region_tif.sbatch first "
+                  f"(ISIS3 .cub reads segfault) -> skip", flush=True)
+            continue
+        if pid not in inc.index:
+            print(f"  ⚠ {pid}: no incidence row -> skip", flush=True)
             continue
         t0 = time.monotonic()
         with rasterio.open(cube) as ds:
