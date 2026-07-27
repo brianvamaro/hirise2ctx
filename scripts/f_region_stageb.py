@@ -6,7 +6,7 @@ Array-task-aware (round-robin stride of region_frame_list.csv), resumable (skips
 exists). Runs on a Sherlock GPU node in the map venv (same env as map_region.py / run_region_array).
 
 Per frame, per read-window (the map_region window sweep):
-  I/F  ÷ cos^k(i(lat))   [per-ROW incidence, V5 verdict — inc(lat)=center_inc+slope*(lat-center_lat)]
+  I/F  ÷ cos^k(i(lat))   [per-ROW incidence from PHYSICAL subsolar geometry (V2); no slope fit]
        ÷ per-frame median [H1 centering; median of the cos^k-corrected valid pixels]
        -> FIXED centered-pool log stretch (0.8400..1.1170) -> uint8
   -> FangEmbedder.embed_window (GeM, S=32) -> DeployableHead(deployable_f_center).predict -> P(rich)
@@ -14,8 +14,9 @@ Per frame, per read-window (the map_region window sweep):
 
 Output per frame: {PRODUCT_ID}.npz  (TI, TJ, prob int32/int32/float32) + {PRODUCT_ID}.json (meta).
 Logits are NOT stored (H4 logit-transforms at compose time, as the pilot did); calibration is a final
-step after H4. Slope is a PARAMETER (--slope): the V2 pooled fit is confounded, so V3 pins it by the
-residual-ramp check (default 0.635 = audit within-family; NOT the confounded 0.019).
+step after H4. Per-row incidence is PHYSICAL — cos(i(φ)) = sinφ·sinφ_s + cosφ·cosφ_s·cos(Δλ) from
+V2's region_frame_incidence.csv (center_lon, subsolar_lat, subsolar_lon); no slope fit (V2 confirmed
+it reproduces the index center incidence to ~0.1 deg).
 
 Usage (Sherlock gpu node, map venv; via run_f_region_stageb.sbatch):
   TASK_ID=0 N_TASKS=1 python scripts/f_region_stageb.py \
@@ -71,24 +72,31 @@ def lat_deg_of_rows(transform, row_idx: np.ndarray) -> np.ndarray:
     return y / (R_MARS_M * np.pi / 180.0)
 
 
-def cosk_incidence_rows(row_idx, transform, center_inc, center_lat, slope) -> np.ndarray:
-    """cos^k(incidence(lat)) per row: inc(lat) = center_inc + slope*(lat - center_lat)."""
+def cosk_incidence_rows(row_idx, transform, subsolar_lat, dlam_deg) -> np.ndarray:
+    """cos^k(incidence(lat)) per row from PHYSICAL subsolar geometry (no slope fit; V2 confirmed it
+    reproduces the PDS index center incidence to ~0.1 deg):
+        cos(i(φ)) = sinφ·sinφ_s + cosφ·cosφ_s·cos(Δλ),  Δλ = center_lon − subsolar_lon (per-frame const).
+    The per-row gradient is exact; H1 median-centering removes the absolute cos^k level, so only the
+    within-frame ramp is corrected (real geology/albedo down the frame is untouched)."""
     lat = lat_deg_of_rows(transform, np.asarray(row_idx, float))
-    inc = np.clip(center_inc + slope * (lat - center_lat), 0.0, 89.5)
-    return np.cos(np.radians(inc)) ** K_MINNAERT
+    phi = np.radians(lat)
+    phis = np.radians(subsolar_lat)
+    cosi = np.sin(phi) * np.sin(phis) + np.cos(phi) * np.cos(phis) * np.cos(np.radians(dlam_deg))
+    cosi = np.clip(cosi, np.cos(np.radians(89.5)), 1.0)
+    return cosi ** K_MINNAERT
 
 
-def frame_median(ds, transform, center_inc, center_lat, slope, stride: int = 16) -> float:
+def frame_median(ds, transform, subsolar_lat, dlam_deg, stride: int = 16) -> float:
     """H1 centering statistic: median of the cos^k(i(lat))-corrected I/F over valid pixels (decimated)."""
     a = ds.read(1, out_shape=(ds.height // stride, ds.width // stride)).astype(np.float32)
     rows = (np.arange(a.shape[0]) * stride).astype(float)
-    cosk = cosk_incidence_rows(rows, transform, center_inc, center_lat, slope)
+    cosk = cosk_incidence_rows(rows, transform, subsolar_lat, dlam_deg)
     d = a / cosk[:, None]
     fin = np.isfinite(d) & (a > 0) & (a > -1e30)
     return float(np.median(d[fin])) if fin.any() else float("nan")
 
 
-def process_frame(ds, transform, center_inc, center_lat, slope, med, embedder, head, args):
+def process_frame(ds, transform, subsolar_lat, dlam_deg, med, embedder, head, args):
     """Sweep windows -> global (TI, TJ, prob) for one frame."""
     H, W = ds.height, ds.width
     win, overlap = args.win_px, 2 * TILE_PX
@@ -102,7 +110,7 @@ def process_frame(ds, transform, center_inc, center_lat, slope, med, embedder, h
             continue
         iff = ds.read(1, window=Window(col_off, row_off, w, h)).astype(np.float32)
         rows = row_off + np.arange(h, dtype=float)
-        cosk = cosk_incidence_rows(rows, transform, center_inc, center_lat, slope)
+        cosk = cosk_incidence_rows(rows, transform, subsolar_lat, dlam_deg)
         u8 = to_uint8_log((iff / cosk[:, None]) / med)
         ti, tj = tile_grid_for_window(u8.shape, row_off, col_off, TILE_PX)
         if ti.size == 0:
@@ -136,8 +144,6 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--cubes-dir", required=True)
     ap.add_argument("--out-dir", required=True)
-    ap.add_argument("--slope", type=float, default=0.635,
-                    help="di/dlat for per-row cos^k(i(lat)); V2 pooled fit is confounded, pin via V3")
     ap.add_argument("--win-px", type=int, default=4096)
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--max-zero-fraction", type=float, default=0.3)
@@ -158,8 +164,8 @@ def main() -> int:
 
     embedder = FangEmbedder.load(device="cpu" if args.cpu else None)
     head = DeployableHead.load(Path(args.head))
-    print(f"task {task_id}/{n_tasks}: {len(pids)} frames  slope={args.slope}  "
-          f"head={Path(args.head).name}", flush=True)
+    print(f"task {task_id}/{n_tasks}: {len(pids)} frames  "
+          f"head={Path(args.head).name}  (physical per-row incidence)", flush=True)
 
     for pid in pids:
         out_npz = out_dir / f"{pid}.npz"
@@ -173,17 +179,19 @@ def main() -> int:
         t0 = time.monotonic()
         with rasterio.open(cube) as ds:
             tr = ds.transform
-            ci, cl = float(inc.loc[pid, "incidence"]), float(inc.loc[pid, "center_lat"])
-            med = frame_median(ds, tr, ci, cl, args.slope)
+            slat = float(inc.loc[pid, "subsolar_lat"])
+            dlam = float(inc.loc[pid, "center_lon"]) - float(inc.loc[pid, "subsolar_lon"])
+            ci = float(inc.loc[pid, "incidence"])           # index center incidence (QA/logging only)
+            med = frame_median(ds, tr, slat, dlam)
             if not np.isfinite(med):
                 print(f"  ⚠ {pid}: no valid pixels -> skip", flush=True)
                 continue
-            TI, TJ, prob = process_frame(ds, tr, ci, cl, args.slope, med, embedder, head, args)
+            TI, TJ, prob = process_frame(ds, tr, slat, dlam, med, embedder, head, args)
             crs_wkt = ds.crs.to_wkt() if ds.crs else ""
         np.savez_compressed(out_npz, TI=TI, TJ=TJ, prob=prob)
         (out_dir / f"{pid}.json").write_text(json.dumps({
-            "PRODUCT_ID": pid, "incidence": ci, "center_lat": cl, "slope": args.slope,
-            "frame_median": round(med, 6), "n_tiles": int(TI.size),
+            "PRODUCT_ID": pid, "index_incidence": ci, "subsolar_lat": slat,
+            "dlam_deg": round(dlam, 4), "frame_median": round(med, 6), "n_tiles": int(TI.size),
             "prob_mean": float(prob.mean()) if TI.size else None,
             "global_tile_m": GLOBAL_M, "crs_wkt": crs_wkt,
         }, indent=2), encoding="utf-8")

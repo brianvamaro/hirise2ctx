@@ -50,8 +50,11 @@ under full offsets; residual-only 0.0595 fails). Two cheap pre-spend probes were
 1. **Stage-C attribution must BIND** (§4.3): if the smooth offset field correlates with geology
    proxies (MOLA/THEMIS) rather than epoch/incidence metadata → **mandated fallback to residual-only**;
    do NOT let an "ambiguous" verdict silently default to full offsets.
-2. **Early stopping rule:** at the first ~50–100 leveled frames, recompute leave-one-FRAME-out η² and
-   **abort to the A1 fallback if > ~0.06** (Stage A/B are checkpointed, so this is free insurance).
+2. ~~**Early stopping rule:** at the first ~50–100 leveled frames, recompute leave-one-FRAME-out η²
+   and abort if > ~0.06.~~ **DROPPED 2026-07-26** (Brian): Stage B is a cheap (~33 L40S-h) unattended
+   overnight run, so there is no wall-clock to save by aborting mid-run, and H4 leveling is a
+   post-Stage-B step anyway. The go/no-go moves entirely to the **Stage-C/D acceptance gates + the
+   §5.1 comparison** on the full map — if η² fails there, ship the A1 fallback.
 3. **Physically vet the two large under-pinned offsets** J02 (+1.71, on a radiometrically-normal
    frame, LOFO pred-err 0.49) and P22_009549 (−1.39) before trusting the η² reduction — 85% of the
    pilot's η² drop rides on 3 frames and only F02 has a documented physical story.

@@ -4,13 +4,14 @@
 # array like run_region_array.sbatch; each task takes a round-robin stride of region_frame_list.csv;
 # resumable (skips frames whose {PRODUCT_ID}.npz exists). Map venv (torch/GPU), NOT the isis env.
 #
-# Prereq: Stage A done (907 cubes in $SCRATCH/hirise2ctx/f_region); V2 done
-# (reports/figures/region_frame_incidence.csv). RUN V3 FIRST (run_f_region_stageb on 1 frame +
-# scripts/f_region_v3.py) to pin --slope + confirm parity before this full array.
+# Prereq: Stage A done (907 cubes in $SCRATCH/hirise2ctx/f_region); V2 done WITH subsolar geometry
+# (reports/figures/region_frame_incidence.csv). RUN V3 FIRST (this script on ~2 overlapping frames via
+# `python scripts/f_region_stageb.py --frames PID1 PID2 ...` + scripts/f_region_v3.py) to confirm
+# co-location + parity before this full array. Per-row incidence is physical (no slope to set).
 #
 # Usage:
 #   cd ~/hirise2ctx && git pull && mkdir -p logs
-#   SLOPE=0.635 sbatch run_f_region_stageb.sbatch          # slope from V3
+#   sbatch run_f_region_stageb.sbatch
 # Sizing: V1 measured ~162M valid tiles, ~33 L40S-h embed. 6 GPUs -> ~5-6 h; --array=0-11 -> ~3 h.
 #
 #SBATCH --job-name=h2c-region-B
@@ -33,16 +34,15 @@ cd "$HOME/hirise2ctx"
 
 N=$(( SLURM_ARRAY_TASK_MAX - SLURM_ARRAY_TASK_MIN + 1 ))
 I=$(( SLURM_ARRAY_TASK_ID - SLURM_ARRAY_TASK_MIN ))
-SLOPE="${SLOPE:-0.635}"
 BATCH="${BATCH:-256}"
 CUBES="${CUBES:-$SCRATCH/hirise2ctx/f_region}"
 OUT="${STAGEB_OUT:-$SCRATCH/hirise2ctx/f_region_logits}"
 mkdir -p "$OUT"
 
-echo "task $I/$N  host $(hostname)  GPU ${CUDA_VISIBLE_DEVICES:-none}  slope $SLOPE  batch $BATCH"
+echo "task $I/$N  host $(hostname)  GPU ${CUDA_VISIBLE_DEVICES:-none}  batch $BATCH"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 
 TASK_ID=$I N_TASKS=$N python scripts/f_region_stageb.py \
-    --cubes-dir "$CUBES" --out-dir "$OUT" --slope "$SLOPE" --batch "$BATCH"
+    --cubes-dir "$CUBES" --out-dir "$OUT" --batch "$BATCH"
 
 echo "task $I done -> $OUT"

@@ -63,27 +63,33 @@ def main() -> None:
     rows, missing, flagged = [], [], 0
     for k, (vol, g) in enumerate(vols):
         names, idx = volume_index(vol)
-        i_pid = _col(names, "PRODUCT_ID")
-        i_inc = _col(names, "INCIDENCE_ANGLE")
-        i_lat = _col(names, "CENTER_LATITUDE", "SUB_SPACECRAFT_LATITUDE")
+        c = {"pid": _col(names, "PRODUCT_ID"),
+             "inc": _col(names, "INCIDENCE_ANGLE"),
+             "clat": _col(names, "CENTER_LATITUDE"),
+             "clon": _col(names, "CENTER_LONGITUDE"),
+             "slat": _col(names, "SUB_SOLAR_LATITUDE", "SUBSOLAR_LATITUDE"),
+             "slon": _col(names, "SUB_SOLAR_LONGITUDE", "SUBSOLAR_LONGITUDE")}
+        mx = max(c.values())
         by = {}
         for ln in idx:
             vals = [v.strip().strip('"') for v in ln.split(",")]
-            if len(vals) > max(i_pid, i_inc, i_lat):
+            if len(vals) > mx:
                 try:
-                    by[vals[i_pid]] = (float(vals[i_inc]), float(vals[i_lat]))
+                    by[vals[c["pid"]]] = tuple(float(vals[c[k2]])
+                                               for k2 in ("inc", "clat", "clon", "slat", "slon"))
                 except ValueError:
                     pass
         for pid in g["PRODUCT_ID"]:
             if pid not in by:
                 missing.append(pid)
                 continue
-            inc, lat = by[pid]
+            inc, clat, clon, slat, slon = by[pid]
             sm = float(seam.get(pid, float("nan")))
             if np.isfinite(sm) and abs(sm - inc) > 1.0:
                 flagged += 1
             rows.append(dict(PRODUCT_ID=pid, VOLUME_ID=vol, incidence=round(inc, 4),
-                             center_lat=round(lat, 4)))
+                             center_lat=round(clat, 4), center_lon=round(clon, 4),
+                             subsolar_lat=round(slat, 4), subsolar_lon=round(slon, 4)))
         if (k + 1) % 25 == 0 or k + 1 == len(vols):
             print(f"  {k+1}/{len(vols)} volumes, {len(rows)} frames resolved", flush=True)
 
@@ -94,11 +100,19 @@ def main() -> None:
           f"center_lat {df.center_lat.min():.1f}-{df.center_lat.max():.1f} deg")
     print(f"SeamMap-vs-PDS incidence disagreements >1 deg: {flagged} (SeamMap untrusted; PDS used)")
 
-    # candidate per-row slope: between-frame incidence-vs-lat fit (proxy for within-frame di/dlat)
-    if len(df) > 10:
-        slope = float(np.polyfit(df.center_lat, df.incidence, 1)[0])
-        print(f"between-frame di/dlat fit = {slope:+.3f} deg/deg "
-              f"(audit within-family ~0.635; Stage B slope candidate)")
+    # PHYSICAL-model sanity: cos(i) at the image center from subsolar geometry must reproduce the
+    # index INCIDENCE_ANGLE (else the spherical model or a column is wrong). Stage B uses this same
+    # geometry per row -> exact per-row incidence, no slope fit (the pooled fit was season-confounded).
+    if len(df):
+        phi = np.radians(df.center_lat.values)
+        phis = np.radians(df.subsolar_lat.values)
+        dlam = np.radians((df.center_lon - df.subsolar_lon).values)
+        cosi = np.sin(phi) * np.sin(phis) + np.cos(phi) * np.cos(phis) * np.cos(dlam)
+        inc_phys = np.degrees(np.arccos(np.clip(cosi, -1.0, 1.0)))
+        dinc = np.abs(inc_phys - df.incidence.values)
+        print(f"physical incidence(center) vs index: median |Δ| {np.median(dinc):.2f} deg, "
+              f"max {dinc.max():.2f} deg, frames >2 deg: {int((dinc > 2).sum())} "
+              f"(median <~1 deg ⇒ subsolar geometry OK for the per-row model)")
 
     if missing:
         print(f"\n⚠ {len(missing)} frames MISSING from their PDS volume index (V2 gate):")

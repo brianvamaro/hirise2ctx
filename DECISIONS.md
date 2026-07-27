@@ -4879,8 +4879,15 @@ idea does NOT work — like the raw ramp, it is geology-confounded (V5 lesson), 
 local-time/season dependent. So the linear `--slope` (default 0.635) is a placeholder; the correct
 model is **PHYSICAL** — extend V2 to pull `SUB_SOLAR_LATITUDE/LONGITUDE` + `CENTER_LONGITUDE` and
 compute `cos(i(φ)) = sinφ·sinφ_s + cosφ·cosφ_s·cos(λ_frame − λ_s)` per row (exact, no fitting;
-reproducing the index center incidence is its V3 sanity check). This removes the slope guess entirely
-and is the immediate next step before the 907 Stage-B run.
+reproducing the index center incidence is its sanity check).
+
+**Physical incidence LANDED 2026-07-26.** V2 extended with `subsolar_lat/lon` + `center_lon`;
+`f_region_stageb.py` computes per-row incidence physically and the `--slope` param is gone. V2 sanity:
+physical incidence(center) reproduces the index incidence to **median 0.11° / max 0.23°, 0 frames
+>2°** → the per-row gradient is exact and the ramp correction needs no tuning. V3 (`f_region_v3.py`)
+now validates **co-location** (overlapping frames land on the same global (TI,TJ) tiles — the Stage-C
+prerequisite) + **pre-H4 overlap agreement** on a couple of frames, instead of a slope. Early-stop
+guard dropped (overnight Stage B; go/no-go at the Stage-C/D gates). **Ready for V3 → the 907 run.**
 
 ## 2026-07-07 — PHASE 2 H1 (per-frame log-median centering): BOTH GATES PASS — η² 0.179→0.081, embedder amplification KILLED
 
