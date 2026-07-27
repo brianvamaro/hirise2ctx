@@ -58,17 +58,27 @@ def main() -> int:
         sets[pid] = frame_tiles(path)
         print(f"  {pid}: {len(sets[pid]):,} global tiles")
 
+    from collections import Counter
+    cnt = Counter()
+    for s in sets.values():
+        cnt.update(s)
+    multi = sum(1 for v in cnt.values() if v >= 2)                 # tiles covered by >=2 frames
+    print(f"\ntotal distinct tiles {len(cnt):,}; covered by >=2 frames (co-located): {multi:,}")
+
     pids = list(sets)
-    max_shared = 0
-    print("\n=== pairwise co-located tiles ===")
+    pairs = []
     for i in range(len(pids)):
         for j in range(i + 1, len(pids)):
             sh = len(sets[pids[i]] & sets[pids[j]])
-            max_shared = max(max_shared, sh)
-            print(f"  {pids[i]} ∩ {pids[j]} = {sh:,} shared")
+            if sh > 0:
+                pairs.append((sh, pids[i], pids[j]))
+    pairs.sort(reverse=True)
+    print(f"overlapping pairs: {len(pairs)} of {len(pids)*(len(pids)-1)//2}")
+    for sh, a, b in pairs[:12]:
+        print(f"  {a} ∩ {b} = {sh:,}")
 
-    ok = max_shared > 0
-    print(f"\nVERDICT: {'PASS — frames co-locate on the global grid; Stage C can build the overlap graph' if ok else 'FAIL — 0 shared tiles: cubes not on a shared lattice; fix keying before the 907 run'}")
+    ok = multi > 0
+    print(f"\nVERDICT: {'PASS — overlapping frames co-locate on the global grid; Stage C can build the overlap graph' if ok else 'FAIL — 0 co-located tiles across ALL these frames: keying/lattice bug; fix before the 907 run'}")
     return 0 if ok else 1
 
 
