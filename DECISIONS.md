@@ -4848,6 +4848,28 @@ all 907 region frames to `{PRODUCT_ID}.map.cub` (Stage B's input).
 Next after Stage A: **V2** (PDS incidence for all 907 — now load-bearing since per-row `cos^k(i(lat))`
 needs each frame's N/S endpoints) + **V3** parity gate, then **Stage B**.
 
+## 2026-07-26 — F build V2 (per-frame incidence for the per-row mapping): 907/907 resolved; pooled slope is CONFOUNDED
+
+Stage A complete (907/907 cubes, integrity-clean). V2 = per-frame TRUE incidence + center latitude
+for the per-row `cos^k(i(lat))` Stage-B mapping (`scripts/f_region_incidence.py` →
+`reports/figures/region_frame_incidence.csv`; cube-based routes were dead ends — caminfo needs the
+deleted Level-1 cubes, phocube is too slow — so PDS metadata it is).
+- **907/907 resolved** from the PDS volume indexes (812 volumes) — V2 completeness gate PASS, no
+  missing frames. incidence 37.1–80.8°, center_lat 30.0–50.5°.
+- **SeamMap-vs-PDS incidence: 0 disagreements >1°** — the P20_008839 decimal-shift class does NOT
+  appear in the 907 region set (it was a leg-B cohort frame); SeamMap would have been fine here, but
+  PDS is used regardless.
+- **⚠ The per-row SLOPE (di/dlat) is still open.** The pooled between-frame fit of center-incidence
+  vs center-latitude = **+0.019°/°** — CONFOUNDED: pooling 907 frames across many Mars seasons washes
+  out the latitude dependence (same-latitude frames at different Ls have very different incidence). It
+  is NOT the within-frame di/dlat the per-row correction needs (audit within-family ~0.635; simple
+  subsolar geometry for a region well north of the subsolar latitude → closer to ~1). **Resolution:
+  make the slope a Stage-B parameter and pin it empirically — apply per-row on a test frame and tune
+  so the residual within-frame ramp drops <1% (V5-style check, folds into V3); or add
+  SUB_SOLAR_LATITUDE from the index for a physical per-frame slope. Do NOT use the confounded 0.019.**
+
+Next: build Stage B (slope parameterized) → V3 (parity + residual-ramp slope check) → the 907 array.
+
 ## 2026-07-07 — PHASE 2 H1 (per-frame log-median centering): BOTH GATES PASS — η² 0.179→0.081, embedder amplification KILLED
 
 First item of the PLAN_StripingArtifact PHASE 2 docket. **H1 = log-minnaert (k=0.580) + a

@@ -75,3 +75,4 @@ Thumbs.db
 # H3 consistency pairs (169M; recomputable via scripts/f_h3_pairs.py from the h2_frame_emb cache)
 reports/f_leg_b/h3_consistency_pairs.npz
 reports/f_build/probe_cubes/
+cache/pds_index/
