@@ -4895,11 +4895,14 @@ Kicking off the V3 Stage-B test on Sherlock hit two environment issues, both fix
 - **H1 head not on Sherlock.** `models/` is gitignored, so `deployable_f_center` (the H1-retrained
   head) never reached Sherlock — Stage B died at `DeployableHead.load`. Force-added the small (2.6 MB)
   frozen head to git as a deliberate exception (commit 131e6e1) so it travels with `git pull`.
-- **ISIS3 driver segfaults on resampled reads.** `rasterio.read(out_shape=...)` on a `.map.cub`
-  SIGSEGVs in GDAL's ISIS3 driver (native windowed reads verified fine). `frame_median` rewritten to
-  take the H1 centering median from native full-width strips (commit efe9760) — no cube→GeoTIFF
-  conversion; `process_frame` already used native windows.
-V3 (co-location + pre-H4 agreement on 5 E8_N44 frames) re-running after the fixes.
+- **ISIS3 driver segfaults on large reads → convert to GeoTIFF.** `rasterio.read(out_shape=...)`
+  SIGSEGVs (fixed `frame_median` → native strips, efe9760), but then `process_frame`'s native
+  **4096² windowed read ALSO SIGSEGVs** (16.7M px; a 2048²=4.2M read is fine → a size threshold in
+  GDAL's ISIS3 driver, faulthandler-confirmed at process_frame:124). Decisive fix: **convert all 907
+  `.map.cub` → `.map.tif` (GeoTIFF/LZW)** via `run_f_region_tif.sbatch` (`gdal_translate` reads the
+  cube in native blocks so the conversion itself is safe — proven in the probe), and Stage B now
+  **prefers `.map.tif`** (resolver order changed). GTiff reads are solid at any window size (the
+  laptop ran Stage B on tifs end-to-end). Order: **tif-convert → V3 → 907 Stage B.**
 
 ## 2026-07-07 — PHASE 2 H1 (per-frame log-median centering): BOTH GATES PASS — η² 0.179→0.081, embedder amplification KILLED
 

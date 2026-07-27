@@ -181,7 +181,9 @@ def main() -> int:
         out_npz = out_dir / f"{pid}.npz"
         if out_npz.exists():
             continue
-        cube = next((cubes / f"{pid}{e}" for e in (".map.cub", ".map.tif", ".tif")
+        # prefer .map.tif: GDAL's ISIS3 driver SIGSEGVs on large windowed reads of .map.cub, so the
+        # build reads GeoTIFFs (run_f_region_tif.sbatch converts them). DECISIONS 2026-07-27.
+        cube = next((cubes / f"{pid}{e}" for e in (".map.tif", ".tif", ".map.cub")
                      if (cubes / f"{pid}{e}").exists()), None)
         if cube is None or pid not in inc.index:
             print(f"  ⚠ {pid}: cube or incidence missing -> skip", flush=True)
