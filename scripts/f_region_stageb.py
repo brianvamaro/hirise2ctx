@@ -126,14 +126,17 @@ def process_frame(cube, transform, H, W, subsolar_lat, dlam_deg, med, embedder, 
     win, overlap = args.win_px, 2 * TILE_PX
     grid = [(r, c) for r in window_offsets(H, win, overlap, TILE_PX)
             for c in window_offsets(W, win, overlap, TILE_PX)]
+    print(f"    {len(grid)} windows ({H}x{W})", flush=True)
     TI, TJ, PROB = [], [], []
-    for (row_off, col_off) in grid:
+    for wk, (row_off, col_off) in enumerate(grid):
         h = min(win, H - row_off)
         w = min(win, W - col_off)
         if h < 3 * TILE_PX or w < 3 * TILE_PX:
             continue
+        t_r = time.monotonic()
         with rasterio.open(cube) as ds:                       # open -> read -> CLOSE before embed
             iff = ds.read(1, window=Window(col_off, row_off, w, h)).astype(np.float32)
+        t_read = time.monotonic() - t_r
         rows = row_off + np.arange(h, dtype=float)
         cosk = cosk_incidence_rows(rows, transform, subsolar_lat, dlam_deg)
         u8 = map_uint8(iff, cosk, med)
@@ -146,10 +149,15 @@ def process_frame(cube, transform, H, W, subsolar_lat, dlam_deg, med, embedder, 
         zf = own_tile_zero_fraction(u8, ti, tj, tile_px=TILE_PX, row0=row_off, col0=col_off)
         keep = zf <= args.max_zero_fraction
         if not keep.any():
+            if wk % 10 == 0:
+                print(f"    win {wk+1}/{len(grid)} read {t_read:.1f}s, 0 valid tiles", flush=True)
             continue
         ti, tj = ti[keep], tj[keep]
+        t_e = time.monotonic()
         emb, valid = embedder.embed_window(u8, ti, tj, tile_px=TILE_PX, row0=row_off,
                                            col0=col_off, pool="gem", batch=args.batch)
+        print(f"    win {wk+1}/{len(grid)}: {int(valid.sum())} tiles  "
+              f"read {t_read:.1f}s embed {time.monotonic()-t_e:.1f}s", flush=True)
         if not valid.any():
             continue
         prob = head.predict(emb[valid]).astype(np.float32)
