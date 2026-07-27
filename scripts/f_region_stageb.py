@@ -46,6 +46,7 @@ import src.modeling  # noqa: F401  OpenMP/DLL bootstrap; must precede numpy/torc
 import numpy as np
 import pandas as pd
 import rasterio
+import torch
 from rasterio.windows import Window
 
 from scripts.map_region import window_offsets
@@ -63,14 +64,21 @@ FRAME_LIST = REPO / "reports" / "figures" / "region_frame_list.csv"
 INC_CSV = REPO / "reports" / "figures" / "region_frame_incidence.csv"
 
 
-def to_uint8_log(arr: np.ndarray) -> np.ndarray:
-    """ln(x) in [ln lo, ln hi] -> [1,255]; nodata/<=0 -> 0 (matches f_pilot_crop.to_uint8_log)."""
-    out = np.zeros(arr.shape, dtype=np.uint8)
-    fin = np.isfinite(arr) & (arr > 0)
-    v = np.log(arr[fin])
-    llo, lhi = np.log(STRETCH_LO), np.log(STRETCH_HI)
-    out[fin] = np.clip((v - llo) / (lhi - llo) * 254.0 + 1.0, 1, 255).astype(np.uint8)
-    return out
+def map_uint8(iff: np.ndarray, cosk: np.ndarray, med: float) -> np.ndarray:
+    """I/F ÷ cos^k(i(lat)) ÷ median → ln stretch [lo,hi] → uint8 (nodata/<=0 → 0), done in TORCH.
+
+    A large numpy log/divide (16.7M px @ win 4096) SIGSEGVs once the embedder is loaded on CUDA —
+    numpy's math runtime vs torch's OpenMP runtime cannot coexist for the big op (small numpy ops,
+    e.g. frame_median's strips, are fine). Keeping this in torch (one runtime) avoids the conflict.
+    DECISIONS 2026-07-27."""
+    t = torch.from_numpy(np.ascontiguousarray(iff))
+    t = t / torch.from_numpy(np.ascontiguousarray(cosk, dtype=np.float32))[:, None] / float(med)
+    fin = torch.isfinite(t) & (t > 0)
+    out = torch.zeros(t.shape, dtype=torch.uint8)
+    llo, lhi = float(np.log(STRETCH_LO)), float(np.log(STRETCH_HI))
+    out[fin] = torch.clamp((torch.log(t[fin]) - llo) / (lhi - llo) * 254.0 + 1.0,
+                           1.0, 255.0).to(torch.uint8)
+    return out.numpy()
 
 
 def lat_deg_of_rows(transform, row_idx: np.ndarray) -> np.ndarray:
@@ -128,7 +136,7 @@ def process_frame(ds, transform, subsolar_lat, dlam_deg, med, embedder, head, ar
         iff = ds.read(1, window=Window(col_off, row_off, w, h)).astype(np.float32)
         rows = row_off + np.arange(h, dtype=float)
         cosk = cosk_incidence_rows(rows, transform, subsolar_lat, dlam_deg)
-        u8 = to_uint8_log((iff / cosk[:, None]) / med)
+        u8 = map_uint8(iff, cosk, med)
         ti, tj = tile_grid_for_window(u8.shape, row_off, col_off, TILE_PX)
         if ti.size == 0:
             continue
