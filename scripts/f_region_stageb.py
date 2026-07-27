@@ -140,15 +140,21 @@ def process_frame(cube, transform, H, W, subsolar_lat, dlam_deg, med, embedder, 
         ti, tj = tile_grid_for_window(u8.shape, row_off, col_off, TILE_PX)
         if ti.size == 0:
             continue
+        # Skip mostly-nodata tiles BEFORE embedding (frames are thin swaths in a big canvas ~57%
+        # nodata; embedding all of them then masking after was the bottleneck). The zero-fraction
+        # count is cheap numpy. DECISIONS 2026-07-27.
+        zf = own_tile_zero_fraction(u8, ti, tj, tile_px=TILE_PX, row0=row_off, col0=col_off)
+        keep = zf <= args.max_zero_fraction
+        if not keep.any():
+            continue
+        ti, tj = ti[keep], tj[keep]
         emb, valid = embedder.embed_window(u8, ti, tj, tile_px=TILE_PX, row0=row_off,
                                            col0=col_off, pool="gem", batch=args.batch)
-        zf = own_tile_zero_fraction(u8, ti, tj, tile_px=TILE_PX, row0=row_off, col0=col_off)
-        usable = valid & (zf <= args.max_zero_fraction)
-        if not usable.any():
+        if not valid.any():
             continue
-        prob = head.predict(emb[usable]).astype(np.float32)
-        cy = transform.f + (ti[usable] + 0.5) * TILE_PX * transform.e
-        cx = transform.c + (tj[usable] + 0.5) * TILE_PX * transform.a
+        prob = head.predict(emb[valid]).astype(np.float32)
+        cy = transform.f + (ti[valid] + 0.5) * TILE_PX * transform.e
+        cx = transform.c + (tj[valid] + 0.5) * TILE_PX * transform.a
         TI.append(np.round(cy / GLOBAL_M).astype(np.int64))
         TJ.append(np.round(cx / GLOBAL_M).astype(np.int64))
         PROB.append(prob)
