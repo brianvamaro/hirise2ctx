@@ -34,19 +34,13 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-# torch(CUDA) x numpy/rasterio OpenBLAS threading conflict SIGSEGVs on Sherlock GPU nodes: the uint8
-# map op crashed ONLY with the embedder loaded on CUDA (login/CPU was fine). Single-thread the
-# CPU-side libs BEFORE numpy/torch import (DECISIONS 2026-07-27).
 import os
-for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
-    os.environ.setdefault(_v, "1")
 
 import src.modeling  # noqa: F401  OpenMP/DLL bootstrap; must precede numpy/torch
 
 import numpy as np
 import pandas as pd
 import rasterio
-import torch
 from rasterio.windows import Window
 
 from scripts.map_region import window_offsets
@@ -64,21 +58,24 @@ FRAME_LIST = REPO / "reports" / "figures" / "region_frame_list.csv"
 INC_CSV = REPO / "reports" / "figures" / "region_frame_incidence.csv"
 
 
-def map_uint8(iff: np.ndarray, cosk: np.ndarray, med: float) -> np.ndarray:
-    """I/F ÷ cos^k(i(lat)) ÷ median → ln stretch [lo,hi] → uint8 (nodata/<=0 → 0), done in TORCH.
+def map_uint8(iff: np.ndarray, cosk: np.ndarray, med: float, row_block: int = 64) -> np.ndarray:
+    """I/F ÷ cos^k(i(lat)) ÷ median → ln stretch [lo,hi] → uint8 (nodata/<=0 → 0).
 
-    A large numpy log/divide (16.7M px @ win 4096) SIGSEGVs once the embedder is loaded on CUDA —
-    numpy's math runtime vs torch's OpenMP runtime cannot coexist for the big op (small numpy ops,
-    e.g. frame_median's strips, are fine). Keeping this in torch (one runtime) avoids the conflict.
-    DECISIONS 2026-07-27."""
-    t = torch.from_numpy(np.ascontiguousarray(iff))
-    t = t / torch.from_numpy(np.ascontiguousarray(cosk, dtype=np.float32))[:, None] / float(med)
-    fin = torch.isfinite(t) & (t > 0)
-    out = torch.zeros(t.shape, dtype=torch.uint8)
+    Pure numpy, computed in small ROW-BLOCK chunks: a single log/divide over the full ~16.7M-px
+    window SIGSEGVs once the embedder is loaded on CUDA, while small ops (≲1M px, cf. frame_median's
+    strips) are fine. Chunking keeps every op small AND keeps the pre-embed path torch-free like
+    map_region (a torch pre-embed op perturbed the GPU conv). DECISIONS 2026-07-27."""
+    out = np.zeros(iff.shape, dtype=np.uint8)
     llo, lhi = float(np.log(STRETCH_LO)), float(np.log(STRETCH_HI))
-    out[fin] = torch.clamp((torch.log(t[fin]) - llo) / (lhi - llo) * 254.0 + 1.0,
-                           1.0, 255.0).to(torch.uint8)
-    return out.numpy()
+    med = float(med)
+    for r0 in range(0, iff.shape[0], row_block):
+        d = (iff[r0:r0 + row_block] / cosk[r0:r0 + row_block, None]) / med
+        fin = np.isfinite(d) & (d > 0)
+        if fin.any():
+            v = np.log(d[fin])
+            out[r0:r0 + row_block][fin] = np.clip((v - llo) / (lhi - llo) * 254.0 + 1.0,
+                                                  1, 255).astype(np.uint8)
+    return out
 
 
 def lat_deg_of_rows(transform, row_idx: np.ndarray) -> np.ndarray:

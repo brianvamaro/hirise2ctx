@@ -32,10 +32,6 @@ ml python/3.12.1
 source "/home/groups/mlapotre/bamaro/envs/hirise2ctx/bin/activate"
 cd "$HOME/hirise2ctx"
 
-# torch(CUDA) x numpy/OpenBLAS threading conflict SIGSEGVs on GPU nodes -- single-thread the
-# CPU-side libs (also set in-script; belt-and-suspenders). DECISIONS 2026-07-27.
-export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
-
 N=$(( SLURM_ARRAY_TASK_MAX - SLURM_ARRAY_TASK_MIN + 1 ))
 I=$(( SLURM_ARRAY_TASK_ID - SLURM_ARRAY_TASK_MIN ))
 BATCH="${BATCH:-256}"
