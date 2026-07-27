@@ -1,0 +1,11 @@
+{
+  "name": "deployable_mlp_ens3_seed0",
+  "seed": 0,
+  "hidden": [
+    256,
+    64
+  ],
+  "dropout": 0.2,
+  "d_in": 768,
+  "batch": 4096
+}
