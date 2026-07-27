@@ -86,14 +86,24 @@ def cosk_incidence_rows(row_idx, transform, subsolar_lat, dlam_deg) -> np.ndarra
     return cosi ** K_MINNAERT
 
 
-def frame_median(ds, transform, subsolar_lat, dlam_deg, stride: int = 16) -> float:
-    """H1 centering statistic: median of the cos^k(i(lat))-corrected I/F over valid pixels (decimated)."""
-    a = ds.read(1, out_shape=(ds.height // stride, ds.width // stride)).astype(np.float32)
-    rows = (np.arange(a.shape[0]) * stride).astype(float)
-    cosk = cosk_incidence_rows(rows, transform, subsolar_lat, dlam_deg)
-    d = a / cosk[:, None]
-    fin = np.isfinite(d) & (a > 0) & (a > -1e30)
-    return float(np.median(d[fin])) if fin.any() else float("nan")
+def frame_median(ds, transform, subsolar_lat, dlam_deg,
+                 n_strips: int = 24, strip_h: int = 64, col_sub: int = 8) -> float:
+    """H1 centering statistic: median of the cos^k(i(lat))-corrected I/F over valid pixels.
+
+    Sampled from NATIVE full-width strips spaced across the frame — GDAL's ISIS3 driver segfaults on
+    a resampled `read(out_shape=...)` (DECISIONS 2026-07-27; native windowed reads are fine)."""
+    H, W = ds.height, ds.width
+    vals = []
+    for r0 in np.unique(np.linspace(0, max(H - strip_h, 0), n_strips).astype(int)):
+        h = min(strip_h, H - int(r0))
+        a = ds.read(1, window=Window(0, int(r0), W, h))[:, ::col_sub].astype(np.float32)
+        rows = int(r0) + np.arange(h, dtype=float)
+        cosk = cosk_incidence_rows(rows, transform, subsolar_lat, dlam_deg)
+        d = a / cosk[:, None]
+        fin = np.isfinite(d) & (a > 0) & (a > -1e30)
+        if fin.any():
+            vals.append(d[fin])
+    return float(np.median(np.concatenate(vals))) if vals else float("nan")
 
 
 def process_frame(ds, transform, subsolar_lat, dlam_deg, med, embedder, head, args):
