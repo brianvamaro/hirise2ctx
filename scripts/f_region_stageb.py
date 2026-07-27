@@ -98,29 +98,31 @@ def cosk_incidence_rows(row_idx, transform, subsolar_lat, dlam_deg) -> np.ndarra
     return cosi ** K_MINNAERT
 
 
-def frame_median(ds, transform, subsolar_lat, dlam_deg,
+def frame_median(cube, transform, subsolar_lat, dlam_deg,
                  n_strips: int = 24, strip_h: int = 64, col_sub: int = 8) -> float:
     """H1 centering statistic: median of the cos^k(i(lat))-corrected I/F over valid pixels.
 
-    Sampled from NATIVE full-width strips spaced across the frame — GDAL's ISIS3 driver segfaults on
-    a resampled `read(out_shape=...)` (DECISIONS 2026-07-27; native windowed reads are fine)."""
-    H, W = ds.height, ds.width
+    Sampled from NATIVE full-width strips (a resampled read(out_shape=...) SIGSEGVs the ISIS3 driver;
+    DECISIONS 2026-07-27). Opens+closes the cube here; no embed runs during this, so it's safe."""
     vals = []
-    for r0 in np.unique(np.linspace(0, max(H - strip_h, 0), n_strips).astype(int)):
-        h = min(strip_h, H - int(r0))
-        a = ds.read(1, window=Window(0, int(r0), W, h))[:, ::col_sub].astype(np.float32)
-        rows = int(r0) + np.arange(h, dtype=float)
-        cosk = cosk_incidence_rows(rows, transform, subsolar_lat, dlam_deg)
-        d = a / cosk[:, None]
-        fin = np.isfinite(d) & (a > 0) & (a > -1e30)
-        if fin.any():
-            vals.append(d[fin])
+    with rasterio.open(cube) as ds:
+        H, W = ds.height, ds.width
+        for r0 in np.unique(np.linspace(0, max(H - strip_h, 0), n_strips).astype(int)):
+            h = min(strip_h, H - int(r0))
+            a = ds.read(1, window=Window(0, int(r0), W, h))[:, ::col_sub].astype(np.float32)
+            rows = int(r0) + np.arange(h, dtype=float)
+            cosk = cosk_incidence_rows(rows, transform, subsolar_lat, dlam_deg)
+            d = a / cosk[:, None]
+            fin = np.isfinite(d) & (a > 0) & (a > -1e30)
+            if fin.any():
+                vals.append(d[fin])
     return float(np.median(np.concatenate(vals))) if vals else float("nan")
 
 
-def process_frame(ds, transform, subsolar_lat, dlam_deg, med, embedder, head, args):
-    """Sweep windows -> global (TI, TJ, prob) for one frame."""
-    H, W = ds.height, ds.width
+def process_frame(cube, transform, H, W, subsolar_lat, dlam_deg, med, embedder, head, args):
+    """Sweep windows -> global (TI, TJ, prob). The cube is opened+closed PER window read, so NO GDAL
+    dataset is open while the CUDA embed runs — a held-open GDAL dataset during the embed SIGSEGVs the
+    conv (map_region reads the same open->read->close way). DECISIONS 2026-07-27."""
     win, overlap = args.win_px, 2 * TILE_PX
     grid = [(r, c) for r in window_offsets(H, win, overlap, TILE_PX)
             for c in window_offsets(W, win, overlap, TILE_PX)]
@@ -130,7 +132,8 @@ def process_frame(ds, transform, subsolar_lat, dlam_deg, med, embedder, head, ar
         w = min(win, W - col_off)
         if h < 3 * TILE_PX or w < 3 * TILE_PX:
             continue
-        iff = ds.read(1, window=Window(col_off, row_off, w, h)).astype(np.float32)
+        with rasterio.open(cube) as ds:                       # open -> read -> CLOSE before embed
+            iff = ds.read(1, window=Window(col_off, row_off, w, h)).astype(np.float32)
         rows = row_off + np.arange(h, dtype=float)
         cosk = cosk_incidence_rows(rows, transform, subsolar_lat, dlam_deg)
         u8 = map_uint8(iff, cosk, med)
@@ -206,17 +209,18 @@ def main() -> int:
             print(f"  ⚠ {pid}: no incidence row -> skip", flush=True)
             continue
         t0 = time.monotonic()
-        with rasterio.open(cube) as ds:
+        with rasterio.open(cube) as ds:                       # metadata only; CLOSE before any embed
             tr = ds.transform
-            slat = float(inc.loc[pid, "subsolar_lat"])
-            dlam = float(inc.loc[pid, "center_lon"]) - float(inc.loc[pid, "subsolar_lon"])
-            ci = float(inc.loc[pid, "incidence"])           # index center incidence (QA/logging only)
-            med = frame_median(ds, tr, slat, dlam)
-            if not np.isfinite(med):
-                print(f"  ⚠ {pid}: no valid pixels -> skip", flush=True)
-                continue
-            TI, TJ, prob = process_frame(ds, tr, slat, dlam, med, embedder, head, args)
+            H, W = ds.height, ds.width
             crs_wkt = ds.crs.to_wkt() if ds.crs else ""
+        slat = float(inc.loc[pid, "subsolar_lat"])
+        dlam = float(inc.loc[pid, "center_lon"]) - float(inc.loc[pid, "subsolar_lon"])
+        ci = float(inc.loc[pid, "incidence"])                 # index center incidence (QA/logging only)
+        med = frame_median(cube, tr, slat, dlam)
+        if not np.isfinite(med):
+            print(f"  ⚠ {pid}: no valid pixels -> skip", flush=True)
+            continue
+        TI, TJ, prob = process_frame(cube, tr, H, W, slat, dlam, med, embedder, head, args)
         np.savez_compressed(out_npz, TI=TI, TJ=TJ, prob=prob)
         (out_dir / f"{pid}.json").write_text(json.dumps({
             "PRODUCT_ID": pid, "index_incidence": ci, "subsolar_lat": slat,
