@@ -4889,6 +4889,18 @@ now validates **co-location** (overlapping frames land on the same global (TI,TJ
 prerequisite) + **pre-H4 overlap agreement** on a couple of frames, instead of a slope. Early-stop
 guard dropped (overnight Stage B; go/no-go at the Stage-C/D gates). **Ready for V3 → the 907 run.**
 
+## 2026-07-27 — Stage-B first-run: two Sherlock gotchas fixed (head vendoring + ISIS3 out_shape segfault)
+
+Kicking off the V3 Stage-B test on Sherlock hit two environment issues, both fixed:
+- **H1 head not on Sherlock.** `models/` is gitignored, so `deployable_f_center` (the H1-retrained
+  head) never reached Sherlock — Stage B died at `DeployableHead.load`. Force-added the small (2.6 MB)
+  frozen head to git as a deliberate exception (commit 131e6e1) so it travels with `git pull`.
+- **ISIS3 driver segfaults on resampled reads.** `rasterio.read(out_shape=...)` on a `.map.cub`
+  SIGSEGVs in GDAL's ISIS3 driver (native windowed reads verified fine). `frame_median` rewritten to
+  take the H1 centering median from native full-width strips (commit efe9760) — no cube→GeoTIFF
+  conversion; `process_frame` already used native windows.
+V3 (co-location + pre-H4 agreement on 5 E8_N44 frames) re-running after the fixes.
+
 ## 2026-07-07 — PHASE 2 H1 (per-frame log-median centering): BOTH GATES PASS — η² 0.179→0.081, embedder amplification KILLED
 
 First item of the PLAN_StripingArtifact PHASE 2 docket. **H1 = log-minnaert (k=0.580) + a
