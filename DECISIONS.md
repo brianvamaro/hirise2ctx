@@ -4870,6 +4870,18 @@ deleted Level-1 cubes, phocube is too slow — so PDS metadata it is).
 
 Next: build Stage B (slope parameterized) → V3 (parity + residual-ramp slope check) → the 907 array.
 
+**Stage-B kit built 2026-07-26** (`scripts/f_region_stageb.py` + `run_f_region_stageb.sbatch`, GPU
+array, resumable): per-frame `I/F ÷ cos^k(i(lat)) ÷ per-frame median → fixed log-stretch → uint8 →
+FangEmbedder + deployable_f_center → P(rich)`, keyed to a GLOBAL 160 m `(TI,TJ)` grid (round of each
+tile's CTX-CRS world center) so overlapping frames co-locate for Stage C. Sizing ~33 L40S-h.
+**⚠ Incidence-model correction (supersedes the linear slope):** the residual-ramp slope-pinning
+idea does NOT work — like the raw ramp, it is geology-confounded (V5 lesson), and the true slope is
+local-time/season dependent. So the linear `--slope` (default 0.635) is a placeholder; the correct
+model is **PHYSICAL** — extend V2 to pull `SUB_SOLAR_LATITUDE/LONGITUDE` + `CENTER_LONGITUDE` and
+compute `cos(i(φ)) = sinφ·sinφ_s + cosφ·cosφ_s·cos(λ_frame − λ_s)` per row (exact, no fitting;
+reproducing the index center incidence is its V3 sanity check). This removes the slope guess entirely
+and is the immediate next step before the 907 Stage-B run.
+
 ## 2026-07-07 — PHASE 2 H1 (per-frame log-median centering): BOTH GATES PASS — η² 0.179→0.081, embedder amplification KILLED
 
 First item of the PLAN_StripingArtifact PHASE 2 docket. **H1 = log-minnaert (k=0.580) + a
