@@ -34,6 +34,13 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+# torch(CUDA) x numpy/rasterio OpenBLAS threading conflict SIGSEGVs on Sherlock GPU nodes: the uint8
+# map op crashed ONLY with the embedder loaded on CUDA (login/CPU was fine). Single-thread the
+# CPU-side libs BEFORE numpy/torch import (DECISIONS 2026-07-27).
+import os
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_v, "1")
+
 import src.modeling  # noqa: F401  OpenMP/DLL bootstrap; must precede numpy/torch
 
 import numpy as np
@@ -162,8 +169,8 @@ def main() -> int:
     ap.add_argument("--cpu", action="store_true")
     args = ap.parse_args()
 
-    task_id = int(__import__("os").environ.get("TASK_ID", 0))
-    n_tasks = int(__import__("os").environ.get("N_TASKS", 1))
+    task_id = int(os.environ.get("TASK_ID", 0))
+    n_tasks = int(os.environ.get("N_TASKS", 1))
     out_dir = Path(args.out_dir); out_dir.mkdir(parents=True, exist_ok=True)
     cubes = Path(args.cubes_dir)
 
