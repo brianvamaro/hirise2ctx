@@ -156,8 +156,9 @@ def process_frame(cube, transform, H, W, subsolar_lat, dlam_deg, med, embedder, 
         t_e = time.monotonic()
         emb, valid = embedder.embed_window(u8, ti, tj, tile_px=TILE_PX, row0=row_off,
                                            col0=col_off, pool="gem", batch=args.batch)
-        print(f"    win {wk+1}/{len(grid)}: {int(valid.sum())} tiles  "
-              f"read {t_read:.1f}s embed {time.monotonic()-t_e:.1f}s", flush=True)
+        if wk % 20 == 0:                                    # occasional progress, not every window
+            print(f"    win {wk+1}/{len(grid)}: {int(valid.sum())} tiles  "
+                  f"read {t_read:.1f}s embed {time.monotonic()-t_e:.1f}s", flush=True)
         if not valid.any():
             continue
         prob = head.predict(emb[valid]).astype(np.float32)
