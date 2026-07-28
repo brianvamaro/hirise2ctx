@@ -91,12 +91,13 @@ because its polygon bbox straddles a Murray Lab tile boundary (see
 cohort with COLOR.JP2 + LBL on disk but never had Stage 4 run; it is excluded
 from Stage 7 (cohort 36 of 37 colour-eligible).
 
-**Next priorities:** clear the **reopening-call checklist** ([PLAN_FBuild.md](PLAN_FBuild.md) §0):
-build-prep part B (H1 centering-statistic stability, `f_h4_buildprep.py`, waiting on free CPU) +
-the ESP_053989 recheck under `minnaert_center` + the THEMIS-ρ leg on the leveled pilot map → Brian's
-reopening call. If YES → execute **PLAN_FBuild** (the 907-frame regional F build: ≈333 CPU-h ISIS +
-~25–40 GPU-h, one to two Sherlock days); if NO → fall back to shipping the A1 map + caveat + H6
-provenance. Then the parked validation legs resume on the final map
+**Next priorities:** finish **PLAN_FBuild** — the reopening call landed **reopen-with-guards**
+(2026-07-23) and the 907-frame build is executing. **Stage A done** (907 ISIS cubes → GeoTIFFs);
+**Stage B running** on Sherlock (per-frame logit npzs, resumable — re-`sbatch` until 907);
+**Stage C built** 2026-07-28 (`src/leveling.py` + `scripts/f_region_stagec.py`) and waiting on those
+npzs; **Stage D** (composite + the five acceptance gates + the §5.1 head-to-head vs the mosaic map
+and A1) is the next thing to build. If the Stage-C/D gates fail → fall back to shipping the A1 map +
+caveat + H6 provenance. Then the parked validation legs resume on the final map
 ([PLAN_RegionalMap.md](PLAN_RegionalMap.md), 2026-07-13 refresh note). Parked: Stage-7 Tier 3,
 Path A model bank. (Live session state = the `project_state_*` memory notes;
 `HANDOFF_NEXT_SESSION.md` is stale.)
@@ -331,6 +332,30 @@ additionally keys placement on the Murray-tile id.
 & $conda run -n geospatial python scripts/f_pilot_crop.py                # leg A: eta^2, 4 mappings (GPU)
 ```
 
+**The 907-frame F build (PLAN_FBuild).** Stages A (ISIS) and B (embed + infer) run on Sherlock
+(SHERLOCK_RUN.md Parts H–I) and leave one `{PRODUCT_ID}.npz` per frame — `{TI, TJ, prob}` on a global
+160 m tile grid — in `$SCRATCH/hirise2ctx/f_region_logits/`. **Stage C** (the H4 overlap solve) is a
+laptop step, ~10 min, no GPU:
+
+```powershell
+# bring the per-frame logits home (~2 GB): on Sherlock
+#   cd $SCRATCH/hirise2ctx && tar cf f_region_logits.tar f_region_logits
+# then unpack to reports/f_region_logits/ and:
+& $conda run --no-capture-output -n geospatial python -u scripts/f_region_stagec.py
+#   -> reports/figures/fbuild_stagec_offsets.csv    the per-frame logit offsets (the deliverable)
+#      reports/figures/fbuild_trend_guard.{csv,png} the §4.2/4.3 verdict: full vs residual-only
+#      reports/figures/fbuild_stagec_{lambda,graph,attribution,watchlist}.csv + _offsets.png
+# Safe to run on a partial Stage B — it censuses the missing frames and says so loudly.
+# --min-tiles / --cv-frac / --perm-draws tune the edge cut, the held-out CV and the permutation null.
+```
+
+Stage C emits only the offset **table**; Stage D applies it at composite time, so the H1-only
+(`o = 0`), full-offset and residual-only maps all come from the same Stage-B run. The solver core is
+`src/leveling.py` (importable, tested) — the driver just does I/O, reporting and figures. The
+geology-attribution axes need the cached validation rasters (`cache_v2/validation/mola_dem_region.tif`,
+`themis_night_ir_region.tif`, via `scripts/fetch_validation_data.py`); without them Stage C still
+solves but the trend guard cannot bind.
+
 The Murray Lab **SeamMap** (per-pixel source-frame partition) is pulled from the remote tile zip via
 `/vsizip/vsicurl/` range requests (no GB download) and cached as `cache/ctx_tiles/_frames_<tile>.gpkg`
 by `src.striping.load_frames`. All striping/A1 logic lives in `src/striping.py`. CTX **EDR**
@@ -363,6 +388,9 @@ src/
                      # package_split + streaming iter_train_batches/iter_test_batches
   fm_embeddings.py   # PLAN_FM: frozen Fang-ViT extraction + CTX-window inference path
                      # (ViT-B/16 encoder, GeM(p=3) pool, 3x3-context slicing) -- torch half
+  leveling.py        # PLAN_FBuild Stage C: H4 overlap-constrained per-frame leveling at build
+                     # scale -- sparse global-tile edges, weighted LS + Tikhonov, held-out-edge
+                     # CV, LOFO, IDW hole patching, block-permutation trend guard + rule table
   qa.py              # shared sanity-check helpers
 scripts/
   run_stage2.py        # headless per-ObsId Stage 2 driver

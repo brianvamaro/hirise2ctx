@@ -166,6 +166,15 @@ Train/deploy-matched H1 recipe (`minnaert_center`, DECISIONS 2026-07-07):
 
 ## 4. Stage C — the H4 solve on the full graph + the pre-declared trend-guard method
 
+> **BUILT 2026-07-28** (ahead of its inputs, while Stage B runs). Code: **`src/leveling.py`** (the
+> reusable core — sparse global-tile edges, the weighted LS, held-out-edge CV, LOFO, IDW hole
+> patching, block-permutation trend guard, the §4.3 rule table) + **`scripts/f_region_stagec.py`**
+> (the driver). Tests: `tests/test_leveling.py` + `tests/test_region_stagec.py` (32). Measured cost:
+> **~10 min on the laptop** (edge build ~5 min at 178k tiles/frame, LOFO over all 907 in 27 s,
+> 1.94 GB peak) — Sherlock not required. Everything in 1–4 below is implemented as written; the
+> deviations and the guard-1 binding check are in DECISIONS 2026-07-28. Run:
+> `python -u scripts/f_region_stagec.py --logits-dir reports/f_region_logits`.
+
 **Solver:** identical to the pilot (`f_h4_level.py` generalized): per-edge sufficient statistics
 (δ̄_ij, W_ij) over co-located S=32 tiles → 907-unknown weighted least squares + λ·Σo² Tikhonov,
 gauge median(o)=0. 3,584 edge blocks is still a trivial sparse solve (seconds). **λ by
@@ -195,6 +204,32 @@ circularity argument):**
    - Ambiguous → apply full offsets (Brian's standing 2026-07-09b ruling) but ship the smooth field
      as an H6 diagnostic layer and say so in `docs/striping_artifact.md`.
 4. Everything in 1–3 lands in `reports/figures/fbuild_trend_guard.{csv,png}` + a DECISIONS entry.
+
+**As built (2026-07-28), the §4.3 branch is a rule table with pre-set constants** (`lv.trend_verdict`,
+α = 0.05 on the block-permutation p, R² margin = 0.05), so the verdict is not a judgement call made
+after seeing the offsets:
+
+| condition | verdict | `apply` |
+|---|---|---|
+| smooth surface p > α | `NO_TREND` | full offsets |
+| geology group significant and beats metadata by the margin | `RESIDUAL_ONLY` | residual only (§0.1 guard 1) |
+| metadata group significant and beats geology by the margin | `FULL` | full offsets |
+| neither wins by the margin | `AMBIGUOUS` | **`full_pending_ruling`** — escalates, does not auto-apply |
+
+The AMBIGUOUS row is how §4.3's "default to full + diagnostic" and §0.1 guard 1's "must not silently
+default to full" are both honoured: Stage D emits full **and** residual-only composites, and the call
+goes to Brian (§7 Q3) with the dense-graph evidence attached. Metadata axes = incidence, acquisition
+epoch, subsolar latitude, and the **residual** H1 centering statistic `ln(frame_median)`; geology
+axes = per-frame mean MOLA elevation and THEMIS night-IR, sampled over the frame's own tile
+footprint from the cached regional rasters. Both sides get block-permutation p-values, because both
+are spatially smooth and an ordinary correlation test would fire on either.
+
+**Also as built:** graph holes (§4 "No-overlap frames") produce a per-frame `offset_source` of
+`solved` / `component_gauged` / `interpolated` (IDW on frame centres), which is PLAN §1 deliverable
+2's offset-provenance flag; and the §0.1 guards are computed here rather than left to inspection —
+guard 3 as `fbuild_stagec_watchlist.csv` (large |o| that is either LOFO-under-pinned or on a
+radiometrically-normal frame, |z(ln frame median)| < 2), guard 4 as
+`corr(offset, frame-mean P(rich))` in `fbuild_trend_guard.csv` (pilot −0.94).
 
 **No-overlap frames:** none expected (P1: 0 isolated). If Stage-A failures disconnect a frame,
 interpolate its offset from graph neighbors (inverse-distance on frame centers) + flag in H6.

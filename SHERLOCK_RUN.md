@@ -562,6 +562,38 @@ build stage (needs V2 incidence-for-907 + V3 parity first). Cubes stay on scratc
 
 ---
 
+## Part I — F build Stage B: embed + infer, then hand off to Stage C (PLAN_FBuild §3–4)
+
+Stage B reads the **GeoTIFFs** (`{PRODUCT_ID}.map.tif` from `run_f_region_tif.sbatch` — GDAL's ISIS3
+driver segfaults on large windowed `.cub` reads, DECISIONS 2026-07-27) and writes one
+`{PRODUCT_ID}.npz` = `{TI, TJ, prob}` per frame on the global 160 m tile grid, plus a `.json`.
+6-GPU array, map venv, ~33 L40S-h total, **resumable** (skips frames whose npz exists).
+
+```bash
+cd ~/hirise2ctx && git pull
+sbatch run_f_region_tif.sbatch          # once: .map.cub -> .map.tif
+sbatch run_f_region_stageb.sbatch       # re-submit as needed; 8 h wall is short of 151 frames/task
+ls $SCRATCH/hirise2ctx/f_region_logits/*.npz | wc -l     # progress out of 907
+```
+
+**Hand-off to Stage C** — Stage C is a laptop step (~10 min, no GPU), so bring the logits home. They
+are small: ~2–3 MB/frame, **~2 GB for all 907**.
+
+```bash
+cd $SCRATCH/hirise2ctx && tar cf f_region_logits.tar f_region_logits
+# OnDemand Files: download f_region_logits.tar; on the laptop:
+tar xf ~/Downloads/f_region_logits.tar -C reports/     # -> reports/f_region_logits/
+& $conda run --no-capture-output -n geospatial python -u scripts/f_region_stagec.py
+```
+
+Stage C can also run on a **login node** (`python scripts/f_region_stagec.py --logits-dir
+$SCRATCH/hirise2ctx/f_region_logits`) — pure numpy/scipy — but the geology half of the trend guard
+needs the cached MOLA/THEMIS regional rasters, which live on the laptop. Run it at home unless you
+only want the solve. It is safe to run against a **partial** Stage B: it censuses the missing frames
+to `fbuild_stagec_missing_frames.csv` and says so, so an early read costs nothing.
+
+---
+
 ## Going global later
 
 `scripts/map_region.py` is tile-list-driven, so global inference = feed the full Murray tile

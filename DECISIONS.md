@@ -4904,6 +4904,73 @@ Kicking off the V3 Stage-B test on Sherlock hit two environment issues, both fix
   **prefers `.map.tif`** (resolver order changed). GTiff reads are solid at any window size (the
   laptop ran Stage B on tifs end-to-end). Order: **tif-convert → V3 → 907 Stage B.**
 
+## 2026-07-28 — F build Stage C BUILT (H4 solve at 907-frame scale) — verified on synthetic + real MOLA/THEMIS while Stage B runs
+
+Stage B is still running on Sherlock, so Stage C was built and validated **ahead of its inputs**
+(PLAN_FBuild §4). Two new pieces:
+
+- **`src/leveling.py`** — the reusable core. The pilot (`scripts/f_h4_level.py`) solved on a dense
+  co-registered raster *stack*; at 907 frames that representation cannot exist, so the same maths
+  now runs on Stage B's **sparse per-frame tile lists**: global `(TI,TJ)` → int64 key, exact per-edge
+  sufficient statistics `(δ̄_ij, W_ij)` over co-located tiles, dense weighted-LS + λ·Σo² with a
+  per-component `median(o)=0` gauge. Sign convention is unchanged and **pinned by a test against a
+  verbatim copy of the frozen pilot normal equations** (`test_solver_matches_the_frozen_pilot_normal_equations`).
+- **`scripts/f_region_stagec.py`** — the driver: load npzs → census → edges (cached) → λ sweep →
+  held-out-edge CV → solve → LOFO → trend guard → CSVs + figures. Emits the offset **table** only;
+  Stage D applies it, which is what keeps the H1-only (o=0) / full / residual-only composites all
+  reproducible from one Stage-B run.
+
+**VERIFIED AT RUNTIME (scale probe, 907 synthetic frames + real tile counts):**
+`candidate_pairs` 0.1 s → 33.7k pairs; `build_edges` **~5 min** at the real ~178k tiles/frame
+(8.9 ms/pair intersect); solve 0.05 s; held-out CV ×8 λ ≈ 2 s; **LOFO over all 907 frames 27 s**;
+1,000-draw block permutation 0.3 s; peak RAM **1.94 GB** (int64 key + float32 logit for 162M tiles).
+Stage C is a **~10-minute laptop step** as planned — it does not need Sherlock.
+
+**Decisions taken while building (all pre-declared, all before any real offset was seen):**
+1. **λ grid is relative** — `λ = frac · median(W)`, frac ∈ {0, 1e-3 … 1}. The pilot's absolute λ*=300
+   is meaningless at build scale where edges carry 10–1000× more co-located tiles; the fraction grid
+   brackets the pilot's operating point (~0.003–0.03·medW) by three decades either side.
+2. **Held-out CV keeps the raw logit pairs.** Median |Δp| is a *nonlinear* function of the tile pairs
+   and cannot be reconstructed from (δ̄, W), so the edge cache stores a bounded random subsample
+   (1,000 pairs/edge, ~100 MB) alongside the exact statistics.
+3. **A held-out edge whose removal splits the gauge is SKIPPED and counted, never scored.** On a
+   redundant graph (build median degree 7) this is ~0; if *every* fold is undefined the driver
+   **hard-exits** rather than picking λ from NaNs — gate 2 rests on this number.
+4. **Graph holes get flagged provenance, not a silent zero** (`patch_graph_holes`): `solved` (main
+   component) / `component_gauged` (smaller component shifted onto the main gauge by median IDW
+   residual — never re-solved, that would mix gauges) / `interpolated` (isolated frame, pure IDW).
+   Feeds PLAN_FBuild §1 deliverable 2's offset-provenance layer. P1 says this should never fire.
+5. **§4.3 attribution is a rule table** (`lv.trend_verdict`, α=0.05, R² margin 0.05), encoded before
+   the data: NO_TREND / FULL / RESIDUAL_ONLY / **AMBIGUOUS → `apply="full_pending_ruling"`**. The
+   ambiguous branch deliberately does **not** resolve itself: §4.3 says "default full + H6 diagnostic"
+   while §0.1 guard 1 says an ambiguous verdict must not silently become full offsets — both are
+   honoured by refusing to auto-apply and escalating to Brian (§7 Q3) with the evidence attached.
+6. **Significance is block-permutation throughout** (~4° blocks, whole blocks relocated). Plain
+   permutation would destroy short-range autocorrelation too, giving a null that *any* smooth field
+   beats — a trend test that always fires. This is also what lets the attribution discriminate at
+   all: MOLA/THEMIS and a lat-linked incidence are both spatially smooth.
+
+**Guard-1 binding CHECKED on the real cached rasters** (72 synthetic frames over the actual
+circum-Chryse extent, planted per-frame biases, `mola_dem_region.tif` + `themis_night_ir_region.tif`):
+
+| planted offset field | metadata R² (p) | geology R² (p) | plane R² (p) | verdict | correct? |
+|---|---|---|---|---|---|
+| −0.7·z(MOLA elevation) | 0.449 (0.002) | **0.951** (0.002) | 0.948 (0.002) | **RESIDUAL_ONLY** | ✅ guard 1 binds |
+| −0.7·z(acquisition year), spatially random | 0.548 (0.002) | 0.012 (0.780) | 0.017 (0.735) | **NO_TREND** → full | ✅ (no smooth field to guard) |
+| −0.7·z(incidence), incidence linear in lat | **0.988** (0.002) | 0.555 (0.002) | 0.982 (0.002) | **FULL** | ✅ metadata can still win |
+
+Offset recovery vs the planted field: **corr +1.000** in both directed cases. The third row is the
+one that mattered: because MOLA/THEMIS are themselves smooth, a naive test would collapse to
+"always residual-only" — it doesn't.
+
+**Tests:** `tests/test_leveling.py` (28) + `tests/test_region_stagec.py` (4, end-to-end over
+synthetic Stage-B npzs incl. the missing-frame census and the edge cache) — 32 passing.
+
+**Outputs Stage C will write** (all under `reports/figures/`): `fbuild_stagec_offsets.csv` (the
+deliverable: `offset_logit`, `offset_residual_only`, `offset_source`, LOFO, per-frame covariates),
+`fbuild_trend_guard.{csv,png}` (§4.4's mandated name), `fbuild_stagec_{lambda,graph,attribution,
+watchlist,missing_frames}.csv`, `fbuild_stagec_offsets.png`; edge cache in `reports/f_stagec/`.
+
 ## 2026-07-07 — PHASE 2 H1 (per-frame log-median centering): BOTH GATES PASS — η² 0.179→0.081, embedder amplification KILLED
 
 First item of the PLAN_StripingArtifact PHASE 2 docket. **H1 = log-minnaert (k=0.580) + a
