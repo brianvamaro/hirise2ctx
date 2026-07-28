@@ -199,13 +199,16 @@ def main() -> int:
 
     fl = pd.read_csv(FRAME_LIST)
     inc = pd.read_csv(INC_CSV).set_index("PRODUCT_ID")
-    pids = args.frames if args.frames else list(fl["PRODUCT_ID"])
-    pids = [p for k, p in enumerate(pids) if k % n_tasks == task_id]
+    all_pids = args.frames if args.frames else list(fl["PRODUCT_ID"])
+    # Resume-balanced: stride over only the NOT-yet-done frames. Fixed-stride over the FULL list kept
+    # handing the same unfinished stride back to one task on resume -> a single-GPU bottleneck.
+    undone = [p for p in all_pids if not (out_dir / f"{p}.npz").exists()]
+    pids = [p for k, p in enumerate(undone) if k % n_tasks == task_id]
 
     embedder = FangEmbedder.load(device="cpu" if args.cpu else None)
     head = DeployableHead.load(Path(args.head))
-    print(f"task {task_id}/{n_tasks}: {len(pids)} frames  "
-          f"head={Path(args.head).name}  (physical per-row incidence)", flush=True)
+    print(f"task {task_id}/{n_tasks}: {len(pids)} of {len(undone)} remaining frames  "
+          f"head={Path(args.head).name}", flush=True)
 
     for pid in pids:
         out_npz = out_dir / f"{pid}.npz"
