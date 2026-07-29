@@ -10,9 +10,21 @@ A1's median per-image AUC must not drop materially vs baseline (the mitigation m
 Identical harness for both, so the baseline-vs-A1 delta is the decisive comparison.
 
 Run: conda run -n geospatial python scripts/striping_a1_loio.py
+
+**PLAN_FBuild §5.1 addition (2026-07-28).** The numbers of record here were produced under 38-image
+folds, while every F-build number uses the 36 images common to the mosaic and F embedding stores — so
+the A1 skill cell of the §5.1 scorecard was not comparable to the F cells, and post-hoc row filtering
+cannot fix it (the folds trained on 37 images rather than 35). Brian ruled: re-run restricted to the
+36. Use
+
+    python scripts/striping_a1_loio.py --restrict-store fang_embeddings_f_minnaert_center --tag _36
+
+which writes `striping_a1_loio_{preds,summary}_36.csv` and leaves the 38-image files of record
+untouched.
 """
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -34,11 +46,46 @@ TARGET = "fa_gt_1e-2"
 FIG = REPO / "reports" / "figures"
 
 
-def run_store(store_name: str) -> pd.DataFrame:
+def restrict_fold(fold, avail: set[str]):
+    """Drop train/test rows whose obs_id is not in `avail`; None if no test rows left.
+
+    Copied verbatim from scripts/f_leg_b_loio.py:48 so the two harnesses restrict IDENTICALLY —
+    restricting both sides is what makes the folds train-regime-comparable to the F runs (filtering
+    predictions afterwards leaves the folds trained on 37 images instead of 35). Note `y_train`/
+    `y_test` are label DataFrames, not arrays, and `groups_test` must be subset too.
+    """
+    from dataclasses import replace as dc_replace
+
+    mte = fold.keys_test["obs_id"].isin(avail).to_numpy()
+    if not mte.any():
+        return None
+    mtr = fold.keys_train["obs_id"].isin(avail).to_numpy()
+    return dc_replace(
+        fold,
+        X_train=fold.X_train[mtr],
+        y_train=fold.y_train[mtr].reset_index(drop=True),
+        groups_train=fold.groups_train[mtr],
+        keys_train=fold.keys_train[mtr].reset_index(drop=True),
+        X_test=fold.X_test[mte],
+        y_test=fold.y_test[mte].reset_index(drop=True),
+        groups_test=fold.groups_test[mte],
+        keys_test=fold.keys_test[mte].reset_index(drop=True),
+    )
+
+
+def store_obs(name: str) -> set[str]:
+    return {p.name[: -len("_P96.npz")] for p in (DATASET_DIR / name).glob("*_P96.npz")}
+
+
+def run_store(store_name: str, avail: set[str] | None = None) -> pd.DataFrame:
     target = get_target(TARGET)
     store = load_fang_store(PX, pool=POOL, dataset_dir=DATASET_DIR, store_name=store_name)
     rows = []
     for fold in iter_loio_folds(SCHEME, scale_idx=SCALE_IDX, dataset_dir=DATASET_DIR):
+        if avail is not None:
+            fold = restrict_fold(fold, avail)
+            if fold is None:
+                continue
         f = augment_fold_with_fang(fold, px=PX, pool=POOL, dataset_dir=DATASET_DIR,
                                    replace=True, store=store)
         ytr = target.binarize(f.y_train).astype(np.float32)
@@ -72,18 +119,35 @@ def summarize(df: pd.DataFrame, label: str) -> dict:
 
 
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--restrict-store", default=None,
+                    help="restrict folds to the obs_ids present in this embedding store "
+                         "(e.g. fang_embeddings_f_minnaert_center -> the 36 common images)")
+    ap.add_argument("--tag", default="", help="output filename suffix (e.g. _36)")
+    args = ap.parse_args()
+
+    avail = None
+    if args.restrict_store:
+        avail = store_obs("fang_embeddings") & store_obs(args.restrict_store)
+        print(f"restricting folds to {len(avail)} obs common to fang_embeddings and "
+              f"{args.restrict_store}", flush=True)
+        if not args.tag:
+            raise SystemExit("--restrict-store changes the numbers; pass --tag (e.g. --tag _36) so "
+                             "the 38-image files of record are not overwritten")
+
     results, auc_by = {}, {}
     allrows = []
     for store in ("fang_embeddings", "fang_embeddings_a1"):
         print(f"=== LOIO over store: {store} ===", flush=True)
-        df = run_store(store)
+        df = run_store(store, avail)
         allrows.append(df)
         s, aucs = summarize(df, store)
         results[store] = s
         auc_by[store] = aucs
-    pd.concat(allrows, ignore_index=True).to_csv(FIG / "striping_a1_loio_preds.csv", index=False)
+    tag = args.tag
+    pd.concat(allrows, ignore_index=True).to_csv(FIG / f"striping_a1_loio_preds{tag}.csv", index=False)
     summ = pd.DataFrame([results["fang_embeddings"], results["fang_embeddings_a1"]])
-    summ.to_csv(FIG / "striping_a1_loio_summary.csv", index=False)
+    summ.to_csv(FIG / f"striping_a1_loio_summary{tag}.csv", index=False)
     print("\n=== SKILL GATE: baseline vs A1 ===")
     print(summ.to_string(index=False))
     b, a = results["fang_embeddings"], results["fang_embeddings_a1"]

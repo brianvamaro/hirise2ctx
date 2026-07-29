@@ -1,0 +1,24 @@
+{
+  "verdict": {
+    "verdict": "UNKNOWN",
+    "apply": "?",
+    "needs_ruling": true,
+    "lambda_star": null
+  },
+  "gate1": {
+    "mosaic": {
+      "n_windows": 234,
+      "eta2_median": 0.12215999999999999,
+      "eta2_p90": 0.2885480000000003,
+      "null_mean_median": 0.04327,
+      "null_p95_median": 0.06764,
+      "excess_median": 0.07188,
+      "ratio_median": 1.6496550409843305,
+      "frac_windows_below_bar": 0.21367521367521367,
+      "passes_bar": false,
+      "tile_eta2_median": 0.1849861007546681,
+      "tile_excess_median": 0.09418773531480569,
+      "tile_ratio_median": 1.5081329304529536
+    }
+  }
+}

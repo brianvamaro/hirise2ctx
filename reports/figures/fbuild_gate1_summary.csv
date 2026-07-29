@@ -1,0 +1,2 @@
+row,n_windows,eta2_median,eta2_p90,null_mean_median,null_p95_median,excess_median,ratio_median,frac_windows_below_bar,passes_bar,tile_eta2_median,tile_excess_median,tile_ratio_median
+mosaic,234,0.12215999999999999,0.2885480000000003,0.04327,0.06764,0.07188,1.6496550409843305,0.21367521367521367,False,0.1849861007546681,0.09418773531480569,1.5081329304529536

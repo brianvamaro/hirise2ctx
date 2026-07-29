@@ -1,0 +1,2 @@
+n_tiles,n_images,t1_knots,t2_knots,abundance_ceiling,insample_ece,tier1_loio_ece,tier2_loio_top_ratio_pooled,tier2_loio_marginal_l1_pooled,tier2_loio_top_ratio_img_median,tier2_loio_top_ratio_img_p10,tier2_loio_marginal_l1_img_median
+153663,36,232,4000,0.2932421875,5.158505847255007e-18,0.027982949334694588,0.8782966614715537,0.00035218432629419166,0.5925312862706118,0.06964499130887333,0.004729163794220963
