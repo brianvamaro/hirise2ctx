@@ -50,7 +50,9 @@ OFFSETS_CSV = FIG / "fbuild_stagec_offsets.csv"
 GUARD_CSV = FIG / "fbuild_trend_guard.csv"
 COHORT_BOUNDS = REPO / "reports" / "f_leg_b" / "cohort_obs_bounds.csv"
 LABELS_DIR = REPO / "dataset_v2" / "labels"
-VARIANTS = ("h1only", "full", "resid")
+VARIANTS = ("h1only", "full", "resid", "lcv")   # lcv = λ re-selected on |Δlogit| (Brian, 2026-07-29)
+OFFSET_COL = {"h1only": None, "full": "offset_logit",
+              "resid": "offset_residual_only", "lcv": "offset_logit_lcv"}
 
 
 # --------------------------------------------------------------------------- gate 1
@@ -73,6 +75,13 @@ def gate1(tiles, map_f: Path, map_mosaic: Path, lut: list[str], args) -> tuple[p
             p = map_f / f"{tile}_{v}_prob_partition.tif"
             if p.exists():
                 rows[f"F_{v}"] = fg.read_layer(p)
+        # ONE common footprint across rows (review 2026-07-29): the F partition rasters have lower
+        # coverage than the mosaic map by construction, and scoring each row on its own footprint let
+        # a purely geometric 8-16% coverage deficit buy the F rows an 11-22% better η²/null ratio.
+        # `f_map_compare.quality_table` already did this; gate 1 did not.
+        raw_cov = {k: float(np.isfinite(a).mean()) for k, a in rows.items()}
+        mask = fg.common_finite(*rows.values())
+        rows = {k: np.where(mask, a, np.nan) for k, a in rows.items()}
         t0 = time.monotonic()
         for name, arr in rows.items():
             ws = fg.window_eta2(arr, labels, tile, win_px=args.window_px,
@@ -88,8 +97,12 @@ def gate1(tiles, map_f: Path, map_mosaic: Path, lut: list[str], args) -> tuple[p
             tile_rows.append({"row": name, "tile": tile, "scope": "tile", "n_cells": nc,
                               "n_frames": nf, "eta2": e, "null_mean": nm, "null_p95": n95,
                               "excess": e - nm if np.isfinite(e) else np.nan,
-                              "ratio": e / n95 if np.isfinite(n95) and n95 > 0 else np.nan})
-        print(f"  {tile}: {len(rows)} rows scored ({time.monotonic() - t0:.0f}s)", flush=True)
+                              "ratio": e / n95 if np.isfinite(n95) and n95 > 0 else np.nan,
+                              "raw_coverage": raw_cov[name],
+                              "common_mask_frac": float(mask.mean())})
+        print(f"  {tile}: {len(rows)} rows on a common mask covering {mask.mean():.1%} "
+              f"(raw per-row {min(raw_cov.values()):.1%}..{max(raw_cov.values()):.1%}) "
+              f"({time.monotonic() - t0:.0f}s)", flush=True)
     return pd.DataFrame(win_rows), pd.DataFrame(tile_rows)
 
 
@@ -102,17 +115,35 @@ def gate2(offsets: pd.DataFrame, guard: dict, args) -> pd.DataFrame:
     es_all = lv.EdgeSet.load(cache[-1])
     es = es_all.filter(es_all.w >= args.min_tiles)
     n = len(es.pids)
-    lam = float(guard.get("lambda_star") or 0.0)
+    # each variant is scored at ITS OWN λ: `lcv` uses the saturation-immune |Δlogit| selection
+    # (2026-07-29), the others the pre-registered |Δp| one.
+    lam_dp = float(guard.get("lambda_star") or 0.0)
+    lam_lcv = float(guard.get("lambda_star_lcv") or guard.get("lambda_lcv") or lam_dp)
+    # lon/lat/degree so the `resid` fold can refit its own smooth plane (else the CV leaks)
+    lon = lat = deg = None
+    if {"lon", "lat"} <= set(offsets.columns):
+        lon = np.array([float(offsets.loc[p, "lon"]) if p in offsets.index else np.nan
+                        for p in es.pids])
+        lat = np.array([float(offsets.loc[p, "lat"]) if p in offsets.index else np.nan
+                        for p in es.pids])
+        deg = es.degrees(n).astype(float)
     rows = []
     for v in VARIANTS:
-        col = {"h1only": None, "full": "offset_logit", "resid": "offset_residual_only"}[v]
+        col = OFFSET_COL[v]
+        if col and col not in offsets.columns:
+            print(f"  ⚠ F_{v}: no `{col}` column in the Stage-C table -> skipped", flush=True)
+            continue
         o = np.zeros(n) if col is None else np.array(
             [float(offsets.loc[p, col]) if p in offsets.index else 0.0 for p in es.pids])
-        r = fg.edge_cv_for_offsets(es, o, n, lam, frac=args.cv_frac, repeats=args.cv_repeats,
-                                  seed=args.seed)
+        lam = lam_lcv if v == "lcv" else lam_dp
+        metric = "dlogit" if v == "lcv" else "dp"
+        r = fg.edge_cv_for_offsets(es, o, n, lam, variant=v, frac=args.cv_frac,
+                                   repeats=args.cv_repeats, seed=args.seed, metric=metric,
+                                   lon=lon, lat=lat, degree=deg)
         rows.append({"row": f"F_{v}", "n_edges": es.n_edges, "lambda": lam, **r})
-        print(f"  F_{v}: unleveled |Δp| {r['unleveled_dp']:.4f} -> in-sample {r['insample_dp']:.4f}, "
-              f"held-out {r['heldout_cv_dp']:.4f}", flush=True)
+        print(f"  F_{v}: unleveled {r['metric']} {r['unleveled_dp']:.4f} -> in-sample "
+              f"{r['insample_dp']:.4f}, held-out {r['heldout_cv_dp']:.4f}"
+              f"{'  [' + r['note'] + ']' if r.get('note') else ''}", flush=True)
     return pd.DataFrame(rows)
 
 
@@ -147,20 +178,40 @@ def gate3(tiles, map_f: Path, map_mosaic: Path, args) -> pd.DataFrame:
 
 
 # --------------------------------------------------------------------------- gate 5 / 6 cohort join
+def common_36() -> set[str]:
+    """The 36 images the F store, the F head and the F calibrator were all fitted on.
+
+    Ruling 4 scopes gate 5 to these; the label directory has 38, so pooling all of them would mix in
+    two images (ESP_066634_2210, ESP_071093_2210) the F path never saw (review 2026-07-29).
+    """
+    ds = REPO / "dataset_v2"
+    obs = {}
+    for store in ("fang_embeddings", "fang_embeddings_f_minnaert_center"):
+        obs[store] = {p.name[: -len("_P96.npz")] for p in (ds / store).glob("*_P96.npz")}
+    return obs["fang_embeddings"] & obs["fang_embeddings_f_minnaert_center"]
+
+
 def cohort_table(map_f: Path, map_mosaic: Path, tiles, args) -> pd.DataFrame:
-    """Labelled cohort tiles joined to the F map through the global lattice (gates 5 + 6)."""
-    if not COHORT_BOUNDS.exists():
-        print(f"  ⚠ {COHORT_BOUNDS} missing -> gates 5/6 skipped", flush=True)
-        return pd.DataFrame()
-    bounds = pd.read_csv(COHORT_BOUNDS)
+    """Labelled cohort tiles joined to the F map through the global lattice (gates 5 + 6).
+
+    The join keys off the label rows' own world bbox — see `fgates.cohort_tiles_to_global` for why the
+    (ti, tj) + window-corner route was wrong by ~100 km.
+    """
     labs = []
     for p in sorted(LABELS_DIR.glob("*.parquet")):
-        d = pd.read_parquet(p, columns=["obs_id", "tile_size_px", "ti", "tj", "fractional_area"])
+        d = pd.read_parquet(p, columns=["obs_id", "tile_size_px", "ti", "tj", "fractional_area",
+                                        "xmin", "xmax", "ymin", "ymax"])
         labs.append(d[d.tile_size_px == 32])
     if not labs:
         return pd.DataFrame()
     lab = pd.concat(labs, ignore_index=True)
-    joined = fg.cohort_tiles_to_global(bounds, lab)
+    keep = common_36()
+    if keep:
+        n_before = lab.obs_id.nunique()
+        lab = lab[lab.obs_id.isin(keep)]
+        print(f"  cohort restricted to the {len(keep)} common images "
+              f"(of {n_before} labelled) — ruling 4", flush=True)
+    joined = fg.cohort_tiles_to_global(lab)
     if joined.empty:
         return joined
     out = []
@@ -203,7 +254,7 @@ def gate5(coh: pd.DataFrame) -> pd.DataFrame:
     df = pd.DataFrame(rows)
     if {"F_h1only", "F_full"} <= set(df.row):
         h1 = df.loc[df.row == "F_h1only"].iloc[0]
-        for v in ("full", "resid"):
+        for v in [x for x in VARIANTS if x != "h1only"]:
             if f"F_{v}" in set(df.row):
                 r = df.loc[df.row == f"F_{v}"].iloc[0]
                 df.loc[df.row == f"F_{v}", "delta_pr_auc_vs_h1"] = (r["pooled_pr_auc"]
@@ -372,7 +423,8 @@ def main() -> int:
         if not coh.empty:
             coh.to_parquet(FIG / "fbuild_cohort_join.parquet", index=False)
             print(f"  {len(coh):,} labelled tiles in {coh.obs_id.nunique()} obs land inside the "
-                  f"block (of 36 cohort images — only the in-region ones are scorable)", flush=True)
+                  f"block (of the {len(common_36())} common images — only the in-region ones are "
+                  f"scorable; ruling 4)", flush=True)
 
     if 5 in args.gates and not coh.empty:
         print("\n=== gate 5: pooled skill Δ(leveled − unleveled) ===", flush=True)
@@ -392,6 +444,9 @@ def main() -> int:
                 FIG / "fbuild_gate6_abundance.csv", index=False)
             if not bins.empty:
                 bins.to_csv(FIG / "fbuild_gate6_perbin.csv", index=False)
+            g6 = g6.reindex(columns=list(g6.columns) + [
+                c for c in ("spearman", "top_ratio", "marginal_l1", "rich_bin_rmse",
+                            "passes_top_ratio") if c not in g6.columns])
             print(g6[["row", "calibrator", "n", "spearman", "top_ratio", "marginal_l1",
                       "rich_bin_rmse", "passes_top_ratio"]].to_string(index=False))
             print(f"\n  band: top_ratio in {fg.TOP_RATIO_BAND}; monotone calibrators preserve "
@@ -403,7 +458,7 @@ def main() -> int:
                                            encoding="utf-8")
     print(f"\nwrote {FIG / 'fbuild_gates.json'}")
     if verdict["needs_ruling"]:
-        print("⚠ the trend-guard verdict is AMBIGUOUS — the gate table scores all three variants; "
+        print("⚠ the trend-guard verdict is AMBIGUOUS — the gate table scores every variant; "
               "which one ships is Brian's call (PLAN_FBuild §7 Q3).")
     return 0
 

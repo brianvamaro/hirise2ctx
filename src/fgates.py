@@ -119,20 +119,61 @@ def summarize_windows(scores: list[WindowScore]) -> dict:
 
 
 # --------------------------------------------------------------------------- gate 2
-def edge_cv_for_offsets(edges, offsets: np.ndarray, n: int, lam: float, *, frac: float = 0.05,
-                        repeats: int = 4, seed: int = 0) -> dict:
-    """Gate 2: held-out-edge |Δp| for a GIVEN offset vector, plus the unleveled baseline.
+def edge_cv_for_offsets(edges, offsets: np.ndarray, n: int, lam: float, *, variant: str = "full",
+                        frac: float = 0.05, repeats: int = 4, seed: int = 0, metric: str = "dp",
+                        lon=None, lat=None, degree=None) -> dict:
+    """Gate 2: held-out-edge disagreement for the offset MODEL the map actually uses.
 
-    Stage C only records this for the FULL offsets (`full_heldout_cv_dp`). If the trend guard lands on
-    RESIDUAL_ONLY (or AMBIGUOUS), the residual-only number does not exist anywhere and has to be
-    recomputed here from the cached edge set — otherwise gate 2 would silently be scored on offsets
-    the map does not use.
+    The held-out number must be **variant-aware**. An earlier version delegated to
+    `lv.heldout_edge_cv`, which re-solves FULL offsets on each fold and never sees `offsets` — so the
+    headline was byte-identical for h1only / full / resid, and the H1-only row (which applies no
+    offsets at all, and whose held-out disagreement IS the unleveled baseline by construction) was
+    reported as clearing the gate. Caught by the 2026-07-29 adversarial review; that is exactly the
+    failure this docstring used to claim it prevented.
+
+    So the fold loop lives here and rebuilds the variant's own offsets per fold:
+      * `h1only` — no offsets: the held-out value IS the baseline, and `passes` is False by
+        construction (there is nothing to generalise).
+      * `full` / `lcv` — solve on the retained edges at this variant's λ, score the held-out ones.
+      * `resid` — solve on the retained edges, then subtract the degree-weighted lon/lat plane refit
+        **on that fold's own solve** before scoring (the residual-only model is "solve minus its
+        smooth component", so the plane has to be refit inside the fold or the CV leaks).
+
+    `metric` is "dp" (probability space, pre-registered) or "dlogit" (saturation-immune; see
+    `lv.edge_dlogit` — in probability space the statistic is minimised by railing the sigmoid).
     """
-    base = float(np.median(lv.edge_dp(edges, np.zeros(n))))
-    insample = float(np.median(lv.edge_dp(edges, offsets)))
-    cv, skipped = lv.heldout_edge_cv(edges, lam, n, frac=frac, repeats=repeats, seed=seed)
-    return {"unleveled_dp": base, "insample_dp": insample, "heldout_cv_dp": cv,
-            "cv_edges_skipped": skipped,
+    metric_fn = lv.EDGE_METRICS[metric] if hasattr(lv, "EDGE_METRICS") else lv.edge_dp
+    base = float(np.median(metric_fn(edges, np.zeros(n))))
+    insample = float(np.median(metric_fn(edges, np.asarray(offsets, dtype=float))))
+    out = {"variant": variant, "metric": metric, "unleveled_dp": base, "insample_dp": insample}
+    if variant == "h1only":
+        return {**out, "heldout_cv_dp": base, "cv_edges_skipped": 0, "passes": False,
+                "note": "unleveled by construction — the held-out value IS the baseline"}
+    if variant == "resid" and (lon is None or lat is None):
+        print("  ⚠ gate 2 resid: no lon/lat given, cannot refit the fold plane -> scoring the FULL "
+              "offset model instead (the number is NOT the residual-only variant's)", flush=True)
+        variant = "full"
+
+    rng = np.random.default_rng(seed)
+    m = edges.n_edges
+    k = max(1, int(round(frac * m)))
+    dps, skipped = [], 0
+    for _ in range(repeats):
+        hold = rng.choice(m, size=min(k, m), replace=False)
+        mask = np.ones(m, dtype=bool)
+        mask[hold] = False
+        comp = lv.components(edges.ei[mask], edges.ej[mask], n)
+        o = lv.solve_offsets(edges, lam, n, comp=comp, edge_mask=mask)
+        if variant == "resid":
+            w = None if degree is None else np.asarray(degree, dtype=float)
+            fitted = lv.weighted_fit(lv.design_matrix(lon, lat, order=1), o, w)[1]
+            o = lv.regauge(o - fitted, comp)
+        ok = comp[edges.ei[hold]] == comp[edges.ej[hold]]
+        skipped += int((~ok).sum())
+        if ok.any():
+            dps.append(metric_fn(edges, o, hold[ok]))
+    cv = float(np.median(np.concatenate(dps))) if dps else float("nan")
+    return {**out, "heldout_cv_dp": cv, "cv_edges_skipped": skipped,
             "passes": bool(np.isfinite(cv) and cv < base)}
 
 
@@ -163,30 +204,38 @@ def spearman_rho(a: np.ndarray, b: np.ndarray, min_n: int = 50) -> tuple[float, 
 
 
 # --------------------------------------------------------------------------- gates 5 & 6 support
-def cohort_tiles_to_global(obs_bounds: pd.DataFrame, labels: pd.DataFrame,
-                           tile_px: int = 32) -> pd.DataFrame:
+def cohort_tiles_to_global(labels: pd.DataFrame) -> pd.DataFrame:
     """Join the labelled HiRISE cohort tiles to Stage B's GLOBAL (TI, TJ) keys.
 
-    Cohort labels are indexed by (obs_id, ti, tj) in each observation's OWN window grid; Stage B uses
-    a global lattice anchored at the CRS origin. `reports/f_leg_b/cohort_obs_bounds.csv` carries each
-    obs window's (row0, col0) and world bbox, which is exactly what closes the gap. Without this join
-    gates 5 and 6 cannot be scored on build products at all.
+    Keyed off the **world bbox the label rows already carry** (`xmin/xmax/ymin/ymax`), which is the
+    only self-consistent source: `TI = round(y_centre/160)`, `TJ = round(x_centre/160)` — Stage B's
+    exact keying (`f_region_stageb.py:167-168`).
+
+    An earlier version reconstructed the world position from `(ti, tj)` and
+    `reports/f_leg_b/cohort_obs_bounds.csv`'s window corner, on the premise that `ti/tj` are indices
+    in each observation's own window grid. **That premise is false** — `src/labeling.py:363-370`
+    emits them on the lattice anchored at the PARENT Murray tile's `inner_transform` origin, i.e. the
+    window offset is already baked in (`dataset/DATA_DICTIONARY.md:184`; every other consumer, e.g.
+    `src/features.py:653`, subtracts `mosaic_row_origin` to get back to window coords). Anchoring
+    already-absolute indices at the window corner added `(col0, row0)·4.99997 m` on top: measured
+    displacement over all 38 obs was a **median 94.7 km in x / 108.8 km in y** (ESP_017355_2260:
+    +19,065 m / −106,915 m). It failed silently — ~79k mis-keyed rows still landed inside a block tile
+    on finite pixels — so gates 5 and 6 were pairing labels with predictions ~100 km apart and
+    publishing plausible numbers (on E16_N44: pooled pr_auc 0.544 / Spearman −0.180 mis-keyed vs
+    0.939 / +0.791 correct). Found by the 2026-07-29 adversarial review; the old unit test could not
+    catch it because it pinned `row0=col0=0` and re-derived the expectation from the same formula.
+
+    Using the bbox also drops the `32 * 5.0 = 160.0` pitch approximation — label tiles are actually
+    32 × 4.9999744853063 = 159.9992 m wide.
     """
-    need = {"obs_id", "minx", "maxy"}
-    if not need <= set(obs_bounds.columns):
-        raise ValueError(f"obs_bounds needs {sorted(need)}, has {sorted(obs_bounds.columns)}")
-    ob = obs_bounds.set_index("obs_id")
-    out = []
-    for obs, g in labels.groupby("obs_id"):
-        if obs not in ob.index:
-            continue
-        minx, maxy = float(ob.loc[obs, "minx"]), float(ob.loc[obs, "maxy"])
-        # tile (ti, tj) centre in world metres, then the same round-to-160 keying Stage B used
-        cx = minx + (g["tj"].to_numpy(float) + 0.5) * tile_px * 5.0
-        cy = maxy - (g["ti"].to_numpy(float) + 0.5) * tile_px * 5.0
-        out.append(g.assign(TI=np.round(cy / lv.TILE_M).astype(np.int64),
-                            TJ=np.round(cx / lv.TILE_M).astype(np.int64)))
-    return pd.concat(out, ignore_index=True) if out else labels.assign(TI=[], TJ=[])
+    need = {"xmin", "xmax", "ymin", "ymax"}
+    if not need <= set(labels.columns):
+        raise ValueError(f"labels need the world bbox columns {sorted(need)} (read them from "
+                         f"dataset_v2/labels/*.parquet); has {sorted(labels.columns)}")
+    cx = (labels["xmin"].to_numpy(float) + labels["xmax"].to_numpy(float)) / 2.0
+    cy = (labels["ymin"].to_numpy(float) + labels["ymax"].to_numpy(float)) / 2.0
+    return labels.assign(TI=np.round(cy / lv.TILE_M).astype(np.int64),
+                         TJ=np.round(cx / lv.TILE_M).astype(np.int64))
 
 
 def pooled_skill(y: np.ndarray, p: np.ndarray) -> dict:
@@ -222,9 +271,14 @@ def abundance_fidelity(fa_true: np.ndarray, ab_pred: np.ndarray) -> dict:
     from src.calibration import compression_metrics
     from src.modeling.evaluate import per_bin_rmse
 
+    keys = ("spearman", "top_ratio", "near_zero_pred", "near_zero_true", "marginal_l1",
+            "rich_bin_rmse")
     m = np.isfinite(fa_true) & np.isfinite(ab_pred)
     if m.sum() < 100:
-        return {"n": int(m.sum())}
+        # Return the FULL key set (NaN-filled) — gate 6 selects these columns for its table, so a
+        # short dict here raised KeyError after the CSV had already been written (review 2026-07-29).
+        return {"n": int(m.sum()), **{k: np.nan for k in keys}, "passes_top_ratio": False,
+                "per_bin": pd.DataFrame(), "note": "too few paired finite cells to score"}
     yt, yp = np.asarray(fa_true, float)[m], np.asarray(ab_pred, float)[m]
     cm = {k: v for k, v in compression_metrics(yt, yp).items() if k != "low_over"}
     bins = per_bin_rmse(yt, yp)

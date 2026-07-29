@@ -302,6 +302,89 @@ def test_verdict_ambiguous_never_silently_applies_full_offsets():
 
 
 def test_verdict_handles_missing_geology_proxies():
+    """NaN R² = the proxy rasters are absent, which is 'untestable', not 'geology lost'."""
     v = lv.trend_verdict(_trend(), {"r2": 0.6, "p_value": 0.002},
                          {"r2": float("nan"), "p_value": float("nan")})
     assert v["verdict"] == "FULL"
+
+
+def test_verdict_missing_metadata_axes_still_honours_guard_1():
+    v = lv.trend_verdict(_trend(), {"r2": float("nan"), "p_value": float("nan")},
+                         {"r2": 0.6, "p_value": 0.002})
+    assert v["verdict"] == "RESIDUAL_ONLY" and v["apply"] == "residual"
+
+
+def test_verdict_with_no_attribution_axes_at_all_escalates():
+    nan = {"r2": float("nan"), "p_value": float("nan")}
+    v = lv.trend_verdict(_trend(), dict(nan), dict(nan))
+    assert v["verdict"] == "AMBIGUOUS" and v["needs_ruling"] and v["apply"] != "full"
+
+
+def test_verdict_requires_the_margin_even_when_the_loser_is_insignificant():
+    """The 906-frame run, verbatim: metadata cleared α but held the LOWER R².
+
+    Before 2026-07-29 the rule fired on `not g_sig`, returning FULL on metadata R²=0.108 vs geology
+    R²=0.142 because geology's permutation p landed at 0.0579 rather than ≤0.05 — 8 draws in 1000,
+    and 19-FULL/1-AMBIGUOUS across 20 seeds. PLAN_FBuild §4.3's table always required the winner to
+    beat the other by the margin; this pins that reading so the verdict cannot ride on RNG noise.
+    """
+    v = lv.trend_verdict(_trend(r2=0.957), {"r2": 0.108, "p_value": 0.019},
+                         {"r2": 0.142, "p_value": 0.058})
+    assert v["verdict"] == "AMBIGUOUS" and v["needs_ruling"] and v["apply"] != "full"
+
+
+def test_verdict_margin_rule_is_symmetric_for_geology():
+    """Mirror image: geology significant, metadata not, but geology does not clear the margin."""
+    v = lv.trend_verdict(_trend(), {"r2": 0.142, "p_value": 0.30},
+                         {"r2": 0.150, "p_value": 0.004})
+    assert v["verdict"] == "AMBIGUOUS" and v["needs_ruling"]
+
+
+# ------------------------------------------------- the saturation-immune edge metric (2026-07-29)
+def test_edge_dlogit_is_immune_to_the_saturation_that_collapses_edge_dp():
+    """A large COMMON offset rails every probability: |Δp| → 0 while the real disagreement is intact.
+
+    This is the 906-frame pathology in miniature — it is why |Δp| drove λ* to 0 with |o|max 21.3
+    logits, and why λ is selected on |Δlogit| instead.
+    """
+    pids, keys, logits, _ = synth_frames(n_frames=6, side=40, overlap=25)
+    es = lv.build_edges(pids, keys, logits, min_tiles=1)
+    n = len(pids)
+    zero, railed = np.zeros(n), np.full(n, 12.0)          # +12 logits saturates p to ~1
+
+    dp0 = float(np.median(lv.edge_dp(es, zero)))
+    dp1 = float(np.median(lv.edge_dp(es, railed)))
+    dl0 = float(np.median(lv.edge_dlogit(es, zero)))
+    dl1 = float(np.median(lv.edge_dlogit(es, railed)))
+
+    assert dp1 < 0.02 * dp0                                # |Δp| collapses...
+    assert dl1 == pytest.approx(dl0, rel=1e-9)             # ...while |Δlogit| is unchanged
+    assert lv.edge_saturated_frac(es, railed) > 0.95
+    assert lv.edge_saturated_frac(es, zero) < 0.10
+
+
+def test_edge_dlogit_still_rewards_a_correct_solve():
+    """Saturation-immunity must not cost sensitivity: the planted bias is still recovered as a win."""
+    pids, keys, logits, _ = synth_frames(n_frames=8)
+    es = lv.build_edges(pids, keys, logits, min_tiles=1)
+    n = len(pids)
+    before = float(np.median(lv.edge_dlogit(es, np.zeros(n))))
+    after = float(np.median(lv.edge_dlogit(es, lv.solve_offsets(es, 0.0, n))))
+    assert after < 0.5 * before
+
+
+def test_heldout_edge_cv_accepts_the_dlogit_metric():
+    pids, keys, logits, _ = synth_frames(n_frames=12, side=40, overlap=28)
+    es = lv.build_edges(pids, keys, logits, min_tiles=1)
+    n = len(pids)
+    unleveled = float(np.median(lv.edge_dlogit(es, np.zeros(n))))
+    cv, skipped = lv.heldout_edge_cv(es, 1.0, n, frac=0.2, repeats=3, seed=0, metric="dlogit")
+    assert skipped == 0 and cv < unleveled
+    # and the two metrics are genuinely different instruments on the same folds
+    cv_dp, _ = lv.heldout_edge_cv(es, 1.0, n, frac=0.2, repeats=3, seed=0, metric="dp")
+    assert not np.isclose(cv, cv_dp)
+
+
+def test_edge_metric_registry_matches_the_functions():
+    assert lv.EDGE_METRICS["dp"] is lv.edge_dp
+    assert lv.EDGE_METRICS["dlogit"] is lv.edge_dlogit

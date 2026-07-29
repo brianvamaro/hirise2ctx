@@ -236,6 +236,34 @@ interpolate its offset from graph neighbors (inverse-distance on frame centers) 
 
 ## 5. Stage D — compositing + final map + validation
 
+> **BUILT 2026-07-29** (commit `afe6fce`). Code: **`src/fcompose.py`** (composite core: the exact
+> integer global-lattice↔map index map, the streaming per-tile accumulators, the partition composite)
+> + **`src/fgates.py`** (gate scorers) + **`scripts/f_region_staged.py`** (composite driver),
+> **`scripts/f_region_gates.py`** (the 6 gates), **`scripts/f_map_compare.py`** (§5.1),
+> **`scripts/bank_calibration_f.py`** (the F-path calibrator, RUN) and
+> **`scripts/striping_a1_map.py`** (the A1 row's missing raster). 63 tests. Cost: ~10 min compose +
+> ~10 min gates on the laptop. Run order = SHERLOCK_RUN **Part J**.
+>
+> **Five methodology rulings (Brian 2026-07-28) are baked in**; all evidence in DECISIONS 2026-07-29:
+> 1. **Gate 1 is windowed and floor-relative** — the literal "≤0.05 on the full block" is not
+>    interpretable at 907-frame scale (measured on the mosaic map: block η² 0.3575 vs its own
+>    rotation null 0.2837, i.e. 79% of it is reproduced by rolling the field; detrended 0.0123 already
+>    passes). Headline = partition η² on ~75 km windows, each against **its own** null, bar on the
+>    median window; block reported as η² − null_mean and η²/null_p95. **Mosaic baseline banked:**
+>    median-window η² **0.1222**, null p95 **0.0676**, ratio **1.65**, `passes_bar` False.
+> 2. **§5.1 footprint = the 9 CTX-equipped tiles** — no A1 raster exists at any extent and A1 needs raw
+>    CTX DN, so that is the only footprint an A1 row can cover; every row is scored on it.
+> 3. **Calibration re-banked on the F path, both layers reported** (gate 6). RUN: Tier-1 LOIO ECE
+>    0.0280 PASS, pooled Tier-2 top_ratio 0.8783 PASS.
+> 4. **Gate 5 scores Δ(H1+H4 − H1) ≥ −0.02**, not an absolute — the F head is in-sample on all 36 —
+>    and only 21 of the 36 cohort images are inside the 907 frames, so its footprint is stated.
+> 5. **A1 skill re-run restricted to the same 36 images** the F rows use.
+>
+> **Deviation from the §5 text worth flagging:** gate 1's bar is applied at the *window* scale, not
+> "on the full block" as written. The block number is still reported, floor-relative; the change is
+> what makes the pre-declared 0.05 mean anything at 907 frames, and it was ruled before any F number
+> was computed. The composite/provenance/deliverable list below is implemented as written.
+
 - **Composite rule:** per tile, combine overlapping frames' *leveled* logits — default **mean of
   leveled logits** (post-H4 co-located disagreement is ~0.035, so the rule barely matters; mean is
   smooth across seams where last-write-wins would reintroduce edges). Record n_frames + max |Δp|

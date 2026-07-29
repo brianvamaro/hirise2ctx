@@ -91,13 +91,14 @@ because its polygon bbox straddles a Murray Lab tile boundary (see
 cohort with COLOR.JP2 + LBL on disk but never had Stage 4 run; it is excluded
 from Stage 7 (cohort 36 of 37 colour-eligible).
 
-**Next priorities:** finish **PLAN_FBuild** — the reopening call landed **reopen-with-guards**
-(2026-07-23) and the 907-frame build is executing. **Stage A done** (907 ISIS cubes → GeoTIFFs);
-**Stage B running** on Sherlock (per-frame logit npzs, resumable — re-`sbatch` until 907);
-**Stage C built** 2026-07-28 (`src/leveling.py` + `scripts/f_region_stagec.py`) and waiting on those
-npzs; **Stage D** (composite + the five acceptance gates + the §5.1 head-to-head vs the mosaic map
-and A1) is the next thing to build. If the Stage-C/D gates fail → fall back to shipping the A1 map +
-caveat + H6 provenance. Then the parked validation legs resume on the final map
+**Next priorities:** **PLAN_FBuild** is fully built and now needs *running*. The reopening call landed
+**reopen-with-guards** (2026-07-23). **Stage A done** (907 ISIS cubes → GeoTIFFs); **Stage B done**
+(906/907 per-frame logit npzs, on Sherlock scratch); **Stage C built** 2026-07-28 and **Stage D +
+gates + §5.1 built** 2026-07-29. The only thing between here and the F-build verdict is the ~2 GB npz
+transfer plus ~30 min of laptop compute — see **SHERLOCK_RUN Part J** for the exact order. The gates'
+mosaic baseline is already banked; the F rows are what the run adds, and the §5.1 A1 column needs two
+GPU steps (`striping_a1_map.py`, then the A1 LOIO re-run on the 36). If the gates fail → fall back to
+shipping the A1 map + caveat + H6 provenance. Then the parked validation legs resume on the final map
 ([PLAN_RegionalMap.md](PLAN_RegionalMap.md), 2026-07-13 refresh note). Parked: Stage-7 Tier 3,
 Path A model bank. (Live session state = the `project_state_*` memory notes;
 `HANDOFF_NEXT_SESSION.md` is stale.)
@@ -355,6 +356,35 @@ Stage C emits only the offset **table**; Stage D applies it at composite time, s
 geology-attribution axes need the cached validation rasters (`cache_v2/validation/mola_dem_region.tif`,
 `themis_night_ir_region.tif`, via `scripts/fetch_validation_data.py`); without them Stage C still
 solves but the trend guard cannot bind.
+
+**Stage D** composites, scores the six acceptance gates, and prices the build against the mosaic map
+and the A1 fallback (~20 min on the laptop, no GPU):
+
+```powershell
+& $conda run --no-capture-output -n geospatial python -u scripts/bank_calibration_f.py   # once
+& $conda run --no-capture-output -n geospatial python -u scripts/f_region_staged.py      # compose
+& $conda run --no-capture-output -n geospatial python -u scripts/f_region_gates.py       # 6 gates
+& $conda run --no-capture-output -n geospatial python -u scripts/f_map_compare.py        # §5.1
+```
+
+Stage D writes into **`reports/map_fbuild/`** — never `reports/map_region/`, which stays on disk as the
+comparison object. Per tile it emits three offset variants (`h1only` / `full` / `resid`) × four layers
+(`prob_raw`, `prob`, `abundance`, `overlap_dp`), the four H6 provenance rasters
+(`n_frames`, `primary_frame`, `incidence`, `offset_source`), and the SeamMap `prob_partition` layer
+gate 1 scores. The headline plain-named copies (`{tile}_prob.tif` etc., so notebook 24 works unchanged
+against `--out-dir`) are written **only** when the trend-guard verdict names a variant — an AMBIGUOUS
+verdict leaves the map deliberately unshipped until Brian rules (§0.1 guard 1); `--headline` overrides.
+
+Two things to know before reading the gate table. **Gate 1 is windowed and floor-relative**: at
+907-frame scale a bare partition η² is dominated by its own geological floor (on the mosaic map, 79% of
+the block-scale η² is reproduced by rolling the field), so the headline is η² on ~75 km windows — the
+scale the 0.05 bar was calibrated on — each against *its own* rotation null, with the block number
+reported as η² − null_mean. The mosaic baseline is banked at median-window η² **0.1222** vs null p95
+**0.0676**. **The §5.1 A1 row needs generating**: no A1 raster exists at any extent, and A1
+renormalises raw CTX DN before the frozen ViT, so `scripts/striping_a1_map.py` (~5–7 GPU-h on the 9
+CTX-equipped tiles) and an A1 LOIO re-run restricted to the same 36 images
+(`striping_a1_loio.py --restrict-store fang_embeddings_f_minnaert_center --tag _36`) come first.
+`f_map_compare.py` runs without them and leaves that row blank.
 
 The Murray Lab **SeamMap** (per-pixel source-frame partition) is pulled from the remote tile zip via
 `/vsizip/vsicurl/` range requests (no GB download) and cached as `cache/ctx_tiles/_frames_<tile>.gpkg`

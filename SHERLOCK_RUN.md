@@ -594,6 +594,68 @@ to `fbuild_stagec_missing_frames.csv` and says so, so an early read costs nothin
 
 ---
 
+## Part J — bring the logits home and run Stages C + D (PLAN_FBuild §4-§5.1)
+
+**Stage B is COMPLETE: 906/907 npzs** (the one permanent failure is an H6 hole to patch with the
+mosaic). Everything downstream is a laptop step — pure numpy/scipy/rasterio, no GPU — so the whole
+remaining build is a transfer plus ~30 minutes of local compute.
+
+**1. Transfer (~2 GB).** On Sherlock:
+```bash
+cd $SCRATCH/hirise2ctx && tar czf ~/f_region_logits.tgz f_region_logits
+ls -l ~/f_region_logits.tgz     # OnDemand Files -> download
+```
+On the laptop:
+```powershell
+tar xzf ~/Downloads/f_region_logits.tgz -C reports/     # -> reports/f_region_logits/ (906 npz + json)
+```
+
+**2. Stage C — the H4 solve** (~10 min; see §4). Partial-safe, so it can be run before the last
+frames land:
+```powershell
+& $conda run --no-capture-output -n geospatial python -u scripts/f_region_stagec.py
+#   -> reports/figures/fbuild_stagec_offsets.csv   the per-frame logit offsets
+#      reports/figures/fbuild_trend_guard.{csv,png}  the verdict: full vs residual-only
+```
+**Read the verdict before Stage D.** If it is `AMBIGUOUS` (`apply=full_pending_ruling`), Stage D
+deliberately writes no headline map — that is §0.1 guard 1, and the call is Brian's (§7 Q3).
+
+**3. Stage D — composite** (~10 min). Needs the F-path calibrator (already banked) and writes on the
+mosaic map's exact grid into a *separate* directory, so `reports/map_region/` survives as the §5.1
+comparison object:
+```powershell
+& $conda run --no-capture-output -n geospatial python -u scripts/bank_calibration_f.py   # once; done
+& $conda run --no-capture-output -n geospatial python -u scripts/f_region_staged.py
+#   -> reports/map_fbuild/{tile}_{h1only,full,resid}_{prob_raw,prob,abundance,overlap_dp}.tif
+#      + {tile}_{n_frames,primary_frame,incidence,offset_source}.tif   (H6 provenance)
+#      + {tile}_{variant}_prob_partition.tif                          (gate 1's scoring layer)
+```
+
+**4. The gates** (~10 min for 26 tiles at `--null-draws 12`):
+```powershell
+& $conda run --no-capture-output -n geospatial python -u scripts/f_region_gates.py
+#   -> fbuild_gate{1..6}*.csv + fbuild_gates.json + fbuild_gate4_choropleth.png
+```
+Gate 1's mosaic baseline is already banked (median-window partition η² **0.1222** against its own
+rotation-null p95 **0.0676**, ratio 1.65 — the artifact). The F rows are what this run adds.
+
+**5. §5.1 comparison.** The A1 row needs two GPU steps first — there is **no A1 raster on disk at any
+extent**, and A1 renormalises raw CTX DN, so there is no post-hoc path:
+```powershell
+# ~5-7 GPU-h on the 9 CTX-equipped tiles (the only footprint A1 can cover without ~30 GB of downloads)
+& $conda run --no-capture-output -n geospatial python -u scripts/striping_a1_map.py
+# ~1 h GPU: A1 skill on the SAME 36 images the F rows use (post-hoc row filtering cannot fix the
+# different training regime)
+& $conda run --no-capture-output -n geospatial python -u scripts/striping_a1_loio.py `
+    --restrict-store fang_embeddings_f_minnaert_center --tag _36
+& $conda run --no-capture-output -n geospatial python -u scripts/f_map_compare.py
+#   -> reports/figures/fbuild_vs_mosaic_vs_a1.{csv,png} + fbuild_cost_ledger.csv
+```
+`f_map_compare.py` runs without the A1 map and simply leaves that row blank, so the mosaic-vs-F
+read is available immediately; the A1 column is what prices the build against the fallback.
+
+---
+
 ## Going global later
 
 `scripts/map_region.py` is tile-list-driven, so global inference = feed the full Murray tile

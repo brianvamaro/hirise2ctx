@@ -11,9 +11,11 @@ Murray tile, on the EXACT grid of the existing mosaic-path map:
   {tile}_n_frames.tif / _primary_frame.tif / _incidence.tif / _offset_source.tif   (H6 provenance)
   {tile}.json                        sidecar (map_region's keys + Stage-D provenance)
 
-for variant in {h1only (o=0), full (offset_logit), resid (offset_residual_only)} — PLAN §1
-deliverable 5 requires all three from ONE Stage-B run, which is exactly why Stage C emits only the
-offset table.
+for variant in {h1only (o=0), full (offset_logit), resid (offset_residual_only),
+lcv (offset_logit_lcv)} — PLAN §1 deliverable 5 requires all of them from ONE Stage-B run, which is
+exactly why Stage C emits only the offset table. `lcv` was added 2026-07-29 (Brian): the
+pre-registered |Δp| edge-CV selects λ by how hard it saturates the sigmoid, so `full`/`resid` are
+retained for the audit trail while `lcv` re-selects λ on the saturation-immune |Δlogit| metric.
 
 Composite rule (PLAN §5): p = sigmoid(mean_f[logit(prob_f) + o_f]) — mean in LOGIT space over the
 frames covering a tile, one sigmoid at the end. Calibration is applied ONCE to the composited
@@ -62,7 +64,11 @@ CAL_MOSAIC = REPO / "models" / "deployable" / "calibration.npz"
 
 VARIANTS = {"h1only": None,                      # o_f == 0 (the un-leveled counterpart, deliverable 5)
             "full": "offset_logit",
-            "resid": "offset_residual_only"}
+            "resid": "offset_residual_only",
+            # λ re-selected on the saturation-immune logit metric (Brian, 2026-07-29): the
+            # pre-registered |Δp| CV drove λ*→0 and |o|max→21.3 logits by saturating the sigmoid,
+            # so `full`/`resid` are kept for the audit trail and `lcv` is the defensible solve.
+            "lcv": "offset_logit_lcv"}
 APPLY_TO_VARIANT = {"full": "full", "residual": "resid", "full_pending_ruling": None}
 SHARED_LAYERS = ("n_frames", "primary_frame", "incidence", "offset_source")
 
@@ -75,6 +81,9 @@ def load_offsets(path: Path) -> pd.DataFrame:
     for col in ("offset_logit", "offset_residual_only"):
         if col not in df.columns:
             raise SystemExit(f"{path} has no column {col!r} — is it a Stage-C offsets table?")
+    if "offset_logit_lcv" not in df.columns:                  # pre-2026-07-29 Stage-C table
+        print("⚠ no `offset_logit_lcv` column — Stage C predates the λ(|Δlogit|) selection; "
+              "the `lcv` variant is unavailable (re-run Stage C to get it)", flush=True)
     if "offset_source" not in df.columns:
         df["offset_source"] = "solved"
     return df
@@ -99,12 +108,24 @@ def frame_index(logits_dir: Path, cache: Path, rebuild: bool = False) -> pd.Data
     (one winning frame per mosaic pixel), while the F build renders each frame's full cam2map
     footprint, which spills into tiles that frame never won. The npz keys are the ground truth.
     """
-    if cache.exists() and not rebuild:
-        return pd.read_csv(cache)
-    rows = []
     npzs = sorted(logits_dir.glob("*.npz"))
     if not npzs:
         raise SystemExit(f"no *.npz in {logits_dir} — Stage B must run (and be tar'd home) first")
+    if cache.exists() and not rebuild:
+        cached = pd.read_csv(cache)
+        # Auto-invalidate: a cache built during a PARTIAL Stage B was otherwise baked in permanently
+        # and invisibly — the print lived inside the build branch, so a stale cached run emitted no
+        # frame count at all, and even `--overwrite` reused it (review 2026-07-29).
+        newest = max(p.stat().st_mtime for p in npzs)
+        stamp = cache.with_suffix(".stamp.json")
+        prev = json.loads(stamp.read_text(encoding="utf-8")) if stamp.exists() else {}
+        if len(cached) == len(npzs) and prev.get("newest_mtime", -1) >= newest - 1e-6:
+            print(f"frame index: {len(cached)} frames (cached)", flush=True)
+            return cached
+        print(f"frame index: STALE ({len(cached)} cached vs {len(npzs)} npz on disk"
+              f"{', newer files present' if prev.get('newest_mtime', -1) < newest else ''}) "
+              f"-> rebuilding", flush=True)
+    rows = []
     t0 = time.monotonic()
     for p in npzs:
         z = np.load(p)
@@ -115,6 +136,9 @@ def frame_index(logits_dir: Path, cache: Path, rebuild: bool = False) -> pd.Data
     df = pd.DataFrame(rows)
     cache.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(cache, index=False)
+    cache.with_suffix(".stamp.json").write_text(
+        json.dumps({"n_npz": len(npzs),
+                    "newest_mtime": max(p.stat().st_mtime for p in npzs)}), encoding="utf-8")
     print(f"frame index: {len(df)} frames, {df.n_tiles.sum():,} global tiles "
           f"({time.monotonic() - t0:.0f}s) -> {cache}", flush=True)
     return df
@@ -285,6 +309,8 @@ def main() -> int:
     ap.add_argument("--no-partition", action="store_true",
                     help="skip the SeamMap partition-composite layer (gate 1 needs it)")
     ap.add_argument("--rebuild-index", action="store_true")
+    ap.add_argument("--allow-partial", action="store_true",
+                    help="write a headline map even though Stage B is short of the planned frames")
     ap.add_argument("--overwrite", action="store_true")
     args = ap.parse_args()
 
@@ -293,14 +319,18 @@ def main() -> int:
     variants = [v for v in VARIANTS if v in args.variants]     # keep the canonical order
     offsets = load_offsets(Path(args.offsets))
     guard = load_verdict(Path(args.guard))
+    dropped = [v for v in variants if VARIANTS[v] and VARIANTS[v] not in offsets.columns]
+    if dropped:                                                # never silently skip coverage
+        print(f"⚠ variants {dropped} have no offset column in {args.offsets} -> SKIPPED", flush=True)
+        variants = [v for v in variants if v not in dropped]
 
     headline = args.headline or APPLY_TO_VARIANT.get(guard["apply"])
     print(f"trend-guard verdict: {guard['verdict']} -> apply '{guard['apply']}'", flush=True)
     if headline is None:
         print("⚠ NO headline map will be written: the verdict does not name a variant "
               "(§0.1 guard 1 — an AMBIGUOUS attribution must not silently ship full offsets).\n"
-              "  All three variants ARE written under explicit names; pass --headline to ship one.",
-              flush=True)
+              f"  All {len(variants)} variants ARE written under explicit names; "
+              f"pass --headline to ship one.", flush=True)
     else:
         print(f"headline (plain-named) variant = {headline}"
               f"{' [--headline override]' if args.headline else ''}", flush=True)
@@ -317,6 +347,22 @@ def main() -> int:
               f"{'; mosaic-reused column ON' if cal_mos is not None else ''}", flush=True)
 
     idx = frame_index(logits_dir, out_dir / "frame_index.csv", args.rebuild_index)
+    # Census against the plan and against Stage C, so a partial Stage B cannot pass unremarked
+    # (Stage C is explicitly partial-safe; Stage D was not — review 2026-07-29).
+    planned = FIG / "region_frame_list.csv"
+    n_planned = len(pd.read_csv(planned)) if planned.exists() else 0
+    n_matched = int(idx.PRODUCT_ID.isin(offsets.index).sum())
+    print(f"census: {len(idx)} frames with logits"
+          + (f" of {n_planned} planned" if n_planned else "")
+          + f"; {n_matched} matched to a Stage-C offset row", flush=True)
+    if n_planned and len(idx) < n_planned:
+        msg = (f"⚠ Stage B is short by {n_planned - len(idx)} frame(s) — the composite will have "
+               f"holes to patch with the mosaic + flag in H6 (PLAN §2)")
+        if headline is not None and not args.allow_partial:
+            raise SystemExit(msg + "\n  Refusing to write a HEADLINE (shippable) map from a partial "
+                                   "Stage B. Pass --allow-partial to proceed, or --headline to "
+                                   "override deliberately; the per-variant maps are unaffected.")
+        print(msg, flush=True)
     frame_lut = {pid: i for i, pid in enumerate(sorted(idx.PRODUCT_ID))}
     pd.DataFrame({"frame_idx": list(frame_lut.values()), "PRODUCT_ID": list(frame_lut)}
                  ).sort_values("frame_idx").to_csv(out_dir / "frame_lut.csv", index=False)
@@ -330,7 +376,14 @@ def main() -> int:
             print(f"  ⚠ {tile}: no reference raster in {map_dir} -> skip (Stage D writes on the "
                   f"mosaic-path grid; that map must be on disk)", flush=True)
             continue
-        done = all((out_dir / f"{tile}_{v}_prob_raw.tif").exists() for v in variants)
+        # The done-check must include the HEADLINE products, not just the per-variant ones: keying
+        # only on `{tile}_{variant}_prob_raw.tif` meant a second run with --headline (or after the
+        # verdict changed from AMBIGUOUS) skipped the tile and silently never wrote the plain-named
+        # map, while still printing "headline variant = ..." (review 2026-07-29).
+        need = [out_dir / f"{tile}_{v}_prob_raw.tif" for v in variants]
+        if headline is not None:
+            need.append(out_dir / f"{tile}_prob_raw.tif")
+        done = all(p.exists() for p in need)
         if done and not args.overwrite:
             print(f"  {tile}: outputs exist -> skip (--overwrite to redo)", flush=True)
             continue

@@ -122,16 +122,55 @@ def test_edge_cv_reports_unleveled_insample_and_heldout():
     es, bias = _edges()
     n = len(es.pids)
     o = -(bias - np.median(bias))
-    r = fg.edge_cv_for_offsets(es, o, n, 1.0, frac=0.2, repeats=3)
+    r = fg.edge_cv_for_offsets(es, o, n, 1.0, variant="full", frac=0.2, repeats=3)
     assert r["insample_dp"] < r["unleveled_dp"]
     assert r["passes"] is True
 
 
-def test_edge_cv_for_zero_offsets_is_the_baseline():
+def test_edge_cv_h1only_is_the_baseline_and_does_NOT_pass():
+    """The held-out number must depend on the offset MODEL. An earlier version delegated to
+    lv.heldout_edge_cv, which re-solves FULL offsets per fold and never sees the offsets, so h1only /
+    full / resid all returned the same value and the UNLEVELED row was reported as clearing gate 2."""
     es, _ = _edges()
     n = len(es.pids)
-    r = fg.edge_cv_for_offsets(es, np.zeros(n), n, 1.0, frac=0.2, repeats=2)
-    assert r["insample_dp"] == pytest.approx(r["unleveled_dp"])
+    r0 = fg.edge_cv_for_offsets(es, np.zeros(n), n, 1.0, variant="h1only", frac=0.2, repeats=2)
+    assert r0["heldout_cv_dp"] == pytest.approx(r0["unleveled_dp"])
+    assert r0["insample_dp"] == pytest.approx(r0["unleveled_dp"])
+    assert r0["passes"] is False
+
+
+def test_edge_cv_heldout_actually_depends_on_the_variant():
+    es, bias = _edges()
+    n = len(es.pids)
+    o = -(bias - np.median(bias))
+    full = fg.edge_cv_for_offsets(es, o, n, 1.0, variant="full", frac=0.2, repeats=2)
+    h1 = fg.edge_cv_for_offsets(es, np.zeros(n), n, 1.0, variant="h1only", frac=0.2, repeats=2)
+    assert full["heldout_cv_dp"] != pytest.approx(h1["heldout_cv_dp"])
+    assert full["heldout_cv_dp"] < h1["heldout_cv_dp"]
+
+
+def test_edge_cv_absurd_offsets_do_not_silently_pass_in_sample():
+    """A wild offset vector must be visible in the in-sample number rather than hidden by a
+    variant-independent held-out value."""
+    es, _ = _edges()
+    n = len(es.pids)
+    wild = fg.edge_cv_for_offsets(es, np.full(n, 7.0), n, 1.0, variant="full", frac=0.2, repeats=2)
+    zero = fg.edge_cv_for_offsets(es, np.zeros(n), n, 1.0, variant="full", frac=0.2, repeats=2)
+    assert wild["insample_dp"] != pytest.approx(zero["insample_dp"])
+
+
+def test_edge_cv_resid_refits_its_plane_per_fold():
+    """resid = "solve minus its own smooth plane"; without lon/lat it must SAY it fell back to full
+    rather than quietly reporting the full-offset number as the residual variant's."""
+    es, bias = _edges()
+    n = len(es.pids)
+    o = -(bias - np.median(bias))
+    lon = np.linspace(-10, 10, n)
+    lat = np.linspace(35, 45, n)
+    with_plane = fg.edge_cv_for_offsets(es, o, n, 1.0, variant="resid", frac=0.2, repeats=2,
+                                        lon=lon, lat=lat, degree=es.degrees(n).astype(float))
+    assert np.isfinite(with_plane["heldout_cv_dp"])
+    assert with_plane["variant"] == "resid"
 
 
 # --------------------------------------------------------------------------- gate 3
@@ -155,43 +194,109 @@ def test_common_finite_is_the_intersection():
 
 
 # --------------------------------------------------------------------------- gates 5 / 6
-def test_cohort_tiles_to_global_uses_the_stage_b_keying():
-    """A cohort tile's (ti,tj) in its own window grid must land on the SAME global node Stage B
-    would have produced for the same ground position."""
-    bounds = pd.DataFrame([{"obs_id": "ESP_1", "minx": 480000.0, "miny": 2000000.0,
-                            "maxx": 500000.0, "maxy": 2020000.0, "row0": 0, "col0": 0}])
-    labels = pd.DataFrame({"obs_id": ["ESP_1", "ESP_1"], "ti": [0, 3], "tj": [0, 5],
-                           "fractional_area": [0.0, 0.05]})
-    got = fg.cohort_tiles_to_global(bounds, labels)
-    want_tj = np.round((480000.0 + (np.array([0, 5]) + 0.5) * 160.0) / 160.0).astype(int)
-    want_ti = np.round((2020000.0 - (np.array([0, 3]) + 0.5) * 160.0) / 160.0).astype(int)
-    assert list(got.TJ) == list(want_tj) and list(got.TI) == list(want_ti)
+def _labels_with_bbox(centres_xy, pitch=32 * 4.9999744853063):
+    """Label rows carrying the world bbox the parquet actually stores, for given tile centres."""
+    cx = np.array([c[0] for c in centres_xy], float)
+    cy = np.array([c[1] for c in centres_xy], float)
+    return pd.DataFrame({"obs_id": ["ESP_1"] * len(cx), "ti": np.arange(len(cx)),
+                         "tj": np.arange(len(cx)), "fractional_area": np.zeros(len(cx)),
+                         "xmin": cx - pitch / 2, "xmax": cx + pitch / 2,
+                         "ymin": cy - pitch / 2, "ymax": cy + pitch / 2})
 
 
-def test_cohort_join_drops_obs_without_bounds():
-    bounds = pd.DataFrame([{"obs_id": "ESP_1", "minx": 0.0, "miny": 0.0, "maxx": 1.0,
-                            "maxy": 1000.0, "row0": 0, "col0": 0}])
-    labels = pd.DataFrame({"obs_id": ["ESP_1", "ESP_2"], "ti": [0, 0], "tj": [0, 0],
-                           "fractional_area": [0.0, 0.1]})
-    got = fg.cohort_tiles_to_global(bounds, labels)
-    assert list(got.obs_id) == ["ESP_1"]
+def test_cohort_join_keys_off_the_label_bbox_not_a_window_corner():
+    """Independently-derived expectation: a tile whose world centre is at (x, y) must key to
+    (round(y/160), round(x/160)) — Stage B's exact keying — regardless of any window offset.
+
+    The previous version of this test pinned row0=col0=0 and re-derived the expected value from the
+    implementation's own formula, so it could not catch the ~100 km window-offset bug the 2026-07-29
+    review found. These centres are chosen by hand.
+    """
+    # centres chosen to be EXACT multiples of 160 so the expectation needs no rounding rule — a
+    # half-cell value like 480_080 would sit on a tie and np.round is half-to-EVEN.
+    labels = _labels_with_bbox([(480_160.0, 2_020_000.0), (-1_600.0, 160.0)])
+    got = fg.cohort_tiles_to_global(labels)
+    assert list(got.TJ) == [3001, -10]
+    assert list(got.TI) == [12625, 1]
 
 
-def test_cohort_join_rejects_bad_bounds_schema():
-    with pytest.raises(ValueError, match="obs_bounds needs"):
-        fg.cohort_tiles_to_global(pd.DataFrame({"obs_id": ["a"]}),
-                                  pd.DataFrame({"obs_id": ["a"], "ti": [0], "tj": [0]}))
+def test_cohort_join_is_immune_to_the_window_offset():
+    """Two obs with identical ground positions but wildly different window origins must get the same
+    global keys — the property the old (ti,tj)+window-corner route violated by ~100 km."""
+    labels = _labels_with_bbox([(500_000.0, 2_500_000.0)])
+    a = fg.cohort_tiles_to_global(labels.assign(ti=0, tj=0))
+    b = fg.cohort_tiles_to_global(labels.assign(ti=21_383, tj=3_813))
+    assert list(a.TI) == list(b.TI) and list(a.TJ) == list(b.TJ)
 
 
-def test_pooled_skill_matches_the_declared_conventions():
+def test_cohort_join_rejects_labels_without_the_world_bbox():
+    with pytest.raises(ValueError, match="world bbox"):
+        fg.cohort_tiles_to_global(pd.DataFrame({"obs_id": ["a"], "ti": [0], "tj": [0]}))
+
+
+def test_cohort_join_matches_the_real_label_geometry(repo_root):
+    """On real label rows, the bbox route must agree with Stage B's keying of the same ground point,
+    and must NOT agree with the window-corner route (which is the bug, reproduced here)."""
+    import glob
+    paths = sorted(glob.glob(str(repo_root / "dataset_v2" / "labels" / "*.parquet")))
+    bounds_csv = repo_root / "reports" / "f_leg_b" / "cohort_obs_bounds.csv"
+    if not paths or not bounds_csv.exists():
+        pytest.skip("dataset_v2/labels or cohort_obs_bounds.csv not on disk")
+    d = pd.read_parquet(paths[0], columns=["obs_id", "tile_size_px", "ti", "tj",
+                                           "xmin", "xmax", "ymin", "ymax", "fractional_area"])
+    d = d[d.tile_size_px == 32].head(200)
+    got = fg.cohort_tiles_to_global(d)
+    cx = (d.xmin.to_numpy() + d.xmax.to_numpy()) / 2
+    cy = (d.ymin.to_numpy() + d.ymax.to_numpy()) / 2
+    assert np.array_equal(got.TJ.to_numpy(), np.round(cx / 160.0).astype(np.int64))
+    assert np.array_equal(got.TI.to_numpy(), np.round(cy / 160.0).astype(np.int64))
+    b = pd.read_csv(bounds_csv).set_index("obs_id")
+    obs = d.obs_id.iloc[0]
+    if obs in b.index and float(b.loc[obs, "col0"]) > 0:
+        wrong_tj = np.round((float(b.loc[obs, "minx"])
+                             + (d.tj.to_numpy() + 0.5) * 160.0) / 160.0).astype(np.int64)
+        assert not np.array_equal(got.TJ.to_numpy(), wrong_tj), (
+            "the window-corner route must NOT agree — it is the bug this join replaced")
+
+
+def test_pooled_pr_auc_is_average_precision_not_roc_auc():
+    """Pins the metric IDENTITY, because the project rule is that presence/ROC AUC must never be
+    reported. The previous version only bounded the value in (0.5, 1] — a band ROC AUC also satisfies
+    — so swapping in roc_auc_score left the whole file green (review 2026-07-29).
+
+    The two reference values are computed here rather than hardcoded, and the test first ASSERTS THEY
+    DIFFER on this input, so it cannot silently become vacuous (an earlier attempt at this test used
+    y=[1,0,0,1]/p=[.9,.8,.7,.6], where average precision and ROC AUC are both exactly 0.75)."""
+    from sklearn.metrics import average_precision_score, roc_auc_score
+
+    y = np.array([1, 1, 0, 0, 1])
+    p = np.array([0.9, 0.8, 0.7, 0.6, 0.5])
+    ap, roc = average_precision_score(y, p), roc_auc_score(y, p)
+    assert abs(ap - roc) > 0.1, "the fixture must discriminate the two metrics"
+    r = fg.pooled_skill(y, p)
+    assert r["pooled_pr_auc"] == pytest.approx(ap, abs=1e-12)
+    assert r["pooled_pr_auc"] != pytest.approx(roc, abs=1e-3)
+
+
+def test_precision_at_5pct_is_pinned_to_a_literal():
+    """k = max(1, round(0.05*N)) with a DESCENDING sort. 40 rows -> k = 2; the two highest-p rows are
+    constructed to be one positive and one negative, so the answer is exactly 0.5."""
+    p = np.linspace(0.0, 1.0, 40)
+    y = np.zeros(40, dtype=int)
+    y[39] = 1          # highest p, positive
+    y[38] = 0          # second highest, negative
+    y[:5] = 1          # positives far from the top, so they cannot enter the top-k
+    r = fg.pooled_skill(y, p)
+    assert r["precision@5%"] == pytest.approx(0.5)
+    assert r["n"] == 40
+
+
+def test_pooled_skill_reports_n_and_handles_a_realistic_pool():
     rng = np.random.default_rng(0)
     y = rng.integers(0, 2, 2000)
     p = np.clip(y * 0.4 + rng.uniform(0, 0.6, 2000), 0, 1)
     r = fg.pooled_skill(y, p)
-    assert 0.5 < r["pooled_pr_auc"] <= 1.0
-    k = max(1, int(round(0.05 * 2000)))
-    assert r["precision@5%"] == pytest.approx(y[np.argsort(-p)[:k]].mean())
-    assert r["n"] == 2000
+    assert 0.5 < r["pooled_pr_auc"] <= 1.0 and r["n"] == 2000
 
 
 def test_pooled_skill_is_nan_on_single_class():

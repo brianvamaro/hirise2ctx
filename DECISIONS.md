@@ -4971,6 +4971,216 @@ deliverable: `offset_logit`, `offset_residual_only`, `offset_source`, LOFO, per-
 `fbuild_trend_guard.{csv,png}` (§4.4's mandated name), `fbuild_stagec_{lambda,graph,attribution,
 watchlist,missing_frames}.csv`, `fbuild_stagec_offsets.png`; edge cache in `reports/f_stagec/`.
 
+## 2026-07-29 — F build Stage D BUILT (composite + 6 gates + §5.1) — and gate 1's bar had to be re-scoped to survive the change of scale
+
+Commit `afe6fce`. Stage B finished in a parallel session (906/907 npzs, still on Sherlock scratch), so
+Stage D was built and its non-F rows RUN on real data. New: `src/fcompose.py`, `src/fgates.py`,
+`scripts/f_region_staged.py`, `scripts/f_region_gates.py`, `scripts/f_map_compare.py`,
+`scripts/bank_calibration_f.py`, `scripts/striping_a1_map.py`, `--restrict-store/--tag` on
+`scripts/striping_a1_loio.py`, 63 tests (fast suite 464).
+
+### VERIFIED AT RUNTIME: the two grids are different lattices, related by an exact integer shift
+
+Stage B keys tiles to an **exact 160.0 m** lattice anchored at the CRS origin; the mosaic-path map is
+**159.9991835298017 m** per Murray tile with origins that are not multiples of 160. Measured over all
+26 tiles (`fcompose.tile_index_map`, asserted every run):
+
+- within any one tile the relation is a **CONSTANT INTEGER SHIFT** — `TJ = col + Kj`, `TI = Ki − row`
+  (e.g. E-12_N32 Kj=−4444/Ki=13335; E0_N44 Kj=1/Ki=17781) — so **no interpolation is needed**;
+- but the lattices differ by a fixed **sub-pixel translation of 6.0–80.0 m in x / 7.9–50.3 m in y**,
+  and the **E0 lon column sits 1.2 mm from a half-cell rounding tie** (its map pixel centres are
+  ~80 m = half a cell from the global node they map to, i.e. on the cell boundary).
+
+Stage D therefore places tiles by the integer shift and **reports** `dx_m`/`dy_m`/`tie_margin_m` per
+tile (`fbuild_staged_registration.csv`) instead of pretending the grids coincide. The translation is
+well inside the project's own O(200 m) HiRISE↔CTX registration budget (CLAUDE.md), and note Stage B
+already accepted a ≤80 m quantisation when it chose an exact-160 key — this is that same choice
+surfacing, not a new error. `TI` increases **northward**, so `row = Ki − TI`; a naive
+`raster[TI − TI_min]` yields a vertically mirrored map (pinned by a test).
+
+### GATE 1: the pre-declared bar is not interpretable at 907-frame scale (measured, then re-scoped)
+
+η² has no group-count correction, so it grows mechanically with frame count and footprint. Measured on
+the **existing mosaic-path map** (read-only probes, then reproduced by the shipped scorer):
+
+| scope | mosaic partition η² | its own rotation-null | reading |
+|---|---|---|---|
+| merged 26-tile block | **0.3575** | mean 0.2837 / p95 0.3189 | 79% of the "artifact" is reproduced by rolling the field |
+| per 4° tile (median) | **0.1850** | p95 0.1268 | ratio 1.46 |
+| ~75 km window (median of 234) | **0.1222** | p95 **0.0676** | ratio **1.65** |
+| detrended σ=30 px | 0.0123 | p95 0.0023 | the un-mitigated map already passes 0.05 |
+
+So the literal "partition η² ≤ 0.05 on the full block" sits **below the geological floor** (nothing can
+pass) while the detrended reading is **already passed by the un-mitigated map** (nothing can fail).
+The 0.05 bar was calibrated on a ~75 km / 7-frame crop where the mosaic scores 0.1948 against a null
+of 0.083–0.117.
+
+**Brian ruled 2026-07-28:** headline = partition η² on **~75 km windows** (469 coarse px = the pilot
+crop's own size), each against **its own** rotation null, with the bar applied to the **median
+window**; the full-block number reported **floor-relative** (η² − null_mean, η²/null_p95). Both are
+computed for every row on one grid and one quantity (raw P(rich), partition composite).
+**Mosaic baseline banked** (`fbuild_gate1_summary.csv`): median-window η² 0.1222, null p95 0.0676,
+excess +0.0719, ratio 1.65, 21.4% of windows already under 0.05, `passes_bar` False. Independent
+cross-check: the shipped scorer's tile-scale median 0.18499 reproduces the earlier probe's 0.185, and
+its windowed null 0.068 lands inside the pilot crop's measured 0.083–0.117 range.
+
+**Consequence to keep in view:** the F rows must be read floor-relative too. H1+H4's pilot 0.0505 is
+*below* the mosaic's own windowed floor, which is why each row is scored against **its own** null —
+comparing one field's η² to another field's null is meaningless (the null depends on the field's
+autocorrelation, and leveling changes it).
+
+### Four more rulings (Brian 2026-07-28), all encoded before any F number existed
+
+1. **§5.1 footprint = the 9 CTX-equipped tiles.** There is **no A1 raster on disk at any extent** —
+   `striping_a1_infer_crop.py` only ever saved a PNG — and A1 renormalises raw CTX **DN** before the
+   frozen ViT, so there is no post-hoc path from the existing probability rasters. A1 can only cover
+   tiles with a cached Murray zip (9 of 26; the rest would need ~30 GB). Every §5.1 row is scored on
+   that footprint. `scripts/striping_a1_map.py` generates it (~5–7 GPU-h).
+2. **Calibration: re-bank on the F path, ship both.** The banked layer was fitted on the *mosaic-path*
+   head's LOIO predictions; Tier-2 is a quantile-match (a marginal-transfer map), and the two heads'
+   pooled P(rich) marginals differ by **CDF L1 0.0358** (median 0.2513 → 0.3218) — the same class of
+   train/deploy mismatch that killed F pilot leg A. `scripts/bank_calibration_f.py` RAN:
+   **Tier-1 LOIO ECE 0.0280 PASS** (bar 0.05); **pooled Tier-2 top_ratio 0.8783 PASS** (band 0.8–1.2;
+   the mosaic layer's number of record is 0.8573); the re-bank recovers the true-zero mass far better
+   (**marginal L1 5e-6 vs 2.1e-3**, near-zero share 0.194 vs 0.104 against a true 0.188). Gate 6
+   reports under **both** layers. Feasibility had to be checked first: the F LOIO preds CSV has no
+   `ti`/`tj`, but qmatch needs only the two marginals and the per-obs tile counts match the labels
+   **36/36 exactly** (153,663 = 153,663), so the label `fractional_area` marginal is the correct target.
+   *Correction made during the run:* I first reported Tier-2 `top_ratio` as a **median over per-image
+   ratios** (0.5925) and compared it to the band — but the 0.8573 on record is a **pooled** statistic,
+   and a per-image ratio is far harsher (each image's tail is predicted from the other 35). Both are
+   now reported; the pooled one is the gate. The per-image spread is itself informative: median 0.5925,
+   p10 0.0696 — consistent with the parked LOIO-negative reliability finding.
+3. **Gate 5 = the DELTA, not the absolute.** The F head is **in-sample on all 36** images (its
+   `train_obs_ids` *are* the 36), so an absolute per-frame pooled pr_auc reads ~0.92 against a LOIO
+   number of record of 0.7964 and would pass vacuously by +0.13. Gate 5 scores
+   **Δ(H1+H4 − H1) ≥ −0.02**, where the head cancels (what the 2026-07-15 probe did: Δ −0.0007).
+   Also measured: **only 21 of the 36 cohort images have CTX source frames inside the 907** (15 of the
+   28 multi-frame obs), so the build's own products cannot cover the pre-declared footprint; the gate
+   is scoped to the in-region obs and says so on the table.
+4. **A1 skill re-run on the 36.** `striping_a1_loio.py --restrict-store fang_embeddings_f_minnaert_center
+   --tag _36` (verified: 38 ∩ 36 = 36). Post-hoc row filtering cannot fix it — the 38-image folds
+   trained on 37 images rather than 35. The restrict helper is copied **verbatim** from
+   `f_leg_b_loio.restrict_fold` (my first hand-rolled version was wrong: `y_train`/`y_test` are label
+   DataFrames needing `reset_index`, and `groups_test` must be subset too).
+
+### Other decisions taken while building
+
+- **Composite rule pinned** to `sigmoid(mean_f[logit(prob_f) + o_f])` — mean in LOGIT space, one
+  sigmoid at the end (reference: `f_h4_legb_perframe.composites`), with `src.leveling`'s EPS=1e-4 so it
+  composes exactly with Stage C's offsets. Calibration is applied **once to the composited P**, and
+  abundance from the **raw** composited P (never the isotonic output), mirroring
+  `src.mapping.predict_window` — `calibrate_abundance` is nonlinear, so mean-then-calibrate ≠
+  calibrate-then-mean (pinned by a test with a convex Tier-2 map).
+- **H6 overlap-QA `max |Δp|`**: max over frame PAIRS equals `p_max − p_min` exactly, so the O(k)
+  running min/max **is** the O(k²) quantity, not an approximation (pinned against brute force).
+- **Provenance layers**: `n_frames`, `primary_frame` (the lowest-incidence contributor — with a mean
+  composite no frame "owns" a pixel, so this is provenance-of-record, not the value's source),
+  `incidence`, and `offset_source` taking the **worst** contributor's severity
+  (solved / component_gauged / interpolated / none).
+- **An AMBIGUOUS verdict writes no headline map.** All three variants are written under explicit
+  names, but the plain `{tile}_prob.tif` names notebook 24 globs are left absent until Brian rules
+  (§0.1 guard 1 vs §4.3's "default to full"); `--headline` overrides explicitly.
+- **Gate 1 needs a partition composite**, which only exists during the frame pass, so the driver emits
+  `{tile}_{variant}_prob_partition.tif` rather than making the gate script re-read every npz. Note the
+  F build's partition raster uses a strictly *smaller* subset of its own predictions than the mean
+  composite it ships — that is the price of being label-comparable to the mosaic map, which has one
+  value per pixel by construction.
+- **Output goes to `reports/map_fbuild/`**, never into `reports/map_region/` (PLAN §1 deliverable 4
+  keeps the mosaic map as the comparison object). `src.striping.frame_label_map`/`load_frames`
+  hard-wire that directory, so Stage D calls `rasterize` itself via `fcompose.frame_labels_on_grid`.
+- **`f_map_compare` masks every row to ONE common finite footprint** before scoring, so a coverage
+  difference can never masquerade as a metric difference.
+- **Cost ledger provenance is recorded per row**: the mosaic/A1 GPU figures are *planning* estimates
+  from the sbatch header (`region_manifest.json` is stale — it records only the last 4-tile array
+  task), while the F-build Stage A/B numbers are probe-measured (V1).
+- **Two of my own test assertions were vacuous** and are fixed with the reason in the test: a
+  symmetric logit pair (0.2/0.8) where mean-of-logits and mean-of-probabilities both give 0.5, and a
+  partition-vs-mean comparison under offsets that make the frames agree exactly. Both now use
+  discriminating inputs.
+
+**Not yet run:** the F rows of every gate. The A1 map and the A1 LOIO re-run are GPU steps.
+SHERLOCK_RUN **Part J** is the transfer + run order.
+
+### 2026-07-29b — adversarial review of Stage D: 36 findings, 17 confirmed, 2 BLOCKERS fixed
+
+7-dimension find→refute-by-default review over the Stage D implementation. The two blockers were both
+things my own tests were *structurally unable* to catch, which is the more useful lesson than either
+bug:
+
+**Blocker 1 — the gate-5/6 cohort join was off by ~100 km.** `fgates.cohort_tiles_to_global`
+reconstructed each labelled tile's world position from `(ti, tj)` plus the observation window's corner
+in `cohort_obs_bounds.csv`, on the premise that `ti/tj` are window-relative. They are not:
+`src/labeling.py:363-370` emits them anchored at the **parent Murray tile's** `inner_transform`
+origin, so the window offset is already baked in (`DATA_DICTIONARY.md:184`; `src/features.py:653`
+*subtracts* `mosaic_row_origin` to get back to window coords). Anchoring already-absolute indices at
+the window corner added `(col0, row0)·5 m` on top — **measured median displacement 94.7 km in x /
+108.8 km in y over all 38 obs** (max 210/219 km). It failed silently: ~79k mis-keyed rows still landed
+inside a block tile on finite pixels, so gates 5 and 6 were pairing labels with predictions ~100 km
+apart and publishing plausible numbers. **Fixed** by keying off the world bbox the label rows already
+carry (`xmin/xmax/ymin/ymax` → centre → Stage B's `round(·/160)`), which also drops the `32*5.0`
+pitch approximation (label tiles are 159.9992 m). Verified against the mosaic map on real data:
+
+| | mis-keyed | fixed |
+|---|---|---|
+| pooled pr_auc@1e-2 | 0.544 | **0.9013** |
+| precision@5% | 0.442 | **0.9878** |
+| Spearman(fa, p) | **−0.180** | **+0.7954** |
+
+(102,948 labelled tiles on finite pixels, 23 obs, 9 tiles; E16_N44 alone 0.939/+0.791, reproducing the
+reviewer's independent probe.) The old unit test could not fail: it pinned `row0=col0=0` and derived
+its expectation from the same formula. The replacement uses hand-chosen exact-multiple-of-160 centres
+(a half-cell value would sit on a `np.round` half-to-even tie), asserts invariance to the window
+offset, and cross-checks against the real parquet geometry.
+
+**Blocker 2 — gate 2 was scored on offsets the map does not use.** `edge_cv_for_offsets` delegated the
+headline to `lv.heldout_edge_cv`, which re-solves FULL offsets per fold and never sees the `offsets`
+argument — so `heldout_cv_dp` and `passes` were byte-identical for h1only / full / resid, and the
+**H1-only row (no offsets at all) was reported as clearing the gate**. Exactly what that function's
+docstring claimed to prevent. **Fixed**: the fold loop now lives in `fgates` and rebuilds each
+variant's own offsets per fold — `h1only` short-circuits to the baseline with `passes=False`,
+`full`/`lcv` solve at their own λ and metric, and `resid` refits its degree-weighted lon/lat plane
+**inside** each fold (refitting outside would leak). The old tests asserted only `passes is True`
+(which an absurd `full(n, 7.0)` vector also satisfied) and compared `median(edge_dp(zeros))` with
+itself.
+
+**Also confirmed and fixed:**
+- **Gate 1 scored each row on its own footprint.** The F partition rasters have lower coverage than
+  the mosaic map *by construction*, and the reviewer measured that a purely geometric 8–16% coverage
+  deficit buys an 11–22% better η²/null ratio — with zero real mitigation. `gate1()` now builds one
+  `common_finite` mask per tile (as `f_map_compare.quality_table` already did) and records each row's
+  raw coverage alongside.
+- **§5.1 did not intersect over TILES.** A row present on only some tiles was compared against rows
+  scored on a different tile set; per-tile window-median η² spans 0.033–0.222 across the block, so
+  tile composition alone moves a row by ±15% — the same order as the effect being adjudicated. Now
+  intersected, with a loud "REDUCED FOOTPRINT" report naming the dropped tiles.
+- **`abundance_fidelity`'s thin-data branch** returned a short dict, so gate 6's column selection
+  raised `KeyError` *after* writing its CSV. Now NaN-fills the full key set.
+- **The frame-index cache was never invalidated**, so a run started during a partial Stage B baked
+  that frame set in permanently — and because the print lived in the build branch, a stale cached run
+  emitted no frame count at all. Now stamped with `(n_npz, newest mtime)` and auto-rebuilt, with a
+  `census:` line and a refusal to write a *headline* (shippable) map from a short Stage B unless
+  `--allow-partial`.
+- **The resume gate ignored the headline products**, so a second run with `--headline` (or after the
+  verdict stopped being AMBIGUOUS) skipped the tile and silently never wrote the plain-named map while
+  still printing "headline variant = ...".
+- **Gates 5/6 pooled all 38 labelled images** while printing "of 36" — now restricted to the store
+  intersection, per ruling 4.
+- **`pooled_skill`'s test did not pin average precision**: swapping in `roc_auc_score` left all 23
+  tests green, so the column named `pooled_pr_auc` could have been the forbidden presence AUC. Now
+  pinned on a fixture that *asserts the two metrics differ* first — my first attempt at this test used
+  `y=[1,0,0,1] / p=[.9,.8,.7,.6]`, where average precision and ROC AUC are **both** 0.75, i.e. it was
+  itself vacuous.
+
+**Not fixed, recorded instead:** ruling 1's *full-block* floor-relative η² is still computed at
+per-4°-tile scope, not on a merged 26-tile raster (the block-scale null costs ~18 min/field at n=40).
+The per-tile medians are reported; the merged-block row remains open.
+
+**Measured, not assumed:** `TileAccum.add_frame` costs 21.4 ms per 60k-tile frame, i.e. ~1.7 min of
+accumulation for the whole 26-tile × 60-frame × 3-variant run — `np.minimum.at`/`maximum.at` are
+2.7–6.0 ms each on current numpy, so the buffered sort-and-`fmax.reduceat` alternative (4.7 ms) is not
+worth the complexity. Fast-suite total 478.
+
 ## 2026-07-07 — PHASE 2 H1 (per-frame log-median centering): BOTH GATES PASS — η² 0.179→0.081, embedder amplification KILLED
 
 First item of the PLAN_StripingArtifact PHASE 2 docket. **H1 = log-minnaert (k=0.580) + a

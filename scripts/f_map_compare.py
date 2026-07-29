@@ -104,6 +104,30 @@ def quality_table(tiles, map_f, map_mosaic, map_a1, args) -> tuple[pd.DataFrame,
     lut = (list(pd.read_csv(lut_path).sort_values("frame_idx").PRODUCT_ID) if lut_path.exists()
            else (sorted(pd.read_csv(fl).PRODUCT_ID) if fl.exists() else []))
     themis_path = Path(args.themis)
+    # §5.1 requires ONE footprint. Intersecting over ROWS within a tile is not enough: a row missing
+    # on a subset of tiles would be compared against rows scored on a different tile set, and the
+    # per-tile window-median η² spans 0.033..0.222 across the block, so tile composition alone can
+    # move a row by ±15% — the same order as the mitigation being adjudicated (review 2026-07-29).
+    row_tiles = {}
+    for tile in tiles:
+        if not (map_mosaic / f"{tile}_prob_raw.tif").exists():
+            continue
+        for name, v in row_layers(map_f, map_mosaic, map_a1, tile).items():
+            if v["eta2"].exists():
+                row_tiles.setdefault(name, set()).add(tile)
+    if row_tiles:
+        common = set.intersection(*row_tiles.values())
+        dropped = {n: sorted(t - common) for n, t in row_tiles.items() if t - common}
+        if dropped:
+            print(f"  ⚠ REDUCED FOOTPRINT: only {len(common)} of {len(tiles)} tiles carry EVERY row; "
+                  f"scoring those. Per-row extra tiles dropped: "
+                  f"{ {n: len(d) for n, d in dropped.items()} }", flush=True)
+            for n, d in dropped.items():
+                print(f"      {n}: dropped {d}", flush=True)
+        tiles = [t for t in tiles if t in common]
+        if not tiles:
+            raise SystemExit("no tile carries every requested row — score a subset explicitly with "
+                             "--tiles, or generate the missing map (e.g. scripts/striping_a1_map.py)")
     win_rows, tile_rows = [], []
     for tile in tiles:
         ref = map_mosaic / f"{tile}_prob_raw.tif"

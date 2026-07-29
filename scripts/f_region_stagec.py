@@ -185,36 +185,61 @@ def graph_report(es: lv.EdgeSet, n: int, min_tiles: int) -> pd.DataFrame:
 
 
 # --------------------------------------------------------------------------- 3-4. λ and solve
-def lambda_sweep(es: lv.EdgeSet, n: int, comp, args) -> tuple[pd.DataFrame, float, np.ndarray, float]:
+def lambda_sweep(es: lv.EdgeSet, n: int, comp, args) -> tuple[pd.DataFrame, dict, dict, dict, dict]:
+    """λ sweep scored on BOTH edge metrics + the saturation diagnostic.
+
+    λ* is selected on the held-out **logit** metric since 2026-07-29 (Brian). The pre-registered
+    probability-space |Δp| is still computed and reported — gate 2 rests on it — but it cannot select
+    λ: it is monotonically improved by saturating the sigmoid, so it drove λ* to the grid boundary
+    (λ*=0, |o|max 21.3 logits, 51.8% of co-located tiles railed) while the honest logit-space
+    disagreement barely moved (1.1731 → 1.0859, and 1.0974 at λ=1·medW). See `lv.edge_dlogit`.
+    """
     med_w = float(np.median(es.w))
     base = np.zeros(n)
     base_dp = float(np.median(lv.edge_dp(es, base)))
-    print(f"unleveled in-sample median |Δp| over {es.n_edges} edges: {base_dp:.4f} "
-          f"(pilot unleveled 0.0738)", flush=True)
+    base_dl = float(np.median(lv.edge_dlogit(es, base)))
+    base_sat = lv.edge_saturated_frac(es, base)
+    print(f"unleveled over {es.n_edges} edges: median |Δp| {base_dp:.4f} (pilot unleveled 0.0738), "
+          f"median |Δlogit| {base_dl:.4f}, railed tiles {base_sat:.3f}", flush=True)
     rows, solved = [], {}
     for frac in LAMBDA_FRACS:
         lam = frac * med_w
         o = lv.solve_offsets(es, lam, n, comp=comp)
         solved[frac] = o
         insamp = float(np.median(lv.edge_dp(es, o)))
+        insamp_dl = float(np.median(lv.edge_dlogit(es, o)))
+        sat = lv.edge_saturated_frac(es, o)
+        # identical folds for both metrics (same seed) -> the two CV numbers are comparable
         cv, skipped = lv.heldout_edge_cv(es, lam, n, frac=args.cv_frac, repeats=args.cv_repeats,
-                                         seed=args.seed)
+                                         seed=args.seed, metric="dp")
+        cv_dl, _ = lv.heldout_edge_cv(es, lam, n, frac=args.cv_frac, repeats=args.cv_repeats,
+                                      seed=args.seed, metric="dlogit")
         rows.append({"lambda_frac_medW": frac, "lambda": round(lam, 3),
                      "insample_dp": round(insamp, 4), "heldout_cv_dp": round(cv, 4),
+                     "insample_dlogit": round(insamp_dl, 4), "heldout_cv_dlogit": round(cv_dl, 4),
+                     "railed_tile_frac": round(sat, 4),
                      "cv_edges_skipped": skipped, "max_abs_offset": round(float(np.abs(o).max()), 3),
                      "sd_offset": round(float(np.std(o)), 4)})
-        print(f"  λ={lam:>10.1f} ({frac:g}·medW): in|Δp| {insamp:.4f}  heldout|Δp| {cv:.4f}  "
-              f"|o|max {np.abs(o).max():.3f}", flush=True)
+        print(f"  λ={lam:>10.1f} ({frac:g}·medW): heldout |Δp| {cv:.4f}  |Δlogit| {cv_dl:.4f}  "
+              f"railed {sat:5.3f}  |o|max {np.abs(o).max():.3f}", flush=True)
     df = pd.DataFrame(rows)
-    if not np.isfinite(df["heldout_cv_dp"]).any():
-        # every held-out edge spanned two components of the fit graph -> the CV instrument is
-        # undefined on this graph. Refuse to pick λ silently (gate 2 rests on this number).
-        raise SystemExit("held-out edge CV is undefined (all held-out edges disconnected the "
-                         "gauge). The graph is too sparse — lower --min-tiles or check Stage B "
-                         "coverage before trusting any λ.")
-    # pick by held-out CV; tie -> larger λ (more regularized / conservative), as the pilot did
-    best = df.sort_values(["heldout_cv_dp", "lambda"], ascending=[True, False]).iloc[0]
-    return df, float(best["lambda"]), solved[float(best["lambda_frac_medW"])], base_dp
+    for col in ("heldout_cv_dp", "heldout_cv_dlogit"):
+        if not np.isfinite(df[col]).any():
+            # every held-out edge spanned two components of the fit graph -> the CV instrument is
+            # undefined on this graph. Refuse to pick λ silently (gate 2 rests on this number).
+            raise SystemExit(f"held-out edge CV ({col}) is undefined (all held-out edges "
+                             f"disconnected the gauge). The graph is too sparse — lower "
+                             f"--min-tiles or check Stage B coverage before trusting any λ.")
+    # tie -> larger λ (more regularized / conservative), as the pilot did
+    pick = {}
+    for key, col in (("lcv", "heldout_cv_dlogit"), ("dp", "heldout_cv_dp")):
+        best = df.sort_values([col, "lambda"], ascending=[True, False]).iloc[0]
+        pick[key] = {"lam": float(best["lambda"]), "frac": float(best["lambda_frac_medW"]),
+                     "cv_dp": float(best["heldout_cv_dp"]),
+                     "cv_dlogit": float(best["heldout_cv_dlogit"]),
+                     "railed": float(best["railed_tile_frac"])}
+    base = {"dp": base_dp, "dlogit": base_dl, "railed": base_sat}
+    return df, solved, pick["lcv"], pick["dp"], base
 
 
 # --------------------------------------------------------------------------- 6. geology proxies
@@ -263,6 +288,48 @@ def geology_axes(keys, args) -> dict[str, np.ndarray]:
             print(f"  ⚠ {path} missing -> geology axis '{name}' unavailable "
                   f"(fetch with scripts/fetch_validation_data.py, or pass {flag})", flush=True)
     return axes
+
+
+# --------------------------------------------------------------------------- 6. the guard itself
+def run_trend_guard(o, lon, lat, wdeg, comp, axes, meta_names, geo_names, args, label: str) -> dict:
+    """§4.2/§4.3 on one offset vector: surface fit + block-permutation p + attribution + verdict.
+
+    Factored out so the pre-registered λ*(|Δp|) solve and the λ*(|Δlogit|) solve can both be scored
+    by the identical instrument — the §5.1-style comparison the 2026-07-29 ruling asked for.
+    """
+    print(f"\n=== trend guard [{label}] ({args.perm_draws} draws, {args.cell_deg}° cells) ===",
+          flush=True)
+    tr1 = lv.trend_significance(o, lon, lat, w=wdeg, order=1, cell_deg=args.cell_deg,
+                                n_draws=args.perm_draws, seed=args.seed)
+    tr2 = lv.trend_significance(o, lon, lat, w=wdeg, order=2, cell_deg=args.cell_deg,
+                                n_draws=args.perm_draws, seed=args.seed)
+    for nm, tr in (("linear", tr1), ("quadratic", tr2)):
+        print(f"  {nm:>9} surface: R² {tr['r2']:.3f}  p {tr['p_value']:.4f}  "
+              f"(null median {tr['null_median_r2']:.3f}, p95 {tr['null_p95_r2']:.3f}, "
+              f"{tr['n_blocks']} blocks)", flush=True)
+    smooth = tr1["fitted"]
+    per_axis = lv.attribution(smooth, axes, lon, lat, w=wdeg, cell_deg=args.cell_deg,
+                              n_draws=args.perm_draws, seed=args.seed)
+    gmeta = lv.group_r2(smooth, axes, meta_names, lon, lat, w=wdeg, cell_deg=args.cell_deg,
+                        n_draws=args.perm_draws, seed=args.seed)
+    ggeo = (lv.group_r2(smooth, axes, geo_names, lon, lat, w=wdeg, cell_deg=args.cell_deg,
+                        n_draws=args.perm_draws, seed=args.seed)
+            if geo_names else {"r2": np.nan, "p_value": np.nan, "axes": []})
+    print("  attribution axes:", flush=True)
+    for nm, a in per_axis.items():
+        side = "metadata" if nm in meta_names else "geology"
+        print(f"    {nm:>16} ({side:>8}): R² {a['r2']:.3f}  p {a['p_value']:.4f}", flush=True)
+    verdict = lv.trend_verdict(tr1, gmeta, ggeo)
+    print(f"\n  metadata group R² {gmeta['r2']:.3f} (p {gmeta['p_value']:.4f}) | "
+          f"geology group R² {ggeo['r2']:.3f} (p {ggeo['p_value']:.4f})", flush=True)
+    print(f"  TREND-GUARD VERDICT [{label}]: {verdict['verdict']} -> apply '{verdict['apply']}'\n"
+          f"    {verdict['why']}", flush=True)
+    if verdict["needs_ruling"]:
+        print("    ⚠ §0.1 guard 1: an AMBIGUOUS verdict must NOT silently become full offsets — "
+              "Stage D ships every variant and the call goes to Brian (§7 Q3).", flush=True)
+    return {"tr1": tr1, "tr2": tr2, "smooth": smooth, "resid": o - smooth,
+            "o_resid": lv.regauge(o - smooth, comp), "per_axis": per_axis,
+            "gmeta": gmeta, "ggeo": ggeo, "verdict": verdict}
 
 
 # --------------------------------------------------------------------------- main
@@ -318,15 +385,31 @@ def main() -> int:
 
     # 3-4 ------------------------------------------------------------ λ sweep + solve
     print(f"\n=== λ sweep ({es.n_edges} edges >= {args.min_tiles} tiles, {n} frames) ===", flush=True)
-    lam_df, lam_star, o_star, base_dp = lambda_sweep(es, n, comp, args)
+    lam_df, solved, pick_lcv, pick_dp, base = lambda_sweep(es, n, comp, args)
     lam_df.to_csv(FIG / "fbuild_stagec_lambda.csv", index=False)
-    star = lam_df.loc[np.isclose(lam_df["lambda"], lam_star)].iloc[0]
-    print(f"\nPICK λ*={lam_star:.1f}: held-out |Δp| {star['heldout_cv_dp']:.4f} vs unleveled "
-          f"{base_dp:.4f}  (gate 2: materially below)", flush=True)
+    lam_star, lam_lcv = pick_dp["lam"], pick_lcv["lam"]
+    print(f"\nPRE-REGISTERED λ*(|Δp|)={lam_star:.1f}: held-out |Δp| {pick_dp['cv_dp']:.4f} vs "
+          f"unleveled {base['dp']:.4f}, but {pick_dp['railed']:.1%} of co-located tiles railed "
+          f"-> `offset_logit` (variants full/resid)", flush=True)
+    print(f"SELECTED  λ*(|Δlogit|)={lam_lcv:.1f}: held-out |Δlogit| {pick_lcv['cv_dlogit']:.4f} vs "
+          f"unleveled {base['dlogit']:.4f}, {pick_lcv['railed']:.1%} railed "
+          f"-> `offset_logit_lcv` (variant lcv)", flush=True)
+    if np.isclose(lam_star, lam_lcv):
+        # Agreeing on λ does NOT mean the solve is healthy: both CV metrics score only CO-LOCATED
+        # (i.e. adjacent) tiles, so neither can penalise a GLOBAL drift mode — the ramp reduces
+        # local disagreement slightly, so every edge-local instrument prefers it. Verified
+        # 2026-07-29: held-out |Δlogit| moves 1.1198→1.1431 (2%) across three decades of λ while
+        # |o|max moves 21.3→3.8. Read `railed_tile_frac` and the trend guard, not the CV, for this.
+        print(f"  ⚠ both metrics pick the same λ, but that is NOT a clean bill of health: the CV is "
+              f"edge-LOCAL and blind to global drift. railed tiles {pick_dp['railed']:.1%}, "
+              f"|Δlogit| spread across the λ grid "
+              f"{lam_df['heldout_cv_dlogit'].max() - lam_df['heldout_cv_dlogit'].min():.4f} "
+              f"— check the trend guard below.", flush=True)
 
     # §4 end — make every frame's offset comparable to the main component's gauge (or flag it).
     lon, lat = ft["lon"].to_numpy(float), ft["lat"].to_numpy(float)
-    o_star, off_src = lv.patch_graph_holes(o_star, comp, deg, lon, lat)
+    o_star, off_src = lv.patch_graph_holes(solved[pick_dp["frac"]], comp, deg, lon, lat)
+    o_lcv, _ = lv.patch_graph_holes(solved[pick_lcv["frac"]], comp, deg, lon, lat)
     n_patched = int((off_src != "solved").sum())
     if n_patched:
         print(f"⚠ {n_patched} frames not solved on the main gauge: "
@@ -348,21 +431,6 @@ def main() -> int:
 
     # 6 -------------------------------------------------------------- trend guard (§4.2/§4.3)
     wdeg = deg.astype(float)                                  # §4.1: weight the surface fit by degree
-    print(f"\n=== trend guard ({args.perm_draws} block-permutation draws, {args.cell_deg}° cells) ===",
-          flush=True)
-    tr1 = lv.trend_significance(o_star, lon, lat, w=wdeg, order=1, cell_deg=args.cell_deg,
-                                n_draws=args.perm_draws, seed=args.seed)
-    tr2 = lv.trend_significance(o_star, lon, lat, w=wdeg, order=2, cell_deg=args.cell_deg,
-                                n_draws=args.perm_draws, seed=args.seed)
-    for nm, tr in (("linear", tr1), ("quadratic", tr2)):
-        print(f"  {nm:>9} surface: R² {tr['r2']:.3f}  p {tr['p_value']:.4f}  "
-              f"(null median {tr['null_median_r2']:.3f}, p95 {tr['null_p95_r2']:.3f}, "
-              f"{tr['n_blocks']} blocks)", flush=True)
-    smooth = tr1["fitted"]
-    resid = o_star - smooth
-    o_resid = lv.regauge(resid, comp)
-
-    print("  attribution axes:", flush=True)
     axes = {"incidence": ft["incidence"].to_numpy(float),
             "epoch_year": ft["epoch_year"].to_numpy(float),
             "subsolar_lat": ft["subsolar_lat"].to_numpy(float),
@@ -370,24 +438,17 @@ def main() -> int:
     axes.update(geology_axes(keys, args))
     meta_names = [k for k in ("incidence", "epoch_year", "subsolar_lat", "ln_frame_median") if k in axes]
     geo_names = [k for k in ("mola_elev", "themis_night_ir") if k in axes]
-    per_axis = lv.attribution(smooth, axes, lon, lat, w=wdeg, cell_deg=args.cell_deg,
-                              n_draws=args.perm_draws, seed=args.seed)
-    gmeta = lv.group_r2(smooth, axes, meta_names, lon, lat, w=wdeg, cell_deg=args.cell_deg,
-                        n_draws=args.perm_draws, seed=args.seed)
-    ggeo = (lv.group_r2(smooth, axes, geo_names, lon, lat, w=wdeg, cell_deg=args.cell_deg,
-                        n_draws=args.perm_draws, seed=args.seed)
-            if geo_names else {"r2": np.nan, "p_value": np.nan, "axes": []})
-    for nm, a in per_axis.items():
-        side = "metadata" if nm in meta_names else "geology"
-        print(f"    {nm:>16} ({side:>8}): R² {a['r2']:.3f}  p {a['p_value']:.4f}", flush=True)
-    verdict = lv.trend_verdict(tr1, gmeta, ggeo)
-    print(f"\n  metadata group R² {gmeta['r2']:.3f} (p {gmeta['p_value']:.4f}) | "
-          f"geology group R² {ggeo['r2']:.3f} (p {ggeo['p_value']:.4f})", flush=True)
-    print(f"  TREND-GUARD VERDICT: {verdict['verdict']} -> apply '{verdict['apply']}'\n"
-          f"    {verdict['why']}", flush=True)
-    if verdict["needs_ruling"]:
-        print("    ⚠ §0.1 guard 1: an AMBIGUOUS verdict must NOT silently become full offsets — "
-              "Stage D ships both composites and the call goes to Brian (§7 Q3).", flush=True)
+    G = run_trend_guard(o_star, lon, lat, wdeg, comp, axes, meta_names, geo_names, args,
+                        f"pre-registered λ*(|Δp|)={lam_star:.1f}")
+    tr1, tr2 = G["tr1"], G["tr2"]
+    smooth, resid, o_resid = G["smooth"], G["resid"], G["o_resid"]
+    per_axis, gmeta, ggeo, verdict = G["per_axis"], G["gmeta"], G["ggeo"], G["verdict"]
+    # the same instrument on the λ*(|Δlogit|) solve -> companion row, never overwrites the
+    # pre-registered verdict Stage D reads (fbuild_trend_guard.csv stays single-row).
+    G_lcv = (G if np.isclose(lam_star, lam_lcv) else
+             run_trend_guard(o_lcv, lon, lat, wdeg, comp, axes, meta_names, geo_names, args,
+                             f"selected λ*(|Δlogit|)={lam_lcv:.1f}"))
+    o_lcv_resid = G_lcv["o_resid"]
 
     # 7 -------------------------------------------------------------- guard-3/4 diagnostics
     pm = ft["prob_mean"].to_numpy(float)
@@ -410,6 +471,9 @@ def main() -> int:
         "offset_logit": np.round(o_star, 4),
         "trend_fitted": np.round(smooth, 4), "trend_resid": np.round(resid, 4),
         "offset_residual_only": np.round(o_resid, 4),
+        # λ selected on the saturation-immune logit metric (2026-07-29) -> Stage D variant `lcv`
+        "offset_logit_lcv": np.round(o_lcv, 4),
+        "offset_residual_only_lcv": np.round(o_lcv_resid, 4),
         "lofo_offset_pred": np.round(o_hat, 4), "lofo_pred_err": np.round(pred_err, 4),
         "lofo_n_edges": n_used,
         "frame_mean_prob": np.round(pm, 5), "ln_frame_median": np.round(lnm, 4),
@@ -438,9 +502,22 @@ def main() -> int:
         "n_frames": n, "n_edges": es.n_edges, "n_components": n_comp,
         "n_offsets_not_solved": n_patched,
         "min_shared_tiles": args.min_tiles, "lambda_star": round(lam_star, 3),
-        "baseline_dp": round(base_dp, 4),
+        "baseline_dp": round(base["dp"], 4),
         "full_insample_dp": round(float(np.median(dp_star)), 4),
-        "full_heldout_cv_dp": float(star["heldout_cv_dp"]),
+        "full_heldout_cv_dp": pick_dp["cv_dp"],
+        # saturation-immune companions (2026-07-29): |Δp| alone cannot validate the solve
+        "baseline_dlogit": round(base["dlogit"], 4),
+        "baseline_railed_frac": round(base["railed"], 4),
+        "full_heldout_cv_dlogit": pick_dp["cv_dlogit"],
+        "full_railed_frac": pick_dp["railed"],
+        # `lambda_star_lcv` is the name scripts/f_region_gates.gate2 reads — keep them in sync
+        "lambda_star_lcv": round(lam_lcv, 3),
+        "lcv_heldout_cv_dlogit": pick_lcv["cv_dlogit"],
+        "lcv_heldout_cv_dp": pick_lcv["cv_dp"],
+        "lcv_railed_frac": pick_lcv["railed"],
+        "lcv_max_abs_offset": round(float(np.abs(o_lcv).max()), 3),
+        "lcv_linear_r2": round(G_lcv["tr1"]["r2"], 4),
+        "lcv_verdict": G_lcv["verdict"]["verdict"], "lcv_apply": G_lcv["verdict"]["apply"],
         "lofo_median_pred_err": round(float(np.nanmedian(pred_err)), 4),
         "max_abs_offset": round(float(np.abs(o_star).max()), 3),
         "sd_offset": round(float(np.std(o_star)), 4),
@@ -461,7 +538,7 @@ def main() -> int:
     pd.DataFrame([{"axis": k, **v} for k, v in per_axis.items()]).to_csv(
         FIG / "fbuild_stagec_attribution.csv", index=False)
 
-    _figures(out, tr1, gmeta, ggeo, per_axis, meta_names, lam_star, dp_star, base_dp)
+    _figures(out, tr1, gmeta, ggeo, per_axis, meta_names, lam_star, dp_star, base["dp"])
     print(f"\nStage C done: offsets -> {FIG / 'fbuild_stagec_offsets.csv'} "
           f"(Stage D applies `offset_logit` or `offset_residual_only` per the verdict)", flush=True)
     return 0
@@ -491,9 +568,17 @@ def _figures(out, tr1, gmeta, ggeo, per_axis, meta_names, lam_star, dp_star, bas
     ax[1, 0].set_ylabel("R² vs the smooth field")
     ax[1, 0].set_title(f"attribution — metadata (blue) R²={gmeta['r2']:.3f} vs "
                        f"geology (orange) R²={ggeo['r2']:.3f}", fontsize=9)
-    ax[1, 1].hist(o, bins=40, color="0.6")
+    ax[1, 1].hist(o, bins=40, color="0.6", label=f"λ*(|Δp|)  |o|max {np.abs(o).max():.2f}")
+    if "offset_logit_lcv" in out.columns:
+        olcv = out["offset_logit_lcv"].to_numpy(float)
+        ax[1, 1].hist(olcv, bins=40, color="tab:green", alpha=0.6,
+                      label=f"λ*(|Δlogit|)  |o|max {np.abs(olcv).max():.2f}")
+        ax[1, 1].legend(fontsize=7)
+    # the per-tile logit clip: an |offset| beyond this outweighs ALL within-frame contrast
+    for s in (-1, 1):
+        ax[1, 1].axvline(s * np.log((1 - 1e-4) / 1e-4), color="tab:red", ls=":", lw=1.0)
     ax[1, 1].axvline(0, color="k", lw=0.8)
-    ax[1, 1].set_xlabel("offset (logit)")
+    ax[1, 1].set_xlabel("offset (logit); red dotted = ±per-tile logit clip")
     ax[1, 1].set_title(f"offset distribution — sd {np.std(o):.3f}, |o|max {np.abs(o).max():.2f}",
                        fontsize=9)
     fig.suptitle("PLAN_FBuild Stage C — H4 offsets + trend guard")

@@ -1,0 +1,6 @@
+min_shared_tiles,n_edges,n_components,largest_comp,isolated_frames,median_degree,max_degree,median_shared_tiles,is_operating_point
+50,6073,1,906,0,12.0,45,28680.0,False
+100,6048,1,906,0,12.0,45,28861.0,False
+200,6014,1,906,0,12.0,45,29122.0,True
+500,5945,1,906,0,11.0,45,29641.0,False
+1000,5830,1,906,0,11.0,45,30672.5,False

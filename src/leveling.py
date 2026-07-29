@@ -254,26 +254,74 @@ def solve_offsets(es: EdgeSet, lam: float, n: int, comp: np.ndarray | None = Non
     return regauge(o, comp)
 
 
-def edge_dp(es: EdgeSet, o: np.ndarray, idx=None) -> np.ndarray:
-    """Per-edge median |p_i − p_j| over its sampled co-located tiles, after applying offsets o."""
+def _edge_stat(es: EdgeSet, o: np.ndarray, idx, fn) -> np.ndarray:
+    """Per-edge reduction `fn(ℓ_i + o_i, ℓ_j + o_j)` over the edge's sampled co-located tiles."""
     idx = np.arange(es.n_edges) if idx is None else np.asarray(idx, dtype=np.int64)
     out = np.empty(idx.size, dtype=np.float64)
     for k, e in enumerate(idx.tolist()):
         s, t = int(es.samp_off[e]), int(es.samp_off[e + 1])
-        pi = sigmoid(es.samp_i[s:t].astype(np.float64) + o[es.ei[e]])
-        pj = sigmoid(es.samp_j[s:t].astype(np.float64) + o[es.ej[e]])
-        out[k] = np.median(np.abs(pi - pj))
+        li = es.samp_i[s:t].astype(np.float64) + o[es.ei[e]]
+        lj = es.samp_j[s:t].astype(np.float64) + o[es.ej[e]]
+        out[k] = fn(li, lj)
     return out
 
 
+def edge_dp(es: EdgeSet, o: np.ndarray, idx=None) -> np.ndarray:
+    """Per-edge median |p_i − p_j| over its sampled co-located tiles, after applying offsets o.
+
+    Pre-registered as gate 2's metric, so it is still computed and reported — but see
+    `edge_dlogit`: in probability space this statistic is minimised by SATURATING the sigmoid, so it
+    must not be the only instrument at build scale.
+    """
+    return _edge_stat(es, o, idx, lambda li, lj: np.median(np.abs(sigmoid(li) - sigmoid(lj))))
+
+
+def edge_dlogit(es: EdgeSet, o: np.ndarray, idx=None) -> np.ndarray:
+    """Per-edge median |ℓ_i − ℓ_j| on co-located tiles — the SATURATION-IMMUNE twin of `edge_dp`.
+
+    `edge_dp` measures disagreement after sigmoid(), which compresses hard near the rails: an offset
+    big enough to push both frames' tiles to p≈1 drives |p_i − p_j| → 0 while the underlying logit
+    disagreement is untouched. At 906-frame scale that is not hypothetical — the λ=0 solve saturates
+    51.8% of co-located tiles, corr(saturated fraction, median |Δp|) = −0.997, and |Δp| therefore
+    ranks λ by how hard it saturates rather than by how well frames agree (DECISIONS 2026-07-29:
+    med|Δp| 0.1622→0.0112 but med|Δlogit| only 1.1731→1.0859). Logit space is affine in the offsets,
+    so it cannot be gamed this way; λ is selected on THIS metric as of 2026-07-29.
+    """
+    return _edge_stat(es, o, idx, lambda li, lj: np.median(np.abs(li - lj)))
+
+
+EDGE_METRICS = {"dp": edge_dp, "dlogit": edge_dlogit}
+
+
+def edge_saturated_frac(es: EdgeSet, o: np.ndarray, idx=None, rail: float = 0.01) -> float:
+    """Share of sampled co-located tile probabilities pushed onto a rail (p<rail or p>1−rail).
+
+    The diagnostic that makes a suspiciously good `edge_dp` readable: a solve that "agrees" because
+    everything saturated reports a high value here (0.518 at λ*=0 vs 0.017 unleveled).
+    """
+    idx = np.arange(es.n_edges) if idx is None else np.asarray(idx, dtype=np.int64)
+    sat = tot = 0
+    for e in idx.tolist():
+        s, t = int(es.samp_off[e]), int(es.samp_off[e + 1])
+        for p in (sigmoid(es.samp_i[s:t].astype(np.float64) + o[es.ei[e]]),
+                  sigmoid(es.samp_j[s:t].astype(np.float64) + o[es.ej[e]])):
+            sat += int(((p < rail) | (p > 1.0 - rail)).sum())
+            tot += p.size
+    return sat / tot if tot else float("nan")
+
+
 def heldout_edge_cv(es: EdgeSet, lam: float, n: int, frac: float = 0.05, repeats: int = 4,
-                    seed: int = 0) -> tuple[float, int]:
+                    seed: int = 0, metric: str = "dp") -> tuple[float, int]:
     """Held-out-edge CV (PLAN_FBuild §4: 5% edge sample, not the pilot's all-edges loop).
 
-    Fit the offsets WITHOUT a random `frac` of the edges, then score median |Δp| on exactly those
+    Fit the offsets WITHOUT a random `frac` of the edges, then score `metric` on exactly those
     edges. Held-out edges whose endpoints fall in different components of the *fit* graph have no
     common gauge and are skipped (counted, and reported so a silent drop can't hide).
+
+    `metric` is "dp" (the pre-registered probability-space statistic) or "dlogit" (saturation-immune;
+    what λ* is selected on since 2026-07-29 — see `edge_dlogit`).
     """
+    stat = EDGE_METRICS[metric]
     rng = np.random.default_rng(seed)
     m = es.n_edges
     k = max(1, int(round(frac * m)))
@@ -287,7 +335,7 @@ def heldout_edge_cv(es: EdgeSet, lam: float, n: int, frac: float = 0.05, repeats
         ok = comp[es.ei[hold]] == comp[es.ej[hold]]
         skipped += int((~ok).sum())
         if ok.any():
-            dps.append(edge_dp(es, o, hold[ok]))
+            dps.append(stat(es, o, hold[ok]))
     return (float(np.median(np.concatenate(dps))) if dps else float("nan")), skipped
 
 
@@ -517,6 +565,15 @@ def trend_verdict(trend: dict, meta: dict, geo: dict, alpha: float = ATTR_ALPHA,
                     NOT silently become full offsets. Both are honoured by refusing to auto-apply:
                     Stage D emits full AND residual-only composites and the call goes to Brian
                     (PLAN_FBuild §7 Q3) with the dense-graph evidence attached.
+
+    **The winning side must beat the other by `margin` on R², regardless of whether the loser cleared
+    `alpha`** (Brian, 2026-07-29). Until then the rule also fired on `not other_sig`, which let a
+    side win while holding the LOWER R²: the 906-frame run returned FULL on metadata R²=0.108 vs
+    geology R²=0.142 purely because geology's permutation p landed at 0.0579 instead of ≤0.05 — a
+    margin of 8 draws in 1000, and 19-FULL/1-AMBIGUOUS across 20 seeds. Requiring the margin makes
+    the verdict seed-stable and matches PLAN_FBuild §4.3's table as written. A side whose R² is NaN
+    is treated as *unavailable* (proxy rasters missing), not as "lost": that cannot trigger guard 1,
+    so an unavailable geology side leaves a significant metadata side applying full offsets.
     """
     if trend["p_value"] > alpha:
         return {"verdict": "NO_TREND", "apply": "full", "needs_ruling": False,
@@ -525,15 +582,27 @@ def trend_verdict(trend: dict, meta: dict, geo: dict, alpha: float = ATTR_ALPHA,
     m_sig = np.isfinite(meta.get("p_value", np.nan)) and meta["p_value"] <= alpha
     g_sig = np.isfinite(geo.get("p_value", np.nan)) and geo["p_value"] <= alpha
     m_r2, g_r2 = float(meta.get("r2", np.nan)), float(geo.get("r2", np.nan))
+    m_ok, g_ok = np.isfinite(m_r2), np.isfinite(g_r2)
     tail = (f"metadata R²={m_r2:.3f} (p={meta.get('p_value', float('nan')):.3f}) vs "
             f"geology R²={g_r2:.3f} (p={geo.get('p_value', float('nan')):.3f}); "
             f"smooth surface R²={trend['r2']:.3f} (p={trend['p_value']:.3f})")
-    if g_sig and (not m_sig or g_r2 > m_r2 + margin):
+    ambiguous = {"verdict": "AMBIGUOUS", "apply": "full_pending_ruling", "needs_ruling": True,
+                 "why": f"neither side wins by {margin} R² — Brian's call (§7 Q3); "
+                        f"ship both composites + the smooth field as an H6 diagnostic. {tail}"}
+    if not m_ok and not g_ok:                       # neither side measurable → nothing to attribute
+        return {**ambiguous, "why": f"no attribution axes available — cannot bind §4.3. {tail}"}
+    if not g_ok:                                    # geology unavailable → guard 1 cannot trigger
+        return ({"verdict": "FULL", "apply": "full", "needs_ruling": False,
+                 "why": f"METADATA-dominant, geology proxies unavailable. {tail}"} if m_sig
+                else ambiguous)
+    if not m_ok:
+        return ({"verdict": "RESIDUAL_ONLY", "apply": "residual", "needs_ruling": False,
+                 "why": f"GEOLOGY-dominant, metadata axes unavailable — §0.1 guard 1. {tail}"}
+                if g_sig else ambiguous)
+    if g_sig and g_r2 > m_r2 + margin:
         return {"verdict": "RESIDUAL_ONLY", "apply": "residual", "needs_ruling": False,
                 "why": f"GEOLOGY-dominant — §0.1 guard 1 mandates residual-only. {tail}"}
-    if m_sig and (not g_sig or m_r2 > g_r2 + margin):
+    if m_sig and m_r2 > g_r2 + margin:
         return {"verdict": "FULL", "apply": "full", "needs_ruling": False,
                 "why": f"METADATA-dominant — smooth field is artifact-side. {tail}"}
-    return {"verdict": "AMBIGUOUS", "apply": "full_pending_ruling", "needs_ruling": True,
-            "why": f"neither side wins by {margin} R² — Brian's call (§7 Q3); "
-                   f"ship both composites + the smooth field as an H6 diagnostic. {tail}"}
+    return ambiguous
