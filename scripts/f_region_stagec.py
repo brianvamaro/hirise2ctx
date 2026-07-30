@@ -391,9 +391,8 @@ def main() -> int:
     print(f"\nPRE-REGISTERED λ*(|Δp|)={lam_star:.1f}: held-out |Δp| {pick_dp['cv_dp']:.4f} vs "
           f"unleveled {base['dp']:.4f}, but {pick_dp['railed']:.1%} of co-located tiles railed "
           f"-> `offset_logit` (variants full/resid)", flush=True)
-    print(f"SELECTED  λ*(|Δlogit|)={lam_lcv:.1f}: held-out |Δlogit| {pick_lcv['cv_dlogit']:.4f} vs "
-          f"unleveled {base['dlogit']:.4f}, {pick_lcv['railed']:.1%} railed "
-          f"-> `offset_logit_lcv` (variant lcv)", flush=True)
+    print(f"λ*(|Δlogit|)={lam_lcv:.1f}: held-out |Δlogit| {pick_lcv['cv_dlogit']:.4f} vs "
+          f"unleveled {base['dlogit']:.4f}, {pick_lcv['railed']:.1%} railed", flush=True)
     if np.isclose(lam_star, lam_lcv):
         # Agreeing on λ does NOT mean the solve is healthy: both CV metrics score only CO-LOCATED
         # (i.e. adjacent) tiles, so neither can penalise a GLOBAL drift mode — the ramp reduces
@@ -409,7 +408,12 @@ def main() -> int:
     # §4 end — make every frame's offset comparable to the main component's gauge (or flag it).
     lon, lat = ft["lon"].to_numpy(float), ft["lat"].to_numpy(float)
     o_star, off_src = lv.patch_graph_holes(solved[pick_dp["frac"]], comp, deg, lon, lat)
-    o_lcv, _ = lv.patch_graph_holes(solved[pick_lcv["frac"]], comp, deg, lon, lat)
+    # `pfree` — the SHIPPED solve as of 2026-07-30 (Brian): same objective, but the region-wide
+    # plane is constrained out because the measured per-step term is patchy, not a constant gradient
+    # (b = +0.203 / -0.003 / +0.433 per lon tercile), so there is no global plane to estimate and
+    # integrating one across 33° is what manufactured the -22.7-logit ramp. λ=0: no tuning constant.
+    o_pfree, _ = lv.patch_graph_holes(
+        lv.solve_offsets_planefree(es, 0.0, n, lon, lat, comp=comp), comp, deg, lon, lat)
     n_patched = int((off_src != "solved").sum())
     if n_patched:
         print(f"⚠ {n_patched} frames not solved on the main gauge: "
@@ -445,10 +449,29 @@ def main() -> int:
     per_axis, gmeta, ggeo, verdict = G["per_axis"], G["gmeta"], G["ggeo"], G["verdict"]
     # the same instrument on the λ*(|Δlogit|) solve -> companion row, never overwrites the
     # pre-registered verdict Stage D reads (fbuild_trend_guard.csv stays single-row).
-    G_lcv = (G if np.isclose(lam_star, lam_lcv) else
-             run_trend_guard(o_lcv, lon, lat, wdeg, comp, axes, meta_names, geo_names, args,
-                             f"selected λ*(|Δlogit|)={lam_lcv:.1f}"))
-    o_lcv_resid = G_lcv["o_resid"]
+    G_pfree = run_trend_guard(o_pfree, lon, lat, wdeg, comp, axes, meta_names, geo_names, args,
+                              "SHIPPED plane-free (constrained)")
+
+    # ---- lean guards (Brian 2026-07-29): concentration + magnitude, no spectral machinery -------
+    spread = lv.frame_level_spread(ft["prob_mean"].to_numpy(float))
+    print(f"\n=== lean guards (frame-level spread yardstick = {spread:.2f} logits) ===", flush=True)
+    lean = []
+    for nm, o in (("full", o_star), ("resid", o_resid), ("pfree", o_pfree)):
+        mag = lv.offset_magnitude_report(o, spread)
+        con = lv.benefit_concentration(es, o, np.zeros(n))
+        vs_pfree = lv.benefit_concentration(es, o, o_pfree)
+        lean.append({"variant": nm, **mag, **{f"conc_{k}": v for k, v in con.items()},
+                     "gain_share_top_1pct_vs_pfree": vs_pfree["gain_share_top_1pct"],
+                     "frac_edges_worse_vs_pfree": vs_pfree["frac_edges_worse"],
+                     "railed_frac": lv.edge_saturated_frac(es, o)})
+        print(f"  {nm:6s}: |o|max {mag['max_abs_offset']:6.2f} "
+              f"({mag['max_over_frame_spread']:5.2f}x the frame spread; "
+              f"{mag['n_over_logit_clip']:3d} frames past the ±9.21 clip)  "
+              f"railed {100 * lean[-1]['railed_frac']:5.1f}%  "
+              f"| vs H1-only: top-1% of edges hold "
+              f"{100 * con['gain_share_top_1pct']:5.1f}% of the gain, "
+              f"{100 * con['frac_edges_worse']:4.1f}% of edges worse", flush=True)
+    pd.DataFrame(lean).to_csv(FIG / "fbuild_stagec_lean_guards.csv", index=False)
 
     # 7 -------------------------------------------------------------- guard-3/4 diagnostics
     pm = ft["prob_mean"].to_numpy(float)
@@ -471,9 +494,9 @@ def main() -> int:
         "offset_logit": np.round(o_star, 4),
         "trend_fitted": np.round(smooth, 4), "trend_resid": np.round(resid, 4),
         "offset_residual_only": np.round(o_resid, 4),
-        # λ selected on the saturation-immune logit metric (2026-07-29) -> Stage D variant `lcv`
-        "offset_logit_lcv": np.round(o_lcv, 4),
-        "offset_residual_only_lcv": np.round(o_lcv_resid, 4),
+        # the SHIPPED solve (2026-07-30): region-wide plane constrained out -> Stage D variant `pfree`
+        "offset_logit_pfree": np.round(o_pfree, 4),
+        "trend_fitted_pfree": np.round(G_pfree["smooth"], 4),
         "lofo_offset_pred": np.round(o_hat, 4), "lofo_pred_err": np.round(pred_err, 4),
         "lofo_n_edges": n_used,
         "frame_mean_prob": np.round(pm, 5), "ln_frame_median": np.round(lnm, 4),
@@ -510,14 +533,19 @@ def main() -> int:
         "baseline_railed_frac": round(base["railed"], 4),
         "full_heldout_cv_dlogit": pick_dp["cv_dlogit"],
         "full_railed_frac": pick_dp["railed"],
-        # `lambda_star_lcv` is the name scripts/f_region_gates.gate2 reads — keep them in sync
-        "lambda_star_lcv": round(lam_lcv, 3),
-        "lcv_heldout_cv_dlogit": pick_lcv["cv_dlogit"],
-        "lcv_heldout_cv_dp": pick_lcv["cv_dp"],
-        "lcv_railed_frac": pick_lcv["railed"],
-        "lcv_max_abs_offset": round(float(np.abs(o_lcv).max()), 3),
-        "lcv_linear_r2": round(G_lcv["tr1"]["r2"], 4),
-        "lcv_verdict": G_lcv["verdict"]["verdict"], "lcv_apply": G_lcv["verdict"]["apply"],
+        "lambda_star_dlogit": round(lam_lcv, 3),
+        # the SHIPPED plane-free solve (2026-07-30). `lambda_star_pfree` is 0 by construction:
+        # constraining the region-wide plane removes the drift, so no Tikhonov constant is needed.
+        "lambda_star_pfree": 0.0,
+        "pfree_max_abs_offset": round(float(np.abs(o_pfree).max()), 3),
+        "pfree_sd_offset": round(float(np.std(o_pfree)), 4),
+        "pfree_railed_frac": round(lv.edge_saturated_frac(es, o_pfree), 4),
+        "pfree_insample_dlogit": round(float(np.median(lv.edge_dlogit(es, o_pfree))), 4),
+        "pfree_insample_dp": round(float(np.median(lv.edge_dp(es, o_pfree))), 4),
+        "pfree_linear_r2": round(G_pfree["tr1"]["r2"], 4),
+        "pfree_linear_p": G_pfree["tr1"]["p_value"],
+        "pfree_verdict": G_pfree["verdict"]["verdict"], "pfree_apply": G_pfree["verdict"]["apply"],
+        "frame_level_spread_logit": round(float(spread), 4),
         "lofo_median_pred_err": round(float(np.nanmedian(pred_err)), 4),
         "max_abs_offset": round(float(np.abs(o_star).max()), 3),
         "sd_offset": round(float(np.std(o_star)), 4),

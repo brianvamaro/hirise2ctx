@@ -5377,6 +5377,207 @@ pooled p0.5–p99.5 log stretch, bilinear extract. Stores/CSVs: `fang_embeddings
 `reports/f_leg_b/variant_summary.csv`, `reports/figures/f_leg_b_loio_{preds,summary}_minnaert_wl.csv`.
 **Next-step decision (confirm eta² / fix ESP_053989 / go to head-rebuild+regional) → Brian.**
 
+## 2026-07-30 — Stage C RUN at 906-frame scale: the free H4 solve drifts; `pfree` (plane-free) shipped. The 2026-07-23 within-frame-ramp risk MATERIALISED
+
+`f_region_logits.tgz` brought home (906/907 npz, 203.9M tiles) and Stage C run. **Graph is healthy:**
+one connected component at every min-shared-tiles cut (50/100/200/500/1000), 6,014 edges ≥200 shared
+tiles, median degree 12, max 45, **zero isolated frames** — P1 confirmed at build scale. One permanent
+Stage-B hole (`P21_009378_2200_XI_40N002W`), patched from the mosaic + H6-flagged.
+
+The pre-declared solve returns offsets spanning **32.9 logits** (|o|max 21.31) against a per-tile
+logit clip of ±9.21. Everything below is why, and what shipped instead.
+
+### Gate 2's metric is gamed by sigmoid saturation → RE-DECLARED (Brian)
+
+λ*(|Δp|)=0.0 was picked at the grid boundary, CV monotone in λ. The 93% "win" (median |Δp|
+0.1622 → 0.0112) is **saturation, not agreement**: `corr(railed fraction, median |Δp|)` = **−0.997**,
+and at λ*=0 **51.8%** of co-located tile probabilities sit on a rail. In logit space the gain is only
+**7.4%** and is nearly λ-independent.
+
+**Landed:** `lv.edge_dlogit`, `lv.edge_saturated_frac`, `lv.EDGE_METRICS`, `metric=` on
+`lv.heldout_edge_cv`. **Brian: gate 2 re-declared** — passes only if |Δlogit| improves **AND** railed
+fraction stays ≤2× the unleveled baseline; |Δp| still reported for the audit trail.
+
+### §4.3 verdict could be won by the side with the LOWER R² → FIXED
+
+FULL fired via a `not g_sig` shortcut: metadata R²=0.108 (p=0.019) "beat" geology R²=0.142 (p=0.0579)
+only because geology missed α=0.05 by **8 permutation draws in 1000**. Seed sweep: **19 FULL / 1
+AMBIGUOUS** over 20 seeds; geology R² > metadata R² in **20/20**. Patched to require the margin
+regardless of the loser's significance (NaN R² = *unavailable*, not *lost*). Verdict is now correctly
+**AMBIGUOUS → `full_pending_ruling`**.
+
+### NEGATIVE RESULT — selecting λ on |Δlogit| does not fix λ*
+
+λ*(|Δlogit|) = 0.0 too. Held-out |Δlogit| moves only **1.1198 → 1.1431 (2%)** across three decades of
+λ while |o|max moves 21.3 → 3.8. **Both CV metrics are edge-LOCAL** and blind to a global drift mode.
+The `lcv` variant was therefore a duplicate of `full` and was removed. Recorded so it is not retried.
+
+### Five hypotheses REFUTED before settling on the cause
+
+| hypothesis | test | result |
+|---|---|---|
+| noise amplified on a soft mode | split-half solve × 24 | slope −0.654 ± 0.054, **0/48 sign flips** |
+| objective is indifferent to the ramp | constrained vs free SSR | forbidding it costs 17.9% of residual / **1.28pp of total** |
+| leverage points at the block ends | eccentricity of top-gain edges | they sit **closer** to centre (0.86×) |
+| a few bad frames/edges | drop top-k and re-solve | top 1% (60 edges) cuts the ramp only 19%; random-1% control flat (−22.66 ± 0.09) |
+| weakly determined ("datum defect") | LS error propagation, measured σ | ramp = −23.61 ± 0.99, **24σ from zero** |
+
+Also **order-independent** (edge shuffle/reverse, frame relabel: max Δoffset 1.7e-13 … 9.0e-12), and
+a lon-proportional bias field is a **perfect gradient field** (verified to 6.8e-16), so it sums to
+zero around every loop — loop closure, the standard check for accumulating survey error, is
+*mathematically blind* to it despite median degree 12 and 92.9% loop-consistent edge energy.
+
+### The stochastic model IS wrong — but does not cause the ramp (NOT landed)
+
+Measured components: **σ²_pair = 2.448** (per-tile variance of ℓ_j−ℓ_i), **σ²_sys = 0.401**
+(loop-inconsistent residual, dof-corrected). SE(δ̄) if tiles were independent = **0.0092** logits;
+actually achievable = **0.633**. So `w = W` **understates each overlap's uncertainty 69×**
+(variance 4769×) and the correct inverse-variance weights are nearly **uniform** (max/min 1.03 vs the
+current 2550×). Re-solving with corrected weights does **not** remove the ramp (−22.71 → −23.61).
+**Deliberately left unlanded** — it changes every quoted error bar and belongs in its own change.
+
+### THE CAUSE — and it was predicted on 2026-07-23
+
+The ramp is **24σ significant AND physically impossible** (23.6 logits vs 0.05 of E-W gradient in the
+H1-only control map, 3.24 total observed frame-level spread, 18.42 = the model's whole range; it rails
+51.8% of tiles and makes 44% of edges worse). Significance under a wrong model measures consistency,
+not truth → **the per-frame additive-offset model is misspecified.**
+
+**This is exactly the 2026-07-23 audit's "ONE GENUINE RISK":** *"Both H1 and H4 are per-frame DC
+operators and cannot touch a within-frame gradient"*, with the pilot *"insulated"* by its ~1.3° crop
+while build frames span 3–4° latitude. Confirmed and quantified here:
+
+- pair differences are **24.8%** explained by illumination/radiometry jointly — dominated by
+  `ln_frame_median` (**R² 0.184, t=+36.8**), i.e. residual radiometry H1 left behind — versus only
+  **0.4%** by longitude geometry. Incidence collapses t=−21.3 → +1.0 once radiometry is in, so its
+  effect runs *through* radiometry, as the audit's Minnaert argument implies.
+- within-frame **along-track (latitude)** overlap position is identifiable and nearly quadruples
+  explained variance (R² 0.0069 → 0.0254) — the predicted within-frame ramp, in the predicted axis.
+- within-frame **longitude** position is **99.8% collinear** with frame lon separation, so "real
+  regional gradient" and "within-frame structure" are **not separable from overlaps even in
+  principle** (R² 0.0040 vs 0.0045 — the within-frame version fits marginally better).
+- and the per-step term is **patchy, not a gradient**: fitting b per lon tercile gives
+  **+0.203 / −0.003 / +0.433** (R² 0.0023 / 0.0000 / 0.0150) — absent in two thirds of the block.
+  Fitting one global plane to that and integrating it over 33° is what manufactures 22.7 logits.
+
+This is the standard failure of overlap-only radiometric block adjustment, whose literature models
+global **and local** differences rather than one offset per image
+([Yang 2020](https://ieeexplore.ieee.org/document/9242244/),
+[Pan 2024](https://doi.org/10.1016/j.isprsjprs.2024.09.005),
+[Wang 2023 vignetting drift](https://doi.org/10.3390/rs15215129)).
+
+### SHIPPED — `pfree`, the plane-free constrained solve (Brian's call)
+
+`lv.solve_offsets_planefree`: same objective, region-wide plane (constant + lon tilt + lat tilt)
+constrained out; 903 of 906 directions still fit exactly. **No tuning constant.** Justified by the
+tercile result above — there is no constant gradient to estimate — not by the outcome. `plane_complement`
+is **rank-aware** (SVD, not QR): a degenerate frame layout would otherwise have a phantom third basis
+column silently delete real signal.
+
+| variant | \|o\|max | ×frame spread (3.24) | frames past ±9.21 | railed | trend verdict |
+|---|---|---|---|---|---|
+| `full` (λ*=0, pre-declared) | 21.31 | 6.58× | **128** | **51.8%** | AMBIGUOUS |
+| `resid` (solve then detrend) | 7.33 | 2.26× | 0 | 2.9% | — |
+| **`pfree` (SHIPPED)** | **4.91** | **1.52×** | **0** | 4.9% | **NO_TREND** |
+
+`pfree` strictly dominates `resid` (SSR 4.65e7 vs 5.83e7 — constrain-then-solve beats
+solve-then-subtract, a theorem now pinned by test). Explains 91.58% of pairwise disagreement vs the
+free solve's 92.86%. **Documented caveat (in the test suite):** where a region-wide gradient genuinely
+exists, this solve both discards it *and* biases the local estimates (planted-local recovery 0.98 →
+0.63) — acceptable here only because the term is patchy; **not** portable to a region where b is constant.
+
+**Lean guards landed** (Brian: no spectral machinery in the critical path) — `lv.benefit_concentration`
++ `lv.offset_magnitude_report` + `lv.frame_level_spread` → `fbuild_stagec_lean_guards.csv`. These
+caught what every edge-local CV passed. **Deferred (Brian):** the "is there a real E-W abundance
+gradient" question, and the stochastic-model fix. Stage D run with `--headline pfree --allow-partial`.
+Variants are now `h1only` / `full` / `resid` / `pfree`; 99 tests pass.
+
+## 2026-07-30b — F BUILD HARD ABORT (Brian): F fixes local striping and breaks regional level coherence
+
+The build ran end to end (Stage A → B → C → D → gates 1–6, 906/907 frames, 4 variants + mosaic
+baseline) and the §0.1 fallback was invoked. **The A1 / mosaic-path map remains the deliverable; no F
+map ships.** PLAN_FBuild → CLOSED. Decision evidence, all on the 26-tile circum-Chryse block:
+
+### The gate table (windowed gate 1 = the pre-declared headline)
+
+| gate | bar | h1only | full | resid | pfree | mosaic |
+|---|---|---|---|---|---|---|
+| 1 windowed η² | ≤ 0.05 | 0.151 ✗ | 0.071 ✗ | 0.089 ✗ | 0.087 ✗ | 0.121 ✗ |
+| 1 ratio vs own null | — | 1.471 | 1.223 | **1.135** | 1.172 | 1.528 |
+| 2 \|Δlogit\| + railing | improve, railed ≤2× base | ✗ | ✗ (51.8% railed) | **PASS** | ✗ (4.9%) | — |
+| 3 THEMIS Δρ | ≥ −0.02 | +0.047 ✓ | +0.024 ✓ | +0.040 ✓ | +0.026 ✓ | — |
+| 5 pooled skill Δ vs h1only | ≥ −0.02 | — | −0.089 ✗ | −0.030 ✗ | −0.186 ✗ | — |
+| 6 top_ratio | 0.8–1.2 | 1.302 ✗ | 8.744 ✗ | 1.428 ✗ | **0.940 ✓** | — |
+| 6 Spearman | — | 0.583 | 0.444 | 0.560 | 0.436 | — |
+
+**No variant clears the absolute η² bar — and neither does the mosaic (0.121)**, so that bar is not
+discriminating at this scale (already flagged 2026-07-29 when gate 1 was re-scoped).
+
+### What F genuinely achieved (report this)
+
+Within-tile striping is really reduced. Scale-free (sd/mean of the per-frame means, median over 26
+tiles): **mosaic 0.827 → h1only 0.646 → resid 0.575 → pfree 0.536**; windowed partition η² 0.121 →
+0.087. Note **h1only is WORSE than the mosaic** on η² (+25.2%), so H4 leveling is what earns the gain.
+Gate 3 also improves for every variant. Per-obs discrimination is untouched: median Δap **0.0000**
+(worst single obs −0.014) — H4 does not degrade the model's local ranking at all.
+
+### The disqualifying finding — between-place level, against GROUND TRUTH
+
+Gate 5's raw failure is a between-obs LEVEL effect, not a skill loss: obs-centred pooled Δap is
+**+0.0068 (resid) / +0.0054 (pfree)**, i.e. both would pass. But obs-centring discards **25.5% of the
+label variance** — the between-place accuracy that IS the product. So the level effect was measured
+directly, per observation, as `mean(predicted abundance) / mean(labelled fractional_area)`, with the
+mosaic sampled at the identical labelled tiles (95,606 tiles, 21 obs):
+
+| row | median ratio | min | max | max/min | **sd(log₁₀)** |
+|---|---|---|---|---|---|
+| **mosaic** | **0.89** | 0.41 | 2.10 | **5.1×** | **0.170** |
+| h1only | 2.22 | 0.67 | 19.63 | 29.4× | 0.328 |
+| resid | 1.92 | 0.36 | 11.63 | 32.5× | 0.371 |
+| pfree | 1.35 | 0.14 | 27.25 | **189.6×** | **0.532** |
+| full | 15.54 | 4.68 | 380.28 | 81.3× | 0.412 |
+
+- the incumbent mosaic map is **well calibrated against truth** (median 0.89, only 5.1× spread);
+- every F variant is **1.9–3.1× less stable between places** and over-predicts ~2×;
+- **leveling HURTS in every variant** (resid 1.13×, pfree 1.62×, full 1.26× worse than unleveled).
+
+This does not depend on the mosaic being correct: if both maps were right the ratio would be constant
+regardless. The spread grows monotonically with the strength of leveling applied while the mosaic is
+fixed, so the instability is attributable to F. Per-tile F/mosaic ratios say the same thing
+(max/min 6.9× unleveled → 24.6× resid → **72.8×** pfree).
+
+**Verdict:** F trades the artifact it was built to remove for a worse one. For a map whose purpose is
+comparing abundance where HiRISE is absent, that is the wrong trade.
+
+### Corrections to earlier readings in this session (recorded so they are not repeated)
+
+1. **Gate 1's tile-scale ratio flatters F.** I cited tile ratio 1.007 (resid) / 1.027 (pfree) vs the
+   mosaic's 1.537 as "artifact indistinguishable from its null". But F's tile rotation null is
+   **1.29–1.39× higher** than the mosaic's, and pfree's absolute tile η² is only −2.1% vs the mosaic.
+   Smoother maps inflate the null and flatter the ratio. **The windowed row is the honest one**
+   (η² −26% at +10% null).
+2. **"Gate 5 is only a confound" was too generous** — obs-centring removes 25.5% of the target variance.
+3. **Retracted:** the claim that the calibrator was banked on the H1-only path and structurally
+   favoured h1only. There are no metadata JSONs in `models/deployable{,_f_center}/`; unsubstantiated.
+4. **`pfree` was the wrong shipping recommendation.** Chosen on SSR + offset magnitude; it is the
+   worst variant on skill (−0.186) and cross-obs Spearman (0.436), and worst on level stability
+   (189.6×). Its documented test-suite caveat — the plane constraint biases local estimates — was the
+   real signal and I under-weighted it. `resid` was the better-balanced variant.
+
+### Retained deliverables
+
+- **General, stays in the codebase:** `lv.edge_dlogit` / `edge_saturated_frac` / `EDGE_METRICS` /
+  `heldout_edge_cv(metric=)`; `lv.benefit_concentration` / `offset_magnitude_report` /
+  `frame_level_spread` (the lean guards); the `trend_verdict` margin fix (a genuine bug — a side could
+  win holding the LOWER R²); rank-aware `lv.plane_complement`. 99 tests pass.
+- **Shelved but kept:** `lv.solve_offsets_planefree`, the `pfree` variant wiring, Stage C/D scripts.
+- **Evidence on disk:** `reports/figures/fbuild_*` (gate tables, offsets, lean guards, trend guard),
+  `reports/f_stagec/` (edge cache — Stage C reruns in ~2 min from it), `reports/f_region_logits/`
+  (906 npz, ~33 GPU-h to regenerate), `reports/map_fbuild/` (4 variants × 26 tiles).
+- **NOT landed, still true:** the edge weights `w = W` understate each overlap's uncertainty **69×**
+  (σ²_sys 0.401 vs σ²_pair/W); correct inverse-variance weights are near-uniform. Any uncertainty
+  quoted from this solve is optimistic. Deferred with F.
+
 ## 2026-07-05 — F leg B mapping iteration: global + minnaert both FAIL; gate converges at ≈ −0.034; SeamMap incidence typo found
 
 **Setup:** `f_leg_b_embed.py --mapping {global,minnaert}` (fixed pooled p2–p98 stretch; minnaert

@@ -388,3 +388,179 @@ def test_heldout_edge_cv_accepts_the_dlogit_metric():
 def test_edge_metric_registry_matches_the_functions():
     assert lv.EDGE_METRICS["dp"] is lv.edge_dp
     assert lv.EDGE_METRICS["dlogit"] is lv.edge_dlogit
+
+
+# ------------------------------------------- the plane-free (constrained) solve, 2026-07-30
+def test_plane_complement_is_orthonormal_and_kills_the_plane():
+    rng = np.random.default_rng(0)
+    lon, lat = rng.normal(size=40), rng.normal(size=40)
+    z = lv.plane_complement(lon, lat)
+    assert z.shape == (40, 37)
+    assert np.allclose(z.T @ z, np.eye(37), atol=1e-10)          # orthonormal
+    for v in (np.ones(40), lon, lat):                            # spans nothing of the plane
+        assert np.allclose(z.T @ v, 0.0, atol=1e-9)
+
+
+def test_plane_complement_is_rank_aware_on_a_degenerate_layout():
+    """All frames at one latitude => span{1,lon,lat} is rank 2, so only 2 directions may be removed.
+
+    A plain QR would hand back an arbitrary third basis column here and the constrained solve would
+    silently delete a direction carrying real signal.
+    """
+    lon = np.arange(12, dtype=float)
+    z = lv.plane_complement(lon, np.zeros(12))
+    assert z.shape == (12, 10)                                   # n - 2, NOT n - 3
+    assert np.allclose(z.T @ z, np.eye(10), atol=1e-10)
+    for v in (np.ones(12), lon):
+        assert np.allclose(z.T @ v, 0.0, atol=1e-9)
+
+
+def _plane_free_bias(lon, lat, seed=0, scale=0.6):
+    """A per-frame bias living ENTIRELY in the plane-free subspace (no constant/lon/lat component).
+
+    Needed because `synth_frames`' default bias is `linspace(-0.8, 0.8)` — a PURE ramp — against
+    which the constrained solve is supposed to lose. Separating "local structure" from "region-wide
+    plane" by construction is what makes these assertions about the method rather than the fixture.
+    """
+    z = lv.plane_complement(lon, lat)
+    b = z @ np.random.default_rng(seed).normal(size=z.shape[1])
+    return scale * b / np.abs(b).max()
+
+
+def _ssr(es, o):
+    r = (o[es.ei] - o[es.ej]) - es.dbar
+    return float((es.w * r ** 2).sum())
+
+
+def test_planefree_recovers_local_structure_when_there_is_no_real_plane():
+    """The regime the build is actually in: no constant region-wide gradient exists to estimate
+    (measured b = +0.203 / -0.003 / +0.433 per lon tercile). There, constraining costs nothing and
+    the local per-frame corrections come back intact."""
+    n_frames = 12
+    lon, lat = np.arange(n_frames, dtype=float), np.zeros(n_frames)
+    local = _plane_free_bias(lon, lat)
+    pids, keys, logits, _ = synth_frames(n_frames=n_frames, side=40, overlap=25,
+                                         bias=local, noise=0.02)
+    es = lv.build_edges(pids, keys, logits, min_tiles=1)
+    pfree = lv.solve_offsets_planefree(es, 0.0, n_frames, lon, lat)
+    assert np.corrcoef(-local, pfree)[0, 1] > 0.98
+
+
+def test_planefree_removes_a_planted_ramp_and_distorts_local_estimates_doing_so():
+    """Plant a GENUINE ramp: the constraint kills it, but at a documented cost.
+
+    The constrained solve does not merely delete the plane — it spends its remaining (plane-free)
+    freedom flattening the ramp's local differences, so the recovered local pattern degrades
+    (corr ~0.6 here vs >0.98 with no ramp planted). This is the real caveat of the method: if a
+    region-wide gradient truly exists, this solve both discards it AND biases the local corrections.
+    Acceptable for the build only because the measured per-step term is patchy rather than a constant
+    gradient (DECISIONS 2026-07-30); it would NOT be acceptable in a region where b is constant.
+    """
+    n_frames = 12
+    lon, lat = np.arange(n_frames, dtype=float), np.zeros(n_frames)
+    local = _plane_free_bias(lon, lat)
+    pids, keys, logits, _ = synth_frames(n_frames=n_frames, side=40, overlap=25,
+                                         bias=local + 0.8 * lon, noise=0.02)
+    es = lv.build_edges(pids, keys, logits, min_tiles=1)
+    free = lv.solve_offsets(es, 0.0, n_frames)
+    pfree = lv.solve_offsets_planefree(es, 0.0, n_frames, lon, lat)
+
+    A = lv.design_matrix(lon, lat, order=1)
+    assert abs(lv.weighted_fit(A, free, None)[0][1]) > 0.5        # free solve carries the ramp
+    assert abs(lv.weighted_fit(A, pfree, None)[0][1]) < 1e-6      # constrained one does not
+    r = np.corrcoef(-local, pfree)[0, 1]
+    assert 0.4 < r < 0.95, f"expected degraded-but-positive local recovery, got {r:.3f}"
+
+
+def test_planefree_costs_almost_nothing_when_the_truth_has_no_plane():
+    """If the real bias has no region-wide component, constraining it away is nearly free."""
+    n = 12
+    lon, lat = np.arange(n, dtype=float), np.zeros(n)
+    pids, keys, logits, _ = synth_frames(n_frames=n, side=40, overlap=28,
+                                         bias=_plane_free_bias(lon, lat), noise=0.02)
+    es = lv.build_edges(pids, keys, logits, min_tiles=1)
+    free = _ssr(es, lv.solve_offsets(es, 0.0, n))
+    pfree = _ssr(es, lv.solve_offsets_planefree(es, 0.0, n, lon, lat))
+    assert pfree >= free - 1e-9                                   # never better than unconstrained
+    assert pfree < 1.15 * max(free, 1e-12)                        # ...but within 15% here
+
+
+def test_planefree_is_never_a_better_fit_than_the_free_solve():
+    """The general guarantee, even when the planted truth IS a pure ramp (where it loses badly)."""
+    pids, keys, logits, _ = synth_frames(n_frames=12, side=40, overlap=28)   # default bias = a ramp
+    n = len(pids)
+    lon, lat = np.arange(n, dtype=float), np.zeros(n)
+    es = lv.build_edges(pids, keys, logits, min_tiles=1)
+    free = _ssr(es, lv.solve_offsets(es, 0.0, n))
+    pfree = _ssr(es, lv.solve_offsets_planefree(es, 0.0, n, lon, lat))
+    assert pfree >= free - 1e-9
+    # and it SHOULD lose here — documents the method's caveat: a genuine region-wide plane is lost
+    assert pfree > 10 * free
+
+
+def test_planefree_beats_post_hoc_detrending_on_its_own_objective():
+    """The build's finding: constrain-then-solve dominates solve-then-subtract.
+
+    This is a theorem, not a coincidence — `posthoc` is one member of the plane-free subspace and
+    `pfree` is that subspace's minimiser — so it pins the ORDER of the two operations.
+    """
+    n = 12
+    lon, lat = np.arange(n, dtype=float), np.zeros(n)
+    pids, keys, logits, _ = synth_frames(n_frames=n, side=40, overlap=28,
+                                         bias=_plane_free_bias(lon, lat) + 0.6 * lon, noise=0.05)
+    es = lv.build_edges(pids, keys, logits, min_tiles=1)
+    free = lv.solve_offsets(es, 0.0, n)
+    A = lv.design_matrix(lon, lat, order=1)
+    posthoc = lv.regauge(free - lv.weighted_fit(A, free, None)[1])
+    pfree = lv.solve_offsets_planefree(es, 0.0, n, lon, lat)
+    assert _ssr(es, pfree) <= _ssr(es, posthoc) + 1e-9
+
+
+def test_normal_equations_still_reproduce_the_pilot_solver():
+    """The refactor that introduced normal_equations() must not change solve_offsets' answer."""
+    pids, keys, logits, _ = synth_frames(n_frames=6)
+    es = lv.build_edges(pids, keys, logits, min_tiles=1)
+    ref = list(zip(es.ei.tolist(), es.ej.tolist(), es.dbar.tolist(), es.w.tolist()))
+    for lam in (0.0, 10.0, 300.0):
+        assert np.allclose(lv.solve_offsets(es, lam, len(pids)),
+                           pilot_reference_solve(ref, lam, len(pids)), atol=1e-8)
+
+
+# ------------------------------------------------------- the lean guards (Brian, 2026-07-29)
+def test_benefit_concentration_flags_a_gain_bought_from_few_edges():
+    pids, keys, logits, _ = synth_frames(n_frames=10, side=40, overlap=25)
+    es = lv.build_edges(pids, keys, logits, min_tiles=1)
+    n = len(pids)
+    good = lv.solve_offsets(es, 0.0, n)
+    rep = lv.benefit_concentration(es, good, np.zeros(n))
+    # a genuine, broad improvement: most edges helped, no single edge dominating
+    assert rep["frac_edges_worse"] < 0.5
+    assert rep["gain_share_top_1pct"] < 0.9
+    assert rep["n_edges"] == es.n_edges
+
+
+def test_benefit_concentration_sign_convention_is_new_vs_reference():
+    """gain > 0 must mean `o` fits BETTER than `o_ref` — a flipped sign would invert the guard."""
+    pids, keys, logits, _ = synth_frames(n_frames=8)
+    es = lv.build_edges(pids, keys, logits, min_tiles=1)
+    n = len(pids)
+    solved = lv.solve_offsets(es, 0.0, n)
+    assert lv.benefit_concentration(es, solved, np.zeros(n))["total_gain"] > 0
+    assert lv.benefit_concentration(es, np.zeros(n), solved)["total_gain"] < 0
+
+
+def test_offset_magnitude_report_uses_the_measured_yardstick():
+    spread = lv.frame_level_spread(np.array([0.05, 0.2, 0.4, 0.6, 0.8, 0.95]))
+    assert spread > 0
+    small = lv.offset_magnitude_report(np.array([0.1, -0.2, 0.3]), spread)
+    assert small["within_frame_spread"] and small["n_over_frame_spread"] == 0
+    huge = lv.offset_magnitude_report(np.array([0.1, 21.3, -11.6]), spread)
+    assert not huge["within_frame_spread"]
+    assert huge["n_over_frame_spread"] == 2
+    assert huge["n_over_logit_clip"] == 2            # both exceed the +-9.21 per-tile clip
+    assert huge["max_over_frame_spread"] > 1.0
+
+
+def test_frame_level_spread_is_nan_on_degenerate_input():
+    assert np.isnan(lv.frame_level_spread(np.array([0.5])))
+    assert np.isnan(lv.frame_level_spread(np.array([np.nan, np.nan])))

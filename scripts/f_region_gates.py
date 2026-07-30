@@ -50,9 +50,9 @@ OFFSETS_CSV = FIG / "fbuild_stagec_offsets.csv"
 GUARD_CSV = FIG / "fbuild_trend_guard.csv"
 COHORT_BOUNDS = REPO / "reports" / "f_leg_b" / "cohort_obs_bounds.csv"
 LABELS_DIR = REPO / "dataset_v2" / "labels"
-VARIANTS = ("h1only", "full", "resid", "lcv")   # lcv = λ re-selected on |Δlogit| (Brian, 2026-07-29)
+VARIANTS = ("h1only", "full", "resid", "pfree")  # pfree = plane-free constrained solve, SHIPPED 2026-07-30
 OFFSET_COL = {"h1only": None, "full": "offset_logit",
-              "resid": "offset_residual_only", "lcv": "offset_logit_lcv"}
+              "resid": "offset_residual_only", "pfree": "offset_logit_pfree"}
 
 
 # --------------------------------------------------------------------------- gate 1
@@ -115,10 +115,14 @@ def gate2(offsets: pd.DataFrame, guard: dict, args) -> pd.DataFrame:
     es_all = lv.EdgeSet.load(cache[-1])
     es = es_all.filter(es_all.w >= args.min_tiles)
     n = len(es.pids)
-    # each variant is scored at ITS OWN λ: `lcv` uses the saturation-immune |Δlogit| selection
-    # (2026-07-29), the others the pre-registered |Δp| one.
+    # Gate 2 is RE-DECLARED as of 2026-07-29 (Brian): it passes only if the saturation-immune
+    # |Δlogit| improves AND the railed-tile fraction stays at baseline. The pre-registered |Δp| is
+    # still reported for the audit trail, but it cannot be the criterion — it is minimised by
+    # railing the sigmoid, so the drifting λ=0 solve "won" it 0.1622→0.0112 while railing 51.8% of
+    # co-located tiles (DECISIONS 2026-07-30).
     lam_dp = float(guard.get("lambda_star") or 0.0)
-    lam_lcv = float(guard.get("lambda_star_lcv") or guard.get("lambda_lcv") or lam_dp)
+    lam_pfree = float(guard.get("lambda_star_pfree") or 0.0)   # 0 by construction: the constraint
+    #                                                            removes the drift, no λ needed
     # lon/lat/degree so the `resid` fold can refit its own smooth plane (else the CV leaks)
     lon = lat = deg = None
     if {"lon", "lat"} <= set(offsets.columns):
@@ -135,14 +139,28 @@ def gate2(offsets: pd.DataFrame, guard: dict, args) -> pd.DataFrame:
             continue
         o = np.zeros(n) if col is None else np.array(
             [float(offsets.loc[p, col]) if p in offsets.index else 0.0 for p in es.pids])
-        lam = lam_lcv if v == "lcv" else lam_dp
-        metric = "dlogit" if v == "lcv" else "dp"
+        lam = lam_pfree if v == "pfree" else lam_dp
+        # the re-declared criterion is |Δlogit| for EVERY variant; |Δp| is reported alongside
         r = fg.edge_cv_for_offsets(es, o, n, lam, variant=v, frac=args.cv_frac,
-                                   repeats=args.cv_repeats, seed=args.seed, metric=metric,
+                                   repeats=args.cv_repeats, seed=args.seed, metric="dlogit",
                                    lon=lon, lat=lat, degree=deg)
-        rows.append({"row": f"F_{v}", "n_edges": es.n_edges, "lambda": lam, **r})
-        print(f"  F_{v}: unleveled {r['metric']} {r['unleveled_dp']:.4f} -> in-sample "
-              f"{r['insample_dp']:.4f}, held-out {r['heldout_cv_dp']:.4f}"
+        r_dp = fg.edge_cv_for_offsets(es, o, n, lam, variant=v, frac=args.cv_frac,
+                                      repeats=args.cv_repeats, seed=args.seed, metric="dp",
+                                      lon=lon, lat=lat, degree=deg)
+        railed = lv.edge_saturated_frac(es, o)
+        railed_base = lv.edge_saturated_frac(es, np.zeros(n))
+        # PASS = |Δlogit| improves AND railing stays within 2x the unleveled baseline
+        improves = bool(r["heldout_cv_dp"] < r["unleveled_dp"]) and v != "h1only"
+        rows.append({"row": f"F_{v}", "n_edges": es.n_edges, "lambda": lam, **r,
+                     "heldout_cv_dp_probspace": r_dp["heldout_cv_dp"],
+                     "insample_dp_probspace": r_dp["insample_dp"],
+                     "railed_frac": round(railed, 4), "railed_frac_unleveled": round(railed_base, 4),
+                     "railed_ok": bool(railed <= 2 * railed_base),
+                     "passes": improves and bool(railed <= 2 * railed_base)})
+        print(f"  F_{v}: |Δlogit| {r['unleveled_dp']:.4f} -> held-out {r['heldout_cv_dp']:.4f}  "
+              f"| railed {100 * railed:5.1f}% (baseline {100 * railed_base:.1f}%)  "
+              f"| |Δp| held-out {r_dp['heldout_cv_dp']:.4f}  "
+              f"-> {'PASS' if rows[-1]['passes'] else 'fail'}"
               f"{'  [' + r['note'] + ']' if r.get('note') else ''}", flush=True)
     return pd.DataFrame(rows)
 

@@ -1,0 +1,85 @@
+{
+  "murray_tile": "E4_N44",
+  "tile_px": 32,
+  "raster_shape": [
+    1479,
+    1479
+  ],
+  "ti_min": 1,
+  "tj_min": 1,
+  "n_predicted_tiles": 2187441,
+  "calibrated": true,
+  "isotonic": true,
+  "prob_mean": 0.6097880005836487,
+  "rich_share_at_0p5": 0.6580771778530256,
+  "abundance_mean": 0.019250226066905816,
+  "stage": "D",
+  "headline_variant": "pfree",
+  "per_variant": {
+    "h1only": {
+      "n_finite": 2187441,
+      "coverage": 1.0,
+      "prob_mean": 0.5183885097503662,
+      "rich_share_at_0p5": 0.5235802931370492,
+      "abundance_mean": 0.015370400427965912,
+      "abundance_saturated_frac": 0.0,
+      "overlap_dp_median": 0.47806233167648315,
+      "partition_coverage": 0.9996671910236664,
+      "mean_n_frames": 3.62809419631958,
+      "max_n_frames": 20
+    },
+    "full": {
+      "n_finite": 2187441,
+      "coverage": 1.0,
+      "prob_mean": 0.9590914845466614,
+      "rich_share_at_0p5": 0.9957114271882076,
+      "abundance_mean": 0.06937563456101795,
+      "abundance_saturated_frac": 0.004245143069001632,
+      "overlap_dp_median": 0.03592357039451599,
+      "partition_coverage": 0.9996671910236664,
+      "mean_n_frames": 3.62809419631958,
+      "max_n_frames": 20
+    },
+    "resid": {
+      "n_finite": 2187441,
+      "coverage": 1.0,
+      "prob_mean": 0.449585497379303,
+      "rich_share_at_0p5": 0.4299745684569321,
+      "abundance_mean": 0.011264264251687875,
+      "abundance_saturated_frac": 0.0,
+      "overlap_dp_median": 0.3933969736099243,
+      "partition_coverage": 0.9996671910236664,
+      "mean_n_frames": 3.62809419631958,
+      "max_n_frames": 20
+    },
+    "pfree": {
+      "n_finite": 2187441,
+      "coverage": 1.0,
+      "prob_mean": 0.6097880005836487,
+      "rich_share_at_0p5": 0.6580771778530256,
+      "abundance_mean": 0.019250226066905816,
+      "abundance_saturated_frac": 0.0,
+      "overlap_dp_median": 0.3585853576660156,
+      "partition_coverage": 0.9996671910236664,
+      "mean_n_frames": 3.62809419631958,
+      "max_n_frames": 20
+    }
+  },
+  "global_lattice": {
+    "Kj": 1483,
+    "Ki": 17781,
+    "dx_m": 58.789,
+    "dy_m": 14.518,
+    "tie_margin_m": 21.2111
+  },
+  "offsets_csv": "fbuild_stagec_offsets.csv",
+  "trend_guard": {
+    "verdict": "AMBIGUOUS",
+    "apply": "full_pending_ruling",
+    "needs_ruling": true,
+    "why": "neither side wins by 0.05 R\u00b2 \u2014 Brian's call (\u00a77 Q3); ship both composites + the smooth field as an H6 diagnostic. metadata R\u00b2=0.108 (p=0.019) vs geology R\u00b2=0.142 (p=0.058); smooth surface R\u00b2=0.957 (p=0.001)",
+    "lambda_star": 0.0
+  },
+  "n_frames_used": 51,
+  "frames_without_offset": []
+}

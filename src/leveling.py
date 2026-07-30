@@ -222,15 +222,9 @@ def regauge(o: np.ndarray, comp: np.ndarray | None = None) -> np.ndarray:
     return o
 
 
-def solve_offsets(es: EdgeSet, lam: float, n: int, comp: np.ndarray | None = None,
-                  edge_mask: np.ndarray | None = None) -> np.ndarray:
-    """Weighted LS + λ·Tikhonov for the per-frame additive logit offsets (PLAN_H4 §2).
-
-    Minimises Σ W_ij·[(o_i − o_j) − δ̄_ij]² + λ·Σ o². Dense normal equations: n=907 ⇒ a 6.6 MB
-    matrix and a millisecond Cholesky, so there is no reason to reach for sparse machinery.
-    λ>0 makes the Laplacian SPD (and pins isolated / dropped-out frames at 0, which is what
-    leave-one-frame-out needs); λ=0 falls back to the min-norm lstsq the pilot used.
-    """
+def normal_equations(es: EdgeSet, lam: float, n: int,
+                     edge_mask: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """(AᵀWA + λI, AᵀWb) for the weighted-LS offset problem — shared by every solver variant."""
     ei, ej, dbar, w = es.ei, es.ej, es.dbar, es.w
     if edge_mask is not None:
         ei, ej, dbar, w = ei[edge_mask], ej[edge_mask], dbar[edge_mask], w[edge_mask]
@@ -243,6 +237,75 @@ def solve_offsets(es: EdgeSet, lam: float, n: int, comp: np.ndarray | None = Non
     np.add.at(atb, ei, w * dbar)
     np.add.at(atb, ej, -w * dbar)
     ata[np.diag_indices(n)] += lam
+    return ata, atb
+
+
+def plane_complement(lon, lat, rcond: float = 1e-10) -> np.ndarray:
+    """Orthonormal basis of the offsets ORTHOGONAL to span{1, lon, lat} — the region-wide plane.
+
+    Deterministic (SVD, no RNG) so the constrained solve is reproducible run-to-run.
+
+    **Rank-aware on purpose.** If the frame centres are degenerate — all at one latitude, or
+    collinear — then span{1, lon, lat} has rank < 3 and a plain QR returns an ARBITRARY extra column,
+    so the complement would silently delete a direction that carries real signal. Taking the rank
+    from the singular values instead means a degenerate layout constrains only the directions that
+    actually exist, and the returned width is n − rank rather than always n − 3.
+    """
+    lon = np.asarray(lon, dtype=np.float64)
+    lat = np.asarray(lat, dtype=np.float64)
+    n = lon.size
+    m = np.column_stack([np.ones(n), lon - lon.mean(), lat - lat.mean()])
+    u, s, _ = np.linalg.svd(m, full_matrices=True)
+    rank = int((s > rcond * max(float(s[0]), 1.0)).sum()) if s.size else 0
+    return np.ascontiguousarray(u[:, rank:])          # columns beyond the rank span the complement
+
+
+def solve_offsets_planefree(es: EdgeSet, lam: float, n: int, lon, lat,
+                            comp: np.ndarray | None = None,
+                            edge_mask: np.ndarray | None = None) -> np.ndarray:
+    """`solve_offsets` with the REGION-WIDE PLANE (constant + lon tilt + lat tilt) constrained to 0.
+
+    Why this exists (DECISIONS 2026-07-30). At 906-frame scale the free solve returns a −22.7-logit
+    east–west ramp: 87% of the offset energy on one graph direction, |o|max 21.3 against a per-tile
+    logit clip of ±9.21, railing 51.8% of co-located tiles and making 44% of edges WORSE, for
+    1.28pp of extra pairwise agreement. The cause is a small per-step systematic (0.079 logits/step,
+    residual radiometry H1 left behind) integrated over ~100 chain steps.
+
+    The constraint is justified empirically, not by the outcome: fitting the per-step lon coefficient
+    separately per lon tercile gives **+0.203 / −0.003 / +0.433** (R² 0.0023 / 0.0000 / 0.0150), i.e.
+    the term is absent in two thirds of the block. There is no constant region-wide gradient to
+    estimate, so a single global plane is the wrong shape to fit — and integrating it across 33° is
+    what manufactures the ramp. We therefore decline to estimate it rather than let it be guessed.
+
+    Note this is a GAUGE choice on 3 of n directions; the other n−3 are fit exactly as before, which
+    is why it still explains 91.58% of pairwise disagreement vs the free solve's 92.86%. It strictly
+    dominates the post-hoc `resid` variant (which solves free, THEN subtracts the plane, leaving the
+    remaining directions distorted by having accommodated the ramp): SSR 4.65e7 vs 5.83e7 and
+    |o|max 4.91 vs 7.33.
+
+    Caveat for other regions: this assumes the un-trustworthy component is plane-shaped, which held
+    here (the free solve's dominant direction is 96% longitude) but is not guaranteed elsewhere.
+    """
+    ata, atb = normal_equations(es, lam, n, edge_mask)
+    z = plane_complement(lon, lat)
+    c = np.linalg.lstsq(z.T @ ata @ z, z.T @ atb, rcond=None)[0]
+    return regauge(z @ c, comp)
+
+
+def solve_offsets(es: EdgeSet, lam: float, n: int, comp: np.ndarray | None = None,
+                  edge_mask: np.ndarray | None = None) -> np.ndarray:
+    """Weighted LS + λ·Tikhonov for the per-frame additive logit offsets (PLAN_H4 §2).
+
+    Minimises Σ W_ij·[(o_i − o_j) − δ̄_ij]² + λ·Σ o². Dense normal equations: n=907 ⇒ a 6.6 MB
+    matrix and a millisecond Cholesky, so there is no reason to reach for sparse machinery.
+    λ>0 makes the Laplacian SPD (and pins isolated / dropped-out frames at 0, which is what
+    leave-one-frame-out needs); λ=0 falls back to the min-norm lstsq the pilot used.
+
+    At build scale this free solve drifts — see `solve_offsets_planefree`, which is what Stage C
+    ships as of 2026-07-30. This one is retained because `full`/`resid` remain on disk as the
+    pre-declared audit trail.
+    """
+    ata, atb = normal_equations(es, lam, n, edge_mask)
     if lam > 0:
         try:
             from scipy.linalg import cho_factor, cho_solve
@@ -308,6 +371,64 @@ def edge_saturated_frac(es: EdgeSet, o: np.ndarray, idx=None, rail: float = 0.01
             sat += int(((p < rail) | (p > 1.0 - rail)).sum())
             tot += p.size
     return sat / tot if tot else float("nan")
+
+
+def benefit_concentration(es: EdgeSet, o: np.ndarray, o_ref: np.ndarray,
+                          pctiles=(0.5, 1.0, 2.0, 5.0)) -> dict:
+    """Is `o`'s advantage over `o_ref` broad, or bought from a handful of edges? (lean guard 1/2)
+
+    The diagnostic that caught the build's drift where every edge-local CV passed it: the free solve
+    beat the plane-free one by 1.28pp of pairwise disagreement, but **51% of that came from 60 of
+    6014 edges while 44% of edges got WORSE** (DECISIONS 2026-07-30). A correction that helps a
+    percent of the data and harms half of it is overfitting, whatever the aggregate says — and unlike
+    the trend guard this reads the same regardless of the region's shape or the artifact's geometry.
+
+    Returns the share of the total gain held by the top `pctiles`% of edges, plus the fraction of
+    edges made worse. Reported by Stage C for every variant; no threshold is auto-applied.
+    """
+    r_ref = (o_ref[es.ei] - o_ref[es.ej]) - es.dbar
+    r_new = (o[es.ei] - o[es.ej]) - es.dbar
+    gain = es.w * (r_ref ** 2 - r_new ** 2)              # >0 where `o` fits better than `o_ref`
+    total = float(gain.sum())
+    order = np.argsort(-gain)
+    out = {"total_gain": total, "frac_edges_worse": float((gain < 0).mean()),
+           "n_edges_worse": int((gain < 0).sum()), "n_edges": int(gain.size)}
+    for p in pctiles:
+        k = max(1, int(round(gain.size * p / 100.0)))
+        out[f"gain_share_top_{p:g}pct"] = (float(gain[order[:k]].sum()) / total
+                                          if total > 0 else float("nan"))
+    return out
+
+
+def offset_magnitude_report(o: np.ndarray, frame_level_spread: float,
+                            logit_clip: float | None = None) -> dict:
+    """Is the correction bigger than the thing it is correcting? (lean guard 2/2)
+
+    `frame_level_spread` = the observed p5..p95 spread of per-frame mean logit P(rich) (3.24 at build
+    scale). An offset beyond that is not adjusting a frame's level, it is replacing it; an offset
+    beyond `logit_clip` (±9.21, the model's own per-tile range) outweighs all within-frame contrast.
+    Physical yardsticks measured from the data, so they port to any region without re-tuning.
+    """
+    o = np.asarray(o, dtype=np.float64)
+    clip = float(np.log((1 - EPS) / EPS)) if logit_clip is None else float(logit_clip)
+    return {"max_abs_offset": float(np.abs(o).max()), "sd_offset": float(np.std(o)),
+            "span_offset": float(np.ptp(o)),
+            "frame_level_spread": float(frame_level_spread),
+            "max_over_frame_spread": float(np.abs(o).max() / frame_level_spread)
+            if frame_level_spread > 0 else float("nan"),
+            "n_over_frame_spread": int((np.abs(o) > frame_level_spread).sum()),
+            "n_over_logit_clip": int((np.abs(o) > clip).sum()),
+            "within_frame_spread": bool(np.abs(o).max() <= frame_level_spread)}
+
+
+def frame_level_spread(prob_mean) -> float:
+    """p5..p95 spread of per-frame mean P(rich), in logits — the empirical offset yardstick."""
+    p = np.asarray(prob_mean, dtype=np.float64)
+    p = p[np.isfinite(p)]
+    if p.size < 3:
+        return float("nan")
+    lg = logit(p)
+    return float(np.percentile(lg, 95) - np.percentile(lg, 5))
 
 
 def heldout_edge_cv(es: EdgeSet, lam: float, n: int, frac: float = 0.05, repeats: int = 4,

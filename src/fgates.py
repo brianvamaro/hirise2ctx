@@ -149,9 +149,9 @@ def edge_cv_for_offsets(edges, offsets: np.ndarray, n: int, lam: float, *, varia
     if variant == "h1only":
         return {**out, "heldout_cv_dp": base, "cv_edges_skipped": 0, "passes": False,
                 "note": "unleveled by construction — the held-out value IS the baseline"}
-    if variant == "resid" and (lon is None or lat is None):
-        print("  ⚠ gate 2 resid: no lon/lat given, cannot refit the fold plane -> scoring the FULL "
-              "offset model instead (the number is NOT the residual-only variant's)", flush=True)
+    if variant in ("resid", "pfree") and (lon is None or lat is None):
+        print(f"  ⚠ gate 2 {variant}: no lon/lat given, cannot reproduce this variant inside a fold "
+              f"-> scoring the FULL offset model instead (the number is NOT {variant}'s)", flush=True)
         variant = "full"
 
     rng = np.random.default_rng(seed)
@@ -163,7 +163,13 @@ def edge_cv_for_offsets(edges, offsets: np.ndarray, n: int, lam: float, *, varia
         mask = np.ones(m, dtype=bool)
         mask[hold] = False
         comp = lv.components(edges.ei[mask], edges.ej[mask], n)
-        o = lv.solve_offsets(edges, lam, n, comp=comp, edge_mask=mask)
+        if variant == "pfree":
+            # the plane-free model is "solve WITH the region-wide plane constrained out", so the
+            # constraint has to be applied inside the fold too — re-solving free and detrending
+            # afterwards would score `resid`, not `pfree` (they differ: SSR 4.65e7 vs 5.83e7).
+            o = lv.solve_offsets_planefree(edges, lam, n, lon, lat, comp=comp, edge_mask=mask)
+        else:
+            o = lv.solve_offsets(edges, lam, n, comp=comp, edge_mask=mask)
         if variant == "resid":
             w = None if degree is None else np.asarray(degree, dtype=float)
             fitted = lv.weighted_fit(lv.design_matrix(lon, lat, order=1), o, w)[1]

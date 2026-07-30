@@ -12,10 +12,11 @@ Murray tile, on the EXACT grid of the existing mosaic-path map:
   {tile}.json                        sidecar (map_region's keys + Stage-D provenance)
 
 for variant in {h1only (o=0), full (offset_logit), resid (offset_residual_only),
-lcv (offset_logit_lcv)} — PLAN §1 deliverable 5 requires all of them from ONE Stage-B run, which is
-exactly why Stage C emits only the offset table. `lcv` was added 2026-07-29 (Brian): the
-pre-registered |Δp| edge-CV selects λ by how hard it saturates the sigmoid, so `full`/`resid` are
-retained for the audit trail while `lcv` re-selects λ on the saturation-immune |Δlogit| metric.
+pfree (offset_logit_pfree)} — PLAN §1 deliverable 5 requires all of them from ONE Stage-B run, which
+is exactly why Stage C emits only the offset table. `pfree` was added 2026-07-30 (Brian) and is the
+SHIPPED variant: the free solve returns a −22.7-logit east–west ramp that rails 51.8% of co-located
+tiles, because a small patchy per-step bias gets integrated over ~100 chain steps. `full`/`resid`
+are retained as the pre-declared audit trail. See `lv.solve_offsets_planefree` for the justification.
 
 Composite rule (PLAN §5): p = sigmoid(mean_f[logit(prob_f) + o_f]) — mean in LOGIT space over the
 frames covering a tile, one sigmoid at the end. Calibration is applied ONCE to the composited
@@ -65,10 +66,10 @@ CAL_MOSAIC = REPO / "models" / "deployable" / "calibration.npz"
 VARIANTS = {"h1only": None,                      # o_f == 0 (the un-leveled counterpart, deliverable 5)
             "full": "offset_logit",
             "resid": "offset_residual_only",
-            # λ re-selected on the saturation-immune logit metric (Brian, 2026-07-29): the
-            # pre-registered |Δp| CV drove λ*→0 and |o|max→21.3 logits by saturating the sigmoid,
-            # so `full`/`resid` are kept for the audit trail and `lcv` is the defensible solve.
-            "lcv": "offset_logit_lcv"}
+            # `pfree` — the SHIPPED solve (Brian, 2026-07-30): the region-wide plane is constrained
+            # out of the solve because the measured per-step term is patchy, not a constant gradient.
+            # `full`/`resid` stay on disk as the pre-declared audit trail. See lv.solve_offsets_planefree.
+            "pfree": "offset_logit_pfree"}
 APPLY_TO_VARIANT = {"full": "full", "residual": "resid", "full_pending_ruling": None}
 SHARED_LAYERS = ("n_frames", "primary_frame", "incidence", "offset_source")
 
@@ -81,9 +82,9 @@ def load_offsets(path: Path) -> pd.DataFrame:
     for col in ("offset_logit", "offset_residual_only"):
         if col not in df.columns:
             raise SystemExit(f"{path} has no column {col!r} — is it a Stage-C offsets table?")
-    if "offset_logit_lcv" not in df.columns:                  # pre-2026-07-29 Stage-C table
-        print("⚠ no `offset_logit_lcv` column — Stage C predates the λ(|Δlogit|) selection; "
-              "the `lcv` variant is unavailable (re-run Stage C to get it)", flush=True)
+    if "offset_logit_pfree" not in df.columns:                # pre-2026-07-30 Stage-C table
+        print("⚠ no `offset_logit_pfree` column — Stage C predates the plane-free solve; "
+              "the `pfree` variant is unavailable (re-run Stage C to get it)", flush=True)
     if "offset_source" not in df.columns:
         df["offset_source"] = "solved"
     return df

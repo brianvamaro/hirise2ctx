@@ -1,5 +1,34 @@
 # PLAN_FBuild — the 907-frame regional F build (per-frame inference + H1 centering + H4 leveling)
 
+> ## 🔴 STATUS: CLOSED — HARD ABORT (2026-07-30, Brian)
+>
+> **The build RAN end to end (Stage A → B → C → D → gates 1–6 on 906/907 frames) and the §0.1
+> hard-abort fallback was invoked: the A1 / mosaic-path map remains the deliverable.** No F map is
+> shipped. Full evidence in DECISIONS 2026-07-30; the one-line reason:
+>
+> **F fixes within-tile striping and breaks between-place level coherence — the opposite of what a
+> regional abundance map needs.**
+>
+> | measured against | mosaic (incumbent) | F h1only | F resid | F pfree |
+> |---|---|---|---|---|
+> | within-tile striping, sd/mean of per-frame means | 0.827 | 0.646 | 0.575 | **0.536** |
+> | windowed partition η² (gate 1) | 0.121 | 0.151 | 0.089 | 0.087 |
+> | **between-place level vs HiRISE labels, sd(log₁₀ pred/label)** | **0.170** | 0.328 | 0.371 | **0.532** |
+> | median pred/label ratio | **0.89** | 2.22 | 1.92 | 1.35 |
+> | worst-case ratio spread across 21 obs | **5.1×** | 29.4× | 32.5× | **189.6×** |
+>
+> H4 leveling **degrades** between-place accuracy in every variant (1.13× / 1.62× / 1.26× worse than
+> unleveled), and every F variant is 1.9–3.1× less stable than the incumbent. The absolute η² ≤ 0.05
+> bar is met by nothing, the mosaic included. Best variant clears only gates 2 and 3.
+>
+> **What is retained and why:** the diagnosis is the deliverable — see §4.4 and DECISIONS 2026-07-30
+> for the within-frame-ramp mechanism (predicted by the 2026-07-23 audit), the patchy per-step term,
+> the overlap identifiability limit, the saturation-gamed gate metric, and the 69× edge-weight
+> misspecification. `src/leveling.py`'s saturation-immune metric, lean guards and verdict-margin fix
+> are general and stay in the codebase; `solve_offsets_planefree` stays but is unused.
+>
+> _(Historical status below — kept for the arc.)_
+>
 > **STATUS: APPROVED — EXECUTING (2026-07-23).** Brian's reopening call = **reopen-with-guards**,
 > with an added standing requirement: the build must produce a **head-to-head comparison of the
 > F-build vs the existing mosaic-path map and the A1 fallback, on both quality and run-cost** (§5.1).
@@ -212,9 +241,17 @@ after seeing the offsets:
 | condition | verdict | `apply` |
 |---|---|---|
 | smooth surface p > α | `NO_TREND` | full offsets |
-| geology group significant and beats metadata by the margin | `RESIDUAL_ONLY` | residual only (§0.1 guard 1) |
-| metadata group significant and beats geology by the margin | `FULL` | full offsets |
+| geology group significant **and** beats metadata by the margin | `RESIDUAL_ONLY` | residual only (§0.1 guard 1) |
+| metadata group significant **and** beats geology by the margin | `FULL` | full offsets |
 | neither wins by the margin | `AMBIGUOUS` | **`full_pending_ruling`** — escalates, does not auto-apply |
+
+> **Corrected 2026-07-30.** Until then `lv.trend_verdict` also fired on `not other_sig`, so a side
+> could win while holding the **lower** R². The 906-frame run returned FULL on metadata R²=0.108 vs
+> geology R²=0.142 purely because geology's permutation p landed at 0.0579 rather than ≤0.05 — a
+> margin of **8 draws in 1000**, and **19 FULL / 1 AMBIGUOUS** across 20 seeds (geology R² > metadata
+> R² in 20/20). The table as written above always required the margin; the code now matches it, which
+> makes the verdict seed-stable. A side whose R² is NaN counts as *unavailable* (proxy raster missing),
+> not as *lost* — that cannot trigger guard 1. Actual 906-frame verdict: **AMBIGUOUS**.
 
 The AMBIGUOUS row is how §4.3's "default to full + diagnostic" and §0.1 guard 1's "must not silently
 default to full" are both honoured: Stage D emits full **and** residual-only composites, and the call
@@ -233,6 +270,53 @@ radiometrically-normal frame, |z(ln frame median)| < 2), guard 4 as
 
 **No-overlap frames:** none expected (P1: 0 isolated). If Stage-A failures disconnect a frame,
 interpolate its offset from graph neighbors (inverse-distance on frame centers) + flag in H6.
+*Confirmed at build scale: 906 frames, ONE component at every min-shared-tiles cut, 0 isolated.*
+
+### 4.4 As RUN (2026-07-30) — the free solve drifts; `pfree` is the shipped variant
+
+The pre-declared free solve returns |o|max **21.31** logits (span 32.9) against a per-tile logit clip
+of ±9.21, railing **51.8%** of co-located tiles and making **44%** of edges worse for **1.28pp** of
+extra pairwise agreement. Full evidence in DECISIONS 2026-07-30; the short version:
+
+- **λ cannot be selected by edge CV** in either metric (λ*(|Δp|) = λ*(|Δlogit|) = 0). Both are
+  edge-LOCAL and blind to a global drift mode; held-out |Δlogit| moves 2% across three decades of λ.
+- **Gate 2 is RE-DECLARED** (Brian): passes only if |Δlogit| improves **and** railed-tile fraction
+  stays ≤2× the unleveled baseline. |Δp| is still reported — it is minimised by railing the sigmoid
+  (`corr(railed, |Δp|)` = −0.997), so it cannot be the criterion at this scale.
+- **Cause = the §0.1 within-frame ramp risk flagged by the 2026-07-23 audit, materialised.** Pair
+  differences are 24.8% explained by illumination/radiometry (dominated by `ln_frame_median`,
+  R² 0.184) vs 0.4% by longitude geometry; within-frame along-track position is identifiable and
+  nearly quadruples explained variance (0.0069 → 0.0254). Within-frame *longitude* position is
+  **99.8% collinear** with frame lon separation, so a real regional gradient and within-frame
+  structure are **not separable from overlaps even in principle**.
+- **The per-step term is patchy, not a gradient**: b per lon tercile = **+0.203 / −0.003 / +0.433**.
+  There is no constant region-wide gradient to estimate, so fitting one global plane and integrating
+  it over 33° is what manufactures the ramp.
+
+**Shipped:** `lv.solve_offsets_planefree` — same objective with the region-wide plane (constant + lon
+tilt + lat tilt) constrained out; 903 of 906 directions still fit exactly; **no tuning constant**.
+Gives |o|max **4.91** (1.52× the observed 3.24-logit frame-level spread), 0 frames past the clip, and
+a **NO_TREND** trend-guard verdict. Strictly dominates `resid` (SSR 4.65e7 vs 5.83e7 — constrain-then-
+solve beats solve-then-subtract). Stage D variants are now `h1only` / `full` / `resid` / `pfree`, with
+`full`/`resid` retained as the pre-declared audit trail and `pfree` as `--headline`.
+
+**Caveat (in the test suite):** where a region-wide gradient genuinely exists, the constrained solve
+both discards it *and* biases the local estimates (planted-local recovery 0.98 → 0.63). Acceptable
+here only because the term is patchy; **re-check the tercile stability before reusing this in another
+region.** `lv.plane_complement` is rank-aware (SVD) so a degenerate frame layout cannot silently lose
+a real direction.
+
+**Lean guards** (Brian: no spectral machinery in the critical path) — `lv.benefit_concentration` +
+`lv.offset_magnitude_report` → `fbuild_stagec_lean_guards.csv`: |o|max against the measured frame-level
+spread, railed fraction, share of the gain held by the top 0.5/1/2/5% of edges, and the count of edges
+made worse. These are what caught the drift where every edge-local CV passed it, and they are
+geometry-agnostic (unlike the plane-shaped trend guard, whose blind spot is a non-planar soft mode).
+
+**Known-wrong but NOT changed here:** the edge weights `w = W` (raw shared-tile count) assume
+tile-level independence and so **understate each overlap's uncertainty 69×** (measured σ²_sys = 0.401
+vs σ²_pair/W = 0.0092²); correct inverse-variance weights are nearly uniform. Re-solving with them
+does *not* change the ramp (−22.71 → −23.61), so this is deferred to its own change — but every
+uncertainty quoted from this solve is optimistic until it lands.
 
 ## 5. Stage D — compositing + final map + validation
 
