@@ -12,6 +12,15 @@ Conclusion: F preserves skill but does NOT remove the artifact, and is dominated
 η² by the near-free A1 mosaic-side fix. The 907-frame regional ISIS build is not
 justified. F is closed; the striping mitigation decision is paused for write-up.
 
+FINAL OUTCOME (2026-07-30): the above verdict was reopened by the H1-H6 docket
+(H1 PASS, H2/H3 FAIL, H4 pilot PASS), the 907-frame build was approved and RAN
+end to end on 906/907 frames -- and was then HARD-ABORTED by Brian. The build
+reduces within-tile striping but degrades BETWEEN-PLACE level coherence, which is
+what a regional abundance map is for. A1/mosaic remains the deliverable. So F's
+original close-out verdict stands, now on much stronger evidence, and the striping
+programme is closed rather than paused. See the FINAL VERDICT banner + the closing
+section; full record in DECISIONS 2026-07-30 / 2026-07-30b, PLAN_FBuild §4.4.
+
 To regenerate: `python notebooks/_build_28.py` then `nbconvert --execute --inplace`.
 """
 from __future__ import annotations
@@ -31,6 +40,52 @@ def code(t):
 
 
 cells = []
+
+cells.append(md(
+    """# 🔴 FINAL VERDICT (2026-07-30) — the 907-frame build RAN, and was HARD-ABORTED
+
+**Read this first; everything below is the historical arc that led here.**
+
+This notebook's original §4 conclusion ("F closed") was reopened by the Phase-2 H1–H6 docket, the
+907-frame build was approved (2026-07-23) and executed end to end on 906/907 frames — Stage A → B →
+C → D → acceptance gates 1–6, four variants scored against the mosaic baseline. Brian then invoked
+the §0.1 hard-abort fallback. **The A1 / mosaic-path map remains the deliverable; no F map ships.**
+
+**Why, in one line: F fixes *within-tile* striping and breaks *between-place* level coherence —
+the opposite of what a regional abundance map needs.**
+
+| measured on the 26-tile block | mosaic (deliverable) | F h1only | F resid | F pfree |
+|---|---|---|---|---|
+| within-tile striping — sd/mean of per-frame means | 0.827 | 0.646 | 0.575 | **0.536** |
+| windowed partition η² (gate 1) | 0.121 | 0.151 | 0.089 | 0.087 |
+| **between-place level vs HiRISE labels — sd(log₁₀ pred/label)** | **0.170** | 0.328 | 0.371 | **0.532** |
+| median predicted/labelled ratio | **0.89** | 2.22 | 1.92 | 1.35 |
+| worst ratio spread across 21 obs | **5.1×** | 29.4× | 32.5× | **189.6×** |
+
+Levelling makes between-place accuracy **worse in every variant** (1.13× / 1.62× / 1.26× vs
+un-levelled), and every F variant is 1.9–3.1× less stable than the incumbent. The absolute η² ≤ 0.05
+bar is met by nothing, the mosaic included; the best variant clears only gates 2 and 3.
+
+**The mechanism — predicted a week earlier and confirmed.** The 2026-07-23 code/methodology audit
+flagged one genuine build-scale risk: *"Both H1 and H4 are per-frame DC operators and cannot touch a
+within-frame gradient,"* with the pilot *"insulated"* by its ~1.3° crop while build frames span 3–4°
+of latitude. That is exactly what happened. Denied the correction it needed, the solver instead
+integrated a small **patchy** per-step bias (0.079 logits/step, invisible in any single frame pair)
+across ~100 chained frames into a **22.7-logit** east–west ramp — wider than the model's entire
+±9.21 output range. Overlap data cannot separate a real regional gradient from within-frame
+structure (r = **0.998**), and the per-step term is not a constant gradient at all (b per longitude
+tercile **+0.203 / −0.003 / +0.433**, i.e. absent in two thirds of the block).
+
+**A metric lesson worth carrying forward.** Gate 2 scored disagreement in *probability* space, which
+is minimised by **railing the sigmoid** — so the broken solve "won" it 0.1622 → 0.0112 while pushing
+**51.8%** of co-located tiles onto a rail (corr(railed fraction, median |Δp|) = **−0.997**). Gate 2
+was re-declared on the saturation-immune |Δlogit| plus a railing check. `src/leveling.py` keeps the
+generally useful pieces (`edge_dlogit`, `edge_saturated_frac`, the lean concentration/magnitude
+guards, a `trend_verdict` margin bug-fix, rank-aware `plane_complement`); 99 tests.
+
+Full record: **DECISIONS 2026-07-30** (Stage-C diagnosis) and **2026-07-30b** (the abort),
+**PLAN_FBuild §4.4** + its CLOSED header, `reports/figures/fbuild_*` incl. `fbuild_abort_*`.
+"""))
 
 cells.append(md(
     """> **⚠️ 2026-07-05d amendment (post-review).** The §4 "F closed / physical floor" verdict was
@@ -592,6 +647,59 @@ split of the offsets is underpowered, and only the dense build resolves whether 
 is artifact or real regional gradient. Brian's 2026-07-09b ruling: trust the full offsets and treat
 that separation as a build-time item, since combined levers (H1+H4) count toward the bar. Full
 record: DECISIONS 2026-07-09b; PLAN_StripingArtifact "PHASE 2" H4 row; `PLAN_H4_Leveling.md` §3.1.
+"""))
+
+cells.append(md(
+    """---
+
+## 10 — How it actually resolved: the build ran, and F was aborted (2026-07-30)
+
+§9 above ends with two open items gating the reopening call. Both were cleared, the call came back
+**reopen-with-guards** (2026-07-23), and the 907-frame build ran to completion. This section closes
+the loop; the headline table is in the FINAL VERDICT banner at the top of this notebook.
+
+**The trend-guard ambiguity resolved — against H4.** The pilot could not separate "smooth spatial
+plane" from "real regional gradient" at n=7; the dense build could, and the answer was *neither*.
+The pilot already showed 58% of its offset variance was a lon/lat plane (`smooth_plane_frac` 0.5842,
+guard fired) but at n=7 that is ≈ chance (p ≈ 0.17), so it was correctly downgraded to a
+non-load-bearing flag. At 906 frames the same quantity is **R² 0.957, p = 0.001** — and the plane is
+an artefact of the *model*, not a gradient in the ground: the underlying per-step term is patchy
+(b per lon tercile +0.203 / −0.003 / +0.433), so fitting one global plane and integrating it across
+33° of longitude manufactures a 22.7-logit ramp. Nothing in the data supports that amplitude: the
+H1-only control map has an E–W gradient of **0.05 logits**, the total observed frame-level spread is
+**3.24**, and the model's whole expressible range is **18.42**.
+
+**Why the pilot could not have caught this.** Its `|o|max` was **1.71** logits (vs 21.31 at build
+scale) — inside the 3.24-logit frame-level spread, so nothing saturated and the pilot's `dp` numbers
+were honest. Its λ sweep is flat (`max_abs_offset` 1.724 → 1.703 across λ = 0 → 1000), because with
+~1–2 chain steps there is nothing to accumulate. 906 frames give ~100 steps.
+
+**Five hypotheses were refuted before the cause was identified** — recorded so they are not retried:
+noise amplification (split-half slope −0.654 ± 0.054, **0/48 sign flips**), an objective indifferent
+to the ramp (forbidding it costs 17.9% of residual), leverage points at the block edges (top-gain
+edges sit *closer* to centre, 0.86×), a few bad frames (dropping the top 1% of edges cuts the ramp
+only 19%; random-1% control flat), and weak determination (the ramp is **24σ** from zero under the
+measured error model). The solve is also order-independent (edge shuffle/reverse, frame relabel:
+max Δoffset 1.7e-13 … 9.0e-12) — this is conditioning and model shape, not an algorithmic artefact.
+
+**A related defect found but deliberately not fixed:** the per-edge weights `w = W` (raw shared-tile
+count) assume tile-level independence and so understate each overlap's uncertainty **69×** (measured
+σ²_sys 0.401 vs σ²_pair/W = 0.0092²); the correct inverse-variance weights are nearly uniform.
+Re-solving with them does *not* change the ramp, so it was deferred with F — but any uncertainty
+quoted from this solver is optimistic until it lands.
+
+**The upstream lead, measured and left open.** Pairwise disagreement is **24.8%** explained by
+illumination/radiometry jointly, dominated by `ln_frame_median` (**R² 0.184, t = +36.8**) — the H1
+centring statistic — versus **0.4%** by longitude geometry. H1's per-frame centring is leaving real
+structure behind, and H4 was being asked to absorb it with one constant per frame: the wrong shape
+for a patchy field. If striping is ever revisited, that is the measured lever.
+
+**Net for the write-up.** F's original close-out conclusion stands, now on far stronger evidence, and
+PHASE 2 is concluded with **A1 as the shipped mitigation**. The genuinely reportable results are the
+negative ones: a per-frame DC operator cannot correct a within-frame gradient; overlap-only levelling
+cannot identify a region-wide component (r = 0.998 confound); and a probability-space agreement
+metric is gameable by saturation. Full record: DECISIONS 2026-07-30 / 2026-07-30b, PLAN_FBuild §4.4,
+`reports/figures/fbuild_abort_*`.
 """))
 
 nb = nbf.v4.new_notebook(cells=cells)
