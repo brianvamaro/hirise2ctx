@@ -1999,21 +1999,38 @@ nothing in `DECISIONS.md` anticipates it.
   `> 0`, or decimate with a min-filter over the block. Then quantify what the 3,236 recovered tiles do
   to the frozen recipe's metrics.
 
-### R75 — `labeling-2` measured on the cached masks — and the two measurements disagree by 12×
-- **Status:** OPEN · **Severity:** medium (pass 1 filed **low**) · **Liveness:** live-shipped · **Verified:** no — ⚠ **two reviewers measured this independently and got 3.89 % vs 0.21 %**
-- **Detail:** [labeling-deep-footprint.md](review_2026-07-31/labeling-deep-footprint.md) `-2` **vs** [labeling-deep-artifact.md](review_2026-07-31/labeling-deep-artifact.md) `-3`
+### R75 — `labeling-2` measured on the cached masks: the two reviewers counted different populations, and both were right
+- **Status:** **RESOLVED 2026-08-04** by a third, independent measurement · **Severity:** low for the strict defect (as pass 1 had it); **medium** for the partial-depression effect neither reviewer named · **Liveness:** live-shipped · **Verified:** **yes — three independent measurements now agree**
+- **Detail:** [labeling-deep-footprint.md](review_2026-07-31/labeling-deep-footprint.md) `-2` **and** [labeling-deep-artifact.md](review_2026-07-31/labeling-deep-artifact.md) `-3`
 
-Pass 1's swath-edge zero strip was analytic (~2 % of tiles, ~60/image). Both second-pass reviewers
-measured it on the cached `*_hirise_mask.tif` and **did not agree**: `-footprint` reports **3.89 % of
-S=32 tiles / 165 per image / 2,502 tiles**, calling pass 1 an *under*-estimate and adding that the
-strip is an **L along the southern *and* western** edges (dy>0 in 38/38, dx>0 in 30/38) and that the
-shift discards **82,210 detections (1.39 %)**; `-artifact` reports **337 of 161,005 tiles (0.21 %),
-1.16 % of the zero class**, calling pass 1 ~7× too *high*, and self-validates that 0 of its 337 has
-`fa > 0`. Both claim to reproduce the labeller's eligible set exactly. **They cannot both be right** —
-the likely difference is what each counts (all tiles overlapping the post-shift gap vs only tiles whose
-`fa = 0` is *caused* by it), but that is a guess and it needs settling.
-- **Fix:** resolve the discrepancy before citing either number — the two verdict files disagree, which
-  is itself the finding. The direction of the mechanism is not in dispute.
+Pass 1's swath-edge zero strip was analytic (~2 % of tiles, ~60/image). The two second-pass reviewers
+measured it on the cached `*_hirise_mask.tif` and appeared to contradict each other — 3.89 % vs 0.21 %.
+**They were measuring different populations.** Reconstructing the vacated region directly (mask ∧
+¬shift(mask), then per-tile coverage via an integral image over all 38 images, 161,005 eligible S=32
+tiles):
+
+| population | measured | share | reviewer it matches |
+|---|---|---|---|
+| tiles **overlapping** the vacated strip | **6,202** | **3.85 %** | `-footprint`'s 3.89 % |
+| tiles **fully inside** the vacated strip | **340** | **0.21 %** | `-artifact`'s 337 / 0.21 % |
+| …of which `fa == 0` | **340** | **100 %** | `-artifact`'s self-check (0 of its 337 had `fa > 0`) |
+| share of the whole zero class | — | **1.17 %** | `-artifact`'s 1.16 % |
+
+**Which number is the finding.** Only the **340 tiles (0.21 %)** are labelled zero *by construction* —
+a partially-vacated tile can still legitimately hold detections in its remaining area, so its zero (if
+it is zero) is not forced. Pass 1's "low" was the right severity for the strict claim, and `-artifact`'s
+"~7× too high" correction to pass 1's analytic estimate stands.
+**But `-footprint` found something real that neither filed as its own effect:** the other **5,862 tiles
+have a *partially* depressed `fa`** — part of their area cannot contain a polygon — which is a milder
+bias over an 18× larger population, and it is not captured by counting zeros. That is the part worth
+carrying forward. `-footprint`'s other two claims are unaffected and stand: the strip is an **L along
+the southern *and* western** edges (dy>0 in 38/38, dx>0 in 30/38), and the shift pushes **82,210
+detections (1.39 %)** out of the labelled area.
+- **One number does not reconcile:** `-footprint` states both "3.89 %" and "2,502 tiles", but 2,502 is
+  not 3.89 % of 161,005 (that is 6,263) nor of its own 164,273 interior grid (1.52 %). The *percentage*
+  reproduces; the count does not correspond to any denominator in play. Treat the count as suspect.
+- **Fix:** report the partial-depression population (3.85 % of tiles, area-weighted) alongside the
+  by-construction count (0.21 %), and shift the mask with the polygons in Stage 3 so neither arises.
 
 ### R76 — R23's score truncation moves ~2,200 tiles into the wrong class of the frozen recipe's actual target
 - **Status:** OPEN · **Severity:** medium (extends **R23**, filed blocker) · **Liveness:** live-shipped · **Verified:** no
@@ -2253,9 +2270,9 @@ transform.
 - **Upstream of this repo.** The cause of **R23**'s score-ordered geometry loss is in BoulderNet's
   export, not here. (Its *inference footprint*, however, is no longer an open question — `REFUTED`,
   §4j.)
-- **One open contradiction.** **R75**: two independent second-pass reviewers measured the
-  `labeling-2` swath-edge strip on the same cached masks and got **3.89 %** vs **0.21 %** of S=32
-  tiles. Both claim an exact reproduction of the labeller's eligible set. Settle before citing either.
+- ~~**One open contradiction.** R75's 3.89 % vs 0.21 %.~~ **RESOLVED 2026-08-04** — they counted
+  different populations (overlapping vs fully-inside the vacated strip) and a third measurement
+  reproduces both. See R75.
 - **Small residue.** `setup_sherlock_env.sh`, `f_timing_test.sh`, `config_v2_dev.yaml`, and the
   `cache_v2_dev` symlink.
 

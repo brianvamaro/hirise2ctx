@@ -5788,3 +5788,32 @@ is knowingly out of sync. Items listed there are **accepted divergence, not new 
   population that silently excluded its own rich tail. The direction of the bias on skill is unknown
   (the excluded tiles are both the rockiest and the most shadow-saturated) — measure it at rebuild time
   rather than assuming.
+
+## 2026-08-04c — R75 resolved: both reviewers were right, they counted different populations
+
+Two second-pass reviewers measured the `labeling-2` swath-edge strip on the same cached masks and
+appeared to contradict each other (3.89 % vs 0.21 % of S=32 tiles). Settled with a third, independent
+measurement — reconstruct the vacated region as `mask AND NOT shift(mask)` using each sidecar's own
+`(dx, dy)`, then compute per-tile vacated coverage via an integral image, over all 38 images and all
+161,005 eligible S=32 tiles.
+
+| population | measured | share | matches |
+|---|---|---|---|
+| tiles **overlapping** the vacated strip | 6,202 | **3.85 %** | the 3.89 % reviewer |
+| tiles **fully inside** it | 340 | **0.21 %** | the 337 / 0.21 % reviewer |
+| ...of which `fa == 0` | 340 | 100 % | the second reviewer's own self-check |
+| share of the whole zero class | — | 1.17 % | their 1.16 % |
+
+**Ruling.** Only the **340 tiles (0.21 %)** are labelled zero *by construction*: a partially-vacated
+tile can still hold detections in its remaining area, so its zero is not forced. Pass 1's `low`
+severity was right for the strict claim. **But the other 5,862 tiles have a *partially depressed* `fa`
+— a milder bias over an 18× larger population that neither reviewer filed as its own effect, and which
+counting zeros cannot see.** Report both: by-construction 0.21 %, partial depression 3.85 %
+(area-weighted). The real fix is to shift the coverage mask with the polygons in Stage 3, which removes
+both.
+
+Unaffected and standing: the strip is an **L along the southern *and* western** edges (dy>0 in 38/38,
+dx>0 in 30/38), and the shift pushes **82,210 detections (1.39 %)** out of the labelled area.
+**One number does not reconcile** — the first reviewer states both "3.89 %" and "2,502 tiles", but
+2,502 is not 3.89 % of any denominator in play (161,005 → 6,263; its own 164,273 interior grid →
+1.52 %). The percentage reproduces; treat the count as suspect.
