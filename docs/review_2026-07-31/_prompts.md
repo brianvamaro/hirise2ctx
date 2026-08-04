@@ -95,6 +95,23 @@ would change a reported number or a scientific verdict is the most valuable thin
   read, grep, run `git log`/`git show`, and run small python snippets over **committed report
   artifacts** (`reports/figures/*.csv|json`) to check a numerical claim. Do not touch CTX/HiRISE
   imagery or the network.
+- ⚠ **NEVER CALL A PRODUCER FUNCTION, AND DO NOT RUN THE SLOW TESTS.** This is not theoretical: on
+  2026-08-04 a reviewer ran `pytest tests/test_labeling.py` and silently overwrote four **gitignored**
+  v1 artifacts (`dataset/labels/ESP_069669_2220.{parquet,json}`,
+  `cache/reprojected_detections/ESP_065711_1545.{gpkg,json}`), migrating one of nine v1 images across
+  the 2026-06-10 y-sign-fix correctness boundary. It was recoverable only by luck — the original label
+  values happened to survive inside `dataset/packaged/loio_9fold/y_test_fold6.parquet`.
+  **The mechanism:** the producers write straight into the live artifact tree using config-derived
+  paths and have **no dry-run mode** — `src/labeling.py:543` (`df.to_parquet`), `:591` (sidecar),
+  `src/detections.py:151` (`gdf.to_file`), `src/coregister.py:436`. And two tests pass
+  `output_dir=cfg.output_dir` / `cache_dir=cfg.cache_dir`, i.e. the **real** `dataset/` and `cache/`
+  trees, rather than a tmp fixture (`test_stage4_runs_on_ESP_069669_2220`, `test_empty_shapefile.py`).
+  So *merely calling a producer, or running those tests, mutates the dataset.* `git` cannot restore any
+  of it — these paths are gitignored.
+  Concretely: (a) never invoke a Stage-1/3/4 entry point or anything that reaches those write sites;
+  (b) if you must run pytest, use `-m "not slow"` and never the two tests named above; (c) to answer
+  "would today's code produce this artifact?", read the code and reason, or copy inputs to your
+  scratchpad and redirect the output path **explicitly**; (d) `load_shift` is a pure read and is safe.
 - **Read the actual code before claiming anything.** Cite `path:line`; quote the offending lines. A
   finding with no line-level evidence is worthless.
 - **Self-refute before reporting.** For each candidate, spend real effort trying to kill it: is a

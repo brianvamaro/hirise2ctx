@@ -5683,3 +5683,68 @@ deferred to Brian.
   (metadata-only at deploy once k is fixed — the A-meta idea landing inside F). Expected order
   for block-killing: perframe ≥ minnaert > lambert > affine; skill/physics trade to be judged
   with leg-A eta² + leg-B LOIO.
+
+---
+
+## 2026-08-04 — Review PASS 10 (`labeling-deep`), and an accidental v1 artifact mutation (restored)
+
+**Context.** Code-review verification backlog closed (15/15 high-severity live-path findings; commit
+`7bfedb8`), then a four-agent `labeling-deep` second pass opened under Pattern D ("audit the artifact,
+not just the computation"). Findings **R74–R86** in `docs/CODE_REVIEW_2026-07-31.md` §4j.
+
+**VERIFY-AT-RUNTIME answers banked:**
+
+- **BoulderNet's inference footprint EQUALS the HiRISE image footprint.** This was an open question in
+  the register (an interior detector gap would have made some zero labels false zeros). **REFUTED** on
+  four independent tests: no crop (HiRISE-valid ground extends 21–29 m median beyond the extreme
+  detection on all four sides, 38/38 images); no margin (unshifted detection density at 40 m from the
+  coverage boundary is 1.506 ± 0.112× the image mean — *enriched*; the shifted control does show a
+  deficit, so the test has power); no detector-grid periodicity (amplitude at the 512 m CCD pitch and
+  the SAHI 256 m / 204.8 m tiling is *below* median); no geometric holes (150 enclosed zero-components,
+  rectangularity max 0.859). **Do not re-open.**
+- **The coverage mask is wrong in the opposite direction (R74, high, live-shipped).**
+  `src/ctx_retrieve.py:507` defines coverage as `hi_arr > 0` on a nearest-neighbour 5 m decimation, but
+  HiRISE DN is continuous through 0, so deep-shadow pixels are called "not observed". Since eligibility
+  is `all(mask == 1)`, one 5 m pixel deletes a 160 m tile: **3,236 S=32 tiles (1.97 %) dropped, 93.0 %
+  of them rich against a 36.0 % base rate, holding 7.70 % of all detected boulder area.** BoulderNet
+  detected boulders inside those tiles at 3× density, so the data is there. A shadow-biased deletion of
+  exactly the rock-rich tiles.
+- **`dataset_v2/labels` is internally sound** — all 3,564,767 rows self-consistent with their sidecars;
+  both live packaged schemes match the labels bit-for-bit; both live split JSONs rebuild to an identical
+  `split_hash`. **v2 LOIO splits structurally cannot have the `within_image_4fold` vintage drift**
+  (fold *i* is `sorted(obs_ids)[i]`, content-independent).
+- **The labelling tests pin no wrong science, but pin far less than they appear to.** Mutation testing
+  (25 seeded defects against a scratchpad copy of `src/`): **16 of 20 survive `pytest -m "not slow"`**,
+  12 of 20 survive the full suite.
+- **Open contradiction (R75):** two reviewers measured the `labeling-2` swath-edge strip on the same
+  cached masks and got **3.89 %** vs **0.21 %** of S=32 tiles. Unresolved; do not cite either yet.
+
+**DEVIATION — an accidental mutation of v1 data, detected and restored the same day.**
+
+A review agent ran `pytest tests/test_labeling.py`, and at 21:26:35Z this **overwrote four gitignored
+v1 artifacts**: `dataset/labels/ESP_069669_2220.{parquet,json}` and
+`cache/reprojected_detections/ESP_065711_1545.{gpkg,json}`.
+
+- **Cause (now filed as R77, high).** `test_stage4_runs_on_ESP_069669_2220` passes
+  `output_dir=cfg.output_dir` and `test_empty_shapefile.py` passes `cache_dir=cfg.cache_dir` — i.e. the
+  **live** `dataset/` and `cache/` trees, not a tmp fixture. The underlying hazard is broader: the
+  producers write to config-derived live paths with **no dry-run mode** (`src/labeling.py:543`, `:591`,
+  `src/detections.py:151`, `src/coregister.py:436`), so *any* audit that calls one mutates the dataset.
+  `load_shift` is a pure read and is NOT the culprit. This had happened before, unnoticed:
+  `cache/reprojected_detections/ESP_069669_2220.json` was rewritten 2026-06-10 by
+  `test_sanity_residual_one_image.py`.
+- **Why it mattered.** The rewrite was **not value-preserving**: the v1 labels predate the 2026-06-10
+  y-sign fix, so the test migrated one of nine v1 images across a correctness boundary
+  (`max|Δfa|` 0.115 at S=8, `max|Δcount|` 115 at S=64; 3,854 of 96,354 rows differed). `dataset_v2/`
+  and `cache_v2/` — the shipped basis — were untouched, verified.
+- **Restored.** Original label values survived in `dataset/packaged/loio_9fold/y_test_fold6.parquet`
+  (untouched 2026-05-23 vintage). All 96,354 rows restored to an **exact match — 0 differing values
+  across all 7 label columns**; tile geometry was never touched (`xmin`/`ymin` bit-identical
+  throughout). Sidecar `dy` reverted to `-239.74878038511508` and `config_hash` to `e9962e94…`, so the
+  v1 tree is internally consistent again (all 9 images pre-fix, one hash). The sidecar carries a
+  **`restored_from`** block naming what was rebuilt and the two fields that could NOT be recovered
+  (`written_at_iso`, `coreg_peak_correlation`). The mutated state is backed up outside the repo.
+- **Guardrail adopted.** `docs/review_2026-07-31/_prompts.md` §1 now carries an explicit
+  **no-producer / no-slow-tests** rule naming the four write sites and the two offending tests, so
+  future reviewers inherit it. Brian's call: restore + mark reconstructed (not silently), and keep
+  using review subagents with the rule rather than restricting them.

@@ -109,6 +109,10 @@ Agents now persist their own output as their final action.
 
 | `geo-crs-deep` | second pass: `coregister.py`, `ctx_retrieve.py`, `hirise_imagery.py`, `ctx_tiles.py`, `ctx_edr.py`, `pds_labels.py` | **DONE** → [geo-crs-deep.md](review_2026-07-31/geo-crs-deep.md) |
 | `features-deep` | second pass: `features.py`, `spatial_features.py`, `colour.py`, `ctx_source_illumination.py` | **DONE** → [features-deep.md](review_2026-07-31/features-deep.md) |
+| `labeling-deep-footprint` | second pass: is the detector footprint == the image footprint? (false zeros) | **DONE** — the footprint question is **REFUTED** → [labeling-deep-footprint.md](review_2026-07-31/labeling-deep-footprint.md) |
+| `labeling-deep-artifact` | second pass: is the label artifact on disk what today's code produces? | **DONE** → [labeling-deep-artifact.md](review_2026-07-31/labeling-deep-artifact.md) |
+| `labeling-deep-semantics` | second pass: what does the labeller *publish*, and can that statistic move? | **DONE** → [labeling-deep-semantics.md](review_2026-07-31/labeling-deep-semantics.md) |
+| `labeling-deep-tests` | second pass: does `test_labeling.py` (668 lines) pin wrong science? | **DONE** — no, but it pins far less than it appears to (mutation-tested) → [labeling-deep-tests.md](review_2026-07-31/labeling-deep-tests.md) |
 
 **All 15 `src/`-and-docs areas are complete.** Re-running any is wasted work unless the code changed.
 
@@ -1958,6 +1962,223 @@ evidence as independent** now appears in three separate documents.
 
 ---
 
+## 4j. Findings from the `labeling-deep` second pass (PASS 10, 2026-08-04)
+
+Four sub-areas — [labeling-deep-footprint](review_2026-07-31/labeling-deep-footprint.md),
+[-artifact](review_2026-07-31/labeling-deep-artifact.md),
+[-semantics](review_2026-07-31/labeling-deep-semantics.md),
+[-tests](review_2026-07-31/labeling-deep-tests.md). Brief:
+[_prompts_labeling_deep.md](review_2026-07-31/_prompts_labeling_deep.md).
+Opened because Pattern D said pass 1 audited the *computation* and never the *artifact*, and because
+the label basis carries the register's #1 (**R23**) and a confirmed **R03**.
+
+**The headline is a refutation.** The area's own top question — *does BoulderNet's inference footprint
+have interior gaps, so that some zero labels are false zeros?* — is **REFUTED** on four independent
+tests: no crop (HiRISE-valid ground extends 21–29 m median beyond the extreme detection on all four
+sides, 38/38 images), no margin (unshifted detection density at 40 m from the boundary is **1.506 ±
+0.112×** the image mean — *enriched*, and the shifted control does show a deficit, so the test has
+demonstrated power), no detector grid (spectral amplitude at the 512 m CCD pitch and the SAHI 256 m /
+204.8 m tiling is *below* median), and no geometric holes (150 enclosed zero-components, rectangularity
+max 0.859 — none is a rectangle). **Do not re-open this.**
+
+### R74 — The HiRISE coverage mask calls deep-shadow pixels "no coverage", silently deleting 1.97 % of S=32 tiles that are 93 % rich
+- **Status:** OPEN · **Severity:** high · **Liveness:** live-shipped (`dataset_v2/labels` is the basis of the frozen recipe, the deployed head, the banked calibrator and the shipped map) · **Verified:** no (single-agent, but measured on all 38 images)
+- **Where:** [src/ctx_retrieve.py:507](../src/ctx_retrieve.py#L507) · **Detail:** [labeling-deep-footprint.md](review_2026-07-31/labeling-deep-footprint.md) `-1`
+
+Coverage is defined as `hi_arr > 0` on a **nearest-neighbour** 5 m decimation. HiRISE DN is continuous
+through 0 (DN = 1, 2, 3 … all populated), so deep-shadow pixels are classified "not observed" — and
+because eligibility is `all(mask == 1)`, **one 5 m pixel deletes a 160 m tile**. Measured: **3,236 S=32
+tiles (1.97 %) dropped, 93.0 % of them rich against a 36.0 % base rate, holding 7.70 % of all detected
+boulder area**, mean `fa` 4.15× the kept tiles. Interior zeros are 99 % isolated single pixels with
+systematically darker neighbourhoods (5/5 images checked) — not the "missing scans" the docstring
+claims. The refutation-of-the-refutation: **BoulderNet detected boulders inside those tiles at 3×
+density**, so the data is plainly there. This is a *shadow-biased* deletion of exactly the rock-rich
+tiles the model is trained to find. Unpinned by tests (every fixture uses a synthetic `np.full` mask);
+nothing in `DECISIONS.md` anticipates it.
+- **Fix:** one line at the producer — define coverage from the nodata mask / validity band rather than
+  `> 0`, or decimate with a min-filter over the block. Then quantify what the 3,236 recovered tiles do
+  to the frozen recipe's metrics.
+
+### R75 — `labeling-2` measured on the cached masks — and the two measurements disagree by 12×
+- **Status:** OPEN · **Severity:** medium (pass 1 filed **low**) · **Liveness:** live-shipped · **Verified:** no — ⚠ **two reviewers measured this independently and got 3.89 % vs 0.21 %**
+- **Detail:** [labeling-deep-footprint.md](review_2026-07-31/labeling-deep-footprint.md) `-2` **vs** [labeling-deep-artifact.md](review_2026-07-31/labeling-deep-artifact.md) `-3`
+
+Pass 1's swath-edge zero strip was analytic (~2 % of tiles, ~60/image). Both second-pass reviewers
+measured it on the cached `*_hirise_mask.tif` and **did not agree**: `-footprint` reports **3.89 % of
+S=32 tiles / 165 per image / 2,502 tiles**, calling pass 1 an *under*-estimate and adding that the
+strip is an **L along the southern *and* western** edges (dy>0 in 38/38, dx>0 in 30/38) and that the
+shift discards **82,210 detections (1.39 %)**; `-artifact` reports **337 of 161,005 tiles (0.21 %),
+1.16 % of the zero class**, calling pass 1 ~7× too *high*, and self-validates that 0 of its 337 has
+`fa > 0`. Both claim to reproduce the labeller's eligible set exactly. **They cannot both be right** —
+the likely difference is what each counts (all tiles overlapping the post-shift gap vs only tiles whose
+`fa = 0` is *caused* by it), but that is a guess and it needs settling.
+- **Fix:** resolve the discrepancy before citing either number — the two verdict files disagree, which
+  is itself the finding. The direction of the mechanism is not in dispute.
+
+### R76 — R23's score truncation moves ~2,200 tiles into the wrong class of the frozen recipe's actual target
+- **Status:** OPEN · **Severity:** medium (extends **R23**, filed blocker) · **Liveness:** live-shipped · **Verified:** no
+- **Detail:** [labeling-deep-footprint.md](review_2026-07-31/labeling-deep-footprint.md) `-3`
+
+R23 is filed in terms of depressed `fa`. Its consequence on the *actual* target `fa_gt_1e-2` is a
+prevalence-matched flip rate of **41.3 %**, i.e. **≈2,200 of `ESP_017355_2260`'s tiles sit in the wrong
+class**. Also narrows pass 1's "2.5–4.5×" `fa` depression to **≈2.6×**. The reviewer killed its own
+first version: the pooled 51.8 % rate is prevalence-dependent (ρ = −0.757) and implies an impossible
+>100 % true rich share.
+
+### R77 — The two `slow` labelling tests write into the live `dataset/` and `cache/` trees
+- **Status:** **PARTLY REMEDIATED 2026-08-04** (the one mutation this caused was detected and restored; the defect is unfixed) · **Severity:** high · **Liveness:** live-shipped · **Verified:** **yes — reproduced by accident, which is how it was found**
+- **Where:** `tests/test_labeling.py::test_stage4_runs_on_ESP_069669_2220` (passes `output_dir=cfg.output_dir`), `tests/test_empty_shapefile.py` (passes `cache_dir=cfg.cache_dir`) · **Detail:** [labeling-deep-tests.md](review_2026-07-31/labeling-deep-tests.md) `-1`
+
+Running the labelling suite **silently overwrites the provenance an audit reads**, and the rewrite is
+**not value-preserving**: against the untouched 2026-05-23 packaged vintage, `max|Δfa|` = 0.115 (S=8)
+and `max|Δcount|` = 115 (S=64), because the v1 labels predate the 2026-06-10 y-sign fix — so the test
+migrates one of nine v1 images across a **correctness boundary**. `dataset_v2`/`cache_v2` are untouched
+(verified). **This has happened before**: `cache/reprojected_detections/ESP_069669_2220.json` was
+rewritten 2026-06-10 by `test_sanity_residual_one_image.py`. The underlying hazard is broader than the
+tests — the producers write to config-derived live paths with **no dry-run mode**
+([labeling.py:543](../src/labeling.py#L543), [:591](../src/labeling.py#L591),
+[detections.py:151](../src/detections.py#L151), [coregister.py:436](../src/coregister.py#L436)) — so
+*any* audit that calls one mutates the dataset. `load_shift` is a pure read (verified).
+- **Occurred 2026-08-04, and was restored:** a review agent ran the suite and overwrote
+  `dataset/labels/ESP_069669_2220.{parquet,json}` + `cache/reprojected_detections/ESP_065711_1545.{gpkg,json}`.
+  Recoverable only by luck — the original label values survived in
+  `dataset/packaged/loio_9fold/y_test_fold6.parquet`. All 96,354 rows were restored to an exact match
+  (0 differing values across all 7 label columns) and the sidecar carries a `restored_from` block.
+  The reviewer brief ([_prompts.md](review_2026-07-31/_prompts.md) §1) now carries an explicit
+  no-producer rule.
+- **Fix:** point both tests at `tmp_path`. Then consider a `dry_run=` on the producers, since the tests
+  are only the most visible caller of a general hazard.
+
+### R78 — Every end-to-end labelling fixture pins the mosaic grid phase to zero — a configuration 0 of 47 production images has
+- **Status:** OPEN · **Severity:** high · **Liveness:** live-shipped · **Verified:** no (but demonstrated by mutation)
+- **Detail:** [labeling-deep-tests.md](review_2026-07-31/labeling-deep-tests.md) `-2`
+
+`test_tile_bounds_align_with_mosaic_pixel_grid` **cannot detect the failure its own docstring names**:
+dropping the mosaic origin from the bounds displaces real `ymin` by **2,608 km** and the suite stays
+green. This is the *same* fixture defect that `src/fgates.py:211-231` already records as having caused
+the ~100 km gate mis-key (*"the old unit test … pinned `row0=col0=0`"*) — so it has bitten this project
+once already, in a different module.
+- **Fix:** parameterise the fixtures over a non-zero `(row0, col0)` drawn from a real sidecar.
+
+### R79 — `boulder_count` can be identically zero on every tile of every image and the labelling suite stays green
+- **Status:** OPEN · **Severity:** medium · **Liveness:** live-shipped (`boulder_count` is a packaged target, `src/dataset.py:61`) · **Verified:** no (measured by mutation: 5,646 → 0 on the real image, 20 passed)
+- **Detail:** [labeling-deep-tests.md](review_2026-07-31/labeling-deep-tests.md) `-3`
+
+Part of a broader result from **mutation testing** (`src/` copied to a scratchpad, 25 seeded defects):
+**16 of 20 survive `pytest -m "not slow"`** — CLAUDE.md's documented dev loop — and **12 of 20 survive
+the full suite**. The tests do not pin wrong science; they pin much less than they appear to.
+- **Fix:** the area file lists which mutants each surviving assertion would have caught, so the gaps are
+  addressable individually rather than by a rewrite.
+
+### R80 — The size-floor filter, the mechanism behind R03, is the least-tested code in the module
+- **Status:** OPEN · **Severity:** medium · **Liveness:** live-shipped (`min_size_m: 1.4105` is set in both configs) · **Verified:** no
+- **Detail:** [labeling-deep-tests.md](review_2026-07-31/labeling-deep-tests.md) `-4`
+
+The fixture **cannot distinguish diameter from radius**, is exercised in EPSG:4326 (degrees², geopandas
+warns), and **no end-to-end test wires a non-`None` filter at all**. Given R03 is confirmed and the
+floor is the mechanism, this is the untested code with the highest known consequence.
+
+### R81 — The entire v1 `dataset/` label tree is a pre-y-sign-fix generation that today's code cannot reproduce
+- **Status:** OPEN · **Severity:** medium · **Liveness:** live-shipped — the v1 baseline is `docs/modeling_results.md` §§1–8, which `README.md` / `docs/index.md` route external readers to; the go-forward recipe and shipped map are v2 and unaffected · **Verified:** no
+- **Detail:** [labeling-deep-artifact.md](review_2026-07-31/labeling-deep-artifact.md) `-1`
+
+`_w1_migrate_coreg_sign.py` migrated `cache/coregistration/` (all 9 now `+dy`) but Stage 4 was re-run
+for **v2 only** (`DECISIONS.md:2577`), so every v1 sidecar records the **sign-inverted** `dy` against a
+Stage-3 cache that carries the corrected sign. Every v1 label field sits **236–493 m south** of its CTX
+texture. Related: **R44**'s verifier found `docs/methods.md` §5's `dy` column has the same vintage.
+- **Fix:** either re-run Stage 4 for v1 and re-derive the v1 numbers in `modeling_results.md`, or label
+  the v1 sections as a superseded generation and stop citing them as current. **Note R44's verifier
+  established every v1 number reproduces exactly against the tree as it stands** — so this is a
+  correctness-of-basis issue, not an arithmetic one.
+
+### R82 — Two of the four packaged v2 label artifacts carry pre-sign-fix labels, and the provenance field a consumer would check is inverted
+- **Status:** OPEN · **Severity:** medium · **Liveness:** live-shipped (artifacts and their consuming scripts are on disk and runnable; the verdicts they produced are dead-closed) · **Verified:** no
+- **Detail:** [labeling-deep-artifact.md](review_2026-07-31/labeling-deep-artifact.md) `-2`
+
+`packaged/loio_nfold_ctx_illum` and `loio_nfold_nbr_s5` carry pre-fix targets: **65.4 % / 88.3 %** of
+`fractional_area` values differ from the labels and **19.4 % / 13.6 %** of tiles flip the frozen
+`fa > 1e-2` class. The provenance is **inverted** — the two *stale* packages' `config_hash` equals the
+labels' own, while the two *correct* ones differ. `_sweep_stage6b.py` would today compare a post-fix
+baseline against a pre-fix arm. (Contrast the clean result below: for v2 `dataset_v2/labels`, all
+3,564,767 rows are self-consistent with their sidecars and both *live* packaged schemes match the
+labels bit-for-bit.)
+
+### R83 — The `fa > 1e-2` rich/poor class is cohort-dependent, and it is a re-ranking no level correction can absorb
+- **Status:** OPEN · **Severity:** medium · **Liveness:** live-shipped (the target of the frozen recipe + shipped map) **and** live-active-plan · **Verified:** no
+- **Detail:** [labeling-deep-semantics.md](review_2026-07-31/labeling-deep-semantics.md) `-1`
+
+Restated on one common size floor, the 0.25 m/px cohort's rich prevalence **halves** (0.326 → 0.164)
+while the 0.50 m/px cohort's does not move (0.369 → 0.366); up to **64 %** of one image's tiles flip.
+Critically it is a **re-ranking, not a rescale** (within-image Spearman 0.60–0.98 fine vs 0.96–0.9998
+coarse), so A1 / H1 / H4 / calibration **cannot** absorb it. Holding the shipped predictions fixed, the
+committed `striping_a1_loio_summary.csv` moves: `median_auc` 0.79038 → **0.7968**, `pooled_pr_auc`
+0.77729 → **0.7728**; individual fine-image AUC by −0.18 to +0.43.
+**Corrects R03** (twice): the *post-filter* floors are 1.411–1.427 m vs 1.943–2.664 m diameter — a
+**1.9–3.6×** area gap, not 3–4× — and it is the **coarse** cohort that is internally heterogeneous.
+**Corrects R03's verifier:** its "93–99 % area recovery" used a whole-image denominator; on the same
+eligible tiles the 5× rasteriser recovers **99.7–100.2 %** with no cohort difference, so
+`methods.md`'s unbiasedness claim stands.
+**Strongest self-refutation, and why this is medium not high:** `Spearman(sub-floor area share,
+per-image AUC) = −0.468, p = 0.003` survives every control — but **also survives inside the 0.50 m/px
+cohort alone** (−0.467, p = 0.016, n = 26), so it is mostly small-boulder terrain, not pixel scale.
+
+### R84 — The deployed abundance layer publishes a physical quantity whose size convention is an unrecorded 78/22 mixture of two floors
+- **Status:** OPEN · **Severity:** medium · **Liveness:** live-shipped (`*_abundance.tif` is the deliverable) **and** live-active-plan · **Verified:** no
+- **Detail:** [labeling-deep-semantics.md](review_2026-07-31/labeling-deep-semantics.md) `-2`
+
+Proved from `calibration.npz`: `t2_y` max = **0.293242** = exactly the max `fa` of the 161,005-tile
+pool, so the abundance layer is quantile-matched onto a **78.4 % coarse / 21.6 % fine** mixture of two
+floors. `write_geotiff` writes **no tags at all**. **R03's recommended remedy (emit `map_scale_mpp` +
+the measured floor per image) is necessary but not sufficient** — fine for PLAN_RegionalMap legs 1–3
+(within-map rank statistics), insufficient for **leg 4** and for any external comparison, because the
+deployed layer's floor is a *mixture* that no per-image sidecar can state.
+- **Fix:** compute and record the mixture floor as a product-level attribute on the GeoTIFF.
+
+### R85 — `boulder_count` / `count_density` are 5–10× more cohort-distorted than `fa`
+- **Status:** OPEN · **Severity:** medium · **Liveness:** mixed — `count_density` is live-published in every label parquet; the Stage-7d partition is dead-closed · **Verified:** no
+- **Detail:** [labeling-deep-semantics.md](review_2026-07-31/labeling-deep-semantics.md) `-3`
+
+**~90 %** of a fine image's counted boulders lie below the coarse floor, against 1.5 % of its *area*.
+The published Stage-7d `boulder_count > 50` partition moves **0.621 → 0.244** on the fine cohort
+(0.439 → 0.429 coarse). Distinct from **R50** (which is about the positive-class definition changing).
+
+### R86 — Four lower-severity label-record defects
+- **`semantics-4`** (low, live-shipped) — the only published number describing the size floor,
+  `n_polygons_after_filter`, equals `n_polygons_stage1` for **26/26** coarse images and **0/12** fine:
+  it reports "nothing was filtered" precisely where the floor is most wrong. `detection_filters` is
+  byte-identical across all 38 sidecars. Same shape as `geo-crs-deep`'s `peak_correlation`. **Includes
+  the clean negative the brief asked for: no image beyond R23's two has a non-uniform confidence basis**
+  (36/38 have score min exactly 0.100000) — but `DATA_DICTIONARY.md:19`'s "0.10–0.83" is wrong in both
+  directions (measured **0.100–0.956**).
+- **`semantics-5`** (low) — all four documents defining the target omit the size floor;
+  `methods.md:753` states a `binary_by_count` default of 5 against a shipped 1.
+- **`artifact-4`** (low) — `config_hash` cannot detect label staleness **in either direction** and is
+  **read by zero call sites**: it moved when `validation_rasters` changed (irrelevant) and stayed fixed
+  across the y-sign fix (code, not config), so all 38 v2 sidecars now mismatch the current config.
+- **`artifact-5`** (low) — `DATA_DICTIONARY.md:134` still defines `shift_m.dy` with the pre-fix,
+  sign-inverted formula (distinct from R44's `methods.md` instance).
+- **`tests-5`/`-6`** (low) — `test_stage4_runs_on_ESP_069669_2220` is a runs-not-right test (six of
+  seven assertions cannot fail on a wrong labeller); `test_empty_shapefile.py:32`'s
+  `assert crs is not None` pins nothing about the target CRS.
+
+### Verified clean by this pass — do not re-file
+- **BoulderNet's inference footprint equals the HiRISE image footprint** (four independent tests, above).
+- **`dataset_v2/labels` is internally sound**: all 3,564,767 rows self-consistent with their sidecars
+  and `_flatten_to_dataframe`; both *live* packaged schemes match the labels bit-for-bit (0 differing
+  values); both live split JSONs rebuild to an identical `split_hash`.
+- **The v2 LOIO splits do not have `within_image_4fold`'s vintage problem and structurally cannot** —
+  fold *i* is `sorted(obs_ids)[i]`, content-independent; verified identical across all 3 v2 LOIO splits
+  and 3 packaged metadata. R45's drift is specific to `_compute_quadrant_definitions`, which medians
+  over label rows. (The **v1** `within_image_4fold.json` *does* have it: 543 of 27,307 S=32 tiles,
+  1.99 %, in a different quadrant than today's splitter assigns.)
+- **The labelling tests pin no wrong science** — no assertion defends a known defect. R23,
+  `labeling-2` and R03 are pinned *nowhere*. What the tests genuinely do pin is enumerated in the area
+  file (eligibility semantics, sub-pixel area arithmetic, the ×2 ladder, centroid ownership, shift sign,
+  idempotency, the column contract), each named by the mutant that it killed.
+- **`load_shift` is a pure read** — not the cause of the 2026-08-04 artifact writes.
+
+---
+
 ## 5. Refuted / verified-clean — do not re-litigate
 
 **Refuted by an independent verifier** (the claim was wrong, unreachable, or a documented deliberate
@@ -2013,11 +2234,14 @@ transform.
   reproducible from committed artifacts, so it stays cheap if wanted.
   **Read §7's closing notes before doing more of it:** the 0-of-15 kill rate says the residual risk in
   this register is in *severity and blast radius*, not in whether the defects exist.
-- **Assertions that pin wrong science.** The `tests` area surveyed markers, skips and assertion
-  *shapes*, but did not read the five largest test bodies line-by-line (`test_labeling.py` 668,
-  `test_features.py` 533, `test_within_image_split.py` 445, `test_region_staged.py` 409,
-  `test_splits.py` 399). All three known instances of that class (**R19**, **R24**, **R11**) were found
-  by *other* areas, which suggests more remain. Highest-yield code-reading work left.
+- **Assertions that pin wrong science — 1 of 5 now done.** `test_labeling.py` (668) was read
+  line-by-line and mutation-tested by `labeling-deep-tests` (2026-08-04): **no assertion defends a
+  known defect**, but 16 of 20 seeded defects survive `pytest -m "not slow"` and 12 of 20 survive the
+  full suite → **R77–R80**. **Four remain unread:** `test_features.py` (533),
+  `test_within_image_split.py` (445), `test_region_staged.py` (409), `test_splits.py` (399). The
+  labelling result suggests the yield is "tests pin less than they appear to" rather than "tests pin
+  wrong science" — calibrate expectations accordingly, and note that **mutation testing against a
+  scratchpad copy of `src/` is what produced the evidence**; reading alone would not have.
 - **Anything requiring execution.** No reviewer ran a notebook, sweep, training run, map build, ISIS
   step, GDAL/CTX read, or network fetch. Open as a result: the Slurm history that would settle whether
   the 906/907 hole came from **R18**'s resume race; whether fixing **R32** changes the FM-vs-Tier-1
@@ -2027,7 +2251,11 @@ transform.
   estimate only); and the current pass/fail state of the 21 slow tests (only their collection was
   verified).
 - **Upstream of this repo.** The cause of **R23**'s score-ordered geometry loss is in BoulderNet's
-  export, not here.
+  export, not here. (Its *inference footprint*, however, is no longer an open question — `REFUTED`,
+  §4j.)
+- **One open contradiction.** **R75**: two independent second-pass reviewers measured the
+  `labeling-2` swath-edge strip on the same cached masks and got **3.89 %** vs **0.21 %** of S=32
+  tiles. Both claim an exact reproduction of the labeller's eligible set. Settle before citing either.
 - **Small residue.** `setup_sherlock_env.sh`, `f_timing_test.sh`, `config_v2_dev.yaml`, and the
   `cache_v2_dev` symlink.
 
