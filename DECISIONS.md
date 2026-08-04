@@ -5748,3 +5748,43 @@ v1 artifacts**: `dataset/labels/ESP_069669_2220.{parquet,json}` and
   **no-producer / no-slow-tests** rule naming the four write sites and the two offending tests, so
   future reviewers inherit it. Brian's call: restore + mark reconstructed (not silently), and keep
   using review subagents with the rule rather than restricting them.
+
+## 2026-08-04b — R74 fix applied, rebuild deliberately deferred (new policy + `docs/PENDING_REBUILD.md`)
+
+**Policy (Brian).** As review findings are fixed, **apply the code fix but defer the re-run**, batching
+every rebuild-requiring change into a single pass once the review is complete — so the expensive stages
+run once, not once per fix. The accepted cost is deliberate artifact drift in the interim. Tracked in
+**`docs/PENDING_REBUILD.md`**, which is the checklist for that eventual rebuild and the record of what
+is knowingly out of sync. Items listed there are **accepted divergence, not new findings.**
+
+**R74 fixed in code.** `src/ctx_retrieve.py` gained `_fill_interior_shadow_holes`, called from
+`build_hirise_coverage_mask` via a new `max_interior_hole_px=16` kwarg (`0` restores pre-R74 behaviour).
+
+- **Mechanism, for the record.** Three correct-looking things compose into the defect: (i)
+  `hirise_imagery.py:192` decimates to 5 m/px with **nearest neighbour**, so one 0.25 m source pixel
+  decides a whole 5 m cell; (ii) `ctx_retrieve.py:507` treats `DN == 0` as nodata, but HiRISE RDR DN is
+  **continuous through zero** (histogram 0,1,2,3… all populated), so 0 is the bottom of the real
+  radiometric range and a shadowed pixel is indistinguishable from unimaged ground; (iii)
+  `labeling.py:277-279` requires `mask_min == 1` and `:325` propagates with `.all()`, so one 5 m cell
+  deletes the 40/80/160/320 m tiles containing it. Because the dark pixels are **boulder shadows**, the
+  deletion is correlated with the target.
+- **Fix approach.** Geometry is distinguished from shadow **topologically, not by value**: only regions
+  *fully enclosed* by valid data are candidates (so the rotated-rectangle exterior and any missing scan
+  reaching the swath edge are untouched, being border-connected), and of those only components
+  ≤ `max_interior_hole_px`. Measured shadow holes are 1–2 px (99 % single-pixel), so 16 is ~8× the
+  observed scale and far below a plausible dropout. The shared
+  `read_full_footprint_decimated` was **not** touched — `src/coregister.py:71` depends on it.
+- **Validated read-only** on the 138 cached decimated 5 m/px arrays (never a JP2, never the producer):
+  every re-marked pixel has **DN exactly 0**; `ESP_017355_2260` re-marks **1,185 px**, reproducing the
+  reviewer's independently measured interior-zero count exactly; asserted that the fix only ever *adds*
+  coverage, never alters the swath border, and that `max_interior_hole_px=0` is an exact no-op.
+  `pytest -m "not slow"` → **490 passed, 21 deselected**, identical to the review baseline.
+- **What the rebuild will move.** ~3,236 S=32 tiles (1.97 %) return, 93 % of them rich, holding 7.70 %
+  of all detected boulder area; cohort rich prevalence 0.3598 → **0.3733**. So the frozen recipe's
+  headline numbers, every prevalence-dependent statistic, the calibrator's quantile grid and the
+  deployed map's upper range all shift. Note the amplification: only **0.0048 %** of valid *pixels* are
+  re-marked, but **1.97 %** of *tiles* are recovered — that ratio is the finding.
+- **Not invalidated.** Every previously reported number was *correctly computed*; it was computed on a
+  population that silently excluded its own rich tail. The direction of the bias on skill is unknown
+  (the excluded tiles are both the rockiest and the most shadow-saturated) — measure it at rebuild time
+  rather than assuming.

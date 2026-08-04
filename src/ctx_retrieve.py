@@ -456,6 +456,59 @@ def extract_ctx_window(
     return out_path
 
 
+def _fill_interior_shadow_holes(
+    valid: "np.ndarray", *, max_hole_px: int
+) -> tuple["np.ndarray", int]:
+    """Re-mark small *enclosed* invalid regions in a validity mask as valid.
+
+    HiRISE RDR DN is continuous through zero — the DN histogram runs 0, 1, 2, 3 … with
+    hundreds of pixels at each low value — so `DN == 0` is the bottom of the real
+    radiometric range, **not** a reserved nodata sentinel. A genuinely imaged pixel lying
+    in a boulder's shadow therefore reads 0 and is indistinguishable, by value alone, from
+    unimaged ground. Combined with nearest-neighbour decimation (one 0.25 m source pixel
+    decides a whole 5 m cell) and Stage 4's unanimous `mask_min == 1` eligibility, a single
+    shadowed pixel deleted the 40/80/160/320 m tiles containing it — and because the dark
+    pixels sit next to boulders, the deleted tiles were the rockiest ones (review finding
+    R74: 3,236 of 164,273 S=32 tiles, 93 % of them rich, 7.70 % of all detected boulder
+    area).
+
+    Geometry is distinguished from shadow topologically rather than by value. The exterior
+    nodata region (rotated-rectangle corners) and any missing scan that reaches the swath
+    edge are connected to the array border, so `binary_fill_holes` leaves them untouched.
+    Only regions *fully enclosed* by valid data are candidates, and of those only ones no
+    larger than `max_hole_px` are filled — measured shadow holes are 1–2 px (99 % are a
+    single pixel), so the default is ~8× the observed scale while staying far below any
+    plausible genuine dropout.
+
+    Returns `(mask, n_pixels_filled)`. `max_hole_px <= 0` disables the correction.
+    """
+    import numpy as np
+    from scipy.ndimage import binary_fill_holes, label
+
+    if max_hole_px <= 0:
+        return valid, 0
+
+    as_bool = valid.astype(bool)
+    holes = binary_fill_holes(as_bool) & ~as_bool  # enclosed zero regions only
+    if not holes.any():
+        return valid, 0
+
+    lab, n_components = label(holes)
+    if n_components == 0:
+        return valid, 0
+
+    sizes = np.bincount(lab.ravel())
+    sizes[0] = 0  # background
+    small_labels = np.flatnonzero((sizes > 0) & (sizes <= max_hole_px))
+    if small_labels.size == 0:
+        return valid, 0
+
+    small = np.isin(lab, small_labels)
+    out = valid.copy()
+    out[small] = 1
+    return out, int(small.sum())
+
+
 def build_hirise_coverage_mask(
     obs_id: str,
     *,
@@ -463,6 +516,7 @@ def build_hirise_coverage_mask(
     cache_dir: str | Path,
     ctx_window_tif: str | Path,
     out_path: str | Path,
+    max_interior_hole_px: int = 16,
 ) -> tuple[Path, float]:
     """Write a uint8 HiRISE-coverage mask aligned to the CTX window grid.
 
@@ -470,6 +524,12 @@ def build_hirise_coverage_mask(
     reprojection onto the CTX window's CRS + transform + shape, and 0 elsewhere. Used by
     Stage 4 to suppress label generation outside the HiRISE swath AND inside the swath
     where HiRISE itself has NaN/0 pixels (rotated-rectangle corners, missing scans).
+
+    **Deep shadow is not a data gap.** `DN == 0` is the bottom of HiRISE's real radiometric
+    range, so small *enclosed* zero regions are boulder shadow, not unimaged ground; they
+    are re-marked valid by `_fill_interior_shadow_holes` (see there for the full rationale
+    and for why the swath-geometry zeros are unaffected). Pass `max_interior_hole_px=0` to
+    restore the pre-R74 behaviour.
 
     `nearest` resampling preserves the binary 0-vs-valid distinction at swath edges
     (bilinear would interpolate between 0 and valid, producing spurious partial-coverage
@@ -505,6 +565,15 @@ def build_hirise_coverage_mask(
         ctx_shape = (ctx_src.height, ctx_src.width)
 
     valid_src = (hi_arr > 0).astype(np.uint8)
+    valid_src, n_shadow_filled = _fill_interior_shadow_holes(
+        valid_src, max_hole_px=max_interior_hole_px
+    )
+    if n_shadow_filled:
+        print(
+            f"    [{obs_id}] coverage mask: re-marked {n_shadow_filled} enclosed "
+            f"shadow px as observed (R74; max_interior_hole_px={max_interior_hole_px})",
+            flush=True,
+        )
     mask = np.zeros(ctx_shape, dtype=np.uint8)
     reproject(
         source=valid_src,

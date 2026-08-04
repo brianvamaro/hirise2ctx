@@ -1982,7 +1982,7 @@ demonstrated power), no detector grid (spectral amplitude at the 512 m CCD pitch
 max 0.859 — none is a rectangle). **Do not re-open this.**
 
 ### R74 — The HiRISE coverage mask calls deep-shadow pixels "no coverage", silently deleting 1.97 % of S=32 tiles that are 93 % rich
-- **Status:** OPEN · **Severity:** high · **Liveness:** live-shipped (`dataset_v2/labels` is the basis of the frozen recipe, the deployed head, the banked calibrator and the shipped map) · **Verified:** no (single-agent, but measured on all 38 images)
+- **Status:** **CODE FIXED 2026-08-04, REBUILD DEFERRED** — see [PENDING_REBUILD.md](PENDING_REBUILD.md) #1. `src/ctx_retrieve.py` gained `_fill_interior_shadow_holes`, called from `build_hirise_coverage_mask` (`max_interior_hole_px=16`; `0` restores the old behaviour). Validated read-only on the 138 cached decimated arrays: every re-marked pixel has DN exactly 0; `ESP_017355_2260` re-marks 1,185 px, reproducing the measurement below exactly; the fix only ever *adds* coverage and never alters the swath border; `pytest -m "not slow"` unchanged at 490 passed. **The artifacts are deliberately not regenerated yet** — per policy, all rebuild-requiring fixes are batched into one re-run once the review is complete · **Severity:** high · **Liveness:** live-shipped (`dataset_v2/labels` is the basis of the frozen recipe, the deployed head, the banked calibrator and the shipped map) · **Verified:** no (single-agent, but measured on all 38 images)
 - **Where:** [src/ctx_retrieve.py:507](../src/ctx_retrieve.py#L507) · **Detail:** [labeling-deep-footprint.md](review_2026-07-31/labeling-deep-footprint.md) `-1`
 
 Coverage is defined as `hi_arr > 0` on a **nearest-neighbour** 5 m decimation. HiRISE DN is continuous
