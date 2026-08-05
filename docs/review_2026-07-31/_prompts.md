@@ -103,11 +103,13 @@ would change a reported number or a scientific verdict is the most valuable thin
   values happened to survive inside `dataset/packaged/loio_9fold/y_test_fold6.parquet`.
   **The mechanism:** the producers write straight into the live artifact tree using config-derived
   paths and have **no dry-run mode** — `src/labeling.py:543` (`df.to_parquet`), `:591` (sidecar),
-  `src/detections.py:151` (`gdf.to_file`), `src/coregister.py:436`. And two tests pass
-  `output_dir=cfg.output_dir` / `cache_dir=cfg.cache_dir`, i.e. the **real** `dataset/` and `cache/`
-  trees, rather than a tmp fixture (`test_stage4_runs_on_ESP_069669_2220`, `test_empty_shapefile.py`).
+  `src/detections.py:151` (`gdf.to_file`), `src/coregister.py:436`. And **three** tests pass
+  `output_dir` / `cache_dir` pointing at the **real** `dataset/` and `cache/` trees rather than a tmp
+  fixture: `test_labeling.py::test_stage4_runs_on_ESP_069669_2220`, `test_empty_shapefile.py`, and
+  `test_features.py:485::test_features_align_with_labels_row_for_row` (which also overwrites both
+  context-patch `.npy` stacks, in exchange for an assertion that cannot fail).
   So *merely calling a producer, or running those tests, mutates the dataset.* `git` cannot restore any
-  of it — these paths are gitignored.
+  of it — these paths are gitignored. **All three are `slow`-marked**, so `-m "not slow"` is safe.
   Concretely: (a) never invoke a Stage-1/3/4 entry point or anything that reaches those write sites;
   (b) if you must run pytest, use `-m "not slow"` and never the two tests named above; (c) to answer
   "would today's code produce this artifact?", read the code and reason, or copy inputs to your

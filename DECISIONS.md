@@ -5817,3 +5817,53 @@ dx>0 in 30/38), and the shift pushes **82,210 detections (1.39 %)** out of the l
 **One number does not reconcile** — the first reviewer states both "3.89 %" and "2,502 tiles", but
 2,502 is not 3.89 % of any denominator in play (161,005 → 6,263; its own 164,273 interior grid →
 1.52 %). The percentage reproduces; treat the count as suspect.
+
+## 2026-08-04d — Review PASS 11 (`tests-deep`): mutation testing the large test bodies; 2 of 4 complete
+
+Findings **R87–R90** in `docs/CODE_REVIEW_2026-07-31.md` §4k, plus extensions to R77 and R78.
+Complete: `tests-deep-splits`, `tests-deep-features`. **Partial (session limit):**
+`tests-deep-within-image.PARTIAL.md`, `tests-deep-region-staged.PARTIAL.md` — renamed with a
+`.PARTIAL` suffix so the "an area is done iff its file exists" check keeps reporting them as TODO.
+
+**The structural result: the fast-vs-full mutant survival gap is EXACTLY ZERO in all three suites
+measured**, for three different reasons — in `splits` the two `slow` tests only call the metadata
+loaders and can never reach `build_split`/`package_split`; in `features` the one `slow` test's
+assertion is true by construction; in `region-staged` there are no `slow` tests at all. So
+`pytest -m "not slow"` (CLAUDE.md's documented dev loop) is **not weaker** than the full suite; the
+full suite is simply not stronger. Survival: labelling 16/20 fast (12/20 full), splits **10/16**,
+features **12/22**, within-image **10/15** — all fast == full except labelling.
+
+**No suite pins wrong science.** Across every body attacked, no assertion was found defending a known
+defect. The consistent answer is "pins far less than it appears to".
+
+- **R87 (high)** — a `package_split` fallback to a random per-tile split leaves the suite fully green.
+  That is the **invariant-6** violation, the one that would invalidate every reported number. Every
+  packaging assertion is a row count or a length; nothing checks which `obs_id`s land in which fold
+  parquet. The splits are correct today — what is missing is the regression guard.
+- **R88 (high)** — the X/y column split is unpinned: dropping `label_cols` from `_split_columns` puts
+  `fractional_area` into the feature matrix and the suite stays green; `loaders.py:91-95` has no second
+  filter. Silent perfect-score leak.
+- **R89 (medium)** — 12 of 22 feature defects survive, including the whole labels→window registration
+  arithmetic. **Useful negative:** the register's own fixes for R27 and R28 were run *as mutants* and
+  left the file green, so **both can be applied without touching a test.**
+- **R78 extended to a third suite, and promoted in importance.** Every `test_features.py` fixture pins
+  the mosaic origin to (0,0), which **0 of 52 production sidecars** has (real ranges 894–43,790 /
+  183–41,945). With `test_labeling.py` and the `src/fgates.py:211-231` ~100 km gate mis-key this is the
+  third instance of one fixture-design defect that has **already caused a real error once**.
+  Parameterising the shared fixtures over a real non-zero `(row0, col0)` is one change that fixes three
+  suites — the highest-leverage single test fix in the register.
+- **R77 extended to a THIRD live-tree producer test** — `test_features.py:485-495::
+  test_features_align_with_labels_row_for_row` calls `stage4b_one_image(..., output_dir=repo_root/
+  "dataset")` and overwrites the features parquet, its sidecar and both context-patch `.npy` stacks —
+  in exchange for an assertion that **cannot fail** (`stage4b_one_image` emits one row per label row by
+  iterating the labels groupby, so row-for-row alignment is true by construction).
+  **All three are `slow`-marked — verified** — so `-m "not slow"` cannot reach them. Confirmed no
+  further live-tree writes occurred: nothing under `dataset*/` or `cache*/` has a mtime after the
+  15:21 restore.
+
+**Orchestration lesson, recorded in the brief.** Mutation testing is one full pytest run per mutant, so
+these agents are CPU-bound in a way the reading areas are not. Four launched concurrently saturated the
+machine and all four were killed by a 600 s no-progress watchdog, losing everything because each planned
+to write at the end. Fixed by (i) running at most **two** at a time and (ii) requiring each agent to
+write its file **early and update it** — which is why the two session-limit casualties left usable
+partial files instead of nothing.

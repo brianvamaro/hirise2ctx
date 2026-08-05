@@ -113,6 +113,10 @@ Agents now persist their own output as their final action.
 | `labeling-deep-artifact` | second pass: is the label artifact on disk what today's code produces? | **DONE** → [labeling-deep-artifact.md](review_2026-07-31/labeling-deep-artifact.md) |
 | `labeling-deep-semantics` | second pass: what does the labeller *publish*, and can that statistic move? | **DONE** → [labeling-deep-semantics.md](review_2026-07-31/labeling-deep-semantics.md) |
 | `labeling-deep-tests` | second pass: does `test_labeling.py` (668 lines) pin wrong science? | **DONE** — no, but it pins far less than it appears to (mutation-tested) → [labeling-deep-tests.md](review_2026-07-31/labeling-deep-tests.md) |
+| `tests-deep-splits` | mutation-test `tests/test_splits.py` (399) — invariant 6 | **DONE** → [tests-deep-splits.md](review_2026-07-31/tests-deep-splits.md) |
+| `tests-deep-features` | mutation-test `tests/test_features.py` (533) | **DONE** → [tests-deep-features.md](review_2026-07-31/tests-deep-features.md) |
+| `tests-deep-within-image` | mutation-test `tests/test_within_image_split.py` (445) | **PARTIAL** (session limit) — 15 mutants tabulated, findings + R45 probe missing → [tests-deep-within-image.PARTIAL.md](review_2026-07-31/tests-deep-within-image.PARTIAL.md) |
+| `tests-deep-region-staged` | mutation-test `tests/test_region_staged.py` (409) | **PARTIAL** (session limit) — baseline + safety pre-check only, **0 mutants** → [tests-deep-region-staged.PARTIAL.md](review_2026-07-31/tests-deep-region-staged.PARTIAL.md) |
 
 **All 15 `src/`-and-docs areas are complete.** Re-running any is wasted work unless the code changed.
 
@@ -2042,9 +2046,17 @@ class**. Also narrows pass 1's "2.5–4.5×" `fa` depression to **≈2.6×**. Th
 first version: the pooled 51.8 % rate is prevalence-dependent (ρ = −0.757) and implies an impossible
 >100 % true rich share.
 
-### R77 — The two `slow` labelling tests write into the live `dataset/` and `cache/` trees
+### R77 — **Three** `slow` tests write into the live `dataset/` and `cache/` trees
 - **Status:** **PARTLY REMEDIATED 2026-08-04** (the one mutation this caused was detected and restored; the defect is unfixed) · **Severity:** high · **Liveness:** live-shipped · **Verified:** **yes — reproduced by accident, which is how it was found**
-- **Where:** `tests/test_labeling.py::test_stage4_runs_on_ESP_069669_2220` (passes `output_dir=cfg.output_dir`), `tests/test_empty_shapefile.py` (passes `cache_dir=cfg.cache_dir`) · **Detail:** [labeling-deep-tests.md](review_2026-07-31/labeling-deep-tests.md) `-1`
+- **Where:** `tests/test_labeling.py::test_stage4_runs_on_ESP_069669_2220` (passes `output_dir=cfg.output_dir`), `tests/test_empty_shapefile.py` (passes `cache_dir=cfg.cache_dir`), and — found later by `tests-deep-features` — **`tests/test_features.py:485-495::test_features_align_with_labels_row_for_row`**, which calls `stage4b_one_image(..., output_dir=repo_root/"dataset")` and overwrites the features parquet, its sidecar and **both context-patch `.npy` stacks** · **Detail:** [labeling-deep-tests.md](review_2026-07-31/labeling-deep-tests.md) `-1`, [tests-deep-features.md](review_2026-07-31/tests-deep-features.md) `-1`
+
+**The third instance is the worst of the three, because it buys nothing.** Its assertion
+(`label_keys == feature_keys`) **cannot fail**: `stage4b_one_image` emits one row per label row by
+iterating the labels groupby, so row-for-row alignment is true by construction. It is a producer
+against the live tree in exchange for a tautology. It would also now *launder* the 2026-08-04 labelling
+incident forward into the features tree.
+**All three are `slow`-marked** — verified — so `pytest -m "not slow"` cannot reach them, which is why
+the fast suite is safe to run and was confirmed clean after the R74 fix.
 
 Running the labelling suite **silently overwrites the provenance an audit reads**, and the rewrite is
 **not value-preserving**: against the untouched 2026-05-23 packaged vintage, `max|Δfa|` = 0.115 (S=8)
@@ -2066,16 +2078,23 @@ tests — the producers write to config-derived live paths with **no dry-run mod
 - **Fix:** point both tests at `tmp_path`. Then consider a `dry_run=` on the producers, since the tests
   are only the most visible caller of a general hazard.
 
-### R78 — Every end-to-end labelling fixture pins the mosaic grid phase to zero — a configuration 0 of 47 production images has
-- **Status:** OPEN · **Severity:** high · **Liveness:** live-shipped · **Verified:** no (but demonstrated by mutation)
-- **Detail:** [labeling-deep-tests.md](review_2026-07-31/labeling-deep-tests.md) `-2`
+### R78 — Every end-to-end fixture pins the mosaic grid phase to zero — a configuration no production image has. **Now confirmed in three suites.**
+- **Status:** OPEN · **Severity:** high · **Liveness:** live-shipped · **Verified:** no (but demonstrated by mutation, independently, in two suites)
+- **Detail:** [labeling-deep-tests.md](review_2026-07-31/labeling-deep-tests.md) `-2` **and** [tests-deep-features.md](review_2026-07-31/tests-deep-features.md) `-3`
 
 `test_tile_bounds_align_with_mosaic_pixel_grid` **cannot detect the failure its own docstring names**:
 dropping the mosaic origin from the bounds displaces real `ymin` by **2,608 km** and the suite stays
-green. This is the *same* fixture defect that `src/fgates.py:211-231` already records as having caused
-the ~100 km gate mis-key (*"the old unit test … pinned `row0=col0=0`"*) — so it has bitten this project
-once already, in a different module.
-- **Fix:** parameterise the fixtures over a non-zero `(row0, col0)` drawn from a real sidecar.
+green. `tests-deep-features` then found the same shape in `test_features.py` — every fixture there
+pins the origin to `(0, 0)`, which **0 of 52 production sidecars** has (real ranges 894–43,790 and
+183–41,945) — and it is *why* that suite's origin-sign-flip and bounds-guard mutants both survive.
+
+**This is the third instance, and the first two are not hypothetical:** `src/fgates.py:211-231`
+already records this exact fixture defect as the cause of the **~100 km gate mis-key**
+(*"the old unit test … pinned `row0=col0=0`"*). A defect that has now been found in three separate
+suites, having already caused one real error, is a systemic fixture-design problem rather than three
+bugs.
+- **Fix:** parameterise the shared fixtures over a non-zero `(row0, col0)` drawn from a real sidecar —
+  one change, three suites. This is the highest-leverage single test fix in the register.
 
 ### R79 — `boulder_count` can be identically zero on every tile of every image and the labelling suite stays green
 - **Status:** OPEN · **Severity:** medium · **Liveness:** live-shipped (`boulder_count` is a packaged target, `src/dataset.py:61`) · **Verified:** no (measured by mutation: 5,646 → 0 on the real image, 20 passed)
@@ -2196,6 +2215,105 @@ The published Stage-7d `boulder_count > 50` partition moves **0.621 → 0.244** 
 
 ---
 
+## 4k. Findings from the `tests-deep` pass (PASS 11, 2026-08-04) — 2 of 4 areas complete
+
+Mutation testing of the large test bodies §6 named as the highest-yield code-reading left. Brief:
+[_prompts_tests_deep.md](review_2026-07-31/_prompts_tests_deep.md). **Complete:**
+[tests-deep-splits](review_2026-07-31/tests-deep-splits.md),
+[tests-deep-features](review_2026-07-31/tests-deep-features.md). **Partial (session limit, resume
+these):** `tests-deep-within-image.PARTIAL.md` (all 15 mutants run and tabulated — 10 survived — but
+findings, equivalence checks and the R45 quadrant-stability probe are missing),
+`tests-deep-region-staged.PARTIAL.md` (baseline + a clean safety pre-check establishing no producer is
+reachable from that file; **zero mutants run**).
+
+**The result generalises the labelling one.** Neither suite pins wrong science; both pin far less than
+they appear to, and — the structural finding — **the fast-vs-full survival gap is exactly zero in all
+three suites measured so far**, for three different reasons. In `splits` the two `slow` tests only call
+the metadata loaders and can never reach `build_split`/`package_split`; in `features` the one `slow`
+test's assertion is true by construction; in `region-staged` there are no `slow` tests at all. So
+`pytest -m "not slow"`, the documented dev loop, is not weaker than the full suite — the full suite is
+simply not stronger.
+
+| suite | mutants survived (fast) | survived (full) |
+|---|---|---|
+| `test_labeling.py` (R77–R80) | 16/20 | 12/20 |
+| `test_splits.py` | **10/16** | **10/16** |
+| `test_features.py` | **12/22** | **12/22** |
+| `test_within_image_split.py` (partial) | **10/15** | **10/15** |
+
+### R87 — A `package_split` fallback to a random per-tile split leaves the test suite fully green
+- **Status:** OPEN · **Severity:** high · **Liveness:** live-shipped (the guard is absent; the splitter itself is correct today) · **Verified:** no (demonstrated by mutation)
+- **Detail:** [tests-deep-splits.md](review_2026-07-31/tests-deep-splits.md) `-1`
+
+This is the exact **invariant-6** violation — the one whose occurrence would invalidate every number the
+project reports — and nothing would catch it. Every packaging assertion is a **row count or a length**;
+nothing checks *which* `obs_id`s land in `X_test_fold{k}.parquet`. Demonstrated: all 4 fixture images
+placed in both train and test while `n_test/n_train` stayed exactly 10/30, green. It also survives
+`test_within_image_split.py` + `test_modeling_loaders.py` (41 passed).
+**Calibration:** `labeling-deep-artifact` established the v2 LOIO splits *are* correct and structurally
+cannot drift. This finding is about the **absence of a regression guard**, not a live wrong number.
+- **Fix:** assert set membership of `obs_id` per fold in the packaged parquets, not just row counts.
+
+### R88 — The X/y column split is unpinned, so a label column entering the feature matrix would be silent
+- **Status:** OPEN · **Severity:** high · **Liveness:** live-shipped (guard absent) · **Verified:** no (demonstrated by mutation)
+- **Detail:** [tests-deep-splits.md](review_2026-07-31/tests-deep-splits.md) `-2`
+
+Dropping `label_cols` from `_split_columns`' exclusion set puts `fractional_area` into the feature
+matrix and the suite stays green. [loaders.py:91-95](../src/modeling/loaders.py#L91-L95) has **no second
+filter**, so the failure mode is a silent perfect-score leak — the single most misleading result this
+codebase could produce.
+- **Fix:** assert the emitted feature columns against an explicit expected set, and add a
+  target-absence assertion in `loaders`.
+
+### R89 — 12 of 22 seeded feature defects survive, including the entire labels→window registration arithmetic
+- **Status:** OPEN · **Severity:** medium · **Liveness:** live-shipped · **Verified:** no (demonstrated by mutation)
+- **Detail:** [tests-deep-features.md](review_2026-07-31/tests-deep-features.md) `-2`, `-4`, `-5`, `-6`
+
+Survivors include a `_stack_tiles` row/col transpose, an origin sign flip, deletion of the bounds
+guard, collapsing the GLCM distance→column mapping, inverting `grad_dir_circvar`, halving
+`edge_density`, and an off-by-one in the gliding-box loop. Two amplifiers: the HiRISE mask in every
+fixture is **all ones**, so deleting `arr[mask == 1]` and hardcoding `valid_pixel_fraction = 1.0` both
+pass — exactly the train/deploy seam `features-5` flags; and Stage 4b runs end-to-end at **S=16 only**
+(measured: 58 columns, zero `lacunarity_*`), a scale the frozen recipe never uses, so lacunarity is
+never exercised end-to-end at all.
+- **Useful negative, and the cross-check this pass was sent to do:** **no known feature defect is
+  pinned as intended.** The register's own fixes for **R27** (lacunarity → NaN instead of the 0.0
+  sentinel) and **R28** (canny quantile thresholds) were executed *as mutants* and left the file green.
+  **Both can be applied without touching a test.**
+
+### R90 — Lower-severity test-coverage gaps from PASS 11
+- **`splits-3`** (medium) — `groups_*.npy` is checked for **length only**; collapsing every obs code to
+  0 passes. The within-image arm has exactly this assertion (`unique_train == 3`); the LOIO arm never
+  got it.
+- **`splits-4`** (medium) — **fold identity is unpinned.** All LOIO assertions are set/length, so
+  reversing fold order passes. `labeling-deep-artifact`'s "fold *i* = `sorted(obs)[i]`, structurally
+  cannot drift" is true of today's code but undefended by any test.
+- **`splits-5`** (low) — `split_hash` is only ever compared to itself; removing `"folds"` from the
+  hashed keys passes, and the mutated hash gives an identical digest for two different partitions.
+- **`splits-6`** (low) — three fixture-blind or vacuous tests, incl. one whose own docstring admits its
+  fixture has a single scale, and `_fold_summary`, which is entirely unasserted. No fixture reaching
+  `build_image_inventory` has more than one `BoulderLabel`, though production is 5 rich / 2 poor /
+  2 unknown and that column drives all stratification.
+- **`features-6`** (low) — three assertions cannot fail: the context-patch test compares three outputs
+  of the *same* call (patch centring can be removed entirely), `valid_pixel_fraction == 1.0` asserts a
+  constant, and `test_stack_tiles` uses symmetric offsets.
+
+### Verified clean by PASS 11 — do not re-file
+- **`test_splits.py` genuinely pins**, each named by its killer mutant: metadata group-leak, image-level
+  train/test sizes in the parquets, streaming-iterator membership (the one place membership *is*
+  asserted), the label↔feature join key, the `stratification='none'` guard including its message, and
+  that `seed` really reaches the RNG.
+- **`test_features.py` genuinely pins** 10 items, most valuably that the **2026-06-10 DN-clip fix is a
+  real, working regression guard** (`test_dn_threshold_survives_clip_spike`); also
+  `test_subtile_variance_positive_on_split_tile`, `test_lacunarity_on_clumped_…`,
+  `test_gradient_on_step_function` and `test_intensity_stats_ramp_…`.
+- **`test_region_staged.py` reaches no producer** — verified before any run: no `cfg.output_dir`,
+  `cfg.cache_dir` or `slow` marker; every path is under `tmp_path`; the one module global pointing at a
+  live tree (`sd.FIG`) is monkeypatched by the `staged` fixture. Its two live-tree accesses are
+  harmless reads.
+
+---
+
 ## 5. Refuted / verified-clean — do not re-litigate
 
 **Refuted by an independent verifier** (the claim was wrong, unreachable, or a documented deliberate
@@ -2251,14 +2369,21 @@ transform.
   reproducible from committed artifacts, so it stays cheap if wanted.
   **Read §7's closing notes before doing more of it:** the 0-of-15 kill rate says the residual risk in
   this register is in *severity and blast radius*, not in whether the defects exist.
-- **Assertions that pin wrong science — 1 of 5 now done.** `test_labeling.py` (668) was read
-  line-by-line and mutation-tested by `labeling-deep-tests` (2026-08-04): **no assertion defends a
-  known defect**, but 16 of 20 seeded defects survive `pytest -m "not slow"` and 12 of 20 survive the
-  full suite → **R77–R80**. **Four remain unread:** `test_features.py` (533),
-  `test_within_image_split.py` (445), `test_region_staged.py` (409), `test_splits.py` (399). The
-  labelling result suggests the yield is "tests pin less than they appear to" rather than "tests pin
-  wrong science" — calibrate expectations accordingly, and note that **mutation testing against a
-  scratchpad copy of `src/` is what produced the evidence**; reading alone would not have.
+- **Assertions that pin wrong science — 3 of 5 done, 2 partial.** All five bodies have now been
+  attacked by mutation testing. **Complete:** `test_labeling.py` (668 → R77–R80), `test_splits.py`
+  (399 → R87, R88, R90), `test_features.py` (533 → R89, R90, and it extended R77 and R78).
+  **PARTIAL — resume these, the work is on disk under `*.PARTIAL.md`:**
+  - `tests-deep-within-image.PARTIAL.md` — all 15 mutants run and tabulated (**10 survived**, fast/full
+    gap zero), but the findings write-up, the survivor-equivalence checks and the **R45
+    quadrant-stability probe** are missing. Resuming is cheap: the expensive part is done.
+  - `tests-deep-region-staged.PARTIAL.md` — baseline (18 passed, **no `slow` tests**) and a clean
+    safety pre-check proving no producer is reachable from that file. **Zero mutants run** — this one
+    needs a full run.
+
+  **The consistent answer across every suite measured is "pins less than it appears to", not "pins
+  wrong science"** — no assertion anywhere was found defending a known defect. Note also that
+  **mutation testing against a scratchpad copy of `src/` is what produced all of this**; reading alone
+  would not have, and the two areas that were only read produced nothing comparable.
 - **Anything requiring execution.** No reviewer ran a notebook, sweep, training run, map build, ISIS
   step, GDAL/CTX read, or network fetch. Open as a result: the Slurm history that would settle whether
   the 906/907 hole came from **R18**'s resume race; whether fixing **R32** changes the FM-vs-Tier-1

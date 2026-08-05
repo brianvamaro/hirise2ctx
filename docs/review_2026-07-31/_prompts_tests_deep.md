@@ -52,6 +52,26 @@ the latter. Two shapes from that pass generalise and are worth hunting explicitl
 4. **Also report what the suite genuinely DOES pin**, each item named by the mutant it killed. That is
    the output that lets a future session stop re-reading these files, and it is as valuable as a defect.
 
+## ⚠ How to RUN these (learned by losing a batch)
+
+Mutation testing is **one full pytest run per mutant**, so these agents are CPU-bound in a way the
+document-reading areas are not. On 2026-08-04 all four were launched concurrently, saturated the
+machine, and **all four were killed by a 600-second no-progress watchdog** after doing substantial
+work — losing everything, because each planned to write its file at the end.
+
+Two rules follow, and they are not optional:
+
+1. **Run at most TWO of these at a time.** The 4-at-once batching that works for reading-based areas
+   does not work here. (Contrast the successful `labeling-deep-tests` run, which was the only
+   pytest-heavy agent among three readers.)
+2. **Each agent must write its file EARLY and update it as it goes** — a first version after the
+   initial read plus one mutant, then overwrite after each batch. The idempotency contract ("an area
+   is done iff its file exists") only protects work that reached disk. A partial file beats a perfect
+   answer that was never written.
+
+Also keep each pytest invocation short: target the single test file, not the suite; cap at ~12 mutants;
+emit output frequently, since silence is what the watchdog measures.
+
 ## Ground rules
 
 - **READ-ONLY apart from your own area file and the scratchpad.** Follow §1 of
