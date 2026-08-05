@@ -573,7 +573,11 @@ def _stage2_and_3_ready(cache_dir: Path) -> bool:
 
 
 @pytest.mark.slow
-def test_stage4_runs_on_ESP_069669_2220(cfg):
+def test_stage4_runs_on_ESP_069669_2220(cfg, tmp_path):
+    # R77: writes MUST go to tmp_path, never cfg.output_dir. On 2026-08-04 this test
+    # overwrote the live gitignored dataset/labels/ESP_069669_2220.{parquet,json} and,
+    # because the v1 tree predates the 2026-06-10 y-sign fix, migrated one of nine
+    # images across a correctness boundary. git cannot restore these paths.
     cache_dir = cfg.cache_dir
     if not _stage2_and_3_ready(cache_dir):
         pytest.skip(f"{OBS_ID}: Stage 2 caches missing")
@@ -583,17 +587,18 @@ def test_stage4_runs_on_ESP_069669_2220(cfg):
     df_manifest = M.load_manifest(cfg.manifest_path)
     row = df_manifest.set_index("ObsId").loc[OBS_ID]
 
+    out_dir = tmp_path / "dataset"
     prov = stage4_one_image(
         OBS_ID,
         cache_dir=cache_dir,
-        output_dir=cfg.output_dir,
+        output_dir=out_dir,
         manifest_row=row,
         target_crs=cfg["target_crs"],
         labeling_cfg=cfg["labeling"],
         config_hash=cfg.hash,
         apply_coreg_shift=True,
     )
-    df = pd.read_parquet(cfg.output_dir / LABELS_SUBDIR / f"{OBS_ID}.parquet")
+    df = pd.read_parquet(out_dir / LABELS_SUBDIR / f"{OBS_ID}.parquet")
     assert len(df) > 0
     # Every tile size must appear if any tiles are eligible.
     sizes_present = set(int(s) for s in df["tile_size_px"].unique())

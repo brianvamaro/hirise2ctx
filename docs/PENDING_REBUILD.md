@@ -34,6 +34,19 @@ Run read-only against the 138 **cached decimated** 5 m/px arrays (never a JP2, n
   amplification is Stage 4's unanimous `mask_min == 1` rule, which is the point of the finding.
 - `pytest -m "not slow"` → **490 passed, 21 deselected**, identical to the review baseline.
 
+## Incidental: three v1 cache files carry the R74 fix while their labels do not
+
+On **2026-08-05 09:16**, a full-suite run made *before* the R77 redirect landed regenerated
+`cache/ctx_windows/ESP_069669_2220.{tif,json}` and **`ESP_069669_2220_hirise_mask.tif`** — via
+`test_stage2_one_image.py`, one of the three producer tests the review had not found. Because the
+**R74 fix was already applied**, that mask now has its interior shadow holes filled, while the v1
+labels for the same image (restored 2026-08-04 15:21) were built against the *pre*-R74 mask.
+
+So for this one v1 image the mask and the labels are one generation apart. Low stakes — the whole v1
+tree is already a stale generation (**R81**) and nothing live reads it — but it is real drift and it is
+recorded here rather than left to be rediscovered. The batched rebuild resolves it. **No further writes
+are possible:** the full suite is now verified non-mutating.
+
 ## Known-stale artifacts NOT caused by a deferred fix
 
 Listed so the rebuild pass can sweep them at the same time; each has its own finding.

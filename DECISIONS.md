@@ -5922,3 +5922,39 @@ features 12/22 · within-image 10/15 (**9/14 = 64 %**) · region-staged 15/25 (1
 **Method note for any future test audit:** mutation testing produced all of this; reading alone would
 not have. And the honest survival rate requires discarding equivalent mutants — two areas did so
 explicitly (57 % and 64 % after discarding, vs 63 % and 67 % raw).
+
+## 2026-08-05b — R77 FIXED: the test suite no longer mutates the live artifact trees
+
+**The review undercounted by half.** It named three producer tests. Fixing those three and re-running
+the *full* suite exposed **three more** that no reviewer had flagged:
+
+| test | producer | wrote |
+|---|---|---|
+| `test_labeling.py::test_stage4_runs_on_ESP_069669_2220` | `stage4_one_image` | `dataset/labels/` |
+| `test_empty_shapefile.py` | `stage1_one_image` | `cache/reprojected_detections/` |
+| `test_features.py::test_features_align_with_labels_row_for_row` | `stage4b_one_image` | `dataset/features/`, sidecar, both context-patch `.npy` |
+| **`test_stage2_one_image.py` (×2)** | `stage2_one_image` | `cache/ctx_windows/` **incl. the HiRISE coverage mask** |
+| **`test_coregister.py` (×2)** | `stage3_one_image` | `cache/coregistration/` |
+| **`test_sanity_residual_one_image.py`** | `stage1_one_image` | `cache/reprojected_detections/` |
+
+The last one had **already been recorded in DECISIONS as rewriting a cache file on 2026-06-10** — the
+data was there and nobody connected it to the pattern. **Lesson: the only reliable detector for this
+defect class is to run the suite and diff the tree.** Reading the tests found half of them.
+
+**Fix.** The three `dataset/` writers now take `tmp_path` (the features one stages its labels into the
+tmp tree first, because Stage 4b reads labels from `output_dir`). The three `cache/` writers use a new
+**`read_only_cache`** factory fixture in `tests/conftest.py`, which **hard-links** the read-side subdirs
+into a throwaway cache — the CTX tile zips and HiRISE JP2s are hundreds of MB, so copying per test is
+not viable. The hard link is safe **only because each producer's read and write subdirs are disjoint**;
+that invariant is written into the fixture docstring, since a producer that truncated a linked path
+would write straight through to the original inode.
+
+**Verified.** `pytest -q` (full, 511 passed, incl. all 21 slow) leaves an **identical mtime checksum**
+over `dataset/`, `dataset_v2/`, `cache/`, `cache_v2/` — before `7bb77d3f…`, after `7bb77d3f…` — and an
+empty "modified in the last 4 minutes" window. **The full suite is now safe to run**, which it has not
+been for the life of this project. Adopt the checksum diff as the standing regression check.
+
+**One incidental consequence, recorded in `docs/PENDING_REBUILD.md`:** the pre-fix full-suite run at
+09:16 regenerated `cache/ctx_windows/ESP_069669_2220_hirise_mask.tif` *with the R74 fix already
+applied*, so for that one v1 image the mask is one generation ahead of its labels. Low stakes (the v1
+tree is already stale per R81, nothing live reads it), resolved by the batched rebuild.

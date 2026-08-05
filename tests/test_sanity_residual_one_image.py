@@ -22,7 +22,11 @@ OBS_ID = "ESP_069669_2220"
 
 
 @pytest.mark.slow
-def test_stage1_centroid_residual_under_threshold(cfg):
+def test_stage1_centroid_residual_under_threshold(cfg, tmp_path):
+    # R77: cache_dir MUST be tmp_path. Stage 1 writes cache/reprojected_detections/;
+    # DECISIONS 2026-08-04 records this test silently rewriting the live copy for this
+    # ObsId on 2026-06-10. Stage 1's inputs come from detections_root, not cache_dir,
+    # so a bare tmp_path is sufficient here.
     df = M.load_manifest(cfg.manifest_path)
     row = df.set_index("ObsId").loc[OBS_ID]
 
@@ -32,7 +36,7 @@ def test_stage1_centroid_residual_under_threshold(cfg):
         OBS_ID,
         detections_root=cfg.detections_root,
         target_crs=target_wkt,
-        cache_dir=cfg.cache_dir,
+        cache_dir=tmp_path,
         config_hash=cfg.hash,
         manifest_row=row,
     )

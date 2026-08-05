@@ -28,13 +28,20 @@ def _tile_zip_exists(cache_dir: Path) -> bool:
 
 
 @pytest.mark.slow
-def test_stage2_window_for_ESP_069669_2220(cfg):
-    cache_dir = cfg.cache_dir
-    if not _tile_zip_exists(cache_dir):
+def test_stage2_window_for_ESP_069669_2220(cfg, read_only_cache):
+    # R77: Stage 2 is a producer -- it writes cache/ctx_windows/{obs}.tif and the HiRISE
+    # coverage mask. Read the real tile/JP2 caches (hard-linked; they are hundreds of MB)
+    # but send every write to tmp_path. Read and write subdirs are disjoint, which is what
+    # makes the hard link safe -- see conftest.read_only_cache.
+    if not _tile_zip_exists(cfg.cache_dir):
         pytest.skip(
-            f"{TILE_NAME}.zip not in {cache_dir / CTX_TILES_SUBDIR}; "
+            f"{TILE_NAME}.zip not in {cfg.cache_dir / CTX_TILES_SUBDIR}; "
             "run Stage 2 once interactively to populate the tile cache."
         )
+    cache_dir = read_only_cache(
+        cfg.cache_dir,
+        [CTX_TILES_SUBDIR, "hirise_jp2", "hirise_decimated", "reprojected_detections"],
+    )
 
     df = M.load_manifest(cfg.manifest_path)
     row = df.set_index("ObsId").loc[OBS_ID]
@@ -100,11 +107,15 @@ def test_stage2_window_for_ESP_069669_2220(cfg):
 
 
 @pytest.mark.slow
-def test_stage2_is_idempotent(cfg):
+def test_stage2_is_idempotent(cfg, read_only_cache):
     """Re-running Stage 2 must overwrite the window cache without erroring or growing the tile cache."""
-    cache_dir = cfg.cache_dir
-    if not _tile_zip_exists(cache_dir):
+    # R77: writes go to the throwaway cache, never cfg.cache_dir.
+    if not _tile_zip_exists(cfg.cache_dir):
         pytest.skip(f"{TILE_NAME}.zip not present")
+    cache_dir = read_only_cache(
+        cfg.cache_dir,
+        [CTX_TILES_SUBDIR, "hirise_jp2", "hirise_decimated", "reprojected_detections"],
+    )
 
     df = M.load_manifest(cfg.manifest_path)
     row = df.set_index("ObsId").loc[OBS_ID]

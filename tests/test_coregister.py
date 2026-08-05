@@ -213,18 +213,23 @@ def _stage2_outputs_exist(cache_dir: Path) -> bool:
 
 
 @pytest.mark.slow
-def test_stage3_runs_on_ESP_069669_2220(cfg):
+def test_stage3_runs_on_ESP_069669_2220(cfg, read_only_cache):
     """End-to-end Stage 3 on the canonical trusted_prj image.
 
     Asserts the writeable provenance JSON appears and the solved shift sits inside the
     O(200 m) acceptance band from CLAUDE.md §3.3. No peak-correlation threshold yet —
     the 2026-05-21 decision is to collect the distribution across all 10 images first.
     """
-    cache_dir = cfg.cache_dir
-    if not _stage2_outputs_exist(cache_dir):
+    # R77: Stage 3 writes cache/coregistration/{obs}.json. Read the real Stage-2 outputs
+    # (hard-linked) but send writes to a throwaway cache.
+    if not _stage2_outputs_exist(cfg.cache_dir):
         pytest.skip(
             f"{OBS_ID}: Stage 2 caches missing; run scripts/run_stage2.py {OBS_ID} first."
         )
+    cache_dir = read_only_cache(
+        cfg.cache_dir,
+        [CTX_WINDOWS_SUBDIR, "hirise_jp2", "hirise_decimated", "reprojected_detections"],
+    )
 
     from src import manifest as M
 
@@ -263,11 +268,15 @@ def test_stage3_runs_on_ESP_069669_2220(cfg):
 
 
 @pytest.mark.slow
-def test_stage3_is_idempotent(cfg):
+def test_stage3_is_idempotent(cfg, read_only_cache):
     """Re-running Stage 3 produces an identical shift (deterministic FFT on cached input)."""
-    cache_dir = cfg.cache_dir
-    if not _stage2_outputs_exist(cache_dir):
+    # R77: writes go to the throwaway cache, never cfg.cache_dir.
+    if not _stage2_outputs_exist(cfg.cache_dir):
         pytest.skip(f"{OBS_ID}: Stage 2 caches missing")
+    cache_dir = read_only_cache(
+        cfg.cache_dir,
+        [CTX_WINDOWS_SUBDIR, "hirise_jp2", "hirise_decimated", "reprojected_detections"],
+    )
 
     from src import manifest as M
 

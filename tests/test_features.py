@@ -477,16 +477,33 @@ def test_stage4b_context_patches_bundle_indices(tmp_path):
 # ============================================================================
 
 @pytest.mark.slow
-def test_features_align_with_labels_row_for_row():
+def test_features_align_with_labels_row_for_row(tmp_path):
     """Stage 4b on ESP_069669_2220 must emit exactly the same (scale, ti, tj) set as
-    Stage 4's labels parquet. Skips if Stage 4 hasn't been run."""
+    Stage 4's labels parquet. Skips if Stage 4 hasn't been run.
+
+    R77: Stage 4b is a PRODUCER -- it writes dataset/features/{obs}.parquet, its sidecar
+    and both context-patch .npy stacks. It must never be pointed at the live `dataset/`
+    tree (those paths are gitignored and git cannot restore them). The real labels are
+    copied read-only into an isolated tree, and every write lands there.
+    """
+    import shutil
+
     repo_root = Path(__file__).resolve().parents[1]
     obs = "ESP_069669_2220"
     cache_dir = repo_root / "cache"
-    output_dir = repo_root / "dataset"
-    labels = output_dir / LABELS_SUBDIR / f"{obs}.parquet"
-    if not labels.exists():
+    src_labels = repo_root / "dataset" / LABELS_SUBDIR / f"{obs}.parquet"
+    src_sidecar = src_labels.with_suffix(".json")
+    if not src_labels.exists() or not src_sidecar.exists():
         pytest.skip(f"Stage 4 cache for {obs} not present")
+
+    # Isolated output tree: Stage 4b reads labels from output_dir/labels and writes
+    # features next to them, so the labels must be staged in rather than referenced.
+    output_dir = tmp_path / "dataset"
+    (output_dir / LABELS_SUBDIR).mkdir(parents=True)
+    shutil.copy2(src_labels, output_dir / LABELS_SUBDIR / src_labels.name)
+    shutil.copy2(src_sidecar, output_dir / LABELS_SUBDIR / src_sidecar.name)
+    labels = output_dir / LABELS_SUBDIR / f"{obs}.parquet"
+
     from src.config import load_config
     cfg = load_config(repo_root / "config.yaml")
     stage4b_one_image(
@@ -514,7 +531,9 @@ def test_features_sanity_on_real_data():
     obs = "ESP_069669_2220"
     features = repo_root / "dataset" / FEATURES_SUBDIR / f"{obs}.parquet"
     if not features.exists():
-        pytest.skip(f"Stage 4b cache for {obs} not present (run test_features_align... first)")
+        # R77: this is a pure READ of the committed artifact. It no longer free-rides on
+        # test_features_align_..., which now writes to tmp_path; run scripts/run_stage4b.py.
+        pytest.skip(f"Stage 4b cache for {obs} not present (run Stage 4b first)")
     df = pd.read_parquet(features)
     # Intensity stats must be finite for all rows; CTX is uint8 so values in [0, 255].
     assert df["intensity_mean"].between(0, 255).all()

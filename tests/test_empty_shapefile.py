@@ -13,7 +13,10 @@ OBS_ID = "ESP_065711_1545"
 
 
 @pytest.mark.slow
-def test_stage1_handles_empty_shapefile(cfg):
+def test_stage1_handles_empty_shapefile(cfg, tmp_path):
+    # R77: cache_dir MUST be tmp_path, never cfg.cache_dir. Stage 1 is a producer --
+    # it writes cache/reprojected_detections/{obs}.{gpkg,json}. On 2026-08-04 this test
+    # overwrote the live gitignored copies for this very ObsId; git cannot restore them.
     df = M.load_manifest(cfg.manifest_path)
     row = df.set_index("ObsId").loc[OBS_ID]
     target_wkt = resolve_target_crs(cfg)
@@ -22,7 +25,7 @@ def test_stage1_handles_empty_shapefile(cfg):
         OBS_ID,
         detections_root=cfg.detections_root,
         target_crs=target_wkt,
-        cache_dir=cfg.cache_dir,
+        cache_dir=tmp_path,
         config_hash=cfg.hash,
         manifest_row=row,
     )
