@@ -24,6 +24,19 @@ from src.ctx_source_illumination import (
 )
 
 
+# --- R78: the mosaic grid phase must never be (0, 0) --------------------------------
+# Real phase, read off disk from dataset_v2/labels/ESP_042964_2160.json
+# (mosaic_row_origin = 894, mosaic_col_origin = 12645).  0 of the 52 production label
+# sidecars has either origin equal to 0 (they span 894-43,790 and 183-41,945), yet every
+# call site here used to pass 0/0 -- and with both zero, `ti*S - origin`, `ti*S + origin`
+# and `ti*S` are the same expression, so the sign, the row/col pairing and the subtraction
+# itself were all untested.  Same fixture defect as the ~100 km fgates mis-key
+# (src/fgates.py:211-231).  Because 894 % S != 12645 % S for the scales used here, the row
+# and column offsets differ, which also catches a row/col swap.
+MOSAIC_ROW_ORIGIN = 894
+MOSAIC_COL_ORIGIN = 12645
+
+
 def _affine(px: float = 5.0, x0: float = 0.0, y0: float = 0.0):
     """Build a north-up rasterio Affine with the CTX-mosaic sign convention."""
     from rasterio.transform import Affine
@@ -68,15 +81,22 @@ def _ones_arrays(h: int, w: int, *, inc: float, emi: float, pha: float,
 
 
 def test_uniform_window_constant_mean_zero_std_one_source():
-    arrays = _ones_arrays(64, 64, inc=42.0, emi=5.0, pha=47.0, saz=160.0, sid=7)
+    # R78: at the real phase the first fully-inside S=32 tile is
+    #   ti = ceil(894/32)   = 28 -> window row 28*32 - 894 = 2
+    #   tj = ceil(12645/32) = 396 -> window col 396*32 - 12645 = 27
+    # so a 2x2 block of tiles spans rows 2..66 / cols 27..91 and needs a 96-px window.
+    arrays = _ones_arrays(96, 96, inc=42.0, emi=5.0, pha=47.0, saz=160.0, sid=7)
     df = pd.DataFrame({
         "obs_id": ["ESP_TEST"] * 4,
         "scale_idx": [3] * 4,
         "tile_size_px": [32] * 4,
-        "ti": [0, 0, 1, 1],
-        "tj": [0, 1, 0, 1],
+        "ti": [28, 28, 29, 29],
+        "tj": [396, 397, 396, 397],
     })
-    out = _aggregate_per_tile(df, arrays, mosaic_row_origin=0, mosaic_col_origin=0)
+    out = _aggregate_per_tile(
+        df, arrays,
+        mosaic_row_origin=MOSAIC_ROW_ORIGIN, mosaic_col_origin=MOSAIC_COL_ORIGIN,
+    )
     np.testing.assert_allclose(out["ctx_incidence_mean"], 42.0)
     np.testing.assert_allclose(out["ctx_emission_mean"], 5.0)
     np.testing.assert_allclose(out["ctx_phase_mean"], 47.0)
@@ -87,8 +107,10 @@ def test_uniform_window_constant_mean_zero_std_one_source():
 
 
 def test_tile_mean_matches_manual_calculation():
-    """Tile (0,0) at S=4 covers rows 0..3, cols 0..3. Mean over that block
-    should equal the arithmetic mean of those 16 pixels."""
+    """R78: at the real phase, tile (ti, tj) = (224, 3162) at S=4 covers window
+    rows 2..5, cols 3..6 -- ti*4 - 894 = 2 and tj*4 - 12645 = 3. Row and column offsets
+    differ, so this pins the sign, the subtraction and the row/col pairing at once
+    (at the old (0, 0) phase all three were unobservable)."""
     raw = np.arange(8 * 8, dtype=np.float32).reshape(8, 8)
     arrays = {
         "INCIDENCE": raw.copy(),
@@ -99,27 +121,32 @@ def test_tile_mean_matches_manual_calculation():
     }
     df = pd.DataFrame({
         "obs_id": ["X"], "scale_idx": [1], "tile_size_px": [4],
-        "ti": [0], "tj": [0],
+        "ti": [224], "tj": [3162],
     })
-    out = _aggregate_per_tile(df, arrays, mosaic_row_origin=0, mosaic_col_origin=0)
-    expected_inc = raw[0:4, 0:4].mean()
-    expected_emi = (raw + 100)[0:4, 0:4].mean()
-    expected_std = raw[0:4, 0:4].std(ddof=0)
+    out = _aggregate_per_tile(
+        df, arrays,
+        mosaic_row_origin=MOSAIC_ROW_ORIGIN, mosaic_col_origin=MOSAIC_COL_ORIGIN,
+    )
+    expected_inc = raw[2:6, 3:7].mean()
+    expected_emi = (raw + 100)[2:6, 3:7].mean()
+    expected_std = raw[2:6, 3:7].std(ddof=0)
     assert out["ctx_incidence_mean"][0] == pytest.approx(expected_inc, rel=1e-5)
     assert out["ctx_emission_mean"][0] == pytest.approx(expected_emi, rel=1e-5)
     assert out["ctx_incidence_std"][0] == pytest.approx(expected_std, rel=1e-5)
 
 
 def test_two_sources_split_evenly():
-    """Half the window has source A (incidence=40), half has source B (incidence=60).
-    A single S=4 tile covering the whole 4x4 window should report mean=50,
-    std=10, n_sources=2, dominant_fraction=0.5."""
-    arr = np.empty((4, 4), dtype=np.float32)
-    arr[:, :2] = 40.0
-    arr[:, 2:] = 60.0
-    sid = np.empty((4, 4), dtype=np.uint16)
-    sid[:, :2] = 1
-    sid[:, 2:] = 2
+    """Half the tile has source A (incidence=40), half has source B (incidence=60).
+    The S=4 tile should report mean=50, std=10, n_sources=2, dominant_fraction=0.5.
+
+    R78: the tile is (224, 3162) -> window rows 2..5, cols 3..6; everything outside that
+    block is a decoy value, so a mis-registered read cannot produce these numbers."""
+    arr = np.full((8, 8), 999.0, dtype=np.float32)
+    arr[2:6, 3:5] = 40.0
+    arr[2:6, 5:7] = 60.0
+    sid = np.zeros((8, 8), dtype=np.uint16)
+    sid[2:6, 3:5] = 1
+    sid[2:6, 5:7] = 2
     arrays = {
         "INCIDENCE": arr,
         "EMISSION": np.zeros_like(arr),
@@ -129,9 +156,12 @@ def test_two_sources_split_evenly():
     }
     df = pd.DataFrame({
         "obs_id": ["X"], "scale_idx": [1], "tile_size_px": [4],
-        "ti": [0], "tj": [0],
+        "ti": [224], "tj": [3162],
     })
-    out = _aggregate_per_tile(df, arrays, mosaic_row_origin=0, mosaic_col_origin=0)
+    out = _aggregate_per_tile(
+        df, arrays,
+        mosaic_row_origin=MOSAIC_ROW_ORIGIN, mosaic_col_origin=MOSAIC_COL_ORIGIN,
+    )
     assert out["ctx_incidence_mean"][0] == pytest.approx(50.0)
     assert out["ctx_incidence_std"][0] == pytest.approx(10.0)
     assert out["ctx_n_sources"][0] == 2
@@ -144,10 +174,14 @@ def test_out_of_bounds_tile_returns_nan():
         "obs_id": ["X"] * 2,
         "scale_idx": [3] * 2,
         "tile_size_px": [4] * 2,
-        # First tile is inside; second tile is beyond the window edge.
-        "ti": [0, 5], "tj": [0, 0],
+        # R78, real phase: ti=224 -> window row 2 (inside); ti=229 -> row 22 (past the
+        # 8-px edge). tj=3162 -> col 3.
+        "ti": [224, 229], "tj": [3162, 3162],
     })
-    out = _aggregate_per_tile(df, arrays, mosaic_row_origin=0, mosaic_col_origin=0)
+    out = _aggregate_per_tile(
+        df, arrays,
+        mosaic_row_origin=MOSAIC_ROW_ORIGIN, mosaic_col_origin=MOSAIC_COL_ORIGIN,
+    )
     assert np.isfinite(out["ctx_incidence_mean"][0])
     assert np.isnan(out["ctx_incidence_mean"][1])
     assert out["ctx_n_sources"][1] == 0
@@ -155,11 +189,14 @@ def test_out_of_bounds_tile_returns_nan():
 
 
 def test_nan_pixels_excluded_from_aggregate():
-    """If half the pixels are NaN, the mean should come from the finite half only."""
-    arr = np.full((4, 4), np.nan, dtype=np.float32)
-    arr[:, :2] = 40.0
-    sid = np.zeros((4, 4), dtype=np.uint16)
-    sid[:, :2] = 1
+    """If half the pixels are NaN, the mean should come from the finite half only.
+
+    R78: the tile is (224, 3162) -> window rows 2..5, cols 3..6; the finite pixels live
+    only there, so a mis-registered read would see all-NaN and leave the mean NaN."""
+    arr = np.full((8, 8), np.nan, dtype=np.float32)
+    arr[2:6, 3:5] = 40.0
+    sid = np.zeros((8, 8), dtype=np.uint16)
+    sid[2:6, 3:5] = 1
     arrays = {
         "INCIDENCE": arr,
         "EMISSION": arr.copy(),
@@ -169,9 +206,12 @@ def test_nan_pixels_excluded_from_aggregate():
     }
     df = pd.DataFrame({
         "obs_id": ["X"], "scale_idx": [1], "tile_size_px": [4],
-        "ti": [0], "tj": [0],
+        "ti": [224], "tj": [3162],
     })
-    out = _aggregate_per_tile(df, arrays, mosaic_row_origin=0, mosaic_col_origin=0)
+    out = _aggregate_per_tile(
+        df, arrays,
+        mosaic_row_origin=MOSAIC_ROW_ORIGIN, mosaic_col_origin=MOSAIC_COL_ORIGIN,
+    )
     # Mean of the 8 finite pixels = 40; std = 0 (all 40s among the finite ones).
     assert out["ctx_incidence_mean"][0] == pytest.approx(40.0)
     assert out["ctx_incidence_std"][0] == pytest.approx(0.0)

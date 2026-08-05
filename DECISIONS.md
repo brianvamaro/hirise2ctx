@@ -5958,3 +5958,55 @@ been for the life of this project. Adopt the checksum diff as the standing regre
 09:16 regenerated `cache/ctx_windows/ESP_069669_2220_hirise_mask.tif` *with the R74 fix already
 applied*, so for that one v1 image the mask is one generation ahead of its labels. Low stakes (the v1
 tree is already stale per R81, nothing live reads it), resolved by the batched rebuild.
+
+## 2026-08-05c — R91 fixed; R92 REFUTED and replaced by R97 (a dev-only change moved a production constant)
+
+**R91 FIXED** (`tests/test_within_image_split.py`). The multi-image fixtures now use four deliberately
+ragged extents — different shape *and* origin, `ti_mid != tj_mid` on each — instead of four identical
+symmetric 64×64 squares. Demonstrated by mutation against a scratchpad copy, with a control run on the
+pristine test file that reproduces the review exactly:
+
+| mutant | old fixture | new fixture |
+|---|---|---|
+| M13 (cut computed once, reused for every image) | SURVIVED | **KILLED** |
+| M04 (ti/tj transposed) | SURVIVED | **KILLED** |
+| M01 (median→mean) | SURVIVED | SURVIVED — *equivalent mutant* |
+| M05 (pooled-scale median) | SURVIVED | SURVIVED — cut value unpinned |
+
+M13 now fails on exactly the assertion the review predicted (`len(unique_train) == 3` →
+`unique_train={3}`, i.e. OBS_001 collapsing wholly into one quadrant under OBS_000's cut). **M01 is
+provably equivalent on any rectangular fixture** — for a complete grid the marginal is uniform so
+mean == median exactly (0.00 % of tiles move on all four extents); killing it needs a non-rectangular
+footprint generator, which is beyond R91. M05 survives because nothing pins the cut's *value*
+(the separate `-2` recommendation). Full suite **511 passed**, artifact checksum unchanged.
+
+**R92 REFUTED as filed — the cohorts were inverted.** The finding claimed the **v2** split had drifted
+from its own labels in 29 of 38 images (3.53 % of tiles). Two things were wrong.
+
+1. **Quadrant definitions are never persisted.** They are computed inside `build_split`
+   (`src/dataset.py:295`) and appear in **neither** the split JSON **nor** the packaged metadata —
+   verified by listing the keys of both. So no reviewer read a "stored cut"; every such number was
+   reconstructed, and the reconstruction is where the error entered.
+2. **Measured against the only durable artifact** (packaged fold membership vs today's code and
+   labels, via the production `_compute_quadrant_definitions` + `_quadrant_array_for_image`):
+
+   | cohort | images differing | tiles differing |
+   |---|---|---|
+   | `dataset_v2` | **0 / 38** | **0 / 3,564,767 (0.00 %)** |
+   | `dataset` (v1) | 5 / 8 | 13,969 / 610,586 (2.29 %) |
+
+   **The live v2 split is exactly reproducible.** The drift is confined to the superseded v1 tree.
+
+**The cause — new finding R97.** The cut snaps to `max(SCALE_TO_FACTOR_FROM_FINEST.values())`, and
+commit `29b0adb` ("CNN + S128 **HELD as dev-only**") added `128: 16`, **doubling the production snap
+step from 8 to 16**. No shipped config emits S=128 tiles. The v1 split predates that commit and sits on
+the old 8-tile lattice. The internal tell that the review's probe used the stale factor: its quoted
+`ESP_017355_2260 STORED 688 → RECOMPUTED 696` is impossible under a 16-snap, since 696 is not a
+multiple of 16. Fix: derive the snap step from the scales actually present in the labels, or gate the
+`128` entry behind the dev config — and pin it with a test.
+
+**Process note.** R92 was a *single-agent* finding I folded into the register without independent
+verification, and it was wrong in the most misleading way available: right phenomenon, wrong cohort,
+with a confident unexplained-cause narrative attached. It survived because two agents made the same
+factor-of-8 assumption. **This is the second time a "cause unexplained" flag turned out to mark an
+error in the measurement rather than a mystery in the data** — treat that flag as a smell.

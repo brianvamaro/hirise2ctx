@@ -124,6 +124,36 @@ def _synthetic_manifest(obs_labels: dict[str, str]) -> pd.DataFrame:
     return pd.DataFrame({"ObsId": list(obs_labels), "BoulderLabel": list(obs_labels.values())})
 
 
+# R91 (review 2026-07-31, tests-deep-within-image-1): the multi-image fixtures below are
+# DELIBERATELY ragged -- each image has a different, non-square (ti != tj) extent at a
+# different origin, because real HiRISE footprints do (the docstring example in
+# src.dataset._compute_quadrant_definitions is ti_mid 1352 / tj_mid 5184, a 3.8x asymmetry).
+# With every image an identical 64x64 square, four independent defects in the cut
+# computation were literal no-ops -- most importantly "compute the quadrant cut once and
+# reuse it for every image", which on real footprints collapses 8 of 9 images into a single
+# quadrant. Do not make these extents uniform or symmetric again.
+#
+# Constraints if you edit this table:
+#   * every bound is a multiple of 8 in S=8 units, so the S=16/32/64 nesting stays exact;
+#   * the resulting cut must land STRICTLY inside the extent at every scale (all four
+#     quadrants non-empty at S=64 too), otherwise the partition tests degenerate;
+#   * ti_mid != tj_mid for every image, so a ti/tj transposition is not a no-op.
+# The cut is the S=8 median floor-snapped to a multiple of max(SCALE_TO_FACTOR_FROM_FINEST)
+# == 16 (S=128 is in the factor map even though this fixture stops at S=64).
+_MULTI_IMAGE_EXTENTS_S8: list[tuple[int, int, int, int]] = [
+    # (ti_lo, ti_hi, tj_lo, tj_hi)             shape    -> snapped S=8 cut (ti_mid, tj_mid)
+    (0, 48, 32, 128),      # at (0, 32)        48 x 96  -> ( 16,  64)
+    (32, 112, 160, 224),   # at (32, 160)      80 x 64  -> ( 64, 176)
+    (128, 224, 8, 40),     # at (128, 8)       96 x 32  -> (160,  16)
+    (56, 88, 40, 136),     # at (56, 40)       32 x 96  -> ( 64,  80)
+]
+
+
+def _extent_s8(index: int) -> tuple[int, int, int, int]:
+    """Per-image (ti_lo, ti_hi, tj_lo, tj_hi) in S=8 units. See _MULTI_IMAGE_EXTENTS_S8."""
+    return _MULTI_IMAGE_EXTENTS_S8[index % len(_MULTI_IMAGE_EXTENTS_S8)]
+
+
 # ============================================================================
 # Quadrant cut computation
 # ============================================================================
@@ -183,9 +213,17 @@ def _build_within_image_meta(tmp_path: Path, n_images: int, *, include_empty: bo
     for i in range(n_images):
         obs = f"OBS_{i:03d}"
         obs_labels[obs] = "Boulder rich"
-        _write_multiscale_image(labels_dir, obs, features_dir=features_dir)
+        ti_lo, ti_hi, tj_lo, tj_hi = _extent_s8(i)
+        _write_multiscale_image(
+            labels_dir, obs, features_dir=features_dir,
+            ti_lo_s8=ti_lo, ti_hi_s8=ti_hi, tj_lo_s8=tj_lo, tj_hi_s8=tj_hi,
+        )
     if include_empty:
-        _write_multiscale_image(labels_dir, EMPTY_TRUTH_OBS_ID, features_dir=features_dir, rich=False)
+        ti_lo, ti_hi, tj_lo, tj_hi = _extent_s8(n_images)
+        _write_multiscale_image(
+            labels_dir, EMPTY_TRUTH_OBS_ID, features_dir=features_dir, rich=False,
+            ti_lo_s8=ti_lo, ti_hi_s8=ti_hi, tj_lo_s8=tj_lo, tj_hi_s8=tj_hi,
+        )
         obs_labels[EMPTY_TRUTH_OBS_ID] = "unknown"
     manifest = _synthetic_manifest(obs_labels)
     inv = build_image_inventory(sorted(obs_labels), manifest, labels_dir)
@@ -268,15 +306,18 @@ def test_within_image_metadata_records_quadrant_definitions(tmp_path):
     meta, _, _, _ = _build_within_image_meta(tmp_path, n_images=1)
     fold = meta["folds"][0]
     defs = fold["quadrant_definitions"]
+    ti_lo, ti_hi, tj_lo, tj_hi = _extent_s8(0)  # OBS_000's ragged extent (R91)
     # All four scales present, with integer ti_mid/tj_mid values.
     assert set(defs.keys()) == {"8", "16", "32", "64"}
     for scale_str, qd in defs.items():
         assert isinstance(qd["ti_mid"], int) and isinstance(qd["tj_mid"], int)
-        # No bizarre values: cuts inside the per-scale tile range.
+        # No bizarre values: the cut lies STRICTLY inside this image's own per-scale tile
+        # range on each axis, which is what makes all four quadrants non-empty. The ti and
+        # tj ranges differ (R91), so this is two independent bounds, not one restated.
         scale = int(scale_str)
         factor = scale // 8 or 1
-        assert 0 <= qd["ti_mid"] <= 64 // factor
-        assert 0 <= qd["tj_mid"] <= 64 // factor
+        assert ti_lo // factor < qd["ti_mid"] < ti_hi // factor, (scale_str, qd)
+        assert tj_lo // factor < qd["tj_mid"] < tj_hi // factor, (scale_str, qd)
 
 
 def test_within_image_buffer_drops_boundary_tiles(tmp_path):
@@ -390,22 +431,28 @@ def test_within_image_groups_have_3_unique_train_codes_per_fold(tmp_path):
     rotation `unique_train[fold_idx % n_unique]` must produce a code that is NOT in the
     held-out set. With 3 train quadrants and the test quadrant separate, the rotation is
     always safe.
+
+    R91: run over THREE images with different ragged extents, not one. This is the
+    assertion that catches a cut computed from the wrong image (or the wrong axis), and it
+    can only see that if the images are geometrically distinguishable.
     """
-    meta, _, labels_dir, features_dir = _build_within_image_meta(tmp_path, n_images=1)
+    meta, _, labels_dir, features_dir = _build_within_image_meta(tmp_path, n_images=3)
     out_dir = tmp_path / "out"
     package_split(
         meta, labels_dir=labels_dir, features_dir=features_dir,
         output_dir=out_dir, emit_all_parquet=False, config_hash="test",
     )
     pdir = out_dir / PACKAGED_SUBDIR / "within_image_4fold"
+    obs_of_fold = {int(f["fold_idx"]): f["test_obs_id"] for f in meta["folds"]}
     for k in range(meta["n_folds"]):
+        obs = obs_of_fold[k]
         train_groups = np.load(pdir / f"groups_train_fold{k}.npy")
         test_groups = np.load(pdir / f"groups_test_fold{k}.npy")
         unique_train = set(np.unique(train_groups).tolist())
         unique_test = set(np.unique(test_groups).tolist())
-        assert len(unique_train) == 3, f"fold {k}: unique_train={unique_train}"
-        assert len(unique_test) == 1, f"fold {k}: unique_test={unique_test}"
-        assert not (unique_train & unique_test), f"fold {k}: train/test code collision"
+        assert len(unique_train) == 3, f"fold {k} ({obs}): unique_train={unique_train}"
+        assert len(unique_test) == 1, f"fold {k} ({obs}): unique_test={unique_test}"
+        assert not (unique_train & unique_test), f"fold {k} ({obs}): train/test code collision"
 
 
 def test_within_image_packaged_test_tile_counts_match_metadata(tmp_path):

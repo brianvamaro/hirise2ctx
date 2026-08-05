@@ -2324,22 +2324,56 @@ suite has the right assertion and a fixture that disarms it. That is a more prec
 - **Fix:** give the fixtures asymmetric, differently-shaped real footprints (one non-square, one
   ragged, and two that differ from each other). The assertions already exist.
 
-### R92 — The v2 `within_image_4fold` split artifact has drifted from its own labels, in 29 of 38 images, and no cause survives scrutiny
-- **Status:** OPEN · **Severity:** medium · **Liveness:** live-shipped artifact · **Verified:** **effectively yes** — reproduced by two independent routes (R45's verifier, then this pass recomputing from labels)
-- **Detail:** [tests-deep-within-image.md](review_2026-07-31/tests-deep-within-image.md) `-2` + its R45 probe
+### R92 — ~~The **v2** within-image split has drifted from its own labels~~ → **REFUTED as filed. It is v1 that drifted, and the cause is now known.**
+- **Status:** **CORRECTED 2026-08-05.** The original claim (v2 drifted in 29 of 38 images, 3.53 % of tiles) is **wrong — the cohorts are inverted.** · **Severity:** low (v1 is a superseded generation) · **Liveness:** dead artifact (v1) · **Verified:** **yes — measured directly against the only durable artifact**
+- **Detail:** [tests-deep-within-image.md](review_2026-07-31/tests-deep-within-image.md) `-2`; correction found while fixing **R91**
 
-Recomputing the quadrant definitions from today's labels: **v1 is clean (0 of 8 images)**, but **v2 has
-drifted in 29 of 38 images — 125,830 of 3,564,767 tiles (3.53 %)**, independently reproducing the 3.5 %
-R45's verifier saw from the other direction. That agreement **localises the fault to the split artifact
-itself rather than to the sweep that consumed it.**
-**Four candidate causes were killed:** the splitter code is unchanged since `5ba0a07`; no alternative
-recipe fits the stored cut better; the tile inventory is identical; and — the obvious hypothesis — the
-**labels' mtimes *predate* the split**, so the y-sign-fix story does not work. The cause is genuinely
-unexplained and belongs to the labeling/artifact areas. What belongs to *this* review is that **nothing
-can detect it**: no test pins the cut's value or its stability, the one test that opens a real split
-JSON reads only `kind`/`n_folds`/exclusions, is hardcoded to the **v1** 8-image cohort
-(`n_folds == 32`), and never opens the v2 file. A targeted mutant (packaging re-derives the cut instead
-of using the declared one) **survives**.
+**Why both original measurements were unsound: quadrant definitions are never persisted.** They are
+computed inside `build_split` (`src/dataset.py:295`) and written to **neither** the split JSON **nor**
+the packaged metadata — verified by reading the keys of both. So no reviewer could have compared a
+"stored cut"; whatever they compared, it was reconstructed, and the reconstruction is where the error
+entered.
+
+**The measurement that settles it** compares the *packaged fold membership* — the only durable trace —
+against what today's code computes from today's labels, using the production
+`_compute_quadrant_definitions` + `_quadrant_array_for_image`:
+
+| cohort | images differing | tiles differing |
+|---|---|---|
+| **`dataset_v2`** | **0 / 38** | **0 / 3,564,767 (0.00 %)** |
+| `dataset` (v1) | **5 / 8** | **13,969 / 610,586 (2.29 %)** |
+
+So **the v2 split is exactly reproducible from today's code and labels** — the live cohort is clean —
+and the drift is confined to the superseded v1 tree.
+
+**The cause, which the original finding called "genuinely unexplained":** the quadrant cut snaps to
+`max(SCALE_TO_FACTOR_FROM_FINEST.values())`, and commit **`29b0adb`** ("Model-improvement experiments
+… CNN + S128 HELD as dev-only") added the entry `128: 16`, **doubling the production snap step from 8
+to 16**. The v1 split predates that commit and sits on the old 8-tile lattice. The internal tell that
+the review's probe used the stale factor: its quoted `ESP_017355_2260 STORED 688 → RECOMPUTED 696`
+cannot both be right under a 16-snap, because **696 is not a multiple of 16**.
+- **What survives, and is now the real finding — see R97:** a change flagged "dev-only" silently moved
+  a production splitting constant.
+- **What still stands from the original entry:** nothing pins the cut's value or its stability. The one
+  test that opens a real split JSON reads only `kind`/`n_folds`/exclusions and is hardcoded to the v1
+  cohort; a mutant that re-derives the cut at packaging time survives. R91's fix kills M13/M04 but not
+  M05, precisely because the cut's *value* is unpinned.
+- **Not addressed by this measurement:** R45's verifier compared the split artifact against **the
+  sweep's** fold assignment, which is a *different* comparison from "against today's labels". That
+  claim is untouched either way and R45 stands.
+
+### R97 — A change marked "dev-only" silently doubled a production splitting constant
+- **Status:** OPEN · **Severity:** medium · **Liveness:** live (the constant is current) · **Verified:** yes — measured
+- **Where:** `SCALE_TO_FACTOR_FROM_FINEST` in [src/dataset.py](../src/dataset.py); introduced by `29b0adb`
+
+The within-image quadrant cut snaps to `max(SCALE_TO_FACTOR_FROM_FINEST.values())`. Commit `29b0adb`
+added `128: 16` for an **S=128 modelling experiment that was explicitly HELD as dev-only and that no
+shipped config emits** — and thereby changed the snap step for *every* within-image split from 8 to 16.
+It is the reason the v1 split no longer reproduces (**R92**), and it cost two separate agents a wrong
+answer, because both assumed the step was 8.
+- **Fix:** derive the snap step from the *scales actually present in the labels*, not from the global
+  table — or gate the `128` entry behind the dev config that needs it. Either way, add a test that pins
+  the snap step against a fixture whose scale set is the production one.
 
 ### R93 — `pfree`, the shipped variant the HARD ABORT verdict was pronounced on, is never composited by any test
 - **Status:** OPEN · **Severity:** medium · **Liveness:** dead-closed programme, but it is the *record* of the most consequential decision · **Verified:** no

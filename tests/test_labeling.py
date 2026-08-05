@@ -7,6 +7,7 @@ caches are missing.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import geopandas as gpd
@@ -37,15 +38,47 @@ from src.labeling import (
 
 TILE_SIZES = [8, 16, 32, 64]
 
+# --- R78: the fixtures must never pin the mosaic grid phase to (0, 0) --------------
+# Real geometry, read off disk: dataset_v2/labels/ESP_042964_2160.json carries
+# mosaic_row_origin = 894 / mosaic_col_origin = 12645, and its parent Murray tile
+# cache_v2/ctx_tiles/E-8_N32.json carries inner_transform origin
+# (-474197.58018644986, 2133889.110839024).  0 of the 52 production label sidecars has
+# either origin equal to 0 (they span 894-43,790 and 183-41,945), yet every fixture here
+# used to set both to 0 -- the same fixture defect src/fgates.py:211-231 records as the
+# cause of the ~100 km gate mis-key.  With the phase at zero, `ti*S - origin`, `ti*S +
+# origin` and `ti*S` are the same expression and the whole grid-anchoring surface is
+# untested.
+MOSAIC_ORIGIN_XY = (-474197.58018644986, 2133889.110839024)   # E-8_N32 inner_transform
+MOSAIC_ROW_ORIGIN = 894                                        # ESP_042964_2160 sidecar
+MOSAIC_COL_ORIGIN = 12645                                      # ESP_042964_2160 sidecar
+
+# The finest-grid index of the first coarsest-aligned cell for that phase:
+#   ceil(894 / 64) * 8 = 112   and   ceil(12645 / 64) * 8 = 1584
+_LADDER_RATIO = TILE_SIZES[-1] // TILE_SIZES[0]
+J_MIN_ROW = math.ceil(MOSAIC_ROW_ORIGIN / TILE_SIZES[-1]) * _LADDER_RATIO
+J_MIN_COL = math.ceil(MOSAIC_COL_ORIGIN / TILE_SIZES[-1]) * _LADDER_RATIO
+
 
 def _make_window(tmp_path: Path, *, height: int, width: int, pixel_m: float = 5.0,
-                 origin_x: float = 0.0, origin_y: float = 0.0,
+                 mosaic_origin_xy: tuple[float, float] = MOSAIC_ORIGIN_XY,
+                 row_origin: int = MOSAIC_ROW_ORIGIN,
+                 col_origin: int = MOSAIC_COL_ORIGIN,
                  mask_fill: int = 1) -> tuple[Path, Path, dict, str]:
-    """Write a synthetic CTX window + mask + mosaic tile sidecar. Returns the four pieces."""
-    # The "mosaic" extends from (origin_x, origin_y) covering more than the window so window
-    # (0,0) lies at integer pixel offsets of the mosaic (here, exactly at the mosaic origin).
+    """Write a synthetic CTX window + mask + mosaic tile sidecar. Returns the four pieces.
+
+    R78: the window's upper-left sits at mosaic pixel ``(row_origin, col_origin)`` of a
+    mosaic whose own CRS origin is ``mosaic_origin_xy`` -- both non-zero, mirroring
+    production.  `info` carries the resulting `align` dict plus `work_origin_xy`, the world
+    coordinate of working-region pixel (0, 0), so tests place geometry against the real
+    working region instead of assuming it starts at the window (and CRS) origin.
+    """
+    # The "mosaic" extends from mosaic_origin_xy covering more than the window; the window
+    # upper-left lies at integer mosaic-pixel offsets (row_origin, col_origin) inside it.
+    mx_origin_x, mx_origin_y = mosaic_origin_xy
+    origin_x = mx_origin_x + col_origin * pixel_m
+    origin_y = mx_origin_y - row_origin * pixel_m
     window_transform = Affine(pixel_m, 0, origin_x, 0, -pixel_m, origin_y)
-    mosaic_transform = list(window_transform)[:6]  # window IS the mosaic origin in tests
+    mosaic_transform = [pixel_m, 0.0, mx_origin_x, 0.0, -pixel_m, mx_origin_y]
     crs = pyproj.CRS.from_user_input(
         'PROJCRS["TestMars",BASEGEOGCRS["GCS_TestMars",DATUM["D_TestMars",'
         'ELLIPSOID["TestMars",3396190.0,0.0,LENGTHUNIT["metre",1]]],'
@@ -91,11 +124,16 @@ def _make_window(tmp_path: Path, *, height: int, width: int, pixel_m: float = 5.
         json.dumps({
             "murray_tile": mosaic_tile_name,
             "inner_transform": mosaic_transform,
-            "inner_shape": [10_000, 10_000],
+            "inner_shape": [47_420, 47_420],   # a real Murray tile is 47420 px square
             "inner_dtype": "uint8",
         }),
         encoding="utf-8",
     )
+
+    align = _compute_grid_alignment(
+        window_transform, mosaic_transform, height, width, TILE_SIZES,
+    )
+    work_origin_xy = window_transform * (align["c0_win"], align["r0_win"])
 
     info = {
         "obs_id": obs_id,
@@ -107,8 +145,20 @@ def _make_window(tmp_path: Path, *, height: int, width: int, pixel_m: float = 5.
         "mosaic_transform": mosaic_transform,
         "crs": crs,
         "murray_tile": mosaic_tile_name,
+        "align": align,
+        "work_origin_xy": work_origin_xy,
     }
     return cache_dir, out_dir, info, obs_id
+
+
+def _work_box(info: dict, dx: float, dy: float, half: float):
+    """A square of side ``2*half`` centred ``(dx, dy)`` metres from working-region pixel (0,0).
+
+    R78: the working region no longer starts at the CRS origin, so synthetic geometry is
+    positioned relative to it rather than at absolute (0, 0).
+    """
+    x0, y0 = info["work_origin_xy"]
+    return box(x0 + dx - half, y0 + dy - half, x0 + dx + half, y0 + dy + half)
 
 
 def _write_polygons(info: dict, polygons: list[Polygon], scores=None) -> None:
@@ -197,29 +247,30 @@ def test_alignment_raises_when_window_too_small():
 # ----------------------------------------------------------------------------
 
 def test_rasterize_single_boulder_sub_pixel_count(tmp_path):
-    """A 5x5 m boulder (one full CTX pixel) at the origin should rasterize to 25 sub-pixels
-    at subpixel_factor=5 -> 25 m^2 -- exactly the polygon area."""
-    cache_dir, out_dir, info, obs = _make_window(tmp_path, height=64, width=64)
-    # Polygon covering CTX pixel (0,0): x in [0, 5], y in [-5, 0]
-    poly = box(0.0, -5.0, 5.0, 0.0)
+    """A 5x5 m boulder (one full CTX pixel) at the working-region origin should rasterize to
+    25 sub-pixels at subpixel_factor=5 -> 25 m^2 -- exactly the polygon area."""
+    # R78: 128 px (not 64) because at the real mosaic phase (894, 12645) a 64-px window
+    # cannot contain a single 64-px coarsest tile.
+    cache_dir, out_dir, info, obs = _make_window(tmp_path, height=128, width=128)
+    # Polygon covering the first CTX pixel of the working region.
+    poly = _work_box(info, 2.5, -2.5, 2.5)
     _write_polygons(info, [poly])
     gdf = gpd.read_file(
         cache_dir / "reprojected_detections" / f"{obs}.gpkg", layer="detections",
     )
-    align = _compute_grid_alignment(
-        info["window_transform"], info["mosaic_transform"], 64, 64, TILE_SIZES,
-    )
+    align = info["align"]
     raster = _rasterize_boulders_subpixel(gdf, info["window_transform"], align, subpixel_factor=5)
     # Sub-pixel size is 1 m; a 5 m x 5 m polygon should fill 25 sub-pixels.
     assert int(raster.sum()) == 25
+    # And it must land in the raster's top-left cell -- i.e. the sub-pixel transform is
+    # offset by the working-region origin, not by the window (or CRS) origin.
+    assert int(raster[:5, :5].sum()) == 25
 
 
 def test_rasterize_returns_zero_for_empty_gdf(tmp_path):
-    cache_dir, out_dir, info, obs = _make_window(tmp_path, height=64, width=64)
+    cache_dir, out_dir, info, obs = _make_window(tmp_path, height=128, width=128)
     gdf = gpd.GeoDataFrame({"score": []}, geometry=[], crs=info["crs"])
-    align = _compute_grid_alignment(
-        info["window_transform"], info["mosaic_transform"], 64, 64, TILE_SIZES,
-    )
+    align = info["align"]
     raster = _rasterize_boulders_subpixel(gdf, info["window_transform"], align, subpixel_factor=5)
     assert raster.sum() == 0
 
@@ -229,23 +280,26 @@ def test_rasterize_returns_zero_for_empty_gdf(tmp_path):
 # ----------------------------------------------------------------------------
 
 def test_count_centroids_per_finest_cell_assigns_to_owner(tmp_path):
-    cache_dir, out_dir, info, obs = _make_window(tmp_path, height=64, width=64)
-    # Three boulders:
-    #   centroid (20, -20) m -> mosaic-pixel (4, 4) -> finest cell (0, 0)  (S_min=8)
-    #   centroid (60, -60) m -> mosaic-pixel (12, 12) -> finest cell (1, 1)
-    #   centroid (50, -50) m -> mosaic-pixel (10, 10) -> finest cell (1, 1)
+    # R78: 128 px and geometry placed relative to the working-region origin, which at the
+    # real mosaic phase (894, 12645) is window pixel (2, 27), not (0, 0).
+    cache_dir, out_dir, info, obs = _make_window(tmp_path, height=128, width=128)
+    # Three boulders, offsets measured from working-region pixel (0, 0):
+    #   (20, -20) m  -> local finest cell (0, 0)  (S_min=8 -> 40 m cells)
+    #   (60, -60) m  -> local finest cell (1, 1)
+    #   (50, -50) m  -> local finest cell (1, 1)
     polys = [
-        box(18, -22, 22, -18),
-        box(58, -62, 62, -58),
-        box(48, -52, 52, -48),
+        _work_box(info, 20, -20, 2),
+        _work_box(info, 60, -60, 2),
+        _work_box(info, 50, -50, 2),
     ]
     _write_polygons(info, polys)
     gdf = gpd.read_file(
         cache_dir / "reprojected_detections" / f"{obs}.gpkg", layer="detections",
     )
-    align = _compute_grid_alignment(
-        info["window_transform"], info["mosaic_transform"], 64, 64, TILE_SIZES,
-    )
+    align = info["align"]
+    # The absolute finest-cell indices these land in are J_MIN_ROW/J_MIN_COL-based, so the
+    # j_min subtraction inside the counter is exercised (it was a no-op at phase 0).
+    assert (align["j_min_row"], align["j_min_col"]) == (J_MIN_ROW, J_MIN_COL)
     counts = _count_centroids_per_finest_cell(
         gdf, info["mosaic_transform"], align, finest_size_px=8, px_x=5.0, px_y=5.0,
     )
@@ -268,8 +322,9 @@ def test_sum_up_ladder_preserves_total_area_and_count():
         "boulder_count": rng.integers(0, 5, size=(n, n)).astype(np.int64),
         "eligible": np.ones((n, n), dtype=bool),
     }
+    # R78: real non-zero grid phase (see J_MIN_ROW/J_MIN_COL), not the (0, 0) no case has.
     scales = _sum_up_ladder(
-        finest, TILE_SIZES, px_x=5.0, px_y=5.0, j_min_row=0, j_min_col=0,
+        finest, TILE_SIZES, px_x=5.0, px_y=5.0, j_min_row=J_MIN_ROW, j_min_col=J_MIN_COL,
     )
     base_area = float(finest["boulder_area"].sum())
     base_count = int(finest["boulder_count"].sum())
@@ -278,6 +333,12 @@ def test_sum_up_ladder_preserves_total_area_and_count():
         assert sc["eligible"].all()
         assert float(sc["boulder_area"].sum()) == pytest.approx(base_area, rel=1e-10)
         assert int(sc["boulder_count"].sum()) == base_count
+    # The absolute index offset must be rescaled by the ladder ratio at each scale --
+    # at phase 0 every one of these was 0 and the rescaling was untested.
+    # ratios 1, 2, 4, 8 -> 112/1584, 56/792, 28/396, 14/198
+    assert [(sc["j_min_row"], sc["j_min_col"]) for sc in scales] == [
+        (112, 1584), (56, 792), (28, 396), (14, 198),
+    ]
 
 
 def test_sum_up_ladder_coarse_ineligible_if_any_subtile_ineligible():
@@ -289,8 +350,9 @@ def test_sum_up_ladder_coarse_ineligible_if_any_subtile_ineligible():
         "eligible": np.ones((n, n), dtype=bool),
     }
     finest["eligible"][0, 0] = False
+    # R78: real non-zero grid phase, not (0, 0).
     scales = _sum_up_ladder(
-        finest, TILE_SIZES, px_x=5.0, px_y=5.0, j_min_row=0, j_min_col=0,
+        finest, TILE_SIZES, px_x=5.0, px_y=5.0, j_min_row=J_MIN_ROW, j_min_col=J_MIN_COL,
     )
     # At every coarser scale, the (0, 0) coarse tile must be ineligible.
     for sc in scales[1:]:
@@ -310,8 +372,9 @@ def test_nested_consistency_matches_direct_coarse_compute():
         "boulder_count": count,
         "eligible": np.ones((n, n), dtype=bool),
     }
+    # R78: real non-zero grid phase, not (0, 0).
     scales = _sum_up_ladder(
-        finest, TILE_SIZES, px_x=5.0, px_y=5.0, j_min_row=0, j_min_col=0,
+        finest, TILE_SIZES, px_x=5.0, px_y=5.0, j_min_row=J_MIN_ROW, j_min_col=J_MIN_COL,
     )
     # S=16 (scale 1): 2x2 sums of finest
     expected_16 = area.reshape(8, 2, 8, 2).sum(axis=(1, 3))
@@ -327,14 +390,18 @@ def test_nested_consistency_matches_direct_coarse_compute():
 def test_mask_gating_drops_tiles_with_any_uncovered_pixel(tmp_path):
     """Even a single mask=0 pixel inside a finest tile drops the tile and every coarse tile
     that contains it."""
+    # R78: 192 px at the real mosaic phase (894, 12645) reproduces the old 2x2-coarsest /
+    # 16x16-finest working region; it starts at window pixel (r0_win, c0_win) = (2, 27), so
+    # the mask hole must be punched relative to it, not at window (0, 0).
     cache_dir, out_dir, info, obs = _make_window(
-        tmp_path, height=64, width=64, mask_fill=1,
+        tmp_path, height=192, width=192, mask_fill=1,
     )
-    # Punch a single mask=0 pixel into finest tile (0, 0).
+    align = info["align"]
+    # Punch a single mask=0 pixel into the working region's first finest tile.
     mask_tif = info["mask_tif"]
     with rasterio.open(mask_tif, "r+") as src:
         mask = src.read(1)
-        mask[3, 3] = 0
+        mask[align["r0_win"] + 3, align["c0_win"] + 3] = 0
         src.write(mask, 1)
     _write_polygons(info, [])
     row = _make_manifest_row(info)
@@ -350,15 +417,20 @@ def test_mask_gating_drops_tiles_with_any_uncovered_pixel(tmp_path):
             apply_coreg_shift=False,
         )
     df = pd.read_parquet(out_dir / LABELS_SUBDIR / f"{obs}.parquet")
-    # Finest tile (ti=0, tj=0) must be missing at every scale (the ineligibility propagates
-    # upward through the nested grid).
+    # The working region's first finest tile must be missing at every scale (the
+    # ineligibility propagates upward through the nested grid). R78: at the real phase the
+    # index is J_MIN_ROW/J_MIN_COL rescaled per scale, not (0, 0) -- so this now also pins
+    # the absolute-index arithmetic.
     for s in TILE_SIZES:
         scaled = df[df["tile_size_px"] == s]
         ratio = s // TILE_SIZES[0]
-        # The (0, 0) coarse tile would have its top-left finest sub-tile at (0, 0) -- ineligible.
-        assert not ((scaled["ti"] == 0) & (scaled["tj"] == 0)).any(), (
-            f"tile_size_px={s}: (0,0) tile should have been dropped"
+        ti0, tj0 = J_MIN_ROW // ratio, J_MIN_COL // ratio
+        assert not ((scaled["ti"] == ti0) & (scaled["tj"] == tj0)).any(), (
+            f"tile_size_px={s}: ({ti0},{tj0}) tile should have been dropped"
         )
+        # ... and the surviving tiles must actually be indexed from that offset, so a
+        # mutant that emits 0-based indices fails here rather than passing vacuously.
+        assert int(scaled["ti"].min()) == ti0 and int(scaled["tj"].min()) == tj0
 
 
 # ----------------------------------------------------------------------------
@@ -418,9 +490,10 @@ def test_detection_filter_min_size_drops_small_diameters():
 # ----------------------------------------------------------------------------
 
 def test_label_transforms_emit_expected_columns(tmp_path):
-    cache_dir, out_dir, info, obs = _make_window(tmp_path, height=128, width=128)
-    # Single 25 m^2 boulder centered in finest tile (0,0).
-    poly = box(0.0, -5.0, 5.0, 0.0)
+    # R78: 192 px at the real mosaic phase (894, 12645) -> 16x16 finest / 2x2 coarsest.
+    cache_dir, out_dir, info, obs = _make_window(tmp_path, height=192, width=192)
+    # Single 25 m^2 boulder in the working region's first finest tile.
+    poly = _work_box(info, 2.5, -2.5, 2.5)
     _write_polygons(info, [poly], scores=[0.7])
     row = _make_manifest_row(info)
 
@@ -449,20 +522,32 @@ def test_label_transforms_emit_expected_columns(tmp_path):
     assert (df["boulder_area"] >= 0).all()
     assert (df["boulder_count"] >= 0).all()
 
-    # Finest tile (0, 0) must have boulder_area = 25 m^2, boulder_count = 1, frac = 25/1600.
-    finest_00 = df[(df["tile_size_px"] == 8) & (df["ti"] == 0) & (df["tj"] == 0)]
+    # The working region's first finest tile -- absolute index (J_MIN_ROW, J_MIN_COL) at the
+    # real mosaic phase, R78 -- must have boulder_area = 25 m^2, count = 1, frac = 25/1600.
+    finest_00 = df[
+        (df["tile_size_px"] == 8) & (df["ti"] == J_MIN_ROW) & (df["tj"] == J_MIN_COL)
+    ]
     assert len(finest_00) == 1
     assert finest_00["boulder_area"].iloc[0] == pytest.approx(25.0)
     assert int(finest_00["boulder_count"].iloc[0]) == 1
     assert finest_00["fractional_area"].iloc[0] == pytest.approx(25.0 / 1600.0)
     assert bool(finest_00["binary_by_area"].iloc[0])
     assert bool(finest_00["binary_by_count"].iloc[0])
+    # Its emitted world bounds must be the mosaic-anchored ones for that absolute index.
+    mx_origin_x, mx_origin_y = info["mosaic_transform"][2], info["mosaic_transform"][5]
+    assert finest_00["xmin"].iloc[0] == pytest.approx(mx_origin_x + J_MIN_COL * 8 * 5.0)
+    assert finest_00["ymax"].iloc[0] == pytest.approx(mx_origin_y - J_MIN_ROW * 8 * 5.0)
 
 
 def test_tile_bounds_align_with_mosaic_pixel_grid(tmp_path):
     """Tile bounds (xmin, xmax, ymin, ymax) must lie on integer multiples of (S * px) from the
     mosaic origin -- the definition of 'anchored to CTX pixel origin'."""
-    cache_dir, out_dir, info, obs = _make_window(tmp_path, height=128, width=128)
+    # R78: 192 px at the real mosaic phase (894, 12645) with a real Murray-tile CRS origin.
+    # This is the test the review found could not detect the failure its own docstring names:
+    # with mx_origin_x = mx_origin_y = 0 the assertion below was satisfied identically by a
+    # grid anchored to the *CRS* origin, so dropping the mosaic origin from the bounds
+    # (which displaces real ymin by 2,608 km) left the suite green.
+    cache_dir, out_dir, info, obs = _make_window(tmp_path, height=192, width=192)
     _write_polygons(info, [])
     row = _make_manifest_row(info)
 
@@ -476,17 +561,27 @@ def test_tile_bounds_align_with_mosaic_pixel_grid(tmp_path):
             apply_coreg_shift=False,
         )
     df = pd.read_parquet(out_dir / LABELS_SUBDIR / f"{obs}.parquet")
-    # Mosaic origin is (0, 0); pixel size = 5 m. Every tile bound must be an integer multiple
-    # of (tile_size_px * 5 m) from the origin -- i.e. xmin / (S*5) is an integer.
+    assert len(df) > 0
+    # Pixel size = 5 m. Every tile bound must be an integer multiple of (tile_size_px * 5 m)
+    # *from the mosaic origin* -- measure the offset from mx_origin, not from (0, 0).
+    mx_origin_x, mx_origin_y = info["mosaic_transform"][2], info["mosaic_transform"][5]
+    # Guard the guard: the mosaic origin is not itself on the coarsest tile lattice, so
+    # anchoring to the CRS origin instead would be detected.
+    assert not np.isclose(np.mod(mx_origin_x, TILE_SIZES[-1] * 5.0), 0, atol=1e-6)
+    assert not np.isclose(np.mod(mx_origin_y, TILE_SIZES[-1] * 5.0), 0, atol=1e-6)
     for s in TILE_SIZES:
         sub = df[df["tile_size_px"] == s]
+        assert len(sub) > 0
         step = s * 5.0
-        for col in ("xmin", "xmax"):
-            mods = np.mod(sub[col].to_numpy(), step)
-            assert np.allclose(mods, 0, atol=1e-6), f"{col} not aligned at scale {s}"
-        for col in ("ymin", "ymax"):
-            mods = np.mod(sub[col].to_numpy(), step)
-            assert np.allclose(mods, 0, atol=1e-6), f"{col} not aligned at scale {s}"
+        for col, origin in (("xmin", mx_origin_x), ("xmax", mx_origin_x),
+                            ("ymin", mx_origin_y), ("ymax", mx_origin_y)):
+            # Offset from the mosaic origin, in tiles: must be a whole number of tiles.
+            # (`np.mod` is unusable here -- a 1e-11 negative float error wraps to ~step.)
+            offsets = (sub[col].to_numpy() - origin) / step
+            resid = np.abs(offsets - np.round(offsets)) * step
+            assert (resid < 1e-6).all(), (
+                f"{col} not aligned at scale {s}: max residual {resid.max():.6g} m"
+            )
 
 
 # ----------------------------------------------------------------------------
@@ -494,8 +589,9 @@ def test_tile_bounds_align_with_mosaic_pixel_grid(tmp_path):
 # ----------------------------------------------------------------------------
 
 def test_stage4_is_idempotent(tmp_path):
-    cache_dir, out_dir, info, obs = _make_window(tmp_path, height=128, width=128)
-    polys = [box(20, -20, 30, -10), box(80, -80, 95, -65)]
+    # R78: 192 px at the real mosaic phase; polygons placed in the working region.
+    cache_dir, out_dir, info, obs = _make_window(tmp_path, height=192, width=192)
+    polys = [_work_box(info, 25, -15, 5), _work_box(info, 87.5, -72.5, 7.5)]
     _write_polygons(info, polys, scores=[0.6, 0.8])
     row = _make_manifest_row(info)
 
@@ -536,7 +632,8 @@ def test_stage4_is_idempotent(tmp_path):
 
 def test_stage4_handles_empty_polygons(tmp_path):
     """An ObsId with zero detections should emit all-eligible-tile rows with zero stats."""
-    cache_dir, out_dir, info, obs = _make_window(tmp_path, height=128, width=128)
+    # R78: 192 px at the real mosaic phase (894, 12645), not the (0, 0) no image has.
+    cache_dir, out_dir, info, obs = _make_window(tmp_path, height=192, width=192)
     _write_polygons(info, [])
     row = _make_manifest_row(info)
 

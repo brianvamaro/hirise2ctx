@@ -44,6 +44,21 @@ from src.labeling import LABELS_SUBDIR
 # Synthetic helpers
 # ============================================================================
 
+# --- R78: the fixture must never pin the mosaic grid phase to (0, 0) ----------------
+# Real geometry, read off disk: dataset_v2/labels/ESP_042964_2160.json carries
+# mosaic_row_origin = 894 / mosaic_col_origin = 12645, and its parent Murray tile
+# cache_v2/ctx_tiles/E-8_N32.json carries inner_transform origin
+# (-474197.58018644986, 2133889.110839024).  0 of the 52 production label sidecars has
+# either origin equal to 0, yet this fixture used to write 0/0 -- which is precisely why
+# the origin-sign-flip and the tiles-inside-window bounds-guard mutants both survived
+# this suite: with both origins zero, `ti*S - origin`, `ti*S + origin` and `ti*S` are the
+# same expression.  Same fixture defect as the ~100 km fgates mis-key
+# (src/fgates.py:211-231).
+MOSAIC_ORIGIN_XY = (-474197.58018644986, 2133889.110839024)   # E-8_N32 inner_transform
+MOSAIC_ROW_ORIGIN = 894                                        # ESP_042964_2160 sidecar
+MOSAIC_COL_ORIGIN = 12645                                      # ESP_042964_2160 sidecar
+
+
 def _write_synthetic_stage4_cache(
     tmp_path: Path,
     *,
@@ -54,9 +69,16 @@ def _write_synthetic_stage4_cache(
     mask_fill: int = 1,
     tile_size_px: int = 16,
     n_tiles_axis: int = 4,
+    row_origin: int = MOSAIC_ROW_ORIGIN,
+    col_origin: int = MOSAIC_COL_ORIGIN,
 ) -> tuple[Path, Path, str, np.ndarray]:
     """Write minimal Stage 2 (CTX window + mask) + Stage 4 (labels parquet + sidecar)
     caches that Stage 4b can consume. Returns (cache_dir, output_dir, obs_id, ctx_arr).
+
+    R78: the window's upper-left sits at mosaic pixel ``(row_origin, col_origin)`` of a
+    mosaic whose CRS origin is `MOSAIC_ORIGIN_XY`, so the emitted tile indices are the
+    absolute ones Stage 4 emits and Stage 4b's `ti*S - mosaic_row_origin` arithmetic is
+    genuinely exercised.
     """
     cache_dir = tmp_path / "cache"
     output_dir = tmp_path / "out"
@@ -64,7 +86,11 @@ def _write_synthetic_stage4_cache(
     (output_dir / LABELS_SUBDIR).mkdir(parents=True, exist_ok=True)
 
     obs_id = "SYN_FEAT_000"
-    transform = Affine(pixel_m, 0, 0.0, 0, -pixel_m, 0.0)
+    mx_origin_x, mx_origin_y = MOSAIC_ORIGIN_XY
+    transform = Affine(
+        pixel_m, 0, mx_origin_x + col_origin * pixel_m,
+        0, -pixel_m, mx_origin_y - row_origin * pixel_m,
+    )
     if arr is None:
         # Mid-gray with a sprinkle of dark "shadow" pixels and bright "sunlit" pixels so
         # the DN-mode threshold has a real shadow + bright tail to find.
@@ -88,9 +114,13 @@ def _write_synthetic_stage4_cache(
         dst.write(mask, 1)
 
     # Hand-craft a Stage 4 labels parquet with a small grid of tiles at one scale.
+    # R78: absolute (ti, tj) starting at the first tile fully inside the offset window,
+    # with mosaic-anchored world bounds -- not a 0-based grid at the CRS origin.
+    ti0 = math.ceil(row_origin / tile_size_px)
+    tj0 = math.ceil(col_origin / tile_size_px)
     rows = []
-    for ti in range(n_tiles_axis):
-        for tj in range(n_tiles_axis):
+    for ti in range(ti0, ti0 + n_tiles_axis):
+        for tj in range(tj0, tj0 + n_tiles_axis):
             rows.append({
                 "obs_id": obs_id,
                 "scale_idx": 0,
@@ -98,10 +128,10 @@ def _write_synthetic_stage4_cache(
                 "tile_size_m": tile_size_px * pixel_m,
                 "ti": ti,
                 "tj": tj,
-                "xmin": tj * tile_size_px * pixel_m,
-                "ymin": -(ti + 1) * tile_size_px * pixel_m,
-                "xmax": (tj + 1) * tile_size_px * pixel_m,
-                "ymax": -ti * tile_size_px * pixel_m,
+                "xmin": mx_origin_x + tj * tile_size_px * pixel_m,
+                "ymin": mx_origin_y - (ti + 1) * tile_size_px * pixel_m,
+                "xmax": mx_origin_x + (tj + 1) * tile_size_px * pixel_m,
+                "ymax": mx_origin_y - ti * tile_size_px * pixel_m,
                 "boulder_area": 0.0,
                 "boulder_count": 0,
                 "tile_area": (tile_size_px * pixel_m) ** 2,
@@ -116,8 +146,9 @@ def _write_synthetic_stage4_cache(
     sidecar = {
         "obs_id": obs_id,
         "tile_sizes_px": [tile_size_px],
-        "mosaic_row_origin": 0,
-        "mosaic_col_origin": 0,
+        # R78: real phase, not (0, 0) -- see MOSAIC_ROW_ORIGIN / MOSAIC_COL_ORIGIN above.
+        "mosaic_row_origin": row_origin,
+        "mosaic_col_origin": col_origin,
         "ctx_window_tif": str(ctx_tif),
         "hirise_mask_tif": str(mask_tif),
     }
@@ -388,7 +419,7 @@ def test_stack_tiles_preserves_pixel_values():
 # ============================================================================
 
 def test_stage4b_synthetic_emits_one_row_per_label(tmp_path):
-    cache_dir, output_dir, obs_id, _ = _write_synthetic_stage4_cache(tmp_path)
+    cache_dir, output_dir, obs_id, arr = _write_synthetic_stage4_cache(tmp_path)
     prov = stage4b_one_image(
         obs_id, cache_dir=cache_dir, output_dir=output_dir,
         features_cfg=DEFAULT_FEATURES_CFG, config_hash="test",
@@ -414,6 +445,27 @@ def test_stage4b_synthetic_emits_one_row_per_label(tmp_path):
         assert col in df.columns, f"missing column {col!r}"
     # valid_pixel_fraction must be 1.0 by construction.
     assert (df["valid_pixel_fraction"] == 1.0).all()
+
+    # R78: pin the labels->window registration against pixels, not just row counts.
+    # At the real phase (row 894, col 12645) the first S=16 tile is
+    #   ti = ceil(894/16)  = 56 -> r_win = 56*16 - 894 = 2
+    #   tj = ceil(12645/16) = 791 -> c_win = 791*16 - 12645 = 11
+    # so it must read window rows [2, 18) and cols [11, 27). r_win != c_win, so this also
+    # discriminates a row/col swap; the origin was previously 0 and all three of
+    # `ti*S - origin`, `ti*S + origin`, `ti*S` agreed.
+    assert (df["ti"].min(), df["tj"].min()) == (56, 791)
+    first = df[(df["ti"] == 56) & (df["tj"] == 791)]
+    assert len(first) == 1
+    assert first["intensity_mean"].iloc[0] == pytest.approx(
+        float(arr[2:18, 11:27].mean())
+    )
+    # The next tile along each axis, to pin the stride as well as the offset.
+    assert df[(df["ti"] == 56) & (df["tj"] == 792)]["intensity_mean"].iloc[0] == (
+        pytest.approx(float(arr[2:18, 27:43].mean()))
+    )
+    assert df[(df["ti"] == 57) & (df["tj"] == 791)]["intensity_mean"].iloc[0] == (
+        pytest.approx(float(arr[18:34, 11:27].mean()))
+    )
 
 
 def test_stage4b_is_idempotent(tmp_path):
