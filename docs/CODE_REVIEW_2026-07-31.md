@@ -115,8 +115,8 @@ Agents now persist their own output as their final action.
 | `labeling-deep-tests` | second pass: does `test_labeling.py` (668 lines) pin wrong science? | **DONE** — no, but it pins far less than it appears to (mutation-tested) → [labeling-deep-tests.md](review_2026-07-31/labeling-deep-tests.md) |
 | `tests-deep-splits` | mutation-test `tests/test_splits.py` (399) — invariant 6 | **DONE** → [tests-deep-splits.md](review_2026-07-31/tests-deep-splits.md) |
 | `tests-deep-features` | mutation-test `tests/test_features.py` (533) | **DONE** → [tests-deep-features.md](review_2026-07-31/tests-deep-features.md) |
-| `tests-deep-within-image` | mutation-test `tests/test_within_image_split.py` (445) | **PARTIAL** (session limit) — 15 mutants tabulated, findings + R45 probe missing → [tests-deep-within-image.PARTIAL.md](review_2026-07-31/tests-deep-within-image.PARTIAL.md) |
-| `tests-deep-region-staged` | mutation-test `tests/test_region_staged.py` (409) | **PARTIAL** (session limit) — baseline + safety pre-check only, **0 mutants** → [tests-deep-region-staged.PARTIAL.md](review_2026-07-31/tests-deep-region-staged.PARTIAL.md) |
+| `tests-deep-within-image` | mutation-test `tests/test_within_image_split.py` (445) | **DONE** → [tests-deep-within-image.md](review_2026-07-31/tests-deep-within-image.md) |
+| `tests-deep-region-staged` | mutation-test `tests/test_region_staged.py` (409) | **DONE** — the one suite WITHOUT the (0,0)-origin fixture defect → [tests-deep-region-staged.md](review_2026-07-31/tests-deep-region-staged.md) |
 
 **All 15 `src/`-and-docs areas are complete.** Re-running any is wasted work unless the code changed.
 
@@ -215,6 +215,7 @@ real spend or a whole programme:
 | **R49** | Stage 6c acceptance | the "bad image" label *is* the per-image base rate, so a prevalence oracle passes |
 | **R52** | "isotonic drops Spearman/AUC" | a monotone map cannot raise a rank metric |
 | `leakage-3` | Gate 2 λ selection | λ is chosen as the argmin of the statistic gate 2 then reports and tests |
+| **R94** ⭐ | the two tests pinning "the verdict ships the right variant" | the `biases=[0.5,-0.5]` fixture makes `h1only`/`full`/`resid` **bit-identical** (measured max diff `0.000e+00`), so a mutant taking the headline from `variants[0]` survives. **Seventh instance — and the first found inside the test suite rather than in a gate**, which extends the pattern's reach: a *test* can be pinned by its fixture exactly as a *gate* is pinned by its construction. |
 
 **Rule to adopt:** before declaring a gate, state what a FAIL would look like and verify that outcome is
 *reachable* under the construction being tested — ideally by running the gate on a null/shuffled input
@@ -2215,31 +2216,40 @@ The published Stage-7d `boulder_count > 50` partition moves **0.621 → 0.244** 
 
 ---
 
-## 4k. Findings from the `tests-deep` pass (PASS 11, 2026-08-04) — 2 of 4 areas complete
+## 4k. Findings from the `tests-deep` pass (PASS 11, 2026-08-04) — **COMPLETE, 4 of 4 areas**
 
-Mutation testing of the large test bodies §6 named as the highest-yield code-reading left. Brief:
-[_prompts_tests_deep.md](review_2026-07-31/_prompts_tests_deep.md). **Complete:**
-[tests-deep-splits](review_2026-07-31/tests-deep-splits.md),
-[tests-deep-features](review_2026-07-31/tests-deep-features.md). **Partial (session limit, resume
-these):** `tests-deep-within-image.PARTIAL.md` (all 15 mutants run and tabulated — 10 survived — but
-findings, equivalence checks and the R45 quadrant-stability probe are missing),
-`tests-deep-region-staged.PARTIAL.md` (baseline + a clean safety pre-check establishing no producer is
-reachable from that file; **zero mutants run**).
+Mutation testing of the four large test bodies §6 named as the highest-yield code-reading left (the
+fifth, `test_labeling.py`, was done in PASS 10). Brief:
+[_prompts_tests_deep.md](review_2026-07-31/_prompts_tests_deep.md). Areas:
+[splits](review_2026-07-31/tests-deep-splits.md) · [features](review_2026-07-31/tests-deep-features.md)
+· [within-image](review_2026-07-31/tests-deep-within-image.md) ·
+[region-staged](review_2026-07-31/tests-deep-region-staged.md).
 
-**The result generalises the labelling one.** Neither suite pins wrong science; both pin far less than
-they appear to, and — the structural finding — **the fast-vs-full survival gap is exactly zero in all
-three suites measured so far**, for three different reasons. In `splits` the two `slow` tests only call
-the metadata loaders and can never reach `build_split`/`package_split`; in `features` the one `slow`
-test's assertion is true by construction; in `region-staged` there are no `slow` tests at all. So
-`pytest -m "not slow"`, the documented dev loop, is not weaker than the full suite — the full suite is
-simply not stronger.
+**Across ~100 seeded defects in five suites, not one assertion was found defending a known defect.**
+The register's hypothesis for this work — "assertions that pin wrong science" — is **refuted**. The real
+answer is uniform: *the suites pin far less than they appear to*, and roughly **half of all seeded
+defects survive**.
 
-| suite | mutants survived (fast) | survived (full) |
-|---|---|---|
-| `test_labeling.py` (R77–R80) | 16/20 | 12/20 |
-| `test_splits.py` | **10/16** | **10/16** |
-| `test_features.py` | **12/22** | **12/22** |
-| `test_within_image_split.py` (partial) | **10/15** | **10/15** |
+**Structural finding: the fast-vs-full survival gap is exactly zero in every suite**, for four different
+reasons — `splits`' `slow` tests only call the metadata loaders and can never reach
+`build_split`/`package_split`; `features`' one `slow` test asserts something true by construction;
+`region-staged` and `within-image` have no reachable `slow` coverage of the code under test. So
+`pytest -m "not slow"`, CLAUDE.md's documented dev loop, is **not weaker** than the full suite — the
+full suite simply is not stronger. That is a useful licence: the fast loop is the right one.
+
+| suite | survived (fast) | survived (full) | honest rate after discarding equivalent mutants |
+|---|---|---|---|
+| `test_labeling.py` (PASS 10 → R77–R80) | 16/20 | 12/20 | — |
+| `test_splits.py` (R87, R88, R90) | **10/16** | **10/16** | **8/14 = 57 %** |
+| `test_features.py` (R89, R90) | **12/22** | **12/22** | — |
+| `test_within_image_split.py` (R91, R92, R96) | **10/15** | **10/15** | **9/14 = 64 %** |
+| `test_region_staged.py` (R93–R96) | **15/25** | 11/25 *(with the unit suites)* | **60 % / 44 %** |
+
+**The dominant cause is fixture degeneracy, not missing assertions** — and that reframes the fix.
+`within-image` proved it quantitatively: its suite already *has* the assertion that catches the worst
+mutant, but every fixture image is the same symmetric 64×64 square, so the mutant moves 0 tiles instead
+of collapsing 8 of 9 real images into one quadrant. Fix the fixtures and much of the existing coverage
+starts working. See **R78** (the (0,0) mosaic origin, now in three suites) and **R91**.
 
 ### R87 — A `package_split` fallback to a random per-tile split leaves the test suite fully green
 - **Status:** OPEN · **Severity:** high · **Liveness:** live-shipped (the guard is absent; the splitter itself is correct today) · **Verified:** no (demonstrated by mutation)
@@ -2298,6 +2308,77 @@ never exercised end-to-end at all.
   of the *same* call (patch centring can be removed entirely), `valid_pixel_fraction == 1.0` asserts a
   constant, and `test_stack_tiles` uses symmetric offsets.
 
+### R91 — Every within-image fixture is the same symmetric 64×64 square, which disarms the suite's own strongest assertion
+- **Status:** OPEN · **Severity:** high · **Liveness:** live-shipped (guard absent) · **Verified:** no (demonstrated by mutation, and quantified against real labels)
+- **Detail:** [tests-deep-within-image.md](review_2026-07-31/tests-deep-within-image.md) `-1`
+
+Three "surviving" mutants are **literal no-ops on the fixture** — 0 tiles move — while on real labels the
+same mutations move **75–78 %** (`ti`/`tj` transpose), 27–32 % (pooled median) and 0–4 % (median→mean)
+of tiles. The sharpest case: **M13 (the quadrant cut computed once and reused for every image) collapses
+8 of 9 real images into a single quadrant**, and the file's *strongest* assertion — `len(unique_train)
+== 3` at `:406`, which does kill M16 and M17 — **would have caught it on a real footprint**. So the
+suite has the right assertion and a fixture that disarms it. That is a more precise diagnosis than
+"missing coverage", and it makes **R78** the fix: this is the same fixture-shape defect, third instance.
+- **Fix:** give the fixtures asymmetric, differently-shaped real footprints (one non-square, one
+  ragged, and two that differ from each other). The assertions already exist.
+
+### R92 — The v2 `within_image_4fold` split artifact has drifted from its own labels, in 29 of 38 images, and no cause survives scrutiny
+- **Status:** OPEN · **Severity:** medium · **Liveness:** live-shipped artifact · **Verified:** **effectively yes** — reproduced by two independent routes (R45's verifier, then this pass recomputing from labels)
+- **Detail:** [tests-deep-within-image.md](review_2026-07-31/tests-deep-within-image.md) `-2` + its R45 probe
+
+Recomputing the quadrant definitions from today's labels: **v1 is clean (0 of 8 images)**, but **v2 has
+drifted in 29 of 38 images — 125,830 of 3,564,767 tiles (3.53 %)**, independently reproducing the 3.5 %
+R45's verifier saw from the other direction. That agreement **localises the fault to the split artifact
+itself rather than to the sweep that consumed it.**
+**Four candidate causes were killed:** the splitter code is unchanged since `5ba0a07`; no alternative
+recipe fits the stored cut better; the tile inventory is identical; and — the obvious hypothesis — the
+**labels' mtimes *predate* the split**, so the y-sign-fix story does not work. The cause is genuinely
+unexplained and belongs to the labeling/artifact areas. What belongs to *this* review is that **nothing
+can detect it**: no test pins the cut's value or its stability, the one test that opens a real split
+JSON reads only `kind`/`n_folds`/exclusions, is hardcoded to the **v1** 8-image cohort
+(`n_folds == 32`), and never opens the v2 file. A targeted mutant (packaging re-derives the cut instead
+of using the declared one) **survives**.
+
+### R93 — `pfree`, the shipped variant the HARD ABORT verdict was pronounced on, is never composited by any test
+- **Status:** OPEN · **Severity:** medium · **Liveness:** dead-closed programme, but it is the *record* of the most consequential decision · **Verified:** no
+- **Detail:** [tests-deep-region-staged.md](review_2026-07-31/tests-deep-region-staged.md) `-1`
+
+The Stage-D fixture omits the `offset_logit_pfree` column, so all 18 tests silently drop that variant —
+and `:365` asserts the variant set is exactly the pre-`pfree` three, so **fixing the fixture breaks the
+suite**. The reviewer judged this honestly in the other direction too, which is the valuable part:
+it **verified the wiring is correct** (`f_region_stagec.py:498` ↔ `VARIANTS["pfree"]`, composite exact
+to 1e-5 in a direct probe), so **the abort verdict is not impugned.** Coverage gap, not a wrong number.
+
+### R94 — The two tests that pin "the verdict ships the right variant" cannot fail
+- **Status:** OPEN · **Severity:** medium · **Liveness:** dead-closed · **Verified:** no (measured)
+- **Detail:** [tests-deep-region-staged.md](review_2026-07-31/tests-deep-region-staged.md) `-2`
+
+Their `biases=[0.5, -0.5]` fixture makes `h1only`, `full` and `resid` **bit-identical** (measured max
+difference **0.000e+00**), so a mutant taking the headline from `variants[0]` survives. Guard 1's
+*existence* is pinned; its *identity* is not. **Seventh instance of Pattern A** — a check that could not
+fail — and the first one found inside the test suite rather than in a gate.
+
+### R95 — No assertion checks the georeferencing of any Stage-D output raster
+- **Status:** OPEN · **Severity:** medium · **Liveness:** dead-closed · **Verified:** no (demonstrated by mutation)
+- **Detail:** [tests-deep-region-staged.md](review_2026-07-31/tests-deep-region-staged.md) `-3`
+
+A GDAL-order affine, an empty CRS and a row/col transpose all survive — although "ship on the mosaic's
+exact grid" is Stage D's entire purpose, and **R01** (tile-phase misregistration) is a *shipped* raster
+defect of exactly this class. Compounded by fixture degeneracy: every frame covers the whole tile
+identically and the offsets CSV is already in sorted-key order, so a **positional** offsets join
+(the ~100 km Blocker-1 class) is indistinguishable from a keyed one.
+
+### R96 — Lower-severity items from the last two PASS-11 areas
+- **`within-image-3`** (medium) — `buffer_tiles` is one-sidedly asserted and never exercised through
+  packaging; a mutant hardcoding `buffer_tiles = 0` in packaging survives.
+- **`within-image-4`** (low) — `_within_image_fold_summary`'s finest-scale stats are unasserted and
+  feed a printed table in `notebooks/_build_09.py:161`.
+- **`region-staged-4`** (low) — all three `(review 2026-07-29)` fixes in the Stage-D driver are
+  unprotected; `458168f` added tests to `test_fgates.py` / `test_leveling.py` but never touched this
+  file, which has **one commit ever**.
+- **`region-staged-6`** (low) — assertions that read their expected value from the code under test,
+  plus `after < 0.02*before or after < 1e-6`, whose second disjunct accepts **any negative value**.
+
 ### Verified clean by PASS 11 — do not re-file
 - **`test_splits.py` genuinely pins**, each named by its killer mutant: metadata group-leak, image-level
   train/test sizes in the parquets, streaming-iterator membership (the one place membership *is*
@@ -2311,6 +2392,24 @@ never exercised end-to-end at all.
   `cfg.cache_dir` or `slow` marker; every path is under `tmp_path`; the one module global pointing at a
   live tree (`sd.FIG`) is monkeypatched by the `staged` fixture. Its two live-tree accesses are
   harmless reads.
+- **The Stage-D abort wiring is correct.** `pfree` is untested but correctly wired
+  (`f_region_stagec.py:498` ↔ `VARIANTS["pfree"]`; composite exact to 1e-5 in a direct probe), so
+  **R93 does not impugn the abort verdict.**
+- **`test_region_staged.py` is the one suite WITHOUT the (0,0)-origin fixture defect** — it uses
+  E-12_N32's real origin and pitch, and `TILE_M` 160→80 kills all 18 tests. **Copy this fixture's
+  shape when fixing R78/R91.**
+- **`test_region_staged.py` genuinely pins** 10 things, each named by its killing mutant: lattice pitch,
+  the mean-of-logits rule, offset sign, prescreen axes, guard-1 routing, worst-contributor provenance,
+  missing-offset flagging, Tier-1/Tier-2 separation, calibrate-once, and the leveled partition
+  composite.
+- **`test_within_image_split.py` genuinely pins** the cross-scale coherence of the quadrant cuts, the
+  buffer-band drop, and — its strongest assertion — that each fold's training set spans exactly 3
+  quadrant codes (which killed the self-leak and the group-content mutants).
+- **R11 and R19 are neither pinned nor re-filed here** — R11's guard is computed in Stage C (the
+  nearest assertion, `test_region_stagec.py:110`, is a 4-way membership check) and R19 lives in
+  `fgates`, unreachable from this file.
+- **A consistent non-logistic link survives all three suites** that touch it — they pin that `sigmoid`
+  and `logit` invert each other, not *which* link they are. Benign today; worth knowing.
 
 ---
 
@@ -2369,21 +2468,17 @@ transform.
   reproducible from committed artifacts, so it stays cheap if wanted.
   **Read §7's closing notes before doing more of it:** the 0-of-15 kill rate says the residual risk in
   this register is in *severity and blast radius*, not in whether the defects exist.
-- **Assertions that pin wrong science — 3 of 5 done, 2 partial.** All five bodies have now been
-  attacked by mutation testing. **Complete:** `test_labeling.py` (668 → R77–R80), `test_splits.py`
-  (399 → R87, R88, R90), `test_features.py` (533 → R89, R90, and it extended R77 and R78).
-  **PARTIAL — resume these, the work is on disk under `*.PARTIAL.md`:**
-  - `tests-deep-within-image.PARTIAL.md` — all 15 mutants run and tabulated (**10 survived**, fast/full
-    gap zero), but the findings write-up, the survivor-equivalence checks and the **R45
-    quadrant-stability probe** are missing. Resuming is cheap: the expensive part is done.
-  - `tests-deep-region-staged.PARTIAL.md` — baseline (18 passed, **no `slow` tests**) and a clean
-    safety pre-check proving no producer is reachable from that file. **Zero mutants run** — this one
-    needs a full run.
-
-  **The consistent answer across every suite measured is "pins less than it appears to", not "pins
-  wrong science"** — no assertion anywhere was found defending a known defect. Note also that
-  **mutation testing against a scratchpad copy of `src/` is what produced all of this**; reading alone
-  would not have, and the two areas that were only read produced nothing comparable.
+- ~~**Assertions that pin wrong science.**~~ **DONE — and the hypothesis is REFUTED.** All five large
+  test bodies have now been read line-by-line *and* mutation-tested: `test_labeling.py` (668 →
+  R77–R80), `test_splits.py` (399 → R87, R88, R90), `test_features.py` (533 → R89, R90, + it extended
+  R77 and R78), `test_within_image_split.py` (445 → R91, R92, R96), `test_region_staged.py` (409 →
+  R93–R96). **Across ~100 seeded defects, not one assertion was found defending a known defect** —
+  what the register expected to find is not there. What *is* there: roughly half of all seeded defects
+  survive, the fast/full gap is zero everywhere, and the dominant cause is **fixture degeneracy rather
+  than missing assertions** (§4k). Two method notes worth carrying to any future test audit:
+  **mutation testing produced all of this and reading alone would not have**; and the honest survival
+  rate requires discarding equivalent mutants, which two areas did explicitly (57 % and 64 % after
+  discarding, vs 63 % and 67 % raw).
 - **Anything requiring execution.** No reviewer ran a notebook, sweep, training run, map build, ISIS
   step, GDAL/CTX read, or network fetch. Open as a result: the Slurm history that would settle whether
   the 906/907 hole came from **R18**'s resume race; whether fixing **R32** changes the FM-vs-Tier-1

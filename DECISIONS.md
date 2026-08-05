@@ -5867,3 +5867,58 @@ machine and all four were killed by a 600 s no-progress watchdog, losing everyth
 to write at the end. Fixed by (i) running at most **two** at a time and (ii) requiring each agent to
 write its file **early and update it** — which is why the two session-limit casualties left usable
 partial files instead of nothing.
+
+## 2026-08-05 — Review PASS 11 COMPLETE (4 of 4 `tests-deep` areas); the "wrong science" hypothesis is refuted
+
+Findings **R91–R96** added (§4k); PASS 11 closes. All five large test bodies have now been read
+line-by-line *and* mutation-tested.
+
+**HEADLINE — a refutation.** §6 of the register nominated "assertions that pin wrong science" as the
+highest-yield work left. **Across ~100 seeded defects in five suites, not one assertion was found
+defending a known defect.** The hypothesis is wrong. What is actually true is uniform and different:
+the suites **pin far less than they appear to** (roughly half of all seeded defects survive), and the
+dominant cause is **fixture degeneracy, not missing assertions**.
+
+**Structural result: the fast-vs-full survival gap is exactly zero in every suite**, for four different
+reasons (splits' slow tests only call metadata loaders; features' one slow test asserts something true
+by construction; region-staged and within-image have no reachable slow coverage). So
+`pytest -m "not slow"` is **not weaker** than the full suite — a useful licence, since it is the
+documented dev loop and the only one safe to run (the three producer tests are all slow-marked).
+
+Survival: labelling 16/20 · splits 10/16 (**8/14 = 57 %** after discarding equivalent mutants) ·
+features 12/22 · within-image 10/15 (**9/14 = 64 %**) · region-staged 15/25 (11/25 with the unit suites).
+
+- **R91 (high)** — the sharpest diagnosis of the pass. Every `within-image` fixture is the same
+  symmetric 64×64 square, which makes three "surviving" mutants **literal no-ops** (0 tiles move) while
+  on real labels they move **75–78 %**, 27–32 % and 0–4 % of tiles. M13 (cut computed once, reused)
+  collapses **8 of 9 real images into one quadrant** — and the suite's own strongest assertion
+  (`len(unique_train) == 3`) **would have caught it on a real footprint**. The coverage exists; the
+  fixture disarms it. **Fix the fixtures and much of the existing coverage starts working.**
+- **R92 (medium)** — the v2 `within_image_4fold` split artifact has drifted from its own labels in
+  **29 of 38 images, 125,830 / 3,564,767 tiles (3.53 %)**, independently reproducing R45's 3.5 % by a
+  different route — which **localises the fault to the split artifact, not the sweep**. Four candidate
+  causes killed, including the obvious one: **the labels' mtimes predate the split**, so the y-sign-fix
+  story fails. Cause unexplained; what this review adds is that nothing can detect it.
+- **R93 (medium)** — `pfree`, the shipped variant the HARD ABORT verdict was pronounced on, is never
+  composited by any test (the fixture omits its column and `:365` asserts the pre-`pfree` variant set,
+  so fixing the fixture breaks the suite). **Judged honestly the other way: the wiring was verified
+  correct** (`f_region_stagec.py:498` ↔ `VARIANTS["pfree"]`; composite exact to 1e-5), so **the abort
+  verdict is NOT impugned.** Coverage gap, not a wrong number.
+- **R94 (medium) — seventh instance of Pattern A, and the first inside a test rather than a gate.**
+  The `biases=[0.5,-0.5]` fixture makes `h1only`/`full`/`resid` bit-identical (measured max diff
+  0.000e+00), so the two tests pinning "the verdict ships the right variant" cannot fail. This extends
+  Pattern A's reach: a *test* can be pinned by its fixture exactly as a *gate* is pinned by its
+  construction.
+- **R95 (medium)** — no assertion checks the georeferencing of any Stage-D raster; a GDAL-order affine,
+  an empty CRS and a row/col transpose all survive, though **R01** is a shipped defect of exactly that
+  class.
+- **R78 promoted, with one positive exception.** The (0,0) mosaic-origin fixture is in three suites and
+  already caused the `fgates` ~100 km mis-key. **`test_region_staged.py` is the one suite without it** —
+  it uses E-12_N32's real origin and pitch, and `TILE_M` 160→80 kills all 18 tests. **Copy that
+  fixture's shape when fixing R78/R91.**
+- **Useful negative (R89):** R27's and R28's own fixes were executed *as mutants* and left the suite
+  green — **both can be applied without touching a test.**
+
+**Method note for any future test audit:** mutation testing produced all of this; reading alone would
+not have. And the honest survival rate requires discarding equivalent mutants — two areas did so
+explicitly (57 % and 64 % after discarding, vs 63 % and 67 % raw).
