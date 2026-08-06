@@ -6047,3 +6047,55 @@ ragged footprints. R92 was refuted as filed, and R97 remains the live snapping-c
 
 This audit/documentation session ran no tests, imports with producer side effects, producers, or
 artifact rebuilds.
+
+## 2026-08-06b — R77 residual CLOSED: the suite can no longer write a live artifact, and the audit's mechanism was half wrong
+
+**What was actually wrong.** The 2026-08-05 `read_only_cache` fixture justified hard-linking with "each
+producer's read and write subdirs are disjoint". `hirise_decimated/` broke that invariant: it is staged
+for reading *and* rewritten by `read_full_footprint_decimated` when the cached CRS is stale. That much
+of the audit is right.
+
+**What the audit got wrong, measured.** It predicted the rebuild would truncate the live GeoTIFF through
+the link. Controlled probe in a temp dir (rasterio 1.5.0 / GDAL 3.11.4 / NTFS):
+
+| write API | reaches the source through the link? |
+|---|---|
+| `rasterio.open(p,"w")` | **no** — deletes-then-creates, the link breaks, the source survives |
+| `rasterio.open(p,"r+")` | **yes** |
+| `open(p,"wb")` | **yes** |
+| `Path(p).write_text()` | **yes** |
+| `shutil.copy2(other,p)` | **yes** |
+| `Path(new).replace(p)` | no — swaps a directory entry |
+
+The production rebuild uses `"w"`. So this was a **latent design error that current library behaviour
+masks**, not a demonstrated data-loss path — and "the full suite is safe" and "the live TIFF gets
+truncated" were *both* wrong. The fix removes the dependence on rasterio's create path entirely rather
+than arguing from it.
+
+**Three layers, because each catches what the others cannot.**
+
+1. `tests/live_artifact_guard.py` — session-wide autouse, refuses `open`/`os.open`/`os.replace`/
+   `os.remove`/`os.link`/`shutil.*`/`numpy.save*`/`rasterio.open(mode!="r")`/`to_parquet`/`to_file`
+   under `cache*`, `dataset*`, `models`, `reports`, resolving the `cache_v2_dev` junction. Prevention,
+   not detection: a checksum tells you what you already destroyed. Deliberately not guarded: `mkdir`
+   (`Config.cache_dir` mkdirs on attribute access) and every read.
+2. Static AST scan (`tests/test_artifact_isolation.py`) — the guard only fires on code that runs, and
+   every producer test `skip`s when its cache is absent. The scan fails anyway.
+3. Staging discipline — a hard link lives outside every guarded prefix, so no path-based guard can see
+   a write through it. `read_only_cache` now copies everything except `{tile}.zip` / `{obs}_RED.JP2`;
+   sidecars beside an archive (`{tile}.json`, GDAL PAM `.aux.xml`) are copied because GDAL rewrites PAM
+   in place. Each copy asserts a distinct inode; teardown asserts every linked source is unchanged.
+
+**Two corrections worth carrying forward.** `slow` was never the safety control: re-auditing markers
+found **20 non-slow tests that call a producer** (all writing to `tmp_path`). And the 511-pass checksum
+run proved one cache state, not isolation — the new end-to-end regression drives
+`read_full_footprint_decimated`'s stale-CRS branch on **two temporary roots**, which is the branch that
+run never entered.
+
+**Checked and clean, so nobody re-derives it:** SP1=20 Mars equirectangular survives a GeoTIFF round
+trip, so `_crs_equal` converges and a corrected cache is *not* rewritten on every call.
+
+`pytest -m "not slow"` → **512 passed, 21 deselected** (490 pre-existing + 22 new), with an
+11,218-file path/size/mtime manifest over all six artifact roots bit-identical before and after.
+**Not run:** the slow suite. Its four producer tests have not executed since the fixture changed, so the
+`only=` staging filter is verified only by a read-only listing of what each producer reads.

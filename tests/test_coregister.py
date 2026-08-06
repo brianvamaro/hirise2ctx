@@ -220,8 +220,10 @@ def test_stage3_runs_on_ESP_069669_2220(cfg, read_only_cache):
     O(200 m) acceptance band from CLAUDE.md §3.3. No peak-correlation threshold yet —
     the 2026-05-21 decision is to collect the distribution across all 10 images first.
     """
-    # R77: Stage 3 writes cache/coregistration/{obs}.json. Read the real Stage-2 outputs
-    # (hard-linked) but send writes to a throwaway cache.
+    # R77: Stage 3 writes cache/coregistration/{obs}.json, and warping HiRISE onto the CTX
+    # grid can rewrite hirise_decimated/ when the cached CRS is stale. Stage the mutable
+    # derived inputs as copies (only the zip/JP2 archives are linked) and send writes to a
+    # throwaway cache.
     if not _stage2_outputs_exist(cfg.cache_dir):
         pytest.skip(
             f"{OBS_ID}: Stage 2 caches missing; run scripts/run_stage2.py {OBS_ID} first."
@@ -229,6 +231,7 @@ def test_stage3_runs_on_ESP_069669_2220(cfg, read_only_cache):
     cache_dir = read_only_cache(
         cfg.cache_dir,
         [CTX_WINDOWS_SUBDIR, "hirise_jp2", "hirise_decimated", "reprojected_detections"],
+        only=OBS_ID,
     )
 
     from src import manifest as M
@@ -276,6 +279,7 @@ def test_stage3_is_idempotent(cfg, read_only_cache):
     cache_dir = read_only_cache(
         cfg.cache_dir,
         [CTX_WINDOWS_SUBDIR, "hirise_jp2", "hirise_decimated", "reprojected_detections"],
+        only=OBS_ID,
     )
 
     from src import manifest as M

@@ -30,9 +30,10 @@ def _tile_zip_exists(cache_dir: Path) -> bool:
 @pytest.mark.slow
 def test_stage2_window_for_ESP_069669_2220(cfg, read_only_cache):
     # R77: Stage 2 is a producer -- it writes cache/ctx_windows/{obs}.tif and the HiRISE
-    # coverage mask. Read the real tile/JP2 caches (hard-linked; they are hundreds of MB)
-    # but send every write to tmp_path. Read and write subdirs are disjoint, which is what
-    # makes the hard link safe -- see conftest.read_only_cache.
+    # coverage mask, and `read_full_footprint_decimated` can rewrite hirise_decimated/ when
+    # the cached CRS is stale. Stage every mutable derived input as a *copy* and send every
+    # write to tmp_path; only the immutable zip/JP2 archives are linked. See
+    # conftest.read_only_cache.
     if not _tile_zip_exists(cfg.cache_dir):
         pytest.skip(
             f"{TILE_NAME}.zip not in {cfg.cache_dir / CTX_TILES_SUBDIR}; "
@@ -41,6 +42,9 @@ def test_stage2_window_for_ESP_069669_2220(cfg, read_only_cache):
     cache_dir = read_only_cache(
         cfg.cache_dir,
         [CTX_TILES_SUBDIR, "hirise_jp2", "hirise_decimated", "reprojected_detections"],
+        # The tile sidecar is keyed by Murray tile, not ObsId, and Stage 2 reads it for
+        # the mosaic transform; without it `ensure_tile_cached` would rebuild it.
+        only=[OBS_ID, TILE_NAME],
     )
 
     df = M.load_manifest(cfg.manifest_path)
@@ -115,6 +119,9 @@ def test_stage2_is_idempotent(cfg, read_only_cache):
     cache_dir = read_only_cache(
         cfg.cache_dir,
         [CTX_TILES_SUBDIR, "hirise_jp2", "hirise_decimated", "reprojected_detections"],
+        # The tile sidecar is keyed by Murray tile, not ObsId, and Stage 2 reads it for
+        # the mosaic transform; without it `ensure_tile_cached` would rebuild it.
+        only=[OBS_ID, TILE_NAME],
     )
 
     df = M.load_manifest(cfg.manifest_path)

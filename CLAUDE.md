@@ -16,11 +16,15 @@ pointers**. The full original build spec is preserved verbatim in
 
 ## Invariants & gotchas (load-bearing — keep these in mind every session)
 
-> **Current mutation-safety hold (2026-08-06):** read
-> [docs/CODE_REVIEW_AUDIT_2026-08-06.md](docs/CODE_REVIEW_AUDIT_2026-08-06.md) before running tests or
-> producers. Until its isolation gate is closed, do not run an unfiltered/full suite, slow
-> producer-calling tests, or pipeline producers against repository dataset/cache roots. The Stage 2/3
-> test fixture can write through a hard-linked mutable derived TIFF when cache invalidation fires.
+> **Mutation safety (2026-08-06, test-side gate CLOSED):** the test suite can no longer write a live
+> artifact. `tests/live_artifact_guard.py` is installed session-wide and **refuses** any write under
+> `cache*/`, `dataset*/`, `models/`, `reports/` (the `cache_v2_dev` junction included); a static AST
+> scan fails if a test hands a producer a live root; `read_only_cache` copies mutable derived artifacts
+> and links only `{tile}.zip` / `{obs}_RED.JP2`. **Still true and still load-bearing:** the producers
+> have no dry-run mode, so *scripts and notebooks* — which the guard does not cover — must be given
+> explicit absolute scratch roots. A copied YAML is not isolation (`Config` resolves relative paths
+> against `REPO_ROOT`) and `cache_v2_dev` is a junction to the live `cache_v2`. Do not start a rebuild:
+> the remaining gates are in [docs/CODE_REVIEW_AUDIT_2026-08-06.md](docs/CODE_REVIEW_AUDIT_2026-08-06.md).
 
 - **Per-image local-radius CRS (the #1 gotcha).** Detections are equirectangular (`Equidistant_Cylindrical`,
   central meridian 180°) **on a sphere whose radius is the local Mars radius at that image's center
@@ -56,9 +60,10 @@ pointers**. The full original build spec is preserved verbatim in
   regenerate with `python notebooks/_build_NN.py` then `nbconvert --execute --inplace`. **Never run
   two notebooks (or two CTX-heavy jobs) at once** (memory: `feedback_collaboration`).
 - **Logic lives in importable `src/` modules**; notebooks and tests *call* it (nothing important
-  lives only in a notebook). Current safe loop: `pytest -m "not slow"` after confirming marker
-  assignments, or inspected synthetic tests with independent temporary roots. The full/slow suite is
-  on hold under the mutation-safety warning above.
+  lives only in a notebook). Loop: `pytest -m "not slow"` (512 passed / 21 deselected, 2026-08-06).
+  The slow suite is no longer structurally unsafe, but its four producer tests have not been run since
+  the staging fixture changed — ask before running it. **`slow` is not the safety control** (20
+  non-slow tests call a producer); the guard and the static scan are.
 - For repeat visual analyses, **download JP2s** rather than `/vsicurl/` each time.
 
 ## Reporting standards (project-specific)

@@ -47,6 +47,12 @@ in the middle column are committed scope. If the option is approved, it needs a 
 identity, metrics, head, calibration, and raster provenance; it cannot reuse the primary product's
 scientific claims by implication.
 
+> **Update 2026-08-06 (fixing session).** Isolation criteria 1–3 below are now **closed** and the
+> mechanism claim in "Why the R77 safety claim is not structurally true" is **partly refuted** —
+> see [the measurement](#measured-2026-08-06-which-writers-actually-write-through-a-hard-link).
+> Criteria 4–5 (script parameterization, artifact backup) remain open; they gate the rebuild, not the
+> test suite. Running the slow suite is now Brian's call rather than structurally unsafe.
+
 ## Immediate operational safety rule
 
 > **Do not run an unfiltered/full pytest suite, any slow producer-calling test, or a pipeline producer
@@ -89,24 +95,64 @@ must not override the code-level analysis above. `CLAUDE.md` and `.claude/settin
 warning/permission review because they currently make full pytest and producer commands too easy to
 invoke against live roots.
 
+### Measured 2026-08-06: which writers actually write through a hard link
+
+The analysis above was right that the fixture's own stated invariant was broken, and wrong about the
+consequence. Controlled probe, wholly inside a temp directory, rasterio 1.5.0 / GDAL 3.11.4 / NTFS:
+
+| write API | source reached through the link? |
+|---|---|
+| `rasterio.open(p, "w")` | **no** — deletes-then-creates; the link breaks and the source survives |
+| `rasterio.open(p, "r+")` | **yes** |
+| `open(p, "wb")` | **yes** |
+| `Path(p).write_text(...)` | **yes** |
+| `shutil.copy2(other, p)` | **yes** |
+| `Path(new).replace(p)` | no — swaps a directory entry |
+
+`read_full_footprint_decimated` rebuilds via `rasterio.open(cache, "w")`, so **the specific truncation
+this document predicted does not fire on the current stack**. The defect is therefore a latent design
+error — a staged directory that is also a write target — that current library behaviour masks, not a
+demonstrated data-loss path. Nothing rests on that masking any more: the fix copies instead.
+
+Also corrected: `slow` was never the control. Re-auditing markers found **20 non-slow tests that call
+a producer** (all of them writing to `tmp_path`). The static scan and runtime guard are the control.
+
+Two other checks came back clean and are worth not re-deriving: the SP1=20 Mars equirectangular CRS
+**does** survive a GeoTIFF round trip, so `_crs_equal` converges and a corrected cache is not rewritten
+on every call; and `pytest -m "not slow"` (512 passed, 21 deselected) left an 11,218-file
+path/size/mtime manifest of all six artifact roots bit-identical with the guard installed.
+
 ### Isolation gate acceptance criteria
 
 Before running slow tests or a rebuild:
 
-1. Mutable derived inputs such as `hirise_decimated` must be copied/rebuilt in a scratch cache, never
-   hard-linked. Large immutable source archives may be linked only where the called code has no write,
-   replace, or invalidation path to those names.
-2. Every producer test must receive independent absolute cache and output roots. Those roots must not
-   be junctions, symlinks, or hard links to a live mutable tree.
-3. Add a guard that rejects producer output/cache roots under the live repository artifact roots during
-   tests. Reproduce stale-CRS invalidation only with two entirely temporary roots (a synthetic source
-   and its staged target), and assert the synthetic source remains unchanged. Separately prove through
-   a static/runtime write guard that repository artifact roots were never opened for write; a safety
-   test must never point at the actual repository cache.
-4. Parameterize scripts that currently hard-code `dataset_v2`, embedding, model, calibration, or map
+1. ✅ **CLOSED 2026-08-06.** Mutable derived inputs such as `hirise_decimated` must be copied/rebuilt in
+   a scratch cache, never hard-linked. Large immutable source archives may be linked only where the
+   called code has no write, replace, or invalidation path to those names. — `read_only_cache` now
+   copies everything except `{tile}.zip` / `{obs}_RED.JP2`; sidecars beside an archive (including GDAL
+   PAM `.aux.xml`, which GDAL rewrites in place) are copied. Every copy asserts a distinct inode, and
+   teardown asserts each linked source is unchanged in size and mtime.
+2. ✅ **CLOSED 2026-08-06.** Every producer test must receive independent absolute cache and output
+   roots. Those roots must not be junctions, symlinks, or hard links to a live mutable tree. — each
+   `read_only_cache(...)` call gets its own root under `tmp_path`; the static scan below enforces it.
+3. ✅ **CLOSED 2026-08-06.** Add a guard that rejects producer output/cache roots under the live
+   repository artifact roots during tests. Reproduce stale-CRS invalidation only with two entirely
+   temporary roots, and assert the synthetic source remains unchanged. Separately prove through a
+   static/runtime write guard that repository artifact roots were never opened for write. —
+   `tests/live_artifact_guard.py` (autouse, session-scoped) refuses `open`/`os.open`/`os.replace`/
+   `os.remove`/`os.link`/`shutil.*`/`numpy.save*`/`rasterio.open(mode!="r")`/`to_parquet`/`to_file`
+   under `cache*`, `dataset*`, `models`, `reports`, resolving the `cache_v2_dev` junction; a static AST
+   scan in `tests/test_artifact_isolation.py` fails even when a producer test skips; the stale-CRS
+   regression there runs on two temporary roots and exercises the invalidation branch the 511-pass run
+   never entered.
+4. ⬜ Parameterize scripts that currently hard-code `dataset_v2`, embedding, model, calibration, or map
    paths. A scratch rebuild must be able to run without writing any live ignored tree.
-5. Snapshot ignored caches, datasets, models, and reports separately before regeneration. Pushing git
+5. ⬜ Snapshot ignored caches, datasets, models, and reports separately before regeneration. Pushing git
    commits does not back up those artifacts, and hard links are not independent backups.
+
+Criteria 4–5 gate the **rebuild**, not the test suite. What is still unproven for the test suite: the
+four reworked slow producer tests have not been executed since the fixture changed, so the `only=`
+staging filter is verified only by a read-only listing of the files each producer needs.
 
 ## Corrected current state of the review
 
@@ -126,7 +172,7 @@ evidence strength, affected object, and the exact stage/product blocked.
 | **R31** | OPEN and now active because Stage 2 is in the rebuild. Crop the raster `Window` and derive the transform from the clipped window. Reconstructing bounds from array shape cannot repair west/north overhang. |
 | **R38** | OPEN, medium, and required for A1. The nodata collision is real, but the alleged A1-payoff footprint confound was refuted. The committed-product gate requires an explicit nodata mask. `[1,255]` is useful only as a temporary sentinel-preserving diagnostic because it moves information loss to DN 1. |
 | **R74** | CODE FIXED — REBUILD PENDING. Add direct regression tests and machine-readable provenance before treating the fix as a rebuild boundary. |
-| **R77** | Direct test-output redirects landed, but the full-suite-safety conclusion is retracted pending the hard-link isolation fix above. Treat the residual mutation hazard as OPEN. |
+| **R77** | **FIXED 2026-08-06.** Direct test-output redirects landed 2026-08-05; the residual hard-link staging hole is now closed by copy-staging plus static and runtime write guards. The predicted `rasterio "w"` truncation mechanism was measured and does not fire on this stack; the fix no longer depends on that. |
 | **R78** | PARTIAL. Non-zero mosaic-origin fixtures landed in the labelling/features tests and most of the CTX source-illumination coverage; one `(0,0)` illumination fixture and two mutation checks remain. |
 | **R87/R88** | OPEN regression-coverage gaps. Current production splitting is group-aware and currently excludes label columns; these findings do not establish that current artifacts are corrupt. |
 | **R91** | FIXED by differently shaped and origin-asymmetric rectangular within-image extents; the main register's OPEN line is stale. |
