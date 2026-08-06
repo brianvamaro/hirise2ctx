@@ -268,30 +268,46 @@ def test_rasterize_empty_intersection_returns_all_nan():
 # ============================================================================
 
 def test_add_features_end_to_end():
-    transform = _affine(px=1.0, x0=0.0, y0=8.0)
+    """R78: the last (0, 0) fixture in this file, now on the real mosaic phase.
+
+    The zero origin was never the point of this test — nothing here asserted anything
+    about a zero-phase window — so it was the degenerate case R78 names, not a
+    complementary one. On the real phase the CTX window is *not* tile-aligned: with
+    S = 4, 894 % 4 = 2 and 12645 % 4 = 1, so tiles start at window row 2 and window
+    column 3. Those two offsets differ, so a row/col swap no longer passes either.
+    """
+    # ti = 224 -> window row 224*4 - 894 = 2;  ti = 225 -> row 6.
+    # tj = 3162 -> window col 3162*4 - 12645 = 3;  tj = 3163 -> col 7.
+    TI0, TI1 = 224, 225
+    TJ_LEFT, TJ_RIGHT = 3162, 3163
+    assert TI0 * 4 - MOSAIC_ROW_ORIGIN == 2 and TJ_LEFT * 4 - MOSAIC_COL_ORIGIN == 3, (
+        "tile indices no longer land where this test's geometry assumes"
+    )
+
+    transform = _affine(px=1.0, x0=0.0, y0=12.0)
+    # Source A covers window columns 0-6, source B covers 7-11. The left tile column
+    # (window cols 3-6) is wholly in A; the right one (cols 7-10) wholly in B.
     gdf = _seam_gdf([
-        (box(0, 0, 4, 8), 40.0, 1.0, 41.0, 150.0, "A"),
-        (box(4, 0, 8, 8), 60.0, 2.0, 62.0, 160.0, "B"),
+        (box(0, 0, 7, 12), 40.0, 1.0, 41.0, 150.0, "A"),
+        (box(7, 0, 12, 12), 60.0, 2.0, 62.0, 160.0, "B"),
     ])
     df = pd.DataFrame({
         "obs_id": ["ESP_TEST"] * 4,
         "scale_idx": [1] * 4,
         "tile_size_px": [4] * 4,
-        "ti": [0, 0, 1, 1],
-        "tj": [0, 1, 0, 1],
+        "ti": [TI0, TI0, TI1, TI1],
+        "tj": [TJ_LEFT, TJ_RIGHT, TJ_LEFT, TJ_RIGHT],
         "intensity_mean": [1.0, 2.0, 3.0, 4.0],
     })
     out = add_ctx_source_illumination_features(
         df, seam_gdf=gdf, window_transform=transform,
-        window_h=8, window_w=8,
-        mosaic_row_origin=0, mosaic_col_origin=0,
+        window_h=12, window_w=12,
+        mosaic_row_origin=MOSAIC_ROW_ORIGIN, mosaic_col_origin=MOSAIC_COL_ORIGIN,
     )
     for c in OUTPUT_COLUMNS:
         assert c in out.columns
-    # Left column of tiles ((0,0) and (1,0)) is fully in source A (incidence=40);
-    # right column ((0,1) and (1,1)) is fully in source B (incidence=60).
-    left = out[(out["tj"] == 0)]
-    right = out[(out["tj"] == 1)]
+    left = out[out["tj"] == TJ_LEFT]
+    right = out[out["tj"] == TJ_RIGHT]
     np.testing.assert_allclose(left["ctx_incidence_mean"], 40.0)
     np.testing.assert_allclose(right["ctx_incidence_mean"], 60.0)
     np.testing.assert_array_equal(out["ctx_n_sources"], [1, 1, 1, 1])

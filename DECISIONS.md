@@ -6099,3 +6099,34 @@ trip, so `_crs_equal` converges and a corrected cache is *not* rewritten on ever
 11,218-file path/size/mtime manifest over all six artifact roots bit-identical before and after.
 **Not run:** the slow suite. Its four producer tests have not executed since the fixture changed, so the
 `only=` staging filter is verified only by a read-only listing of what each producer reads.
+
+## 2026-08-06c — R78 CLOSED: both mosaic-origin mutants are now killed
+
+The 2026-08-05 session re-based the labelling and features fixtures on the real mosaic phase
+`(894, 12645)` (from `dataset_v2/labels/ESP_042964_2160.json`; 0 of 52 production sidecars has either
+origin at 0) but never ran the mutants, so the fix was unproven. Run now, on **two independent
+scratchpad copies of `src/` + `tests/`** — the working-tree `src/` was never modified:
+
+| mutant | before | now |
+|---|---|---|
+| `src/labeling.py:367-370`, drop `mx_origin_x`/`mx_origin_y` from the tile bounds | suite green | **FAILS** `test_tile_bounds_align_with_mosaic_pixel_grid` (`xmin not aligned at scale 8`) and `test_label_transforms_emit_expected_columns` |
+| `src/features.py:653-654`, `ti*S - origin` → `ti*S + origin` | suite green | **FAILS** four Stage-4b tests on the bounds guard (`RuntimeError: some Stage 4 tiles fall outside the cached CTX window`) |
+
+Mutant (a) is the one the review used to make the point: it is the failure
+`test_tile_bounds_align_with_mosaic_pixel_grid`'s own docstring names, it displaces real `ymin` by
+2,608 km, and the assertion could not see it while the fixture's origin was `(0, 0)`. On the synthetic
+fixture the residual is only 2.42 m — the fixture reproduces the *detectability*, not the production
+magnitude, which is the whole point of parameterising it on a real phase rather than a large one.
+
+**The last `(0,0)` call site is gone.** `test_ctx_source_illumination.py::test_add_features_end_to_end`
+now runs on the real phase. Nothing in it ever asserted anything about a zero-phase window, so it was
+the degenerate case, not a complementary one. On the real phase the CTX window is not tile-aligned:
+`894 % 4 = 2` and `12645 % 4 = 1`, so tiles start at window row 2 and column 3 — two *different*
+offsets, so a row/col swap now fails as well.
+
+**One zero origin is kept on purpose.** `test_alignment_aligned_window` exists to test the aligned
+case ("Window origin exactly at mosaic origin"), and `test_alignment_offset_window` supplies the
+`(3, 5)` complement. That is the explicit-and-complementary pattern; the R78 defect was the *implicit*
+one.
+
+Fast suite green. The producers were not run: every test involved uses `tmp_path` and synthetic data.
