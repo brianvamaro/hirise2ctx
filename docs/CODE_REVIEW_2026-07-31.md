@@ -1,5 +1,10 @@
 # Full-codebase review — 2026-07-31
 
+> **Current-state correction (2026-08-06):** before using this register as a fixing queue, read
+> [CODE_REVIEW_AUDIT_2026-08-06.md](CODE_REVIEW_AUDIT_2026-08-06.md). It records stale statuses,
+> rejected fix alternatives, the unresolved test-mutation hazard, current product decisions, and the
+> complete v2 rebuild dependency chain.
+
 **Purpose.** A resumable, actionable defect register for the whole `hirise2ctx` repo. Written so a
 future session can (a) pick up the *review* where it stopped, and (b) fix the findings without
 re-deriving them.

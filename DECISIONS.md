@@ -6010,3 +6010,40 @@ verification, and it was wrong in the most misleading way available: right pheno
 with a confident unexplained-cause narrative attached. It survived because two agents made the same
 factor-of-8 assumption. **This is the second time a "cause unexplained" flag turned out to mark an
 error in the measurement rather than a mystery in the data** — treat that flag as a smell.
+
+## 2026-08-06 — code-review audit correction, product scope, and rebuild hold
+
+**Current handoff:** [docs/CODE_REVIEW_AUDIT_2026-08-06.md](docs/CODE_REVIEW_AUDIT_2026-08-06.md).
+It is the correction layer to the 2026-07-31 review and `docs/PENDING_REBUILD.md`: corrected finding
+states/actions, safety gates, product semantics, and the complete v2 rebuild DAG live there.
+
+**Safety correction to 2026-08-05b:** the six direct test-output redirects landed, but the conclusion
+"the full suite is now safe" is not structurally established. `read_only_cache` hard-links the mutable
+derived `hirise_decimated` input, and Stage 2/3 can reopen that path with `"w"` if its cached CRS is
+stale. The clean 511-pass checksum run did not take that invalidation branch. Until the audit's
+isolation gate is closed, unfiltered/full pytest, slow producer-calling tests, and producers pointed at
+repository artifact roots are on hold. Use only the reviewed non-slow loop or inspected synthetic
+tests with independent temporary roots. Checksums remain secondary damage detection, not prevention.
+
+**Brian's product decisions:**
+
+1. Build the v2 regional rich-probability/calibrated-abundance mosaic and a matched A1-normalized
+   version over the same planned 26-tile, globally anchored footprint. A1 is planned, not yet shipped.
+2. Retain and explicitly document the current resolution-dependent minimum-included-label convention
+   for the primary product. A separately identified common-floor target may also be produced later,
+   but is a different target with separate target-dependent model/calibration/claim lineage.
+3. `dataset/` v1 is superseded and will not be rebuilt. Preserve it only as a historical generation;
+   current product and rebuild work are v2.
+
+**Rebuild consequence:** R74's current 3,236-tile/prevalence deltas are a conditional counterfactual,
+not final output counts. The rebuild must include Stage 3 and Stage 5, fresh forced LOIO predictions,
+arm-specific heads/calibrations, and fresh baseline+A1 map generations. Before that begins, close the
+test/cache isolation hole; fix the stage-specific gates in the audit; define A1's statistical unit and
+enforce train/deploy parity; and make every step accept isolated versioned artifact roots.
+
+**Status terminology correction:** R78 is the partially fixed non-zero mosaic-origin coverage gap.
+R91 is fixed by differently shaped and origin-asymmetric rectangular extents; those fixtures are not
+ragged footprints. R92 was refuted as filed, and R97 remains the live snapping-constant finding.
+
+This audit/documentation session ran no tests, imports with producer side effects, producers, or
+artifact rebuilds.

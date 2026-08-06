@@ -16,6 +16,12 @@ pointers**. The full original build spec is preserved verbatim in
 
 ## Invariants & gotchas (load-bearing — keep these in mind every session)
 
+> **Current mutation-safety hold (2026-08-06):** read
+> [docs/CODE_REVIEW_AUDIT_2026-08-06.md](docs/CODE_REVIEW_AUDIT_2026-08-06.md) before running tests or
+> producers. Until its isolation gate is closed, do not run an unfiltered/full suite, slow
+> producer-calling tests, or pipeline producers against repository dataset/cache roots. The Stage 2/3
+> test fixture can write through a hard-linked mutable derived TIFF when cache invalidation fires.
+
 - **Per-image local-radius CRS (the #1 gotcha).** Detections are equirectangular (`Equidistant_Cylindrical`,
   central meridian 180°) **on a sphere whose radius is the local Mars radius at that image's center
   latitude** — it differs image-to-image (e.g. `3393833.26 m`, not the standard `3396190 m`). **Read
@@ -50,7 +56,9 @@ pointers**. The full original build spec is preserved verbatim in
   regenerate with `python notebooks/_build_NN.py` then `nbconvert --execute --inplace`. **Never run
   two notebooks (or two CTX-heavy jobs) at once** (memory: `feedback_collaboration`).
 - **Logic lives in importable `src/` modules**; notebooks and tests *call* it (nothing important
-  lives only in a notebook). Tests: `pytest -m "not slow"` (fast) / full suite incl. slow integration.
+  lives only in a notebook). Current safe loop: `pytest -m "not slow"` after confirming marker
+  assignments, or inspected synthetic tests with independent temporary roots. The full/slow suite is
+  on hold under the mutation-safety warning above.
 - For repeat visual analyses, **download JP2s** rather than `/vsicurl/` each time.
 
 ## Reporting standards (project-specific)
@@ -70,6 +78,8 @@ pointers**. The full original build spec is preserved verbatim in
 - **Config:** `config.yaml` (+ `config_v2.yaml` for the vClaire v2 dataset)
 - **Output column dictionary:** `dataset/DATA_DICTIONARY.md`
 - **Methods writeups (for non-coders):** [docs/methods.md](docs/methods.md), [docs/index.md](docs/index.md)
+- **Current code-review/fixing handoff:**
+  [docs/CODE_REVIEW_AUDIT_2026-08-06.md](docs/CODE_REVIEW_AUDIT_2026-08-06.md)
 - **Live session state:** the `project_state_*` memory notes (not the stale `HANDOFF_NEXT_SESSION.md`)
 
 When reality diverges from a doc, update DECISIONS (and the relevant PLAN/ROADMAP) in the same change —
