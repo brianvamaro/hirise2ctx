@@ -449,32 +449,39 @@ def _contrast_pair():
     return high, low
 
 
-def test_default_canny_thresholds_are_absolute_and_track_frame_contrast():
-    """R28, the mechanism. This pins the *current, shipped* behaviour as a defect, not as
-    an invariant: with `use_quantiles=False` and null thresholds, skimage applies absolute
-    constants, so edge density is a function of how much contrast the frame happens to have.
+_ABSOLUTE_CANNY_CFG = dict(
+    DEFAULT_FEATURES_CFG["canny_edges"],
+    use_quantiles=False, low_threshold=None, high_threshold=None,
+)
 
-    Cohort evidence (read-only, 2026-08-06): per-image `edge_density` tracks per-image
-    `intensity_std` at Spearman rho = 0.965 over the 38 images, 12.2x spread, and 33.8 % of
-    `ESP_068402_2240`'s S=64 tiles have zero Canny edge pixels. Same failure mode the
-    project already found and fixed for `shadow_fraction` (DECISIONS 2026-06-10).
+
+def test_absolute_canny_thresholds_track_frame_contrast():
+    """R28, the mechanism — pinned as a defect, so the fix below has something to beat.
+
+    With `use_quantiles=False` and null thresholds (what shipped through 2026-08-06),
+    skimage applies its absolute 0.1/0.2 constants, so edge density is a function of how
+    much contrast the frame happens to have. Cohort evidence, read-only: per-image
+    `edge_density` tracks per-image `intensity_std` at Spearman rho = 0.965 over the 38
+    images, 12.2x spread, 33.8 % of `ESP_068402_2240`'s S=64 tiles with zero edge pixels.
+    Same failure the project already found and fixed for `shadow_fraction`
+    (DECISIONS 2026-06-10).
     """
     high, low = _contrast_pair()
-    cfg = dict(DEFAULT_FEATURES_CFG["canny_edges"])
-    d_high = _compute_canny_window(high, cfg).mean()
-    d_low = _compute_canny_window(low, cfg).mean()
+    d_high = _compute_canny_window(high, _ABSOLUTE_CANNY_CFG).mean()
+    d_low = _compute_canny_window(low, _ABSOLUTE_CANNY_CFG).mean()
     assert d_low < 0.1 * d_high, (
-        "the absolute-threshold defect no longer reproduces; if the default changed, move "
-        "this assertion to the quantile test and update DATA_DICTIONARY + PENDING_REBUILD"
+        f"absolute thresholds should be gain-dependent: {d_high:.5f} -> {d_low:.5f}"
     )
 
 
-def test_quantile_canny_thresholds_are_contrast_invariant():
-    """R28, the fix. Percentiles of the frame's own gradient magnitude do not move when the
-    gain does."""
+def test_default_canny_thresholds_are_contrast_invariant():
+    """R28, the fix, on the **shipped default**. Percentiles of the frame's own gradient
+    magnitude do not move when the gain does. Brian chose 0.80/0.90 on 2026-08-06."""
+    cfg = DEFAULT_FEATURES_CFG["canny_edges"]
+    assert cfg["use_quantiles"] is True
+    assert (cfg["low_threshold"], cfg["high_threshold"]) == (0.80, 0.90)
+
     high, low = _contrast_pair()
-    cfg = dict(DEFAULT_FEATURES_CFG["canny_edges"])
-    cfg.update(use_quantiles=True, low_threshold=0.8, high_threshold=0.9)
     d_high = _compute_canny_window(high, cfg).mean()
     d_low = _compute_canny_window(low, cfg).mean()
     assert d_high == pytest.approx(d_low, rel=0.05), (
@@ -483,27 +490,39 @@ def test_quantile_canny_thresholds_are_contrast_invariant():
     assert 0.0 < d_high < 0.5
 
 
+def test_shipped_configs_agree_with_the_canny_default(repo_root):
+    """A YAML `features:` block overrides the defaults key-by-key, so a stale config would
+    silently reinstate the absolute thresholds for real runs while the unit tests stayed
+    green on `DEFAULT_FEATURES_CFG`."""
+    import yaml
+
+    want = DEFAULT_FEATURES_CFG["canny_edges"]
+    for name in ("config.yaml", "config_v2.yaml"):
+        raw = yaml.safe_load((repo_root / name).read_text(encoding="utf-8"))
+        got = raw["features"]["canny_edges"]
+        for key in ("use_quantiles", "low_threshold", "high_threshold"):
+            assert got[key] == want[key], f"{name}: canny_edges.{key} = {got[key]!r}"
+
+
 def test_quantile_mode_requires_explicit_thresholds():
     """Turning on `use_quantiles` while leaving the thresholds null would silently fall back
     to the absolute constants — the exact defect the option exists to remove."""
-    cfg = dict(DEFAULT_FEATURES_CFG["canny_edges"])
-    cfg["use_quantiles"] = True
+    cfg = dict(DEFAULT_FEATURES_CFG["canny_edges"], low_threshold=None, high_threshold=None)
     with pytest.raises(ValueError, match="use_quantiles"):
         _compute_canny_window(np.zeros((32, 32), dtype=np.uint8), cfg)
 
 
 def test_explicit_point_one_is_not_the_same_as_none():
-    """The trap that makes "just write the default into the config" wrong: skimage maps
-    None to 0.1 directly, but divides an *explicit* threshold by dtype_max — 0.1/255 on a
-    uint8 window, which passes almost every gradient."""
+    """The trap that makes "just write the old default into the config" wrong: skimage maps
+    None to 0.1 directly, but divides an *explicit* absolute threshold by dtype_max —
+    0.1/255 on a uint8 window, which passes almost every gradient."""
     high, _ = _contrast_pair()
-    as_none = dict(DEFAULT_FEATURES_CFG["canny_edges"])
-    as_explicit = dict(as_none, low_threshold=0.1, high_threshold=0.2)
-    d_none = _compute_canny_window(high, as_none).mean()
+    as_explicit = dict(_ABSOLUTE_CANNY_CFG, low_threshold=0.1, high_threshold=0.2)
+    d_none = _compute_canny_window(high, _ABSOLUTE_CANNY_CFG).mean()
     d_explicit = _compute_canny_window(high, as_explicit).mean()
     assert d_none != pytest.approx(d_explicit, rel=1e-6), (
-        "explicit 0.1/0.2 now matches None; the config may safely state the values "
-        "literally, so update the R28 note in config.yaml"
+        "explicit 0.1/0.2 now matches None; if skimage changed, the R28 note in "
+        "config.yaml about dtype_max scaling needs revisiting"
     )
 
 

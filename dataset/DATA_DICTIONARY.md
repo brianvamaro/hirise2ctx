@@ -309,14 +309,17 @@ Canny edges computed once over the full CTX window (`sigma=1.0`). Per-tile reduc
 > **R28 / 2026-08-06 — read this before using `edge_*` for science.** "skimage-default
 > thresholds" means the **absolute constants 0.1 / 0.2** on the `img_as_float` image, *not*
 > thresholds derived from this image's gradient distribution (`config.yaml` used to claim
-> the opposite). So `edge_density` partly measures how much radiometric contrast the CTX
+> the opposite). So `edge_density` partly measured how much radiometric contrast the CTX
 > frame happens to have: across the 38-image cohort, per-image `edge_density` tracks
 > per-image `intensity_std` at Spearman **ρ = 0.965** with a **12.2×** spread, and
 > **33.8 %** of `ESP_068402_2240`'s S = 64 tiles have zero Canny edge pixels. On a synthetic
-> scene, cutting the DN spread ~3× collapses edge density 100-fold. `canny_edges.use_quantiles`
-> now exists to make the thresholds distribution-derived; it is **off** in the shipped
-> configs pending a decision on the quantile pair, so every `edge_*` value in
-> `dataset*/features/**` is the absolute-threshold version.
+> scene, cutting the DN spread ~3× collapses edge density 100-fold.
+>
+> The shipped configs now use `canny_edges.use_quantiles: true` with `0.80 / 0.90` —
+> **percentiles of each frame's own gradient magnitude**, which is gain-invariant (×1.00 on
+> the same test). **Every `edge_*` value currently in `dataset*/features/**` is still the
+> old absolute-threshold version** and changes at the batched rebuild; see
+> [docs/PENDING_REBUILD.md](../docs/PENDING_REBUILD.md).
 
 | Column | Type | Meaning |
 |---|---|---|

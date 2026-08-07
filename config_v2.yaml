@@ -139,14 +139,14 @@ features:
   subtile_variance:
     min_tile_size_px: 16
   canny_edges:
-    # R28: see the long note in config.yaml. `use_quantiles: false` + null thresholds means
-    # skimage's ABSOLUTE 0.1/0.2 constants, not distribution-derived ones, which is why
-    # edge_density tracks per-frame radiometry. Left at the shipped values pending Brian's
-    # choice of quantile pair; changing them invalidates every edge_* feature.
+    # R28: see the long note in config.yaml. These are PERCENTILES of this frame's own
+    # gradient magnitude (Brian, 2026-08-06), replacing skimage's absolute 0.1/0.2
+    # constants, which made edge_density track per-frame radiometry. Every edge_* value in
+    # dataset_v2/features/** predates this -- see docs/PENDING_REBUILD.md.
     sigma: 1.0
-    use_quantiles: false
-    low_threshold: null
-    high_threshold: null
+    use_quantiles: true
+    low_threshold: 0.80
+    high_threshold: 0.90
     n_orientation_bins: 8
     min_tile_size_px: 16
   context_patch:

@@ -6206,3 +6206,29 @@ by `dtype_max`, so on a uint8 window it becomes 0.1/255 — which passes nearly 
 pinning the two as different.
 
 Six new tests. Fast suite green; nothing regenerated.
+
+## 2026-08-06f — R28 decision: Canny thresholds become quantiles 0.80 / 0.90
+
+Brian chose the quantile pair via AskUserQuestion. `canny_edges` in `DEFAULT_FEATURES_CFG`,
+`config.yaml` and `config_v2.yaml` is now `use_quantiles: true`, `low_threshold: 0.80`,
+`high_threshold: 0.90` — the top 20 % of each frame's own gradient magnitudes are edge candidates and
+the top 10 % are seeds.
+
+**Why that pair.** It is gain-invariant (the ~3× DN-spread test moves synthetic edge density ×1.00,
+versus ×0.01 under the old absolute constants) and its synthetic density, 0.130, sits mid-range of the
+pre-fix 0.025–0.307 cohort spread, so it preserves roughly the current amount of signal rather than
+thinning or flooding the edge map. 0.90/0.95 was the stricter alternative at density 0.062.
+
+A new test asserts both YAMLs agree with `DEFAULT_FEATURES_CFG` on these three keys: `_deep_merge_defaults`
+lets a YAML `features:` block override key-by-key, so a stale config would silently reinstate the
+absolute thresholds for real runs while the unit tests stayed green on the default.
+
+**Artifact impact** is [PENDING_REBUILD.md](docs/PENDING_REBUILD.md) row 3: `edge_density` and
+`edge_orientation_entropy` change for every tile in all 38 images, and with them the six
+`nbr_*_edge_*` Stage-6a derivatives and every GBM/W1 number or error-atlas panel computed from one.
+Expect the per-image `edge_density` spread to shrink sharply — that is the fix working, not a
+regression.
+
+Also decided: **do not run the slow suite yet.** The test-side isolation gate is closed and the fast
+loop is green at 526, but the four staged producer tests have not been executed since the fixture
+changed; they will run as one batch before the rebuild rather than mid-fixing.

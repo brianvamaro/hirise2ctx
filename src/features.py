@@ -77,12 +77,14 @@ DEFAULT_FEATURES_CFG: dict[str, Any] = {
     "lacunarity": {"box_sizes_px": [2, 4], "min_tile_size_px": 32},
     "subtile_variance": {"min_tile_size_px": 16},
     "canny_edges": {
-        # R28: `use_quantiles` is False and the thresholds are None, so skimage applies its
-        # ABSOLUTE 0.1/0.2 constants. See `_compute_canny_window` -- this is the shipped
-        # behaviour, kept as the default only so nothing changes silently, and it is what
-        # makes `edge_density` track per-frame radiometry.
-        "sigma": 1.0, "use_quantiles": False,
-        "low_threshold": None, "high_threshold": None,
+        # R28 (Brian, 2026-08-06): thresholds are PERCENTILES of this frame's own gradient
+        # magnitude, so `edge_density` no longer tracks how much contrast the CTX frame
+        # happens to have. 0.80/0.90 = top 20 % of gradients are edge candidates, top 10 %
+        # are seeds; that lands mid-range of the pre-fix 0.025-0.307 cohort spread, so it
+        # keeps roughly the current amount of signal. See `_compute_canny_window` for the
+        # measurements and for why 0.1/0.2 must NOT be reused as quantiles.
+        "sigma": 1.0, "use_quantiles": True,
+        "low_threshold": 0.80, "high_threshold": 0.90,
         "n_orientation_bins": 8, "min_tile_size_px": 16,
     },
     "context_patch": {"enabled": True, "sizes_px": [32, 64]},

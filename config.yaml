@@ -146,21 +146,23 @@ features:
   canny_edges:
     # Skimage canny on a per-image basis, then per-tile density + orientation entropy.
     sigma: 1.0
-    # R28. The old comment here said "None -> skimage chooses from gradient magnitude".
-    # That is the opposite of what happens: with use_quantiles=false, null makes skimage
-    # use its ABSOLUTE constants 0.1 / 0.2 on the img_as_float image, so edge_density
-    # partly measures how much radiometric contrast the CTX frame happens to have
-    # (measured: Spearman rho = 0.965 against per-image intensity_std across the 38-image
-    # cohort, 12.2x spread; a ~3x DN-spread reduction collapses synthetic edge density
-    # 100-fold). Set use_quantiles: true with HIGH percentiles (e.g. 0.8 / 0.9) to make the
-    # thresholds distribution-derived and contrast-invariant -- do NOT reuse 0.1/0.2 as
-    # quantiles, that marks ~80-90% of pixels as edges. Note also that an explicit 0.1 is
-    # NOT the current behaviour: skimage divides explicit thresholds by dtype_max.
-    # Left at the shipped values pending Brian's choice of quantile pair; changing them
-    # invalidates every edge_* feature (see docs/PENDING_REBUILD.md).
-    use_quantiles: false
-    low_threshold: null
-    high_threshold: null
+    # R28. The old comment here said "None -> skimage chooses from gradient magnitude",
+    # which is the opposite of what happened: with use_quantiles=false, null makes skimage
+    # apply its ABSOLUTE constants 0.1 / 0.2 to the img_as_float image, so edge_density
+    # partly measured how much radiometric contrast the CTX frame happens to have
+    # (Spearman rho = 0.965 against per-image intensity_std across the 38-image cohort,
+    # 12.2x spread; a ~3x DN-spread reduction collapsed synthetic edge density 100-fold).
+    # These are now PERCENTILES of this frame's own gradient magnitude, which is
+    # gain-invariant (same test: x1.00). Brian chose 0.80 / 0.90 on 2026-08-06 -- top 20 %
+    # of gradients are edge candidates, top 10 % are seeds -- because it lands mid-range of
+    # the pre-fix 0.025-0.307 cohort spread.
+    #   * do NOT reuse 0.1 / 0.2 as quantiles: that marks ~80-90 % of pixels as edges.
+    #   * an explicit 0.1 with use_quantiles=false is NOT the old behaviour either --
+    #     skimage divides explicit absolute thresholds by dtype_max (0.1/255 on uint8).
+    # Every edge_* value in dataset*/features/** predates this; see docs/PENDING_REBUILD.md.
+    use_quantiles: true
+    low_threshold: 0.80
+    high_threshold: 0.90
     n_orientation_bins: 8
     min_tile_size_px: 16
   context_patch:
