@@ -6380,3 +6380,46 @@ recipe above covers them), but the embedding, LOIO-prediction, head and map scri
 roots. Criterion 5 (an independent backup of the ignored trees) is untouched.
 
 `pytest -m "not slow"`: 560 passed, 21 deselected; artifact manifest unchanged.
+
+## 2026-08-06k — isolation criterion 4 finished, and an A1 provenance record that lied
+
+**The bug worth naming.** `scripts/striping_a1_map.py` accepts `--head`, and its *region* manifest
+recorded `args.head` correctly — but the *per-tile* sidecar recorded the `A1_HEAD` **constant**
+(line 190). So a `--head <other>` run produced two provenance records that contradicted each other,
+with nothing flagging the disagreement. This is the audit's "the A1 path can report the global default
+head even when a different command-line head is used", confirmed by reading and now fixed.
+
+Both A1 records, and both baseline map records, now carry `head`, `head_digest`, `calibration` and
+`calibration_digest`. **The baseline tile sidecar previously recorded neither** — only
+`calibrated: true/false` — so a `reports/map_region/*.json` could not be traced to the artifacts that
+produced it, and two tiles rendered from different heads were indistinguishable. New
+`src.mapping.artifact_digest` hashes a file *or* a directory (sorted relative-path + content), because
+a `DeployableHead` is a directory and a `CalibrationLayer` is one `.npz`. Digests rather than paths:
+a path can be overwritten in place, and a head directory's name is a hash of the *training recipe*,
+not of the weights that came out of it.
+
+Also fixed while there: `map_region.py`'s manifest called `model_dir.relative_to(REPO_ROOT)`, which
+raises for any head outside the repo — i.e. for exactly the scratch head a rebuild would use.
+
+**Criterion 4 roots, now all flags:**
+
+| script | new flags |
+|---|---|
+| `map_region.py` | `--ctx-tiles`, `--model-parent` (had `--out-dir`, `--model`, `--calibration`) |
+| `map_pilot.py` | `--ctx-windows`, `--ctx-tiles`, `--model-parent`, `--out-map`, `--out-fig`; dead `DATASET_DIR` removed |
+| `parity_check.py` | `--ctx-tiles`, `--model-parent` |
+| `train_deployable_head.py` | `--dataset-dir` |
+| `striping_a1_loio.py` | `--dataset-dir`, `--out-dir` |
+| `striping_a1_map.py` | already had `--head`/`--out-dir`; the provenance now matches them |
+| `bank_calibration.py` | done 2026-08-06j |
+
+Module constants are kept as the argparse *defaults*, so existing invocations are unchanged. Verified:
+all seven import and `--help` cleanly (which exercises the module-level code and the new defaults).
+
+**Left open deliberately.** `resolve_model_dir` still picks `hits[-1]` — the lexicographically last
+head — when `--model` is omitted. That is choosing a head by *name*, not by compatibility with the
+calibrator or the preprocessing arm, and it is a separate open finding in the audit's "Product
+semantics" section. A note now says so at the function rather than in a document nobody reads at the
+call site.
+
+`pytest -m "not slow"`: 560 passed, 21 deselected; artifact manifest unchanged.

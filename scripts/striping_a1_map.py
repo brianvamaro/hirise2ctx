@@ -49,7 +49,8 @@ from rasterio.features import rasterize
 from scripts.map_region import load_tile_sidecar, window_offsets
 from src.calibration import CalibrationLayer
 from src.fm_embeddings import FangEmbedder
-from src.mapping import coarsened_transform, predict_window, read_tile_window, write_geotiff
+from src.mapping import (artifact_digest, coarsened_transform, predict_window,
+                         read_tile_window, write_geotiff)
 from src.modeling.mlp_head import DeployableHead
 from src.striping import (A1_REF_IQR, A1_REF_MEDIAN, CTX_ZIP_DIR, MAP_DIR, _inner_tif_name,
                           a1_stats, frame_label_map, load_frames, read_ctx_on_grid)
@@ -187,7 +188,17 @@ def write_tile(tile, partials, inner_transform, crs_wkt, calibrator, args) -> No
         "isotonic": calibrator is not None and not args.no_isotonic,
         "prob_mean": float(np.nanmean(prob)), "rich_share_at_0p5": float((prob >= 0.5).mean()),
         "abundance_mean": float(np.nanmean(ab)) if ab is not None else None,
-        "variant": "A1", "head": str(A1_HEAD.relative_to(REPO)),
+        # Provenance must describe the run, not the default. Until 2026-08-06 this line
+        # recorded the A1_HEAD *constant* while the region manifest recorded `args.head`,
+        # so a `--head <other>` run produced two provenance records that contradicted each
+        # other and neither was flagged. The digest is what actually pins the artifact: a
+        # path can be overwritten in place, and the head directory's name is a hash of the
+        # training recipe, not of the weights it produced.
+        "variant": "A1",
+        "head": str(args.head),
+        "head_digest": artifact_digest(args.head),
+        "calibration": str(args.calibration) if args.calibration else None,
+        "calibration_digest": artifact_digest(args.calibration) if args.calibration else None,
         "a1_ref": {"median": A1_REF_MEDIAN, "iqr": A1_REF_IQR},
         "a1_stats_source": "read_ctx_on_grid at 160 m, SeamMap partition labels "
                            "(striping_a1_infer_crop.py convention)",
@@ -230,7 +241,12 @@ def main() -> int:
     for tile in tiles:
         results.append(process_tile(tile, embedder, head, calibrator, args))
     (Path(args.out_dir) / "a1_manifest.json").write_text(
-        json.dumps({"tiles": results, "head": str(args.head), "win_px": args.win_px,
+        json.dumps({"tiles": results, "head": str(args.head),
+                    "head_digest": artifact_digest(args.head),
+                    "calibration": str(args.calibration) if args.calibration else None,
+                    "calibration_digest": (
+                        artifact_digest(args.calibration) if args.calibration else None),
+                    "win_px": args.win_px,
                     "batch": args.batch, "a1_ref_median": A1_REF_MEDIAN,
                     "a1_ref_iqr": A1_REF_IQR}, indent=2), encoding="utf-8")
     done = sum(1 for r in results if r["status"] == "done")

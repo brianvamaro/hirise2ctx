@@ -47,6 +47,38 @@ class CtxWindow:
     crs_wkt: str
 
 
+def artifact_digest(path: str | Path) -> str | None:
+    """Content digest of a model/calibration artifact: a file, or a whole directory.
+
+    A `DeployableHead` is a directory and a `CalibrationLayer` is one `.npz`, so map
+    provenance needs both shapes. Directories hash the sorted `(relative posix path,
+    file sha256)` listing, so a renamed or added file changes the digest.
+
+    Recording the *path* is not enough: the audit's requirement is that a tile sidecar and
+    a region manifest identify the head and calibration by content, because a path can be
+    overwritten in place and a directory name is only a recipe hash of the training
+    configuration, not of the weights that came out of it. Returns None for a missing path
+    so a raw-probability run (no calibrator) records `null` rather than crashing.
+    """
+    import hashlib
+
+    p = Path(path)
+    if not p.exists():
+        return None
+    h = hashlib.sha256()
+    if p.is_file():
+        files = [p]
+    else:
+        files = sorted(q for q in p.rglob("*") if q.is_file())
+    for q in files:
+        if p.is_dir():
+            h.update(q.relative_to(p).as_posix().encode("utf-8"))
+        with open(q, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+    return h.hexdigest()
+
+
 def read_tile_window(zip_path: str | Path, inner_tif: str, row_off: int, col_off: int,
                      size: int) -> CtxWindow:
     """Window-read a `size x size` uint8 block from `/vsizip/{zip}/{inner_tif}`.

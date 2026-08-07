@@ -73,20 +73,25 @@ def restrict_fold(fold, avail: set[str]):
     )
 
 
-def store_obs(name: str) -> set[str]:
-    return {p.name[: -len("_P96.npz")] for p in (DATASET_DIR / name).glob("*_P96.npz")}
+def store_obs(name: str, dataset_dir: str | Path | None = None) -> set[str]:
+    root = Path(dataset_dir) if dataset_dir is not None else DATASET_DIR
+    return {p.name[: -len("_P96.npz")] for p in (root / name).glob("*_P96.npz")}
 
 
-def run_store(store_name: str, avail: set[str] | None = None) -> pd.DataFrame:
+def run_store(store_name: str, avail: set[str] | None = None,
+              dataset_dir: str | Path | None = None) -> pd.DataFrame:
+    # Isolation criterion 4: the embedding-store root is an argument, so an A1 rebuild can
+    # run against a scratch dataset tree instead of the live dataset_v2.
+    dataset_dir = Path(dataset_dir) if dataset_dir is not None else DATASET_DIR
     target = get_target(TARGET)
-    store = load_fang_store(PX, pool=POOL, dataset_dir=DATASET_DIR, store_name=store_name)
+    store = load_fang_store(PX, pool=POOL, dataset_dir=dataset_dir, store_name=store_name)
     rows = []
-    for fold in iter_loio_folds(SCHEME, scale_idx=SCALE_IDX, dataset_dir=DATASET_DIR):
+    for fold in iter_loio_folds(SCHEME, scale_idx=SCALE_IDX, dataset_dir=dataset_dir):
         if avail is not None:
             fold = restrict_fold(fold, avail)
             if fold is None:
                 continue
-        f = augment_fold_with_fang(fold, px=PX, pool=POOL, dataset_dir=DATASET_DIR,
+        f = augment_fold_with_fang(fold, px=PX, pool=POOL, dataset_dir=dataset_dir,
                                    replace=True, store=store)
         ytr = target.binarize(f.y_train).astype(np.float32)
         yte = target.binarize(f.y_test).astype(int)
@@ -124,11 +129,16 @@ def main():
                     help="restrict folds to the obs_ids present in this embedding store "
                          "(e.g. fang_embeddings_f_minnaert_center -> the 36 common images)")
     ap.add_argument("--tag", default="", help="output filename suffix (e.g. _36)")
+    ap.add_argument("--dataset-dir", default=str(DATASET_DIR),
+                    help="packaged-dataset + embedding-store root (isolation criterion 4)")
+    ap.add_argument("--out-dir", default=str(FIG),
+                    help="where the LOIO prediction + summary CSVs are written")
     args = ap.parse_args()
 
     avail = None
     if args.restrict_store:
-        avail = store_obs("fang_embeddings") & store_obs(args.restrict_store)
+        avail = (store_obs("fang_embeddings", args.dataset_dir)
+                 & store_obs(args.restrict_store, args.dataset_dir))
         print(f"restricting folds to {len(avail)} obs common to fang_embeddings and "
               f"{args.restrict_store}", flush=True)
         if not args.tag:
@@ -139,15 +149,18 @@ def main():
     allrows = []
     for store in ("fang_embeddings", "fang_embeddings_a1"):
         print(f"=== LOIO over store: {store} ===", flush=True)
-        df = run_store(store, avail)
+        df = run_store(store, avail, args.dataset_dir)
         allrows.append(df)
         s, aucs = summarize(df, store)
         results[store] = s
         auc_by[store] = aucs
     tag = args.tag
-    pd.concat(allrows, ignore_index=True).to_csv(FIG / f"striping_a1_loio_preds{tag}.csv", index=False)
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pd.concat(allrows, ignore_index=True).to_csv(
+        out_dir / f"striping_a1_loio_preds{tag}.csv", index=False)
     summ = pd.DataFrame([results["fang_embeddings"], results["fang_embeddings_a1"]])
-    summ.to_csv(FIG / f"striping_a1_loio_summary{tag}.csv", index=False)
+    summ.to_csv(out_dir / f"striping_a1_loio_summary{tag}.csv", index=False)
     print("\n=== SKILL GATE: baseline vs A1 ===")
     print(summ.to_string(index=False))
     b, a = results["fang_embeddings"], results["fang_embeddings_a1"]

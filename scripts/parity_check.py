@@ -40,12 +40,13 @@ DEFAULT_CALIBRATION = DEFAULT_MODEL_PARENT / "calibration.npz"
 TILE_PX = 32
 
 
-def resolve_model_dir(arg: str | None) -> Path:
+def resolve_model_dir(arg: str | None, model_parent: str | Path | None = None) -> Path:
     if arg:
         return Path(arg)
-    hits = sorted(p for p in DEFAULT_MODEL_PARENT.glob("*") if (p / "recipe.json").exists())
+    parent = Path(model_parent) if model_parent is not None else DEFAULT_MODEL_PARENT
+    hits = sorted(p for p in parent.glob("*") if (p / "recipe.json").exists())
     if not hits:
-        raise SystemExit(f"no deployable head under {DEFAULT_MODEL_PARENT}")
+        raise SystemExit(f"no deployable head under {parent}")
     return hits[-1]
 
 
@@ -89,6 +90,9 @@ def main() -> int:
     ap.add_argument("--col", type=int, default=20000)
     ap.add_argument("--win", type=int, default=512)
     ap.add_argument("--model", default=None)
+    # Isolation criterion 4: both artifact roots this driver reads are flags.
+    ap.add_argument("--ctx-tiles", default=str(CTX_TILES))
+    ap.add_argument("--model-parent", default=str(DEFAULT_MODEL_PARENT))
     ap.add_argument("--calibration", default=str(DEFAULT_CALIBRATION))
     ap.add_argument("--batch", type=int, default=96)
     ap.add_argument("--rtol", type=float, default=1e-3)
@@ -96,11 +100,11 @@ def main() -> int:
                     help="tolerance; fp16 GPU vs fp32 CPU differs at ~1e-3 on probabilities")
     args = ap.parse_args()
 
-    model_dir = resolve_model_dir(args.model)
+    model_dir = resolve_model_dir(args.model, args.model_parent)
 
     if args.emit_reference:
         res = run_window(args.tile, args.row, args.col, args.win, model_dir,
-                         args.calibration, args.batch)
+                         args.calibration, args.batch, args.ctx_tiles)
         Path(args.reference).parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(args.reference, **{k: v for k, v in res.items()
                                                if k not in ("device",)})
@@ -115,7 +119,7 @@ def main() -> int:
                          "and upload it with the head)")
     ref = np.load(ref_path)
     res = run_window(str(ref["tile"]), int(ref["row"]), int(ref["col"]), int(ref["win"]),
-                     model_dir, args.calibration, args.batch)
+                     model_dir, args.calibration, args.batch, args.ctx_tiles)
     print(f"[check] window {res['tile']} ({res['row']},{res['col']}) win={res['win']} "
           f"device={res['device']}  ref tiles={ref['ti'].size}  this tiles={res['ti'].size}")
 

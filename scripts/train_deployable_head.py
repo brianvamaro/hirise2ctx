@@ -47,7 +47,8 @@ INPUT_PX = 96          # 3x3-context box side (frozen)
 POOL = "gem"
 
 
-def build_all_image_matrix(target_id: str, store_name: str = "fang_embeddings"):
+def build_all_image_matrix(target_id: str, store_name: str = "fang_embeddings",
+                           dataset_dir: str | Path | None = None):
     """Assemble (X_emb, y_binary, groups, obs_to_int) over every image at S=32.
 
     Each image is the test set of exactly one LOIO fold; the union of test slices
@@ -55,8 +56,11 @@ def build_all_image_matrix(target_id: str, store_name: str = "fang_embeddings"):
     matrix the recipe was validated on. ``store_name`` selects the embedding store
     (e.g. ``fang_embeddings_a1`` for the A1 striping-mitigation variant).
     """
+    # Isolation criterion 4: the packaged-dataset + embedding-store root is an argument, so
+    # a scratch rebuild can train a head without reading the live dataset_v2 tree.
+    dataset_dir = Path(dataset_dir) if dataset_dir is not None else DATASET_DIR
     target = get_target(target_id)
-    store = load_fang_store(INPUT_PX, pool=POOL, dataset_dir=DATASET_DIR, store_name=store_name)
+    store = load_fang_store(INPUT_PX, pool=POOL, dataset_dir=dataset_dir, store_name=store_name)
     store_obs = set(store[0]["obs_id"].unique())   # some F stores omit images (failed frames)
     Xs, ys, gs = [], [], []
     obs_to_int: dict[str, int] = {}
@@ -64,13 +68,13 @@ def build_all_image_matrix(target_id: str, store_name: str = "fang_embeddings"):
     # Union of per-fold TEST slices = each image once. We look up ONLY the test keys
     # (not augment_fold_with_fang, which also joins the train side — every fold's train
     # set contains the store-missing images and would trip the all-present assert).
-    for fold in iter_loio_folds(SCHEME, scale_idx=SCALE_IDX, dataset_dir=DATASET_DIR):
+    for fold in iter_loio_folds(SCHEME, scale_idx=SCALE_IDX, dataset_dir=dataset_dir):
         held = set(fold.keys_test["obs_id"].unique())
         if not held <= store_obs:                  # test image absent from this store
             skipped.extend(sorted(held - store_obs))
             continue
         emb_test, _ = fang_columns_for_keys(fold.keys_test, INPUT_PX, pool=POOL,
-                                            dataset_dir=DATASET_DIR, store=store)
+                                            dataset_dir=dataset_dir, store=store)
         Xs.append(emb_test)
         ys.append(target.binarize(fold.y_test))
         gs.append(fold.groups_test)
@@ -93,6 +97,8 @@ def main() -> int:
     ap.add_argument("--out", default=str(REPO_ROOT / "models" / "deployable"))
     ap.add_argument("--store-name", default="fang_embeddings",
                     help="embedding store dir name (e.g. fang_embeddings_a1 for the A1 variant)")
+    ap.add_argument("--dataset-dir", default=str(DATASET_DIR),
+                    help="packaged-dataset + embedding-store root (isolation criterion 4)")
     ap.add_argument("--nuisance-basis", default=None,
                     help="H2: npz with a 'basis' (768, N) array; its first --nuisance-k "
                          "columns are projected out of every embedding before the scaler")
@@ -107,7 +113,8 @@ def main() -> int:
 
     print(f"=== train deployable head ({args.target}, batch={args.batch}) ===", flush=True)
     t0 = time.monotonic()
-    X, y, groups, obs_to_int = build_all_image_matrix(args.target, store_name=args.store_name)
+    X, y, groups, obs_to_int = build_all_image_matrix(
+        args.target, store_name=args.store_name, dataset_dir=args.dataset_dir)
     n_img = np.unique(groups).size
     print(f"  matrix: X={X.shape}  pos_rate={float(y.mean()):.4f}  images={n_img}  "
           f"nan_rows={int(np.isnan(X).any(axis=1).sum())}", flush=True)

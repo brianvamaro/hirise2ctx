@@ -35,7 +35,6 @@ import numpy as np
 
 from src.mapping import coarsened_transform, predict_window, read_tile_window, write_geotiff
 
-DATASET_DIR = REPO_ROOT / "dataset_v2"
 CTX_WINDOWS = REPO_ROOT / "cache_v2" / "ctx_windows"
 CTX_TILES = REPO_ROOT / "cache_v2" / "ctx_tiles"
 DEFAULT_MODEL_PARENT = REPO_ROOT / "models" / "deployable"
@@ -54,9 +53,11 @@ def resolve_model_dir(arg: str | None) -> Path:
     return hits[-1]
 
 
-def footprint_pixel_box(obs_id: str, inner_transform) -> tuple[int, int, int, int, str]:
+def footprint_pixel_box(obs_id: str, inner_transform,
+                        ctx_windows: str | Path | None = None) -> tuple[int, int, int, int, str]:
     """(row_min, row_max, col_min, col_max, murray_tile) of the image footprint in tile pixels."""
-    side = json.loads((CTX_WINDOWS / f"{obs_id}.json").read_text(encoding="utf-8"))
+    ctx_windows = Path(ctx_windows) if ctx_windows is not None else CTX_WINDOWS
+    side = json.loads((ctx_windows / f"{obs_id}.json").read_text(encoding="utf-8"))
     xmin, ymin, xmax, ymax = side["actual_bounds_target_crs"]
     a, _, c, _, e, f = (inner_transform[i] for i in range(6))
     px_x, px_y = abs(a), abs(e)
@@ -93,6 +94,12 @@ def main() -> int:
     ap.add_argument("--win-px", type=int, default=3000, help="square window side in CTX pixels (5 m/px)")
     ap.add_argument("--gap-px", type=int, default=256, help="min gap from the footprint")
     ap.add_argument("--model", default=None)
+    # Isolation criterion 4: every artifact root this driver reads or writes is a flag.
+    ap.add_argument("--ctx-windows", default=str(CTX_WINDOWS))
+    ap.add_argument("--ctx-tiles", default=str(CTX_TILES))
+    ap.add_argument("--model-parent", default=str(DEFAULT_MODEL_PARENT))
+    ap.add_argument("--out-map", default=str(OUT_MAP))
+    ap.add_argument("--out-fig", default=str(OUT_FIG))
     ap.add_argument("--max-zero-fraction", type=float, default=0.3,
                     help="reject a candidate window if more than this share of pixels are mosaic nodata")
     ap.add_argument("--raw", action="store_true",
@@ -103,26 +110,30 @@ def main() -> int:
                     help="banked CalibrationLayer .npz (from scripts/bank_calibration.py)")
     args = ap.parse_args()
 
-    model_dir = resolve_model_dir(args.model)
+    model_dir = resolve_model_dir(args.model, args.model_parent)
     card = json.loads((model_dir / "recipe.json").read_text(encoding="utf-8"))
     print(f"=== map pilot: obs={args.obs_id}  win={args.win_px}px  model={model_dir.name} ===")
     print(f"  recipe={card['recipe'].get('cell')}  trained on {card['n_train_images']} images", flush=True)
 
     tile_sidecar_path = None
-    side = json.loads((CTX_WINDOWS / f"{args.obs_id}.json").read_text(encoding="utf-8"))
+    ctx_windows = Path(args.ctx_windows)
+    ctx_tiles = Path(args.ctx_tiles)
+    out_map = Path(args.out_map)
+    out_fig = Path(args.out_fig)
+    side = json.loads((ctx_windows / f"{args.obs_id}.json").read_text(encoding="utf-8"))
     murray_tile = side["source_murray_tile"]
-    tile_sidecar_path = CTX_TILES / f"{murray_tile}.json"
+    tile_sidecar_path = ctx_tiles / f"{murray_tile}.json"
     if not tile_sidecar_path.exists():
         raise SystemExit(f"tile sidecar missing: {tile_sidecar_path}")
     tile_info = json.loads(tile_sidecar_path.read_text(encoding="utf-8"))
-    zip_path = CTX_TILES / f"{murray_tile}.zip"
+    zip_path = ctx_tiles / f"{murray_tile}.zip"
     if not zip_path.exists():
         raise SystemExit(f"tile zip missing: {zip_path} (re-download via ctx_retrieve.ensure_tile_cached)")
     inner_tif = tile_info["inner_tif"]
     inner_transform = tile_info["inner_transform"]
     tile_h, tile_w = tile_info["inner_shape"]
 
-    fp_box = footprint_pixel_box(args.obs_id, inner_transform)[:4]
+    fp_box = footprint_pixel_box(args.obs_id, inner_transform, args.ctx_windows)[:4]
     print(f"  tile={murray_tile} {tile_h}x{tile_w}px  footprint rows[{fp_box[0]}:{fp_box[1]}] "
           f"cols[{fp_box[2]}:{fp_box[3]}]", flush=True)
 
@@ -176,14 +187,14 @@ def main() -> int:
                   f"max={a.max():.4f}", flush=True)
 
     # --- write GeoTIFF(s) (160 m, tile CRS) ---
-    OUT_MAP.mkdir(parents=True, exist_ok=True)
+    out_map.mkdir(parents=True, exist_ok=True)
     tag = "raw" if args.raw else ("cal_noiso" if args.no_isotonic else "cal")
     stem = f"map_pilot_{murray_tile}_{args.obs_id}_{where}_{tag}"
-    tif_path = OUT_MAP / f"{stem}.tif"
+    tif_path = out_map / f"{stem}.tif"
     write_geotiff(tif_path, pred.raster, pred.transform, pred.crs_wkt)
     print(f"  GeoTIFF (rich/poor) -> {tif_path.relative_to(REPO_ROOT)}", flush=True)
     if pred.abundance_raster is not None:
-        ab_path = OUT_MAP / f"{stem}_abundance.tif"
+        ab_path = out_map / f"{stem}_abundance.tif"
         write_geotiff(ab_path, pred.abundance_raster, pred.transform, pred.crs_wkt)
         print(f"  GeoTIFF (abundance) -> {ab_path.relative_to(REPO_ROOT)}", flush=True)
 
@@ -191,7 +202,7 @@ def main() -> int:
     png_path = render_png(window, pred, stem, args.obs_id, murray_tile, where, card)
     print(f"  PNG     -> {png_path.relative_to(REPO_ROOT)}", flush=True)
 
-    (OUT_MAP / f"{stem}.json").write_text(json.dumps({
+    (out_map / f"{stem}.json").write_text(json.dumps({
         "obs_id": args.obs_id, "murray_tile": murray_tile, "placement": where,
         "window_offset_rowcol": [window.row_off, window.col_off], "win_px": win,
         "tile_px": TILE_PX, "model_dir": str(model_dir.relative_to(REPO_ROOT)),
@@ -213,7 +224,7 @@ def render_png(window, pred, stem, obs_id, murray_tile, where, card) -> Path:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    OUT_FIG.mkdir(parents=True, exist_ok=True)
+    out_fig.mkdir(parents=True, exist_ok=True)
     raster = np.ma.masked_invalid(pred.raster)
     has_ab = pred.abundance_raster is not None
     ncol = 4 if has_ab else 3
@@ -243,7 +254,7 @@ def render_png(window, pred, stem, obs_id, murray_tile, where, card) -> Path:
         ax.set_xticks([]); ax.set_yticks([])
     fig.suptitle(f"Map pilot — {murray_tile} ({where} of {obs_id}, beyond HiRISE coverage)  "
                  f"·  frozen {card['recipe'].get('cell')}", fontsize=11)
-    png_path = OUT_FIG / f"{stem}.png"
+    png_path = out_fig / f"{stem}.png"
     fig.savefig(png_path, dpi=130)
     plt.close(fig)
     return png_path

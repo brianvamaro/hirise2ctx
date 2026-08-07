@@ -50,7 +50,8 @@ import src.modeling  # noqa: F401  -- OpenMP/DLL bootstrap; must precede numpy
 
 import numpy as np
 
-from src.mapping import coarsened_transform, predict_window, read_tile_window, write_geotiff
+from src.mapping import (artifact_digest, coarsened_transform, predict_window,
+                         read_tile_window, write_geotiff)
 
 CTX_TILES = REPO_ROOT / "cache_v2" / "ctx_tiles"
 DEFAULT_MODEL_PARENT = REPO_ROOT / "models" / "deployable"
@@ -83,12 +84,20 @@ EXPANSION_TILES = [
 ]
 
 
-def resolve_model_dir(arg: str | None) -> Path:
+def resolve_model_dir(arg: str | None, model_parent: str | Path | None = None) -> Path:
+    """Resolve the deployable head: an explicit path, else the lexicographically last one.
+
+    NOTE (audit, "Product semantics"): picking `hits[-1]` is choosing a head by *name*, not
+    by compatibility with the calibrator or the preprocessing arm. That is a separate open
+    finding; this function only makes the search root parameterizable so a scratch rebuild
+    can resolve against its own `models/` tree.
+    """
     if arg:
         return Path(arg)
-    hits = sorted(p for p in DEFAULT_MODEL_PARENT.glob("*") if (p / "recipe.json").exists())
+    parent = Path(model_parent) if model_parent is not None else DEFAULT_MODEL_PARENT
+    hits = sorted(p for p in parent.glob("*") if (p / "recipe.json").exists())
     if not hits:
-        raise SystemExit(f"no deployable head under {DEFAULT_MODEL_PARENT}; "
+        raise SystemExit(f"no deployable head under {parent}; "
                          "run scripts/train_deployable_head.py")
     return hits[-1]
 
@@ -115,9 +124,16 @@ def window_offsets(extent: int, win: int, overlap: int, tile_px: int) -> list[in
     return offs
 
 
-def load_tile_sidecar(murray_tile: str) -> dict:
-    side_path = CTX_TILES / f"{murray_tile}.json"
-    zip_path = CTX_TILES / f"{murray_tile}.zip"
+def load_tile_sidecar(murray_tile: str, ctx_tiles: str | Path | None = None) -> dict:
+    """Read a Murray tile's cached sidecar + zip.
+
+    `ctx_tiles` is an argument so a scratch rebuild can point at an isolated tile cache
+    (audit isolation criterion 4). It defaults to the live `cache_v2/ctx_tiles` because
+    that directory is a read-only source archive here -- nothing in the map path writes it.
+    """
+    ctx_tiles = Path(ctx_tiles) if ctx_tiles is not None else CTX_TILES
+    side_path = ctx_tiles / f"{murray_tile}.json"
+    zip_path = ctx_tiles / f"{murray_tile}.zip"
     if not side_path.exists():
         raise SystemExit(f"tile sidecar missing: {side_path} "
                          "(re-fetch via ctx_retrieve.ensure_tile_cached)")
@@ -131,7 +147,7 @@ def load_tile_sidecar(murray_tile: str) -> dict:
 
 def map_one_tile(murray_tile: str, embedder, head, calibrator, *, args) -> dict:
     """Sweep one Murray tile and write its GeoTIFFs. Returns a status dict."""
-    info = load_tile_sidecar(murray_tile)
+    info = load_tile_sidecar(murray_tile, getattr(args, "ctx_tiles", None))
     zip_path = info["_zip_path"]
     inner_tif = info["inner_tif"]
     inner_transform = tuple(info["inner_transform"])
@@ -243,6 +259,15 @@ def write_tile_geotiffs(murray_tile, partials, inner_transform, crs_wkt, calibra
         "prob_mean": float(np.nanmean(prob)),
         "rich_share_at_0p5": float((prob >= 0.5).mean()),
         "abundance_mean": float(np.nanmean(abundance)) if has_cal else None,
+        # Which head and calibrator produced this raster. The baseline tile sidecar used to
+        # record neither -- only `calibrated: true/false` -- so a tile could not be traced
+        # to the artifacts that made it, and two tiles rendered from different heads were
+        # indistinguishable. Digests rather than paths, because a path can be overwritten
+        # in place (audit, "Product semantics and provenance").
+        "head": str(getattr(args, "_model_dir", "")) or None,
+        "head_digest": artifact_digest(getattr(args, "_model_dir", "")) if getattr(args, "_model_dir", None) else None,
+        "calibration": str(args.calibration) if has_cal else None,
+        "calibration_digest": artifact_digest(args.calibration) if has_cal else None,
     }, indent=2), encoding="utf-8")
 
 
@@ -265,6 +290,12 @@ def main() -> int:
     ap.add_argument("--max-zero-fraction", type=float, default=0.3,
                     help="mask a tile whose own CTX is more than this share mosaic nodata")
     ap.add_argument("--model", default=None, help="deployable head dir (default: latest)")
+    # Isolation criterion 4: every artifact root the driver reads or searches is a flag, so
+    # a scratch rebuild never has to touch the live tree.
+    ap.add_argument("--ctx-tiles", default=str(CTX_TILES),
+                    help="directory of Murray tile zips + sidecars")
+    ap.add_argument("--model-parent", default=str(DEFAULT_MODEL_PARENT),
+                    help="where --model is searched when it is not given explicitly")
     ap.add_argument("--calibration", default=str(DEFAULT_CALIBRATION),
                     help="banked CalibrationLayer .npz")
     ap.add_argument("--raw", action="store_true",
@@ -283,7 +314,10 @@ def main() -> int:
     tiles = BLOCK_TILES if args.all else (EXPANSION_TILES if args.expansion else args.tiles)
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)
 
-    model_dir = resolve_model_dir(args.model)
+    model_dir = resolve_model_dir(args.model, args.model_parent)
+    # Threaded onto args so `map_one_tile` can record it in each tile sidecar without
+    # another parameter through the call chain.
+    args._model_dir = model_dir
     card = json.loads((model_dir / "recipe.json").read_text(encoding="utf-8"))
     print(f"=== map_region: {len(tiles)} tile(s)  model={model_dir.name}  "
           f"recipe={card['recipe'].get('cell')}  out={args.out_dir} ===", flush=True)
@@ -311,7 +345,14 @@ def main() -> int:
 
     manifest = Path(args.out_dir) / "region_manifest.json"
     manifest.write_text(json.dumps({
-        "tiles": tiles, "model_dir": str(model_dir.relative_to(REPO_ROOT)),
+        # `relative_to(REPO_ROOT)` raised for any head outside the repo, which is exactly
+        # what a scratch rebuild uses. Record the absolute path plus a content digest.
+        "tiles": tiles, "model_dir": str(model_dir),
+        "head_digest": artifact_digest(model_dir),
+        "calibration": str(args.calibration) if calibrator is not None else None,
+        "calibration_digest": (
+            artifact_digest(args.calibration) if calibrator is not None else None),
+        "ctx_tiles": str(args.ctx_tiles),
         "recipe_hash": card.get("recipe_hash"), "win_px": args.win_px,
         "calibrated": calibrator is not None, "raw": args.raw,
         "elapsed_s": round(time.monotonic() - t0, 1), "results": results,
