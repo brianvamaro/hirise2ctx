@@ -6506,3 +6506,33 @@ dropped from it.
 
 **Isolation criterion 5 remains OPEN.** A recovery plan is not a backup, and the rebuild must not start
 on one.
+
+## 2026-08-06 — session close
+
+Sixteen commits, all on `origin/fm-deployable-head-and-map-pilot`. Worktree clean.
+
+**Closed:** R77 (residual), R78, R87, R88, R27, R28, R97, R74 tests+provenance, R04, and isolation
+criteria 1–4. Full suite **581 passed** with the artifact manifest bit-identical — non-mutating by
+construction rather than by luck.
+
+**Four things this session found that were not in the register:**
+
+1. The audit's R77 mechanism was half wrong. `rasterio.open(p,"w")` deletes-then-creates, so the
+   predicted truncation never fires; `open(p,"wb")`, `"r+"`, `write_text` and `copy2` all do. A latent
+   design error masked by library behaviour — and *both* "the suite is safe" and "the live TIFF gets
+   truncated" were wrong.
+2. R97 inverts R92: v1's within-image split matches a step-8 recompute **8/8** and v2 matches the
+   inflated step-16 **38/38**. v1 was never drifted; the splitter was.
+3. `striping_a1_map.py`'s per-tile sidecar recorded the head *constant* while its region manifest
+   recorded `args.head` — two provenance records contradicting each other under `--head`. The baseline
+   map's tile sidecar recorded no head or calibration at all.
+4. The BoulderNet detections (4.18 GB) live outside the repo and were outside every artifact manifest
+   taken during the review. The one irreplaceable input was never being watched.
+
+**Open, in order:** isolation criterion 5 (backup, awaiting a drive — the only remaining *safety*
+gate); then **R56 → R23** (see the audit's "Start the next session at step 4"); then
+R31/R67/R65/R29/R68 for Stages 2–4; then the A1/map blockers R07/R08/R38/R01/R13/R14. Do not start
+the rebuild.
+
+Loose ends: `models/pretrained`'s Fang ViT download URL is recorded nowhere; README/ROADMAP/SHERLOCK
+still carry pre-audit claims; the runtime write guard is test-only, so notebooks are uncovered.

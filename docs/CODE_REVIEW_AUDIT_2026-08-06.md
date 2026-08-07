@@ -400,13 +400,39 @@ sufficient when cached derived inputs can change independently.
 
 ## Recommended fixing-stage order
 
-> **Progress 2026-08-06 (fixing session).** Steps 1 and 3 are **DONE**: R77 (test-side isolation),
-> R78, R87, R88, R27, R28, R97, R74 tests+provenance and R04 are all closed, with mutation
-> verification where the finding was about absent coverage. Step 1's *script/notebook* half remains —
-> the runtime guard is test-only. Step 2 is partly done (register statuses, PENDING_REBUILD,
-> DATA_DICTIONARY, CLAUDE.md); README/ROADMAP/SHERLOCK were not touched. Steps 4–6 are untouched.
-> The fast loop is 551 passed / 21 deselected and the artifact manifest was bit-identical across
-> every run.
+> **Progress 2026-08-06 (fixing session — CLOSED).** Steps **1 and 3 are DONE**: R77 (test-side
+> isolation), R78, R87, R88, R27, R28, R97, R74 tests+provenance and R04 are all closed, with mutation
+> verification wherever the finding was about absent coverage. Step 1's script half is done too
+> (isolation criterion 4); only the *notebook* half and criterion 5's backup remain, and the runtime
+> guard is still test-only. Step 2 is partly done (register statuses, PENDING_REBUILD,
+> DATA_DICTIONARY, CLAUDE.md, index); **README/ROADMAP/SHERLOCK were not touched**. Steps 5–6
+> untouched. Full suite: **581 passed**, artifact manifest bit-identical across every run.
+>
+> ### Start the next session at step 4: R56, then R23
+>
+> R23 is independently confirmed and is the register's #1 remaining blocker, but **its fix is blocked
+> by R56**, so R56 goes first.
+>
+> **R56 — re-run the `min_confidence` comparison with the target held fixed.** The record says
+> confidence filtering is "monotonically degrading ranking" and that is why `min_confidence: null`
+> ships. The comparison behind it varied **both the model and the target**; with the target fixed,
+> `conf ≥ 0.5` is not harmful. Vary only the confidence floor, hold the target, and report the
+> project's standard metrics (`meaningful_auc` / `pr_auc@1e-2` / `precision@5%` + Spearman ρ + per-bin
+> RMSE — never presence AUC).
+>
+> **R23 — then decide the remedy, and note there are three, not one.** Two cohort images (three by the
+> re-derivation: `ESP_017355_2260`, `ESP_046803_2325`, `ESP_068483_2280`) are labelled at score floors
+> of 0.6173 / 0.4734 / 0.4067 while the other 36 reach 0.1000. The register's proposed fix —
+> harmonise by setting the global `min_confidence` to the max kept-score minimum, i.e. **0.6173** —
+> would discard a large share of every unaffected image's detections (their score min is 0.1000,
+> p1 ≈ 0.253). Before defaulting to it, weigh:
+> 1. harmonise upward to 0.6173 (safe, expensive, and Stage 1 must re-run);
+> 2. exclude the three truncated images from the cohort;
+> 3. **retain and document a mixed confidence floor** — the exact shape of the decision Brian already
+>    took for the mixed *size* floor (R03/R83/R84), where the answer was "retain and document, don't
+>    silently harmonise". This option is not in the register and should be on the table.
+>
+> Either way, R23's fix lands in Stage 1 filtering/provenance, so the Stage-1 gate below fires.
 
 1. Close the mutation/isolation hole and parameterize artifact roots. Update the operating manual and
    command permissions before anyone runs a broad test command.
