@@ -1199,13 +1199,13 @@ headless Stage 1 driver — Stage 1 had only ever been run from notebook 01).
   ingest (no-op on v1; detection tests still green) and records `n_polygons_raw` +
   `n_dropped_null_geometry` in the Stage-1 sidecar. True per-image boulder counts span
   9.6k → 727k (≈100–500× v1).
-  **⚠ SUPERSEDED 2026-08-06b — BoulderNet emits nothing of the sort. The three affected
+  **⚠ SUPERSEDED 2026-08-06o — BoulderNet emits nothing of the sort. The three affected
   `.shp` files are BYTE-TRUNCATED (incomplete copies, −354/−132/−173 MB); their `.dbf`
   and `.shx` are complete, so GDAL returns every indexed record and the ones whose
   polygon bytes were never copied read as null geometry. Records are stored
   score-descending, so the survivors are the top-scoring prefix and these images' label
   basis is truncated at a per-image confidence floor. 36 of 39 readable exports drop
-  exactly ZERO rows — "at this density" was never the mechanism. See the 2026-08-06b
+  exactly ZERO rows — "at this density" was never the mechanism. See the 2026-08-06o
   entry; `inspect_shapefile_integrity` now detects this at ingest.**
 
 **Filter decision (`detection_filters`).** Reprojected equivalent-circle diameters are
@@ -1213,7 +1213,7 @@ large (pooled median 3.4 m, p5 ≈ 1.9 m) → **~0% below the `min_size_m=1.4105
 that filter is a no-op (kept, consistent with v1). Scores: 100% ≥ 0.2, 89% ≥ 0.3,
 52% ≥ 0.5 — `min_confidence` kept `null`. The denser set is *more* boulders, not
 *smaller*.
-**⚠ CAVEAT 2026-08-06b (R58): those score percentages were computed over the PRE-drop
+**⚠ CAVEAT 2026-08-06o (R58): those score percentages were computed over the PRE-drop
 population — i.e. including the rows the pipeline then deletes. On the post-drop
 population they read 100 / 97.4 / 77.1 %. The `min_confidence: null` decision is
 unaffected, but the statistic quoted here is the exact one that would have exposed R23,
@@ -3916,7 +3916,7 @@ median-of-medians glance is misleading — both "wins" below shrank under pairin
   label-noise sweep + Stage 2c density/LDS reweighting. PLAN_Calibration §3/§5 + notebook
   23 updated.
 
-## 2026-06-16 -- Calibration Stage 2b/2c CLOSED: reweighting dominated, label-noise ~~harmful~~ [NULL, amended 2026-08-06b] -> ceiling is the data
+## 2026-06-16 -- Calibration Stage 2b/2c CLOSED: reweighting dominated, label-noise ~~harmful~~ [NULL, amended 2026-08-06o] -> ceiling is the data
 
 The last two greenlit Tier-2 levers, same emb-only S=32 LOIO + paired per-image
 Wilcoxon. Both NEGATIVE -> the expensive de-compression investigation is complete.
@@ -3942,7 +3942,7 @@ Wilcoxon. Both NEGATIVE -> the expensive de-compression investigation is complet
   the regen is CPU-only and was run concurrently with the GPU reweight via `--regen-only`.)
 - **STAGE 2 COMPLETE -- the whole levers table:** L1 cheap swaps = wash; L1 distributional
   heads = wash; L1+L2 reweighting = dominated; L2 label-noise = ~~harmful~~ **NULL at
-  conf>=0.5 (amended 2026-08-06, R56 -- see the 2026-08-06b entry)**; L2 coarser scale
+  conf>=0.5 (amended 2026-08-06, R56 -- see the 2026-08-06o entry)**; L2 coarser scale
   = directional only (p=0.19). **No in-cohort retraining lever beats mlp_reg+qmatch on
   ranking.** The ~0.43 per-image ceiling is the 5 m/px CTX magnitude floor, ~~confirmed five
   ways~~ **on the frozen Fang-ViT/GeM-96/S=32 embedding -- all five "ways" hold that
@@ -6556,7 +6556,7 @@ the rebuild.
 Loose ends: `models/pretrained`'s Fang ViT download URL is recorded nowhere; README/ROADMAP/SHERLOCK
 still carry pre-audit claims; the runtime write guard is test-only, so notebooks are uncovered.
 
-## 2026-08-06b — R56 re-scored (verdict withdrawn) and R23's root cause found: three `.shp` files are byte-truncated
+## 2026-08-06o — R56 re-scored (verdict withdrawn) and R23's root cause found: three `.shp` files are byte-truncated
 
 Audit step 4. Both results are read-only measurements on banked artifacts; no producer ran, no live
 artifact changed.
@@ -6763,3 +6763,44 @@ access, and there is no `filterwarnings = error` anywhere to trip on the new war
 priority10 detection set was scanned and is **clean** — all 10 `.shp`/`.shx`/`.dbf`/`.prj` complete.
 A short `.shx`, `.dbf` or `.prj` all raise loudly at read time, so the `.shp` genuinely is the unique
 silent failure and targeting it alone is the right call.
+
+## 2026-08-06p — R29/R75 FIXED: the coverage mask now moves with the polygons
+
+Audit step 5, Stage 4. Stage 4 translated every detection polygon by the Stage-3 `(dx, dy)` but gated
+eligibility with a coverage mask reprojected from the **unshifted** HiRISE product. The shift is a
+whole-product geolocation offset, so the two must move together; leaving the mask still opened an
+L-shaped strip along the receding edges that stayed `eligible` while no detection could land in it.
+
+**Fix:** `src/labeling._shift_coverage_mask` translates the mask by the same `(dx, dy)` before
+eligibility gating, filling vacated area with 0 (**not** eligible — we have no coverage evidence
+there). Applied in `stage4_one_image` between the sanity check and `_build_finest_stats`; opt-out via
+`shift_coverage_mask=False`; recorded in the label sidecar as `coreg_mask_shift` (method, version,
+shift in px, residual, eligible-pixel count before/after) so pre- and post-fix labels are
+distinguishable — without it they are not, which is the Pattern-D failure R74 was also about.
+
+**Correction to the register.** R29's fix bullet says the shifts are "already quantised to CTX
+pixels". **They are not** — measured 2026-08-06: **0 of 39** are integer-pixel. They are quantised to
+1/20 px by the phase-correlation upsampling (`dx/px` values like 35.1000, 21.2750, 8.2000). A raster
+mask cannot move sub-pixel without resampling, so the shift rounds to nearest whole pixel; the
+residual is **≤ 0.5 px (2.5 m)** against a median shift of 194.7 m, a ~78× reduction and far below the
+160 m tile.
+
+**Validated read-only against R75, via a different route** (shift the mask and recompute eligibility,
+vs R75's `mask ∧ ¬shift(mask)` + integral image), over all 38 images at S=32:
+
+| quantity | measured | R75 |
+|---|---|---|
+| tiles losing eligibility (overlap the vacated strip) | **6,202 (3.85 %)** | **6,202 (3.85 %)** ✓ exact |
+| …of which currently `fa == 0` | 1,287 | (340 are *fully* inside the strip — a subset) |
+| …of which currently `fa > 0` | 4,915 | the partial-depression population |
+| `drow ≤ 0` (northward) | **38/38** | dy>0 in 38/38 ✓ |
+| `dcol > 0` (eastward) | 29/38 | dx>0 in 30/38 (off by one; one image rounds to dcol 0) |
+
+**The eligible set is re-registered, not shrunk.** 6,202 tiles drop out on the receding edges and
+**6,255 new tiles become eligible on the advancing edges** — where the HiRISE footprint actually is —
+for a net **161,005 → 161,058** at S=32. The newly eligible tiles have no labels in the current
+parquets, so materialising them requires the Stage-4 re-run already in the rebuild DAG.
+
+7 tests in `tests/test_labeling.py`, including one that pins the **sign** (north = decreasing row):
+flip it and the mask moves the wrong way, doubling the misalignment instead of removing it.
+Fast suite: **582 passed**, 21 deselected.

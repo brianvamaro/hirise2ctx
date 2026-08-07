@@ -101,6 +101,8 @@ leaves a conditional write-through path, documented in the 2026-08-06 audit.
 | `dataset_v2/features/**` derived caches | `features-deep` | Two generations stale (the sidecars themselves are clean). |
 | `dataset_v2/splits/within_image_4fold.json` + `packaged/within_image_*` | **R97** | **Now stale.** The persisted cuts match the R97-inflated step-16 splitter **38 of 38** images; with the snap step derived from the scales actually present, the cut moves for **29 of 38**. Regenerate with Stage 5 (within-image only — the LOIO split and the regional product are unaffected). |
 
+| 4 | **R29/R75** — Stage 4 shifted the polygons but not the coverage mask, leaving an L-shaped strip along the receding edges eligible where no detection could land | `src/labeling._shift_coverage_mask` translates the mask by the same Stage-3 `(dx, dy)` before eligibility gating, vacated area filled as **ineligible**; opt-out `shift_coverage_mask=False`; sidecar block `coreg_mask_shift` is the generation marker. Shifts are **not** integer-pixel (0/39 measured), so it rounds to nearest whole pixel — residual ≤ 2.5 m vs a 194.7 m median shift. | Stage 4 labels for all 38 v2 images → Stage 4b → Stage 5 → embeddings/LOIO → head → calibration → maps | **The eligible tile set is re-registered.** At S=32, **6,202 tiles lose eligibility** (exactly R75's measured overlap population) on the receding edges and **6,255 gain it** on the advancing edges, net 161,005 → **161,058**. Of the 6,202 lost, 4,915 currently carry `fa > 0` (partially depressed) and 1,287 carry `fa == 0`. The newly eligible tiles have **no labels on disk at all**, so they only materialise on the Stage-4 re-run. Every prevalence-dependent statistic moves; combines with R74, which also moves eligibility. |
+
 - All Stage-1 sidecars (`cache_v2/reprojected_detections/*.json`) and all Stage-4 label sidecars
   (`dataset_v2/labels/*.json`) | **R23** | **Provenance-stale, not numerically stale.** The
   2026-08-06 fix adds `source_integrity` + `null_geometry_basis` (Stage 1) and `realised_label_basis`
@@ -117,7 +119,7 @@ leaves a conditional write-through path, documented in the 2026-08-06 audit.
   confidence floor + document it, temporary pending the v3 re-detection). Root cause is **three
   byte-truncated `.shp` files**, not a BoulderNet export artefact, so recovering the 659 MB remains
   a live option. The provenance/documentation half is built; see the row above for its rebuild cost
-  and **DECISIONS 2026-08-06b** for the full pricing of all four remedies.
+  and **DECISIONS 2026-08-06o** for the full pricing of all four remedies.
 - **R38** — A1's clip floor collides with the nodata sentinel. A1 is now an active planned parallel
   regional product, so land the explicit-nodata-mask fix before generating it. `[1,255]` may be used
   diagnostically but does not satisfy the product gate because it moves information loss to DN 1.

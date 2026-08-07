@@ -114,6 +114,71 @@ def _apply_detection_filters(gdf, filters: dict | None):
     return gdf.iloc[keep].reset_index(drop=True)
 
 
+_COREG_MASK_SHIFT_VERSION = 1
+
+
+def _shift_coverage_mask(mask, shift, px_x: float, px_y: float) -> tuple:
+    """Translate the HiRISE coverage mask by the same Stage-3 (dx, dy) as the polygons.
+
+    R29/R75. Stage 4 translates every detection polygon by the Stage-3 shift but used to
+    gate eligibility with a coverage mask reprojected from the **unshifted** HiRISE
+    product. The shift is a whole-product geolocation offset, so the mask and the polygons
+    must move together; leaving the mask still opens an L-shaped strip along the receding
+    edges (dy>0 in 38/38 images, dx>0 in 30/38) that stays `eligible` while no detection
+    can possibly land in it. Measured over 38 images / 161,005 S=32 tiles: **340 tiles
+    (0.21 %) are zero by construction** and a further **5,862 (3.85 % in total) have a
+    partially depressed `fractional_area`**, always at the same edges and the same sign,
+    which also biases any edge-vs-interior diagnostic.
+
+    Vacated area is filled with 0 (**not** eligible): we have no HiRISE coverage evidence
+    there, and eligibility already requires every CTX pixel in a tile to be covered, so a
+    tile overlapping the vacated strip correctly drops out rather than reporting a
+    depressed abundance.
+
+    Rounding note: the register asserts the shifts are "already quantised to CTX pixels".
+    **They are not** -- measured 2026-08-06, 0 of 39 are integer-pixel; they are quantised
+    to 1/20 px by the phase-correlation upsampling. A raster mask can only move by whole
+    pixels without resampling, so we round to nearest. The residual is <= 0.5 px (2.5 m)
+    against a median shift of 194.7 m -- a ~78x reduction, and far below the 160 m tile.
+
+    Returns `(shifted_mask, provenance)`.
+    """
+    prov: dict = {"method": "integer_pixel_roll", "version": _COREG_MASK_SHIFT_VERSION}
+    if shift is None:
+        prov.update(applied=False, reason="no Stage-3 shift for this image")
+        return mask, prov
+
+    dx = float(shift["shift_m"]["dx"])
+    dy = float(shift["shift_m"]["dy"])
+    # +dx is east -> +columns. +dy is north -> DECREASING row index (north-up raster).
+    dcol = int(round(dx / px_x))
+    drow = int(round(-dy / px_y))
+    prov.update(
+        shift_m={"dx": dx, "dy": dy},
+        shift_px={"drow": drow, "dcol": dcol},
+        residual_m={
+            "dx": float(dx - dcol * px_x),
+            "dy": float(dy + drow * px_y),
+        },
+        n_eligible_px_before=int((mask == 1).sum()),
+    )
+    if drow == 0 and dcol == 0:
+        prov.update(applied=False, reason="shift rounds to zero pixels")
+        prov["n_eligible_px_after"] = prov["n_eligible_px_before"]
+        return mask, prov
+
+    h, w = mask.shape
+    out = np.zeros_like(mask)
+    dr0, dr1 = max(0, drow), min(h, h + drow)
+    sr0, sr1 = max(0, -drow), min(h, h - drow)
+    dc0, dc1 = max(0, dcol), min(w, w + dcol)
+    sc0, sc1 = max(0, -dcol), min(w, w - dcol)
+    if dr1 > dr0 and dc1 > dc0:
+        out[dr0:dr1, dc0:dc1] = mask[sr0:sr1, sc0:sc1]
+    prov.update(applied=True, n_eligible_px_after=int((out == 1).sum()))
+    return out, prov
+
+
 def _describe_realised_label_basis(gdf, cache_dir, obs_id: str, detection_filters=None) -> dict:
     """The confidence floor these labels were ACTUALLY built at, per image.
 
@@ -123,7 +188,7 @@ def _describe_realised_label_basis(gdf, cache_dir, obs_id: str, detection_filter
     the minimum `score` actually surviving into the labels -- can, and that difference is
     R23. Brian's 2026-08-06 decision is to RETAIN the resulting mixed floor and DOCUMENT
     it (a temporary measure pending the v3 re-detection), which makes this record the
-    thing that carries the decision downstream. See DECISIONS 2026-08-06b.
+    thing that carries the decision downstream. See DECISIONS 2026-08-06o.
 
     Mirrors the shape of the mixed *size*-floor convention (R03/R83/R84): per-image basis
     persisted, product-level mixture describable by aggregating over images.
@@ -131,7 +196,7 @@ def _describe_realised_label_basis(gdf, cache_dir, obs_id: str, detection_filter
     out: dict = {
         "convention": "mixed_per_image_confidence_floor",
         "temporary_pending": "v3 re-detection",
-        "decision": "DECISIONS 2026-08-06b (retain + document; do not silently harmonise)",
+        "decision": "DECISIONS 2026-08-06o (retain + document; do not silently harmonise)",
     }
     if len(gdf) and "score" in gdf.columns:
         s = pd.to_numeric(gdf["score"], errors="coerce").to_numpy(dtype=float)
@@ -538,6 +603,7 @@ def stage4_one_image(
     config_hash: str,
     subpixel_factor: int = DEFAULT_SUBPIXEL_FACTOR,
     apply_coreg_shift: bool = True,
+    shift_coverage_mask: bool = True,
 ) -> dict:
     """Generate per-tile labels for one ObsId and cache them to `output_dir/labels/`.
 
@@ -614,6 +680,16 @@ def stage4_one_image(
             "preserved this -- investigate cache/ctx_tiles/{murray_tile}.json."
         )
 
+    # R29/R75: the coverage mask must move with the polygons, or an L-shaped strip along
+    # the receding edges stays eligible while no detection can land in it.
+    if shift_coverage_mask:
+        mask, coreg_mask_shift = _shift_coverage_mask(mask, shift, px_x, px_y)
+    else:
+        coreg_mask_shift = {
+            "method": "integer_pixel_roll", "version": _COREG_MASK_SHIFT_VERSION,
+            "applied": False, "reason": "disabled by caller (shift_coverage_mask=False)",
+        }
+
     tile_sizes_px = list(labeling_cfg["tile_sizes_px"])
     if labeling_cfg.get("grid_anchor") != "ctx_pixel_origin":
         raise ValueError(
@@ -678,9 +754,13 @@ def stage4_one_image(
         },
         # The CONFIGURED filter above is identical across every image and so cannot
         # express the mixed basis R23 found; this is the REALISED one. See DECISIONS
-        # 2026-08-06b.
+        # 2026-08-06o.
         "realised_label_basis": realised_basis,
         "coreg_shift_applied": bool(shift is not None),
+        # R29/R75: whether the coverage mask was translated with the polygons. Pre- and
+        # post-fix labels are otherwise indistinguishable (the Pattern-D failure), so this
+        # block is the generation marker. See DECISIONS 2026-08-06p.
+        "coreg_mask_shift": coreg_mask_shift,
         "coreg_shift_m": (
             {
                 "dx": float(shift["shift_m"]["dx"]),

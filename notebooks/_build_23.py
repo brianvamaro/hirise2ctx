@@ -525,7 +525,7 @@ Two more levers, same LOIO + paired-Wilcoxon discipline:
   > population artefact: at a matched 36 % top fraction it is 0.664 → 0.623 → 0.519, and
   > after the **shipped** quantile-match layer it is 0.870 → 0.859 → 0.829. What survives
   > is that filtering **thins** the target rather than cleaning it, so nothing shows
-  > filtering *helps* and `min_confidence: null` stays. See DECISIONS 2026-08-06b.
+  > filtering *helps* and `min_confidence: null` stays. See DECISIONS 2026-08-06o.
 """, "label_rw_md"))
 
 cells.append(code(

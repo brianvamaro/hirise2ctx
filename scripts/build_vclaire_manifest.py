@@ -148,7 +148,7 @@ def integrity_check(obs_id: str) -> dict:
     # and pyogrio happily reports every feature because the .shx says they exist. That is
     # exactly how ESP_017355_2260 / ESP_046803_2325 / ESP_068483_2280 passed this gate
     # while missing 354/132/173 MB of polygon bytes, surfacing downstream only as "null
-    # geometry" (R23; DECISIONS 2026-08-06b). ESP_028537_2270 was caught only because its
+    # geometry" (R23; DECISIONS 2026-08-06o). ESP_028537_2270 was caught only because its
     # .dbf was short too. Ask the .shp about itself.
     integrity = detections.inspect_shapefile_integrity(shp)
     out["shp_status"] = integrity.get("status")
@@ -183,7 +183,7 @@ def integrity_check(obs_id: str) -> dict:
     # tail), and the three affected images are RETAINED by decision (Brian, 2026-08-06:
     # retain + document, temporary pending the v3 re-detection). So `shp_ok` is reported
     # and printed loudly but deliberately NOT folded into `ok` -- doing so would silently
-    # shrink the manifest 39 -> 36 rows and invert that decision. See DECISIONS 2026-08-06b.
+    # shrink the manifest 39 -> 36 rows and invert that decision. See DECISIONS 2026-08-06o.
     out["ok"] = bool(
         dbf_ok and "info_features" in out and out.get("info_features", -1) == shx_records
     )
@@ -266,7 +266,7 @@ def main() -> int:
             extra += (
                 f"  <-- .shp TRUNCATED, {(r.get('shp_missing_bytes') or 0) / 1e6:.1f} MB missing "
                 f"({r.get('shp_records_present')}/{r.get('shx_records')} records present) "
-                "[RETAINED per DECISIONS 2026-08-06b]"
+                "[RETAINED per DECISIONS 2026-08-06o]"
             )
         print(f"  [{flag}] {obs}  n_polys={feats:<9} {sp1}{extra}")
     n_bad = sum(1 for r in integ.values() if not r["ok"])
@@ -274,7 +274,7 @@ def main() -> int:
 
     # R23: a truncated .shp is READABLE, so it does not fail `ok` and is not excluded --
     # but it silently truncates that image's label basis at a high confidence floor, so it
-    # must never pass unremarked. See DECISIONS 2026-08-06b.
+    # must never pass unremarked. See DECISIONS 2026-08-06o.
     truncated = [o for o in obs_ids if integ[o].get("shp_status") == "truncated"]
     if truncated:
         print(
@@ -292,7 +292,7 @@ def main() -> int:
             "     Records are stored score-descending, so the survivors are the "
             "highest-scoring\n     detections and these images' abundance LEVEL is biased "
             "low. Rank-only use is safe.\n     Remedy decided: retain + document, temporary "
-            "pending v3 (DECISIONS 2026-08-06b)."
+            "pending v3 (DECISIONS 2026-08-06o)."
         )
 
     print("\n========== PHASE 2: manifest ==========")

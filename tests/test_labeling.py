@@ -813,3 +813,77 @@ def test_stage4_nested_consistency_on_real_data(cfg):
             f"nested consistency broke for {fine_s}->{coarse_s} px on {compared} tiles "
             f"({mismatches} mismatches)"
         )
+
+
+# ----------------------------------------------------------------------------
+# R29 / R75 — the coverage mask must move with the polygons.
+# ----------------------------------------------------------------------------
+from src.labeling import _shift_coverage_mask
+
+
+def _shift_dict(dx, dy):
+    return {"shift_m": {"dx": dx, "dy": dy, "magnitude": (dx ** 2 + dy ** 2) ** 0.5}}
+
+
+def test_mask_shift_is_a_noop_without_a_stage3_shift():
+    m = np.ones((6, 6), dtype=np.uint8)
+    out, prov = _shift_coverage_mask(m, None, 5.0, 5.0)
+    assert out is m
+    assert prov["applied"] is False
+
+
+def test_mask_shift_moves_north_as_decreasing_row():
+    """+dy is northward, and north is a SMALLER row index in a north-up raster.
+
+    This is the assertion that pins the sign. Flip it and the mask moves the wrong way,
+    doubling the misalignment instead of removing it.
+    """
+    m = np.zeros((6, 6), dtype=np.uint8)
+    m[3:5, 1:3] = 1                                  # a 2x2 block at rows 3-4
+    out, prov = _shift_coverage_mask(m, _shift_dict(0.0, 10.0), 5.0, 5.0)  # 10 m north
+    assert prov["shift_px"] == {"drow": -2, "dcol": 0}
+    assert out[1:3, 1:3].all()                       # moved up two rows
+    assert not out[3:5, 1:3].any()                   # vacated
+    assert out.sum() == m.sum()                      # nothing lost off-array here
+
+
+def test_mask_shift_moves_east_as_increasing_column():
+    m = np.zeros((6, 6), dtype=np.uint8)
+    m[1:3, 0:2] = 1
+    out, prov = _shift_coverage_mask(m, _shift_dict(15.0, 0.0), 5.0, 5.0)  # 15 m east
+    assert prov["shift_px"] == {"drow": 0, "dcol": 3}
+    assert out[1:3, 3:5].all()
+    assert not out[1:3, 0:2].any()
+
+
+def test_mask_shift_fills_vacated_area_as_INELIGIBLE():
+    """The whole point: vacated area must not stay eligible."""
+    m = np.ones((8, 8), dtype=np.uint8)
+    out, _ = _shift_coverage_mask(m, _shift_dict(0.0, 10.0), 5.0, 5.0)
+    assert out[-2:, :].sum() == 0                    # southern strip vacated -> 0
+    assert out[:-2, :].all()                         # the rest survives
+    assert out.sum() < m.sum()
+
+
+def test_mask_shift_rounds_subpixel_shifts_and_reports_the_residual():
+    """Real shifts are quantised to 1/20 px, not whole px (measured 0/39 integer)."""
+    m = np.ones((10, 10), dtype=np.uint8)
+    _, prov = _shift_coverage_mask(m, _shift_dict(0.0, 182.999), 5.0, 5.0)
+    assert prov["shift_px"]["drow"] == -37           # 182.999/5 = 36.6 -> 37 rows north
+    assert abs(prov["residual_m"]["dy"]) <= 2.5 + 1e-9
+    assert prov["applied"] is True
+
+
+def test_mask_shift_records_the_eligibility_it_removed():
+    m = np.ones((10, 10), dtype=np.uint8)
+    out, prov = _shift_coverage_mask(m, _shift_dict(5.0, 10.0), 5.0, 5.0)
+    assert prov["n_eligible_px_before"] == 100
+    assert prov["n_eligible_px_after"] == int((out == 1).sum())
+    assert prov["n_eligible_px_after"] < prov["n_eligible_px_before"]
+
+
+def test_mask_shift_larger_than_the_array_empties_it():
+    m = np.ones((4, 4), dtype=np.uint8)
+    out, prov = _shift_coverage_mask(m, _shift_dict(0.0, 1000.0), 5.0, 5.0)
+    assert out.sum() == 0
+    assert prov["n_eligible_px_after"] == 0

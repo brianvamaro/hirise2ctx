@@ -91,7 +91,7 @@ def test_reproject_does_not_clobber_source_crs():
 
 # ----------------------------------------------------------------------------
 # R23 provenance: byte-truncated .shp detection + rank-truncation characterisation
-# (DECISIONS 2026-08-06b). These are the two checks whose absence let a score-rank
+# (DECISIONS 2026-08-06o). These are the two checks whose absence let a score-rank
 # truncation be recorded as "benign density hygiene" for two months.
 # ----------------------------------------------------------------------------
 import struct

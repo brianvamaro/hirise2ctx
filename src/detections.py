@@ -124,7 +124,7 @@ def inspect_shapefile_integrity(shp: str | Path) -> dict:
     the declared length exceeds the bytes actually present. The `.shx` index and `.dbf`
     table are small and typically finish copying, which is why a truncated `.shp` reads
     without error and simply yields NULL geometry for every record whose bytes are
-    missing -- exactly the R23 signature (DECISIONS 2026-08-06b): three vClaire exports
+    missing -- exactly the R23 signature (DECISIONS 2026-08-06o): three vClaire exports
     were short by 354/132/173 MB, and because BoulderNet writes records in
     score-DESCENDING order, the surviving prefix is the highest-scoring detections and
     the label basis is silently truncated at a per-image confidence floor.
@@ -286,7 +286,7 @@ def drop_null_geometries(gdf: gpd.GeoDataFrame) -> tuple[gpd.GeoDataFrame, int]:
     readable vClaire exports drop exactly zero rows**, and every null-geometry row in the
     cohort came from a **byte-truncated `.shp`** whose polygon bytes were never copied.
     Because BoulderNet writes records score-descending, dropping them truncates that
-    image's label basis at a high confidence floor. See DECISIONS 2026-08-06b.
+    image's label basis at a high confidence floor. See DECISIONS 2026-08-06o.
 
     This function's behaviour is unchanged and correct either way -- the diagnosis belongs
     to `inspect_shapefile_integrity` / `describe_null_geometry_drop`, which Stage 1 calls.
@@ -337,7 +337,7 @@ def cache_reprojected(
                 # .is_rank_truncation` means the dropped rows are the whole low-score
                 # tail, so this image's labels sit at `realised_score_floor` while an
                 # unaffected image sits at ~0.10. Consumers making per-image LEVEL claims
-                # must check these. See DECISIONS 2026-08-06b.
+                # must check these. See DECISIONS 2026-08-06o.
                 "source_integrity": source_integrity,
                 "null_geometry_basis": null_geometry_basis,
                 "source_path": str(source_path),
@@ -383,7 +383,7 @@ def stage1_one_image(
     source_wkt = gdf.crs.to_wkt()
     n_raw = len(gdf)
 
-    # R23 (DECISIONS 2026-08-06b): characterise the dropped population BEFORE dropping it,
+    # R23 (DECISIONS 2026-08-06o): characterise the dropped population BEFORE dropping it,
     # and ask the file itself whether it is byte-complete. Both are recorded, and a
     # truncated source or a rank truncation warns loudly -- it does not raise, because the
     # three affected vClaire images are retained by decision pending the v3 re-detection.
@@ -395,7 +395,7 @@ def stage1_one_image(
             f"{integrity['declared_bytes']:,} bytes but only {integrity['actual_bytes']:,} "
             f"are present ({integrity['missing_bytes'] / 1e6:.1f} MB missing). Records whose "
             "polygon bytes are absent read as null geometry and are dropped, so this image's "
-            "label basis is a high-confidence subset. See DECISIONS 2026-08-06b.",
+            "label basis is a high-confidence subset. See DECISIONS 2026-08-06o.",
             RuntimeWarning,
             stacklevel=2,
         )
@@ -406,7 +406,7 @@ def stage1_one_image(
             f"({basis['dropped_fraction']:.1%}) scores at or below every kept row. This "
             f"image's realised confidence floor is {basis['realised_score_floor']:.6f}, "
             "against ~0.10 for an unaffected image; its per-image abundance LEVEL is "
-            "biased low. See DECISIONS 2026-08-06b.",
+            "biased low. See DECISIONS 2026-08-06o.",
             RuntimeWarning,
             stacklevel=2,
         )

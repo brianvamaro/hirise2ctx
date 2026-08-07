@@ -286,7 +286,7 @@ the cohort's confidence floor). Re-run that comparison with the target held fixe
 to fix R23 — otherwise the top-priority finding gets fixed against a confounded constraint.
 **RESOLVED 2026-08-06:** the re-score was run on a common target; the verdict is withdrawn and the
 constraint is lifted (`conf ≥ 0.5` is a null). The dependency is discharged — but the re-score covers
-0.5 and 0.7 only, so it does **not** license R23's 0.6173 floor. See **DECISIONS 2026-08-06b**.
+0.5 and 0.7 only, so it does **not** license R23's 0.6173 floor. See **DECISIONS 2026-08-06o**.
 
 ---
 
@@ -956,7 +956,7 @@ but unused" with a ~50-**image** switch trigger (the cohort is 38); every within
 > that the `Fix:` bullet below does not list: re-copy the 659 MB of missing bytes.** Also: the
 > harmonisation floor is **0.617257475852966**, and the register's rounded **0.6173 is 4.25e-05 above
 > it** — harmonising at 0.6173 would drop 86 polygons from `ESP_017355_2260` itself.
-> Full pricing of all four options: **DECISIONS 2026-08-06b** and the step-4 block in
+> Full pricing of all four options: **DECISIONS 2026-08-06o** and the step-4 block in
 > [CODE_REVIEW_AUDIT_2026-08-06.md](CODE_REVIEW_AUDIT_2026-08-06.md).
 
   | ObsId | src rows | null-geom | kept | dropped score max | kept score min | kept rows below dropped max |
@@ -1719,7 +1719,7 @@ information" from "this representation extracts no more information".
   test the physical claim (a different backbone, or a native-resolution upper bound).
 
 ### R56 — "`min_confidence` filtering is HARMFUL, ruled out" is a two-factor comparison — and this is what blocks R23's fix
-- **Status:** ✅ **CLOSED 2026-08-06 — CONFIRMED and the record amended** · **Severity:** medium (corrected down) · **Liveness:** dead-closed programme, but it was the recorded justification for the **live** `min_confidence: null` · **Verified:** ✅ re-scored on a common target; see **DECISIONS 2026-08-06b**
+- **Status:** ✅ **CLOSED 2026-08-06 — CONFIRMED and the record amended** · **Severity:** medium (corrected down) · **Liveness:** dead-closed programme, but it was the recorded justification for the **live** `min_confidence: null` · **Verified:** ✅ re-scored on a common target; see **DECISIONS 2026-08-06o**
   > **Resolution.** The decomposition reproduces to 4 dp. Of the recorded −0.021 per-image Spearman
   > loss at `conf ≥ 0.5`, **−0.0172 (82 %) is the target moving**; the model factor is −0.0034
   > (17/38, p=0.43). On the project's standard metrics against the common target, `conf ≥ 0.5` is a

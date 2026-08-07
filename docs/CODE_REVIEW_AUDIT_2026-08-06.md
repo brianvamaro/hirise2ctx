@@ -220,7 +220,7 @@ evidence strength, affected object, and the exact stage/product blocked.
 | **R08** | OPEN. Define and test how A1 handles unlabelled/small frames; do not emit a mixture of raw and normalized DN. |
 | **R13** | OPEN for both maps. Record and test a context-window nodata threshold; checking only the central 32-pixel tile admits embeddings whose surrounding 96-pixel context is mostly nodata. |
 | **R14** | OPEN. A requested new map generation must not silently accept an existing final TIFF as complete. |
-| **R29** | OPEN. The original low/analytic framing is stale: R75 measured 6,202 overlap tiles and 340 forced zeros. Fix coverage-mask/detection alignment before Stage 4. |
+| **R29** | ✅ **CODE FIXED 2026-08-06 — rebuild pending.** `src/labeling._shift_coverage_mask` translates the coverage mask by the same Stage-3 `(dx, dy)` as the polygons before eligibility gating, filling vacated area as ineligible; recorded in the label sidecar as `coreg_mask_shift`. Validated read-only against R75 by an independent route: **6,202 tiles lose eligibility — R75's number exactly** — while **6,255 gain it on the advancing edges**, so the eligible set is *re-registered*, not shrunk (161,005 → 161,058 at S=32). **Register correction:** its fix bullet says the shifts are "already quantised to CTX pixels"; measured, **0 of 39** are — they are 1/20-px quantised, so the mask rounds to the nearest whole pixel (residual ≤ 2.5 m vs a 194.7 m median shift). See DECISIONS 2026-08-06p. |
 | **R31** | OPEN and now active because Stage 2 is in the rebuild. Crop the raster `Window` and derive the transform from the clipped window. Reconstructing bounds from array shape cannot repair west/north overhang. |
 | **R38** | OPEN, medium, and required for A1. The nodata collision is real, but the alleged A1-payoff footprint confound was refuted. The committed-product gate requires an explicit nodata mask. `[1,255]` is useful only as a temporary sentinel-preserving diagnostic because it moves information loss to DN 1. |
 | **R74** | CODE FIXED — REBUILD PENDING. **Tests and provenance landed 2026-08-06**, so it is now usable as a rebuild boundary: ten synthetic hole/threshold/topology tests, the threshold promoted to `ctx_retrieve.max_interior_hole_px`, and a `method`/`version`/threshold/filled-count/SHA-256 record persisted in Stage 2 and propagated through Stage 3 (`shift_id` + input digests) into Stage 4 (`inputs.*`). |
@@ -250,7 +250,7 @@ evidence strength, affected object, and the exact stage/product blocked.
   per-place level comparison is 11/38. Report `mean(pred)/mean(true)` for the level instrument rather
   than promoting per-image `top_ratio` into an impossible new gate.
 - **R56:** ✅ **CLOSED 2026-08-06.** The finding was verified but belongs at medium severity and on a
-  dead-closed comparison. The fixed-target re-score has now been run (DECISIONS 2026-08-06b): the
+  dead-closed comparison. The fixed-target re-score has now been run (DECISIONS 2026-08-06o): the
   "HARMFUL / monotonically degrading" verdict is withdrawn, `conf ≥ 0.5` is a null on the common
   target, and the ruling no longer blocks R23 — but it does not license R23's 0.6173 floor either,
   which was never measured.
@@ -344,11 +344,11 @@ For the baseline-versus-A1 comparison:
 |---|---|
 | Safety | Isolation criteria 1–4 ✅ **CLOSED 2026-08-06** (copy-staging, runtime write guard, static AST scan, every rebuild-DAG script root now a flag), and the full suite verified non-mutating at 581 passed. Still open: criterion 5 — an independent ≈110 GB backup of the ignored trees. The guard is test-only, so notebooks and hand-run producers still rely on the absolute-scratch-root discipline. |
 | Review state | Stale statuses and rejected fix alternatives are normalized; R91 is closed, R78 is marked partial, and R97 is in the live queue. |
-| Label semantics | R56 ✅ **CLOSED 2026-08-06** — re-scored with the target held fixed; verdict withdrawn. R23 remedy ✅ **DECIDED** (Brian: retain + document, temporary pending v3). Mixed-floor metadata contract ✅ **BUILT** (`source_integrity` / `null_geometry_basis` / `realised_label_basis`) but ⬜ **not yet emitted** — zero banked sidecars carry it, so Stage 1 + Stage 4 must re-run. Common-floor target ✅ numerically specified (**0.617257475852966**) and priced, and explicitly **deferred**. All: DECISIONS 2026-08-06b. |
+| Label semantics | R56 ✅ **CLOSED 2026-08-06** — re-scored with the target held fixed; verdict withdrawn. R23 remedy ✅ **DECIDED** (Brian: retain + document, temporary pending v3). Mixed-floor metadata contract ✅ **BUILT** (`source_integrity` / `null_geometry_basis` / `realised_label_basis`) but ⬜ **not yet emitted** — zero banked sidecars carry it, so Stage 1 + Stage 4 must re-run. Common-floor target ✅ numerically specified (**0.617257475852966**) and priced, and explicitly **deferred**. All: DECISIONS 2026-08-06o. |
 | Stage 1 | Run it if source geometry/filtering, CRS logic, or Stage-1 provenance changes. It is required if the R23 filtering/provenance fix lands. |
 | Stage 2 | R74 tests and provenance ✅ **landed 2026-08-06**. Still open: R31 and R67; resolve R66 before using any download/cold-cache path. |
 | Stage 3 | Provenance binding ✅ **landed 2026-08-06** (input digests + coverage-mask identity + a `shift_id` propagated into Stage 4). Still open: R65. |
-| Stage 4 | R29 and R68 are fixed before labels are generated. R80 is reproduced and covered end to end with projected units, a non-`None` size filter, and a fixture that distinguishes diameter from radius; retained mixed-floor semantics make this path load-bearing. |
+| Stage 4 | R29 ✅ **fixed 2026-08-06** (coverage mask now shifts with the polygons; `coreg_mask_shift` provenance). R68 still open before labels are generated. R80 is reproduced and covered end to end with projected units, a non-`None` size filter, and a fixture that distinguishes diameter from radius; retained mixed-floor semantics make this path load-bearing. |
 | Stage 4b | R27 and R28 ✅ **landed 2026-08-06**, so an ordinary Stage-4b regeneration is now the right move — no patch-only path is needed. Patches are regenerated from current labels alongside the corrected `lacunarity_*` (NaN, not the `0.0` sentinel) and `edge_*` (quantile thresholds 0.80/0.90). |
 | Stage 5 | ✅ **CLOSED 2026-08-06.** R04 propagates failure as a nonzero exit; package metadata binds per-obs label/feature content digests plus each label sidecar's R74 `inputs`, and `loaders.verify_package_freshness` enforces them from `load_fold`. R87/R88 guards exist and are mutation-verified. R97 is fixed, so within-image splits regenerate onto the correct snap step. |
 | Modeling/calibration | `fm-embeddings-3`/`fm-embeddings-4` are fixed so arm/suffix, store provenance, existence-only resume, persisted model hash, and nuisance-basis consistency are enforced. LOIO artifacts retain unique tile keys; calibration asserts a complete one-to-one join. R09 plus `calibration-3`/`calibration-4` compatibility and fail-before-write defects are fixed. R54's corrected per-image `mean(pred)/mean(true)` level instrument is emitted beside pooled results, and the pooled-vs-per-place shipping rule is explicit. |
@@ -413,7 +413,7 @@ sufficient when cached derived inputs can change independently.
 >
 > ### Step 4 — R56 **DONE 2026-08-06**; R23 root cause **FOUND**, remedy **awaiting Brian**
 >
-> Full measurements and corrected numbers: **DECISIONS 2026-08-06b**. Both passes were read-only on
+> Full measurements and corrected numbers: **DECISIONS 2026-08-06o**. Both passes were read-only on
 > banked artifacts — no producer ran and no live artifact changed.
 >
 > **R56 — RESOLVED, verdict withdrawn.** Re-scored the three banked arms against **one common
@@ -477,7 +477,7 @@ sufficient when cached derived inputs can change independently.
 > `inspect_shapefile_integrity` + `describe_null_geometry_drop` in Stage 1 (persisted as
 > `source_integrity` / `null_geometry_basis`, both warning loudly), `realised_label_basis` in the
 > Stage-4 sidecar, `DATA_DICTIONARY` entries, 9 tests, fast suite 569 passed. Full detail:
-> **DECISIONS 2026-08-06b**.
+> **DECISIONS 2026-08-06o**.
 >
 > **A fourth truncated export, and a gate that checked the wrong file.** Scanning all 40 vClaire
 > exports with the new check finds **`ESP_028537_2270`** truncated too (513.4 MB of 571.9 MB
