@@ -177,7 +177,7 @@ evidence strength, affected object, and the exact stage/product blocked.
 | **R87/R88** | **FIXED 2026-08-06.** Guards added and mutation-verified (four mutants, each previously green). Confirmed non-corrupt as filed: production splitting is group-aware, and all 620 packaged X parquets under `dataset/` and `dataset_v2/` are free of label columns. R88 also added a *production* second filter in `src/modeling/loaders.py`, which raises rather than silently dropping. |
 | **R91** | FIXED by differently shaped and origin-asymmetric rectangular within-image extents; the main register's OPEN line is stale. |
 | **R92** | REFUTED AS FILED and corrected to historical v1 drift. With v1 superseded, no rebuild action remains. |
-| **R97** | OPEN. Derive the within-image snapping step from scales present in the labels rather than the global table containing dev-only S=128. Add it to the fixing-stage queue. |
+| **R97** | **CODE FIXED 2026-08-06 — within-image rebuild pending.** The step now comes from the scales present in the labels. Measured: the cut moves for 29 of 38 v2 images; v2's persisted cuts match the inflated step 38/38 and **v1 matches the correct step 8/8**, so v1's within-image split was never drifted — the splitter was. `dataset_v2/splits/within_image_4fold.json` and `packaged/within_image_*` are now the stale artifacts. |
 
 ### Corrections to proposed actions and summaries
 

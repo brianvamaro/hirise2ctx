@@ -2371,7 +2371,7 @@ cannot both be right under a 16-snap, because **696 is not a multiple of 16**.
   claim is untouched either way and R45 stands.
 
 ### R97 — A change marked "dev-only" silently doubled a production splitting constant
-- **Status:** OPEN · **Severity:** medium · **Liveness:** live (the constant is current) · **Verified:** yes — measured
+- **Status:** **CODE FIXED 2026-08-06 — WITHIN-IMAGE REBUILD PENDING.** `_compute_quadrant_definitions` now derives the snap step from the scales present in the image's own labels intersected with the factor map, so a table entry for an absent scale is inert; it also raises instead of returning `{}` when no present scale is known. Measured read-only before the change: the inflated step moves the cut for **29 of 38** v2 images, v2's persisted `quadrant_definitions` match step 16 **38/38**, and **v1 matches step 8 8/8** — so **v1 was correct all along and the splitter was the drifted party**, which inverts the old R92/R97 note in [PENDING_REBUILD.md](PENDING_REBUILD.md). Three tests added (production ladder, mixed set containing a real S=128, all-unknown-scale rejection); reverting the one line to `max(scale_to_factor.values())` on a scratch copy fails the first of them. Artifact impact: `dataset_v2/splits/within_image_4fold.json` + `packaged/within_image_*` are now stale; the LOIO split and the regional product are unaffected. · **Severity:** medium · **Liveness:** live (the constant is current) · **Verified:** yes — measured
 - **Where:** `SCALE_TO_FACTOR_FROM_FINEST` in [src/dataset.py](../src/dataset.py); introduced by `29b0adb`
 
 The within-image quadrant cut snaps to `max(SCALE_TO_FACTOR_FROM_FINEST.values())`. Commit `29b0adb`

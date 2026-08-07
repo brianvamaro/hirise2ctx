@@ -66,7 +66,7 @@ leaves a conditional write-through path, documented in the 2026-08-06 audit.
 | Artifact | Finding | Note |
 |---|---|---|
 | The whole v1 `dataset/` label tree | **R81** | Superseded historical generation; no rebuild planned. Pre-2026-06-10 y-sign fix; Stage 4 was re-run for v2 only. Every v1 label sits 236–493 m south of its CTX texture. |
-| v1 `dataset/splits/within_image_4fold.json` | **R92 / R97** | 543 of 27,307 S=32 tiles (1.99 %) are in a different quadrant than today's splitter assigns. Preserve as historical drift; R45 is a separate matched-quadrant scoring defect. |
+| v1 `dataset/splits/within_image_4fold.json` | **R92 / R97** | **Not drifted — it was right and the splitter was wrong.** Measured 2026-08-06: v1's persisted `quadrant_definitions` match a step-8 recompute **8 of 8** images, and the earlier "543 of 27,307 S=32 tiles (1.99 %) disagree with today's splitter" was disagreement with the R97-inflated step-16 splitter. With R97 fixed, v1 agrees again. Still not rebuilt (v1 is superseded for other reasons — R81). R45 is a separate matched-quadrant scoring defect. |
 
 ### Active v2 artifacts — address in the rebuild or retire explicitly
 
@@ -74,6 +74,7 @@ leaves a conditional write-through path, documented in the 2026-08-06 audit.
 |---|---|---|
 | `packaged/loio_nfold_ctx_illum`, `packaged/loio_nfold_nbr_s5` | **R82** | Pre-sign-fix targets: 65.4 % / 88.3 % of `fractional_area` values differ; 19.4 % / 13.6 % of tiles flip the frozen class. Provenance is *inverted* — the stale ones' `config_hash` matches, the current ones' does not. |
 | `dataset_v2/features/**` derived caches | `features-deep` | Two generations stale (the sidecars themselves are clean). |
+| `dataset_v2/splits/within_image_4fold.json` + `packaged/within_image_*` | **R97** | **Now stale.** The persisted cuts match the R97-inflated step-16 splitter **38 of 38** images; with the snap step derived from the scales actually present, the cut moves for **29 of 38**. Regenerate with Stage 5 (within-image only — the LOIO split and the regional product are unaffected). |
 
 ## Not yet fixed — will add rebuild cost when they are
 

@@ -53,6 +53,14 @@ EMPTY_TRUTH_OBS_ID = "ESP_065711_1545"
 # factor convention at every step (per-scale ti_mid is the finest-scale ti_mid // factor;
 # strictly coherent quadrant assignment requires the finest ti_mid to be a multiple of
 # the coarsest factor). Extend this dict if new scales are added upstream.
+#
+# **R97 — this is a lookup table, not a statement about what a dataset contains.**
+# `_compute_quadrant_definitions` derives its snap step from the scales present in the
+# image's own labels, intersected with this table. It used to take `max(...values())`
+# over the whole table, so adding the dev-only `128: 16` entry in commit 29b0adb ("CNN +
+# S128 HELD as dev-only") silently doubled the production snap step 8 -> 16 and moved the
+# quadrant cut for 29 of 38 v2 images. Adding a scale here must stay inert for datasets
+# that do not contain it.
 SCALE_TO_FACTOR_FROM_FINEST = {8: 1, 16: 2, 32: 4, 64: 8, 128: 16}
 
 # Label-side columns -- everything we'd want to predict, plus per-tile context useful
@@ -157,18 +165,34 @@ def _compute_quadrant_definitions(
     # midpoint which we then snap.
     raw_ti_mid = float(np.median(finest["ti"].to_numpy()))
     raw_tj_mid = float(np.median(finest["tj"].to_numpy()))
-    coarsest_factor = max(scale_to_factor.values())
+
+    present_scales = sorted(set(int(s) for s in df["tile_size_px"].unique()))
+    # Scales this image actually has AND that we know a factor for -- exactly the scales
+    # that will receive a definition below.
+    usable_scales = [s for s in present_scales if s in scale_to_factor]
+    if not usable_scales:
+        raise ValueError(
+            f"{obs_id}: none of the label scales {present_scales} appear in "
+            f"scale_to_factor {sorted(scale_to_factor)}; cannot compute quadrant cuts."
+        )
+    # **R97.** The snap step must come from the scales *present in this image's labels*,
+    # not from the global table. Commit 29b0adb ("CNN + S128 HELD as dev-only") added
+    # `128: 16` to SCALE_TO_FACTOR_FROM_FINEST, and because this line used to read
+    # `max(scale_to_factor.values())` it silently doubled the production snap step from 8
+    # to 16 -- for a scale no shipped config emits. Measured 2026-08-06: that moves the cut
+    # for **29 of 38** v2 images, and it is why the v1 within-image split looked "drifted"
+    # (v1 was built with the correct step 8 and matches a step-8 recompute 8/8; the v2
+    # split was built after 29b0adb and matches step 16 38/38). Deriving the step from
+    # `usable_scales` also makes the guarantee exact rather than incidental: coherence is
+    # only needed across the scales that actually get a definition.
+    coarsest_factor = max(scale_to_factor[s] for s in usable_scales)
     # Floor-snap to a multiple of the coarsest factor so the cut is integer-exact at the
     # coarsest scale (and therefore exact at every finer scale by division).
     ti_mid_finest = (int(raw_ti_mid) // coarsest_factor) * coarsest_factor
     tj_mid_finest = (int(raw_tj_mid) // coarsest_factor) * coarsest_factor
-    present_scales = sorted(set(int(s) for s in df["tile_size_px"].unique()))
+
     defs: dict[str, dict[str, int]] = {}
-    for tile_px in present_scales:
-        if tile_px not in scale_to_factor:
-            # Unknown scale (e.g. someone added S=128 upstream without updating the
-            # factor map) -- skip rather than guess.
-            continue
+    for tile_px in usable_scales:
         factor = scale_to_factor[tile_px]
         defs[str(tile_px)] = {
             "ti_mid": int(ti_mid_finest // factor),

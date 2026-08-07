@@ -6232,3 +6232,40 @@ regression.
 Also decided: **do not run the slow suite yet.** The test-side isolation gate is closed and the fast
 loop is green at 526, but the four staged producer tests have not been executed since the fixture
 changed; they will run as one batch before the rebuild rather than mid-fixing.
+
+## 2026-08-06g — R97 CLOSED, and it inverts the R92 story: v1's split was right, the splitter drifted
+
+`_compute_quadrant_definitions` snapped the finest-scale median to `max(SCALE_TO_FACTOR_FROM_FINEST
+.values())`. Commit `29b0adb` ("CNN + S128 **HELD as dev-only**") added `128: 16` to that table, so a
+scale **no shipped config emits** doubled the production snap step from 8 to 16. The step now comes
+from the scales present in the image's own labels, intersected with the factor map; a table entry for
+an absent scale is inert. The function also raises instead of returning `{}` when no present scale is
+known — an empty dict reads downstream as "no tile belongs to any quadrant".
+
+**Measured read-only before changing anything** (recompute per image, compare against the persisted
+`quadrant_definitions` in each split JSON — they *are* persisted, per fold, which corrects the
+2026-08-05 note saying quadrant definitions live nowhere):
+
+| tree | persisted == step-16 recompute | persisted == step-8 recompute | cuts that move |
+|---|---|---|---|
+| `dataset_v2` | **38 / 38** | 9 / 38 | **29 of 38 images** |
+| `dataset` (v1) | 3 / 8 | **8 / 8** | 6 of 9 |
+
+So the v1 within-image split was built with the correct step and still reproduces exactly; the "543 of
+27,307 S=32 tiles (1.99 %) disagree with today's splitter" figure recorded under R92/R97 was
+disagreement **with the defect**, not evidence of v1 drift. v2, built after `29b0adb`, is the tree that
+now goes stale. `PENDING_REBUILD.md` is corrected in both directions.
+
+**Blast radius is within-image only.** The LOIO splits, the frozen recipe, the deployable head, the
+calibration and the regional product do not use quadrant cuts. `dataset_v2/splits/within_image_4fold.json`
+and `packaged/within_image_*` need a Stage-5 regeneration; nothing upstream of Stage 5 does.
+
+Three tests: the production ladder (a fixture whose S=8 median deliberately snaps to 8 under the
+correct step and 0 under the inflated one, with a guard asserting the two differ), a mixed set that
+genuinely contains S=128 and must snap to 16, and rejection when no present scale is known. Reverting
+the single line to `max(scale_to_factor.values())` on a scratch copy fails the first.
+
+**The transferable lesson, and it is the third instance:** a lookup table is not a statement about
+what a dataset contains. Extending one "for a dev experiment" changed a production constant because a
+consumer reduced over the whole table instead of over the data. Two agents then read the constant as 8
+and got the wrong answer twice.

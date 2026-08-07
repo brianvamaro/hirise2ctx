@@ -140,8 +140,11 @@ def _synthetic_manifest(obs_labels: dict[str, str]) -> pd.DataFrame:
 #   * the resulting cut must land STRICTLY inside the extent at every scale (all four
 #     quadrants non-empty at S=64 too), otherwise the partition tests degenerate;
 #   * ti_mid != tj_mid for every image, so a ti/tj transposition is not a no-op.
-# The cut is the S=8 median floor-snapped to a multiple of max(SCALE_TO_FACTOR_FROM_FINEST)
-# == 16 (S=128 is in the factor map even though this fixture stops at S=64).
+# The cut is the S=8 median floor-snapped to a multiple of the coarsest factor among the
+# scales PRESENT here, i.e. 8 for this S=8..S=64 fixture (R97 — it used to be 16, taken from
+# the whole factor map including the dev-only S=128 entry). These four extents happen to
+# snap identically either way, which is precisely why the dedicated R97 tests below use a
+# fixture whose median distinguishes step 8 from step 16.
 _MULTI_IMAGE_EXTENTS_S8: list[tuple[int, int, int, int]] = [
     # (ti_lo, ti_hi, tj_lo, tj_hi)             shape    -> snapped S=8 cut (ti_mid, tj_mid)
     (0, 48, 32, 128),      # at (0, 32)        48 x 96  -> ( 16,  64)
@@ -159,6 +162,101 @@ def _extent_s8(index: int) -> tuple[int, int, int, int]:
 # ============================================================================
 # Quadrant cut computation
 # ============================================================================
+
+def _write_s8_only(labels_dir: Path, obs_id: str, scales: dict[int, int], n_s8: int) -> None:
+    """Labels containing exactly `scales` {tile_size_px: factor}, nested from S=8.
+
+    Deliberately minimal — this exercises `_compute_quadrant_definitions`' scale bookkeeping,
+    not the partitioner, so the quadrants need not be non-empty.
+    """
+    rows = []
+    for tile_px, factor in sorted(scales.items()):
+        for ti in range(n_s8 // factor):
+            for tj in range(n_s8 // factor):
+                rows.append({
+                    "obs_id": obs_id, "tile_size_px": tile_px, "ti": ti, "tj": tj,
+                    "fractional_area": 0.0, "n_polygons_after_filter": 0,
+                })
+    pd.DataFrame(rows).to_parquet(labels_dir / f"{obs_id}.parquet", index=False)
+    (labels_dir / f"{obs_id}.json").write_text(
+        json.dumps({"obs_id": obs_id, "n_polygons_after_filter": 0}), encoding="utf-8"
+    )
+
+
+# R97 fixture: 24 S=8 tiles per axis -> median ti = 11.5 -> int() = 11.
+#   floor-snap to a multiple of 8  -> 8   (correct: the production ladder stops at S=64)
+#   floor-snap to a multiple of 16 -> 0   (what the dev-only S=128 entry used to force)
+# The two answers must differ, or the regression below cannot see anything.
+_R97_N_S8 = 24
+_PRODUCTION_LADDER = {8: 1, 16: 2, 32: 4, 64: 8}
+
+
+def test_quadrant_snap_step_comes_from_the_scales_present_not_the_global_table(tmp_path):
+    """R97. The snap step must be the coarsest factor among the scales this image actually
+    has, not `max(SCALE_TO_FACTOR_FROM_FINEST.values())`.
+
+    Commit 29b0adb ("CNN + S128 HELD as dev-only") added `128: 16` to the global table and
+    thereby doubled the production snap step from 8 to 16 — for a scale no shipped config
+    emits. Measured read-only on 2026-08-06: that moves the quadrant cut for **29 of 38**
+    v2 images, and it is why the v1 within-image split looked drifted (v1 matches a step-8
+    recompute 8/8; the v2 split, built after 29b0adb, matches step 16 38/38).
+    """
+    labels_dir = tmp_path / "labels"
+    labels_dir.mkdir()
+    _write_s8_only(labels_dir, "OBS_R97", _PRODUCTION_LADDER, _R97_N_S8)
+
+    # The global table, S=128 entry and all, must give the same answer as a table that
+    # contains only the production ladder. That equality IS the finding.
+    with_dev_scale = _compute_quadrant_definitions("OBS_R97", labels_dir)
+    ladder_only = _compute_quadrant_definitions(
+        "OBS_R97", labels_dir, scale_to_factor=_PRODUCTION_LADDER,
+    )
+    assert with_dev_scale == ladder_only, (
+        "a factor-map entry for a scale this image does not contain changed its cut: "
+        f"{with_dev_scale} vs {ladder_only}"
+    )
+    assert with_dev_scale["8"]["ti_mid"] == 8, with_dev_scale
+    assert with_dev_scale["8"]["tj_mid"] == 8, with_dev_scale
+
+    # Guard the guard: with the old `max(table.values())` behaviour the answer really was
+    # different, so this fixture can distinguish them.
+    inflated = _compute_quadrant_definitions(
+        "OBS_R97", labels_dir, scale_to_factor={**_PRODUCTION_LADDER, 128: 16},
+    )
+    assert inflated == ladder_only, "the fix should ignore the absent 128 entry"
+    n = _R97_N_S8
+    assert (int(np.median(np.arange(n))) // 8) * 8 != (int(np.median(np.arange(n))) // 16) * 16, (
+        "fixture degenerate: step 8 and step 16 snap to the same cut here"
+    )
+
+
+def test_quadrant_snap_step_grows_when_a_coarser_scale_is_actually_present(tmp_path):
+    """The mixed set: an image that really does contain S=128 must snap to 16, or its S=128
+    tiles would not nest coherently."""
+    labels_dir = tmp_path / "labels"
+    labels_dir.mkdir()
+    mixed = {**_PRODUCTION_LADDER, 128: 16}
+    _write_s8_only(labels_dir, "OBS_MIX", mixed, 128)
+
+    defs = _compute_quadrant_definitions("OBS_MIX", labels_dir)
+    assert set(defs) == {"8", "16", "32", "64", "128"}
+    ti8 = defs["8"]["ti_mid"]
+    assert ti8 % 16 == 0, f"S=128 present, so the S=8 cut must be a multiple of 16: {ti8}"
+    for tile_px, factor in mixed.items():
+        assert defs[str(tile_px)]["ti_mid"] == ti8 // factor
+        assert defs[str(tile_px)]["tj_mid"] == defs["8"]["tj_mid"] // factor
+
+
+def test_quadrant_definitions_reject_labels_with_no_known_scale(tmp_path):
+    """A scale absent from the factor map is skipped rather than guessed — but skipping
+    *everything* used to return an empty dict, which the partitioner would read as "no
+    tile belongs to any quadrant"."""
+    labels_dir = tmp_path / "labels"
+    labels_dir.mkdir()
+    _write_s8_only(labels_dir, "OBS_ODD", {8: 1}, 16)
+    with pytest.raises(ValueError, match="scale_to_factor"):
+        _compute_quadrant_definitions("OBS_ODD", labels_dir, scale_to_factor={16: 2, 32: 4})
+
 
 def test_quadrant_cuts_are_strictly_coherent_across_scales(tmp_path):
     """An S=8 tile's quadrant must equal its parent S=16/S=32/S=64 tile's quadrant.
