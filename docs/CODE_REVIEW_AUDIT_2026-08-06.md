@@ -31,9 +31,13 @@ specific current-state correction below says otherwise.
    product.** Do not silently relabel this as one size-independent abundance target. A parallel
    common-floor product remains an explicit option and may eventually be produced, but it is a
    different scientific target definition rather than a correction or rescaling.
-3. **`dataset/` v1 is superseded and will not be rebuilt.** Preserve it as a frozen historical artifact,
-   exclude it from the rebuild DAG, and do not route current-product readers to it. Numbers derived
-   from it describe that historical tree, not outputs reproducible under current code.
+3. **`dataset/` v1 is superseded and will not be rebuilt.** Exclude it from the rebuild DAG and do not
+   route current-product readers to it. Numbers derived from it describe that historical tree, not
+   outputs reproducible under current code.
+   **Amended later on 2026-08-06: it is also EXPENDABLE — not backed up, and losing it is accepted.**
+   It is non-reproducible, so the cost is that every v1 measurement (R81's label offset, R92/R97's
+   step-8 agreement, the 2026-08-04 incident deltas) becomes unre-verifiable. Those conclusions survive
+   in git-tracked `DECISIONS.md` and the review register; only the ability to re-derive them dies.
 
 These choices imply two product axes that must not be conflated:
 

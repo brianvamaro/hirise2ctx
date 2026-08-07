@@ -83,6 +83,11 @@ leaves a conditional write-through path, documented in the 2026-08-06 audit.
 
 ### Frozen historical artifacts — documentation only, no rebuild
 
+> **2026-08-06:** the whole v1 `dataset/` tree is also **expendable** — Brian's decision; it is not
+> backed up and losing it is accepted. Everything below about v1 records a *conclusion* that survives
+> in git; what would be lost is the ability to re-derive it. See
+> [ARTIFACT_RECOVERY.md](ARTIFACT_RECOVERY.md).
+
 | Artifact | Finding | Note |
 |---|---|---|
 | The whole v1 `dataset/` label tree | **R81** | Superseded historical generation; no rebuild planned. Pre-2026-06-10 y-sign fix; Stage 4 was re-run for v2 only. Every v1 label sits 236–493 m south of its CTX texture. |

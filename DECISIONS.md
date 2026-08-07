@@ -6485,3 +6485,24 @@ does defend against the failure that actually happened twice here — a producer
 live artifact — and 600 GB is free.
 
 Criterion 5 stays **open**. A recovery plan is not a backup, and the rebuild must not start on one.
+
+## 2026-08-06n — `dataset/` v1 is expendable; backup deferred to a drive
+
+Brian: v1 does not need saving. So the 2026-08-06 decision "superseded, will not be rebuilt, preserve
+as a frozen historical artifact" is amended — it is **not preserved either**. Not backed up, and
+losing it is accepted.
+
+Worth stating the cost once so nobody rediscovers it as a surprise: v1 is non-reproducible (pre-y-sign
+-fix), so every v1 measurement becomes **unre-verifiable** — R81's 236–493 m label offset, R92/R97's
+"v1 matches a step-8 recompute 8/8", the 2026-08-04 incident's `max|Δfa|` 0.115 across 3,854 of 96,354
+rows. Those *conclusions* live in git-tracked `DECISIONS.md` and the review register; what dies is the
+ability to re-derive them from the tree. Nothing current reads v1, so that is a reasonable trade.
+
+The backup itself is deferred until an external drive arrives — the machine has one volume (C:, 600 GB
+free) and no removable media. [docs/ARTIFACT_RECOVERY.md](docs/ARTIFACT_RECOVERY.md) now lists the
+drive-day set at ≈105 GB, of which **6.3 GB is the small precious core**: the detections (4.18 GB),
+trained models minus `pretrained` (1.1 GB), current figures + `map_region` (0.98 GB). v1's 5.0 GB is
+dropped from it.
+
+**Isolation criterion 5 remains OPEN.** A recovery plan is not a backup, and the rebuild must not start
+on one.

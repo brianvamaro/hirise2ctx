@@ -14,12 +14,13 @@ Written 2026-08-06, all sizes measured. `git` tracks none of this: `cache*/`, `d
 | what | size | why it cannot be regenerated |
 |---|---|---|
 | `../hirise_priority10_detections/` + `../hirise_40_vClaire/` | 0.01 + **4.17 GB** | **The ground truth.** BoulderNet detection shapefiles — the input every label, model, metric and map in this project derives from. They live *outside the repo* (`detections_root` in both configs) and were outside every artifact manifest taken during this review, so nothing here has ever been checking them. Re-running BoulderNet is a separate project, and the vClaire set came with a specific detector config (`vclaire_40img_ct010_ss256_downscaled_2026-05-28`). |
-| `dataset/` (v1) | 5.0 GB | **Explicitly non-reproducible under current code.** Pre-2026-06-10 y-sign fix; R81 records it as a superseded generation preserved deliberately. Re-running Stage 4 would produce *different* labels, which is the whole point of keeping it. Every historical number in DECISIONS is checkable only against this tree. |
+| ~~`dataset/` (v1)~~ | ~~5.0 GB~~ | **EXPENDABLE — Brian, 2026-08-06.** Not backed up, not rebuilt, and losing it is accepted. It is non-reproducible (pre-2026-06-10 y-sign fix; re-running Stage 4 yields *different* labels, which was the point of keeping it), so the cost is that every v1 measurement becomes **unre-verifiable** — including R81's 236–493 m label offset, R92/R97's "v1 matches a step-8 recompute 8/8", and the 2026-08-04 incident's `max\|Δfa\|` 0.115. Those *conclusions* survive in `DECISIONS.md` and the review register, which git tracks; what dies is the ability to re-derive them. Accepted deliberately: v1 is superseded and nothing current reads it. |
 | `reports/f_build`, `f_leg_b`, `f_timing`, `f_region_logits`, `f_stagec` | **20.2 GB** | Output of the aborted 907-frame F build (~333 CPU-h on Sherlock). The programme is CLOSED, so nobody will re-run it — meaning this is the only surviving evidence for the HARD ABORT verdict. `f_timing` (10.4 GB) is the most droppable: its conclusion (22 min/frame) is already in DECISIONS. |
 | `reports/figures`, `reports/map_region` | 0.98 GB | Regenerable in principle, but from artifacts that are themselves about to change in the rebuild — so the *current* figures are the record of the current claims. |
 | `dataset_v2/packaged/loio_nfold_{ctx_illum,nbr_s5}` | (within the 78 GB) | Pre-sign-fix targets kept deliberately as documented drift (R82). Regenerating them destroys what they document. |
 
-**≈30 GB, of which ~9 GB is small and precious** (detections + v1 + trained models + current figures).
+**≈25 GB after dropping v1**, of which **~6.3 GB is small and precious**: the detections (4.18 GB),
+trained models minus `pretrained` (1.1 GB), and current figures + `map_region` (0.98 GB).
 
 ## Tier 1 — RE-DOWNLOADABLE from external sources. ≈64 GB.
 
@@ -59,25 +60,29 @@ A re-download plan covers Tier 1 well and Tier 2 with an asterisk. It covers **T
 and Tier 0 includes the detections the whole project rests on, which no manifest in this review has
 ever been watching.
 
-## Recommended stopgap until the drive arrives
+## When the drive arrives
 
-C: has 600 GB free. A same-volume copy is **not** disaster protection — one disk failure takes both —
-but it *is* protection against the failure that actually happened here twice (2026-06-10 and
-2026-08-04: a producer silently overwriting a live artifact). Given that threat model, copying the
-small Tier-0 set is worth doing now:
+**Deferred by Brian on 2026-08-06 — no backup runs until then.** The set to copy, with v1 dropped:
 
 ```
-detections (both roots)        4.18 GB
-dataset/ (v1)                  5.00 GB
+detections (both roots)        4.18 GB   <- highest priority; nothing else can be rebuilt without it
 models/ minus pretrained       1.10 GB
 reports/figures + map_region   0.98 GB
-                              ~11.3 GB
+                              ~6.3 GB    small Tier-0 set
+reports/f_* (F programme)     20.2 GB    judgment call; f_timing 10.4 GB is the most droppable
+dataset_v2                    78.3 GB    Tier 2, but see the asterisk above
+                             ~105 GB     total
 ```
 
-Then, when the drive arrives: everything above plus the F-programme 20.2 GB and `dataset_v2` 78.3 GB,
-excluding `ctx_tiles` and `hirise_jp2`. **Exclude those two explicitly** — `cache_v2` reaches them by
-junction, so a naive recursive copy of `cache/` follows it and duplicates 61 GB of re-downloadable
-archives.
+`dataset/` (5.0 GB) is **excluded by decision** — see Tier 0.
+
+**Exclude `ctx_tiles` and `hirise_jp2` explicitly.** `cache_v2` reaches them by junction, so a naive
+recursive copy of `cache/` follows it and duplicates 61 GB of re-downloadable archives.
+
+C: has 600 GB free if an interim same-volume copy of the 6.3 GB set is ever wanted. It is **not**
+disaster protection — one disk failure takes both — but it does defend against the failure that
+actually happened here twice (2026-06-10 and 2026-08-04: a producer silently overwriting a live
+artifact).
 
 ## Before the rebuild
 
