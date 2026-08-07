@@ -145,10 +145,49 @@ Before running slow tests or a rebuild:
    scan in `tests/test_artifact_isolation.py` fails even when a producer test skips; the stale-CRS
    regression there runs on two temporary roots and exercises the invalidation branch the 511-pass run
    never entered.
-4. ⬜ Parameterize scripts that currently hard-code `dataset_v2`, embedding, model, calibration, or map
-   paths. A scratch rebuild must be able to run without writing any live ignored tree.
+4. 🟡 **PARTIAL 2026-08-06.** Parameterize scripts that currently hard-code `dataset_v2`, embedding,
+   model, calibration, or map paths. A scratch rebuild must be able to run without writing any live
+   ignored tree.
+   - ✅ **Stages 1–5** are already config-driven, and the recipe is now pinned by test:
+     `Config.resolve` is `(root / raw).resolve()` and `Path.__truediv__` discards the left operand
+     when the right is absolute, so **absolute** `cache_dir` / `output_dir` values in a copied YAML
+     genuinely redirect. Relative ones do not, wherever the file lives. Both directions are asserted
+     in `tests/test_artifact_isolation.py`.
+   - ✅ **`scripts/bank_calibration.py`** takes `--predictions`, `--labels-dir`, `--out`; it also no
+     longer saves before evaluating its gates, and no longer fails open.
+   - ⬜ **Still hard-coded** (exact lines, so the next session need not re-survey):
+
+     | script | hard-coded roots |
+     |---|---|
+     | `map_region.py:55-58` | `cache_v2/ctx_tiles`, `models/deployable`, `reports/map_region` |
+     | `map_pilot.py:38-43` | `dataset_v2`, `cache_v2/ctx_windows`, `cache_v2/ctx_tiles`, `models/deployable`, `reports/figures`, `reports/map_pilot` |
+     | `train_deployable_head.py:43` | `dataset_v2` |
+     | `parity_check.py:36-37` | `cache_v2/ctx_tiles`, `models/deployable` |
+     | `striping_a1_map.py:58-59` | `models/deployable_a1/86c51a5dca220f63`, `reports/map_a1` |
+     | `striping_a1_loio.py:44-46` | `dataset_v2`, `reports/figures` |
+
+     `map_region.py` and `map_pilot.py` already expose `--out-dir` / `--model` / `--calibration`, so
+     the missing pieces are the *input* roots. The A1 pair needs the same treatment plus the
+     arm-specific head/calibration parameterization the "Product semantics" section requires.
+   - ⬜ The runtime write guard is **test-only**. Scripts and notebooks are not covered by it, so the
+     absolute-scratch-root discipline is the only control there.
 5. ⬜ Snapshot ignored caches, datasets, models, and reports separately before regeneration. Pushing git
    commits does not back up those artifacts, and hard links are not independent backups.
+   Scale, measured 2026-08-06 (`Get-ChildItem -Recurse` does not follow the reparse points, so
+   `cache_v2`'s figure excludes the archive subdirs it shares with `cache` by junction):
+
+   | root | size | in the backup? |
+   |---|---|---|
+   | `dataset_v2` | 78.3 GB | **yes** — irreplaceable |
+   | `reports` | 21.2 GB | **yes** |
+   | `dataset` (v1, frozen) | 5.0 GB | **yes** — superseded but not reproducible under current code |
+   | `models` | 1.4 GB | **yes** |
+   | derived cache subdirs (`ctx_windows`, `coregistration`, `reprojected_detections`, `hirise_decimated`, both trees) | 4.3 GB | **yes** — expensive to recompute |
+   | `cache` + `cache_v2` remainder (CTX tile zips, HiRISE JP2s) | ≈61 GB, shared via junction | no — re-downloadable |
+
+   So the irreplaceable set is **≈110 GB**, not the ≈180 GB the roots total. Note the junction: a
+   naive `robocopy cache cache_backup /E` would follow it and duplicate 61 GB of re-downloadable
+   archives. Exclude `ctx_tiles` and `hirise_jp2` explicitly.
 
 Criteria 4–5 gate the **rebuild**, not the test suite. What is still unproven for the test suite: the
 four reworked slow producer tests have not been executed since the fixture changed, so the `only=`
