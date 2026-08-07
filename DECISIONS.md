@@ -6858,3 +6858,52 @@ visible at 0.001 because ~90 % of its footprint was outside the tile.
 15 tests in `tests/test_ctx_window_geometry.py` (the file previously never called `extract_ctx_window`
 at all), on a deliberately non-square synthetic tile so a `crop` argument swap cannot pass by symmetry.
 Fast suite: **591 passed**, 21 deselected.
+
+## 2026-08-06r — R68 CLOSED: a guard that could not fire, replaced by one that checks the real property
+
+Audit step 5, Stage 4. Stage 4 carried a "runtime pixel-size guard" comparing the CTX window's pixel
+size against its parent mosaic's, cited in `docs/review_2026-07-31/labeling.md` as *the precondition
+for the integer-nesting claim*. It is a **tautology**: `ensure_tile_cached` writes
+`inner_transform = list(src.transform)[:6]` of the `/vsizip/` tile handle into the tile sidecar, and
+`extract_ctx_window` cuts the window from that **same handle** via `src.window_transform(...)`, which
+preserves `a`/`e` bit-identically. Measured over all 49 cached windows the two agree to **0.0 exactly**,
+so no pipeline-reachable input could make it raise.
+
+Independent proof it had never once fired: its own error message was a **non-f-string** containing a
+literal `{murray_tile}` placeholder, and hardcoded `cache/` (wrong for the v2 cohort).
+
+**The property Stage 4 actually depends on** is the *origin phase*: the window's upper-left must sit at
+an integer mosaic-pixel offset from the parent tile's origin, because the ×2 tile ladder is anchored on
+**absolute mosaic-pixel indices**. It matters because Stage 4's two halves are anchored differently —
+`_rasterize_boulders_subpixel` and the eligibility crop are **window**-anchored (`r0_win`/`c0_win`)
+while `_count_centroids_per_finest_cell` and the emitted bbox are **mosaic**-anchored. A fractional
+phase slides them apart: on a synthetic +0.5 px window a 2×2 m boulder reports `boulder_count = 1`
+while `boulder_area` is 0.0 on every tile.
+
+**Fix.** The check now lives inside `_compute_grid_alignment`, at the `int(round(...))` that silently
+assumed it, and covers three things: pixel size, origin phase, and a negative origin. Two named
+tolerances, and the comment says loudly that they are in **different units** — `GRID_PIXEL_SIZE_TOL_M`
+in metres, `GRID_PHASE_TOL_PX` in mosaic pixels. The phase tolerance is 1e-6 px because the measured
+worst residual over 49 cached windows is **1.38e-10 px** — *not* bit-zero, so an `== 0` test would break
+on live data — while one sub-pixel of the 5× rasteriser is 0.2 px, five orders above.
+
+The negative-origin clause is **R31 defence in depth**: an overhanging window was written with the
+requested (un-cropped) transform, so it is misregistered by exactly the overhang; its phase is still
+integer, so only a bounds check catches it. v1's `ESP_057469_2215` is −1,924 px (9.6 km) west today.
+R31 now refuses to write one, but an already-cached window can still carry it.
+
+**Register corrections.** The fix bullet at `geo-crs-deep.md` uses `assert` — wrong for this codebase
+(`python -O` strips assertions, and every other Stage-4 invariant raises). It gives only the **column**
+formula while the prose says "on both axes"; the row axis has the **opposite sign** (`e < 0`), and
+copying the column form across negates the origin. Its offer to "delete it and remove the
+verified-clean claim" as an equal branch is the wrong branch — the property is real, load-bearing and
+was unasserted anywhere. And its `1e-6` silently means pixels where the existing guard's `1e-6` meant
+metres. Also: `geo-crs-deep.md`'s "that phase relation is what R01 found broken" is **not the same
+quantity** — R01 is the `47420 % 32 = 28` offset between *adjacent* Murray tiles' coarse lattices at
+mosaic time; R68 is one window's origin phase on its own parent tile.
+
+**Blast radius: none.** No number moves; `_compute_grid_alignment` returns exactly what it did on every
+passing input. Re-derived on all 38 v2 images: the guard passes 38/38. Eight tests, and all five
+mutants die — tolerance→0 (2 failed), tolerance→1.0 (5), row-sign flip (15), drop the negative-origin
+clause (3), drop the pixel-size clause (1). The tolerance→0 mutant is the one that matters: a fixture
+exercising only an exactly-zero residual would not have killed it. Fast suite: **603 passed**.

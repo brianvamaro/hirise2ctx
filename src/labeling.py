@@ -66,6 +66,17 @@ DEFAULT_SUBPIXEL_FACTOR = 5
 # Chosen 2026-05-23 over a relaxed >= 0.95 -- see module docstring.
 ELIGIBILITY_RULE = "coverage_equals_one"
 
+# R68. Tolerances for the window <-> parent-mosaic grid check. NB these two 1e-6 literals
+# are in DIFFERENT UNITS: pixel size in METRES, phase in mosaic PIXELS. Do not "unify" them.
+# Phase: measured over all 49 cached windows (cache/ + cache_v2/), the worst residual is
+# 1.38e-10 px -- not bit-zero, so an `== 0` test would break on real data. The only source
+# of a non-zero residual on the producing path is float rounding in the affine arithmetic
+# plus the GeoTIFF header round-trip, bounded by ~1e-9 px at Murray Lab coordinate
+# magnitudes. 1e-6 px = 5 um of ground: ~3 orders above the noise, ~5 orders below the
+# smallest consequential break (one sub-pixel of the 5x rasteriser = 0.2 px).
+GRID_PHASE_TOL_PX = 1e-6
+GRID_PIXEL_SIZE_TOL_M = 1e-6
+
 
 def _load_ctx_window(ctx_window_tif: Path) -> tuple[int, int, Any, Any]:
     """Return (height, width, transform, crs) of a Stage 2 CTX window GeoTIFF."""
@@ -292,8 +303,57 @@ def _compute_grid_alignment(
     mx_origin_x = mosaic_transform[2]
     mx_origin_y = mosaic_transform[5]
 
-    mosaic_col_origin = int(round((window_transform.c - mx_origin_x) / px_x))
-    mosaic_row_origin = int(round((mx_origin_y - window_transform.f) / px_y))
+    # ---- R68: check the property this rounding silently assumes -------------------------
+    # Stage 4's x2 tile ladder is anchored on ABSOLUTE mosaic-pixel indices, so the window's
+    # upper-left must sit at an INTEGER mosaic-pixel offset from the parent tile's origin.
+    # `int(round(...))` below discards any fractional phase without complaint. Nothing else
+    # checks it: Stage 4's old "runtime pixel-size guard" compared the window's pixel size
+    # against the parent mosaic's, but Stage 2 cuts the window from the SAME /vsizip/ handle
+    # whose transform it wrote into the tile sidecar, so `a`/`e` agree bit-identically and
+    # the comparison was a tautology that could not fire on any pipeline-reachable input.
+    # A fractional phase matters because the two halves of Stage 4 are anchored differently:
+    # `_rasterize_boulders_subpixel` and the eligibility crop are WINDOW-anchored (r0_win /
+    # c0_win) while `_count_centroids_per_finest_cell` and the emitted bbox are
+    # MOSAIC-anchored, so a half-pixel phase slides them apart -- measured on a synthetic
+    # +0.5 px window, a 2x2 m boulder reports boulder_count = 1 while boulder_area is 0.0.
+    # See DECISIONS 2026-08-06r.
+    mx_px, my_px = abs(mosaic_transform[0]), abs(mosaic_transform[4])
+    if not (abs(px_x - mx_px) < GRID_PIXEL_SIZE_TOL_M
+            and abs(px_y - my_px) < GRID_PIXEL_SIZE_TOL_M):
+        raise RuntimeError(
+            f"CTX window pixel size ({px_x}, {px_y}) m does not match its parent mosaic "
+            f"({mx_px}, {my_px}) m -- the tile sidecar and the window were written from "
+            "different products. Re-run Stage 2 for this image."
+        )
+
+    col_f = (window_transform.c - mx_origin_x) / px_x
+    # NB the row quotient's sign is the OPPOSITE of the column's: e < 0, so the mosaic row
+    # index grows as f decreases. Copying the column form onto the row axis is a real trap.
+    row_f = (mx_origin_y - window_transform.f) / px_y
+    mosaic_col_origin = int(round(col_f))
+    mosaic_row_origin = int(round(row_f))
+    d_col = abs(col_f - mosaic_col_origin)
+    d_row = abs(row_f - mosaic_row_origin)
+    if d_row > GRID_PHASE_TOL_PX or d_col > GRID_PHASE_TOL_PX:
+        raise RuntimeError(
+            f"CTX window origin is NOT on its parent mosaic's pixel lattice. Phase residual "
+            f"(row, col) = ({d_row:.6g}, {d_col:.6g}) px = ({d_row * px_y:.4g}, "
+            f"{d_col * px_x:.4g}) m, tolerance {GRID_PHASE_TOL_PX:g} px. The x2 label ladder "
+            "is anchored on absolute mosaic-pixel indices, so a fractional phase displaces "
+            "the window-anchored boulder raster from the mosaic-anchored (ti, tj) bbox."
+        )
+    if mosaic_row_origin < 0 or mosaic_col_origin < 0:
+        # Defence in depth for R31: a window whose origin is outside its parent tile was
+        # written with the requested (un-cropped) transform while rasterio clipped the read,
+        # so it is misregistered by exactly the overhang. R31 now refuses to write one, but
+        # an already-cached window can still carry it -- v1's ESP_057469_2215 is off by
+        # 1,924 px (9.6 km) west today. Its phase is still integer, so only this clause
+        # catches it.
+        raise RuntimeError(
+            f"CTX window origin ({mosaic_row_origin}, {mosaic_col_origin}) in parent-mosaic "
+            "pixels is negative, i.e. outside the parent tile. The window overhangs its "
+            "Murray Lab tile and its georeferencing cannot be trusted (R31). Re-run Stage 2."
+        )
 
     S_min = int(tile_sizes_px[0])
     S_max = int(tile_sizes_px[-1])
@@ -668,17 +728,13 @@ def stage4_one_image(
 
     px_x = abs(window_transform.a)
     px_y = abs(window_transform.e)
-    # Sanity: the window's pixel size must match the mosaic's. If not, the integer-pixel
-    # alignment claim is wrong and the grid wouldn't be nested cleanly.
-    if not (
-        abs(px_x - abs(mosaic_transform[0])) < 1e-6
-        and abs(px_y - abs(mosaic_transform[4])) < 1e-6
-    ):
-        raise RuntimeError(
-            f"{obs_id}: window pixel size ({px_x}, {px_y}) does not match parent mosaic "
-            f"({abs(mosaic_transform[0])}, {abs(mosaic_transform[4])}). Stage 2 should have "
-            "preserved this -- investigate cache/ctx_tiles/{murray_tile}.json."
-        )
+    # R68: the pixel-size "sanity" check that used to live here was a tautology -- Stage 2
+    # cuts the window from the same /vsizip/ handle whose transform it wrote into the tile
+    # sidecar, so the two agree bit-identically and it could not fire. (Its own error
+    # message gave it away: a non-f-string containing a literal `{murray_tile}` placeholder
+    # and a hardcoded `cache/`, i.e. it had never once been rendered.) The real property --
+    # that the window origin sits on the parent mosaic's integer pixel lattice -- is now
+    # checked inside `_compute_grid_alignment`, where the rounding that assumes it happens.
 
     # R29/R75: the coverage mask must move with the polygons, or an L-shaped strip along
     # the receding edges stays eligible while no detection can land in it.

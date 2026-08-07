@@ -887,3 +887,79 @@ def test_mask_shift_larger_than_the_array_empties_it():
     out, prov = _shift_coverage_mask(m, _shift_dict(0.0, 1000.0), 5.0, 5.0)
     assert out.sum() == 0
     assert prov["n_eligible_px_after"] == 0
+
+
+# ----------------------------------------------------------------------------
+# R68 — the window origin must sit on the parent mosaic's integer pixel lattice.
+# The guard this replaces compared the window's pixel size against the mosaic's,
+# which Stage 2 makes bit-identical by construction, so it could never fire.
+# ----------------------------------------------------------------------------
+from src.labeling import GRID_PHASE_TOL_PX
+
+_MOSAIC = Affine(5.0, 0.0, -474197.5, 0.0, -5.0, 2133889.0)
+_LADDER = [8, 16, 32, 64]
+
+
+def _win(dcol, drow):
+    """Window transform offset from the mosaic origin by (dcol, drow) mosaic pixels."""
+    return _MOSAIC * Affine.translation(dcol, drow)
+
+
+def test_grid_alignment_accepts_an_integer_offset_window():
+    align = _compute_grid_alignment(_win(1280, 640), list(_MOSAIC)[:6], 512, 512, _LADDER)
+    assert align["mosaic_col_origin"] == 1280
+    assert align["mosaic_row_origin"] == 640
+
+
+def test_grid_alignment_tolerates_float_noise_but_not_a_real_phase():
+    """Pins the tolerance from BOTH sides.
+
+    The real cohort's worst phase residual is 1.38e-10 px -- non-zero -- so a mutant that
+    demands an exact 0 would break on live data. And a genuine sub-pixel phase must be
+    rejected. A fixture that only exercises an exactly-zero residual kills neither mutant.
+    """
+    px = 5.0
+    # ~2e-9 px of noise: three orders below the 1e-6 px tolerance, above bit-zero.
+    noisy = Affine(px, 0.0, _MOSAIC.c + 1280 * px + 1e-8,
+                   0.0, -px, _MOSAIC.f - 640 * px - 1e-8)
+    col_f = (noisy.c - _MOSAIC.c) / px
+    assert 0 < abs(col_f - round(col_f)) < GRID_PHASE_TOL_PX   # genuinely non-zero
+    align = _compute_grid_alignment(noisy, list(_MOSAIC)[:6], 512, 512, _LADDER)
+    assert (align["mosaic_col_origin"], align["mosaic_row_origin"]) == (1280, 640)
+
+
+@pytest.mark.parametrize("dcol,drow", [(0.5, 0.0), (0.0, 0.5), (0.25, 0.25), (0.0, 0.2)])
+def test_grid_alignment_rejects_a_fractional_phase(dcol, drow):
+    with pytest.raises(RuntimeError, match="NOT on its parent mosaic's pixel lattice"):
+        _compute_grid_alignment(_win(1280 + dcol, 640 + drow), list(_MOSAIC)[:6],
+                                512, 512, _LADDER)
+
+
+def test_grid_alignment_reports_the_phase_in_both_px_and_m():
+    with pytest.raises(RuntimeError) as ei:
+        _compute_grid_alignment(_win(1280.5, 640.0), list(_MOSAIC)[:6], 512, 512, _LADDER)
+    msg = str(ei.value)
+    assert "0.5" in msg and "2.5" in msg      # 0.5 px = 2.5 m at 5 m/px
+
+
+def test_grid_alignment_rejects_a_pixel_size_mismatch():
+    other = Affine(4.0, 0.0, _MOSAIC.c, 0.0, -4.0, _MOSAIC.f)
+    with pytest.raises(RuntimeError, match="does not match its parent mosaic"):
+        _compute_grid_alignment(other, list(_MOSAIC)[:6], 512, 512, _LADDER)
+
+
+@pytest.mark.parametrize("dcol,drow", [(-1924, 0), (0, -8), (-1, -1)])
+def test_grid_alignment_rejects_a_window_origin_outside_its_tile(dcol, drow):
+    """R31 defence in depth: v1's ESP_057469_2215 is -1924 px (9.6 km) west today.
+
+    Its phase is still integer, so only the bounds clause catches it.
+    """
+    with pytest.raises(RuntimeError, match="outside the parent tile"):
+        _compute_grid_alignment(_win(dcol, drow), list(_MOSAIC)[:6], 512, 512, _LADDER)
+
+
+def test_row_axis_sign_is_not_the_column_axis_sign():
+    """The row quotient uses (f_mosaic - f_window); e < 0 flips it. A copy-paste of the
+    column form onto the row axis negates the origin, which this catches."""
+    align = _compute_grid_alignment(_win(0, 640), list(_MOSAIC)[:6], 512, 512, _LADDER)
+    assert align["mosaic_row_origin"] == +640      # not -640
