@@ -60,10 +60,10 @@ pointers**. The full original build spec is preserved verbatim in
   regenerate with `python notebooks/_build_NN.py` then `nbconvert --execute --inplace`. **Never run
   two notebooks (or two CTX-heavy jobs) at once** (memory: `feedback_collaboration`).
 - **Logic lives in importable `src/` modules**; notebooks and tests *call* it (nothing important
-  lives only in a notebook). Loop: `pytest -m "not slow"` (512 passed / 21 deselected, 2026-08-06).
-  The slow suite is no longer structurally unsafe, but its four producer tests have not been run since
-  the staging fixture changed — ask before running it. **`slow` is not the safety control** (20
-  non-slow tests call a producer); the guard and the static scan are.
+  lives only in a notebook). Loop: `pytest -m "not slow"` (560 passed / 21 deselected, 2026-08-06).
+  The **full suite is now verified non-mutating**: `pytest` → 581 passed with an 11,218-file
+  path/size/mtime manifest over all six artifact roots bit-identical before and after. **`slow` is not
+  the safety control** (20 non-slow tests call a producer); the guard and the static scan are.
 - For repeat visual analyses, **download JP2s** rather than `/vsicurl/` each time.
 
 ## Reporting standards (project-specific)

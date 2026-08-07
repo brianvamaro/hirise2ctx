@@ -47,13 +47,18 @@ in the middle column are committed scope. If the option is approved, it needs a 
 identity, metrics, head, calibration, and raster provenance; it cannot reuse the primary product's
 scientific claims by implication.
 
-> **Update 2026-08-06 (fixing session).** Isolation criteria 1–3 below are now **closed** and the
-> mechanism claim in "Why the R77 safety claim is not structurally true" is **partly refuted** —
+> **Update 2026-08-06 (fixing session). The rule immediately below is SUPERSEDED for the test suite.**
+> Isolation criteria **1–4 are closed**, and the mechanism claim in "Why the R77 safety claim is not
+> structurally true" is **partly refuted** —
 > see [the measurement](#measured-2026-08-06-which-writers-actually-write-through-a-hard-link).
-> Criteria 4–5 (script parameterization, artifact backup) remain open; they gate the rebuild, not the
-> test suite. Running the slow suite is now Brian's call rather than structurally unsafe.
+> **The full suite has been run and verified non-mutating**: `pytest` → **581 passed** (560 fast +
+> 21 slow), with an 11,218-file path/size/mtime manifest over all six artifact roots bit-identical
+> before and after. That is the first time it is safe *by construction* rather than by luck.
+> Only criterion 5 — an independent backup of the ignored trees, ≈110 GB — remains, and it gates the
+> **rebuild**, not the suite. Producers pointed at repository roots by hand, and notebooks, are still
+> uncovered: the runtime guard is test-only.
 
-## Immediate operational safety rule
+## Immediate operational safety rule (superseded — see the update above)
 
 > **Do not run an unfiltered/full pytest suite, any slow producer-calling test, or a pipeline producer
 > against the repository's dataset/cache roots until the isolation gate below is closed.**
@@ -326,7 +331,7 @@ For the baseline-versus-A1 comparison:
 
 | Gate | Must be true before regeneration starts |
 |---|---|
-| Safety | Isolation criteria 1–3 ✅ **CLOSED 2026-08-06** (copy-staging, runtime write guard, static AST scan). Still open: criteria 4–5 — scripts/notebooks accept explicit absolute scratch roots (the guard is test-only), and ignored live artifacts are separately backed up. |
+| Safety | Isolation criteria 1–4 ✅ **CLOSED 2026-08-06** (copy-staging, runtime write guard, static AST scan, every rebuild-DAG script root now a flag), and the full suite verified non-mutating at 581 passed. Still open: criterion 5 — an independent ≈110 GB backup of the ignored trees. The guard is test-only, so notebooks and hand-run producers still rely on the absolute-scratch-root discipline. |
 | Review state | Stale statuses and rejected fix alternatives are normalized; R91 is closed, R78 is marked partial, and R97 is in the live queue. |
 | Label semantics | R56 is re-scored with the target held fixed and R23 is resolved; mixed-floor metadata is defined. The optional common-floor target is either numerically specified or explicitly deferred. |
 | Stage 1 | Run it if source geometry/filtering, CRS logic, or Stage-1 provenance changes. It is required if the R23 filtering/provenance fix lands. |

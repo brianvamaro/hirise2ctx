@@ -6423,3 +6423,30 @@ semantics" section. A note now says so at the function rather than in a document
 call site.
 
 `pytest -m "not slow"`: 560 passed, 21 deselected; artifact manifest unchanged.
+
+## 2026-08-06l — the full suite runs non-mutating, by construction
+
+`pytest` (no marker filter) → **581 passed** (560 fast + 21 slow) with an 11,218-file
+path/size/mtime manifest over `cache`, `cache_v2`, `dataset`, `dataset_v2`, `models` and `reports`
+**bit-identical before and after**. 98.9 s.
+
+This is not the same claim as 2026-08-05's. That run was clean because the cached CRS happened to
+match, so the invalidation branch was never taken, and because rasterio happens to delete-then-create;
+nothing prevented a write. This one is clean because the writes are refused: mutable derived artifacts
+are copied rather than linked, a session-wide guard rejects any write under an artifact root, and a
+static scan fails on a producer call handed a live root even when that test skips. The manifest is now
+corroboration, not the control.
+
+Two things the run confirmed that only a real execution could:
+
+- the reworked `read_only_cache` `only=` filter stages everything Stage 2 and Stage 3 actually read.
+  That was the one thing I could not verify without running it — I had only a read-only listing of
+  which filenames match.
+- the R04 freshness guard fires in situ: `test_run_loio_classification_end_to_end_on_real_fold`
+  emitted `packaged/loio_9fold predates source-digest provenance`, exactly as designed — a warning on
+  a legacy package rather than a failure.
+
+**Still not covered, and worth repeating because it is now the only hole:** the guard is *test-only*.
+A producer invoked by hand from a notebook or a script against a repository root is unaffected by any
+of this. The controls there are the absolute-scratch-root recipe (asserted in
+`tests/test_artifact_isolation.py`) and, before the rebuild, criterion 5's backup.
