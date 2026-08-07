@@ -6269,3 +6269,42 @@ the single line to `max(scale_to_factor.values())` on a scratch copy fails the f
 what a dataset contains. Extending one "for a dev experiment" changed a production constant because a
 consumer reduced over the whole table instead of over the data. Two agents then read the constant as 8
 and got the wrong answer twice.
+
+## 2026-08-06h — R74 becomes a usable rebuild boundary: hole tests + a provenance chain
+
+The R74 fix shipped 2026-08-04 with **no direct tests** and an implicit boundary: the threshold was a
+default kwarg, and nothing in an artifact recorded which algorithm produced it. A config hash over the
+YAML is *identical* either side of the change, and a pathname says nothing, so pre- and post-R74 masks
+had indistinguishable sidecars. That is precisely the Pattern-D failure `PENDING_REBUILD.md` exists to
+control, and it made R74 unusable as a rebuild boundary.
+
+**Tests** — `tests/test_coverage_mask_shadow_fill.py`, ten cases, pure synthetic arrays: small enclosed
+hole; hole above the threshold; the threshold boundary (`<=` fills, one pixel more does not); an
+edge-connected invalid region; the mixed case where one enclosed puddle and one *small* edge-connected
+gap coexist and exactly one may change; `max_interior_hole_px <= 0` as a bit-exact no-op that also does
+not mutate its input; add-only-never-remove over random fields at three hole densities, with
+`n_filled` cross-checked against the mask delta; all-valid and all-nodata.
+
+**Provenance chain** — the identity now travels with the data rather than with the commit:
+
+| stage | records |
+|---|---|
+| 2 | `ctx_window_sha256`, and `hirise_mask{method, version, max_interior_hole_px, n_interior_shadow_px_filled, coverage_fraction, sha256}` |
+| 3 | `inputs{ctx_window_sha256, hirise_mask_tif, hirise_mask_sha256, coverage_mask}` + a `shift_id` digest over its shift and inputs (timestamp excluded, so a re-solve on unchanged inputs is stable) |
+| 4 | `inputs{ctx_window_sha256, hirise_mask_sha256, coverage_mask, coreg_shift_id}` |
+
+`COVERAGE_MASK_VERSION = 2` (1 = pre-R74) must be bumped whenever the output can change for unchanged
+inputs. The threshold is now `ctx_retrieve.max_interior_hole_px` in both YAMLs, wired through
+`scripts/run_stage2.py` rather than living in a default nobody can see from the artifact.
+`build_hirise_coverage_mask` returns a third element; the only caller is `stage2_one_image`.
+
+Stage 3 binds to the mask because it *uses* it — the coverage mask selects the FFT window and gates the
+block field, so a pre-R74 and a post-R74 mask can yield different shifts from identical config.
+
+The sharpest test flips a single pixel in the coverage mask and asserts the Stage 4 sidecar's recorded
+digest moves while its `config_hash` does not.
+
+**Every sidecar on disk predates these fields**, so the absence of `inputs` / `hirise_mask` is itself
+the marker of a pre-2026-08-06 generation — useful during the rebuild.
+
+`pytest -m "not slow"`: 540 passed, 21 deselected; artifact manifest unchanged. No producer was run.

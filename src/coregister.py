@@ -39,6 +39,7 @@ the result aligns with CTX. Stage 4 will only use the magnitudes for now.
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -402,9 +403,25 @@ def stage3_one_image(
     dx_m, dy_m = shift_px_to_world_m(dy_px, dx_px, px_x=px_x, px_y=px_y)
     shift_m = float(math.hypot(dx_m, dy_m))
 
+    # R74: bind this solve to the exact bytes of the Stage 2 products it consumed. Stage 3
+    # picks its FFT window and computes its block field from the coverage mask, so a
+    # pre-R74 mask and a post-R74 one can yield different shifts from identical config --
+    # and recording only the pathnames could not tell them apart. The Stage 2 sidecar's own
+    # mask-algorithm identity is copied through where it exists.
+    stage2_sidecar = cache_dir / ctx_retrieve.CTX_WINDOWS_SUBDIR / f"{obs_id}.json"
+    stage2_mask_prov = None
+    if stage2_sidecar.exists():
+        stage2_mask_prov = json.loads(stage2_sidecar.read_text(encoding="utf-8")).get("hirise_mask")
+
     provenance = {
         "obs_id": obs_id,
         "ctx_window_tif": str(ctx_window_tif),
+        "inputs": {
+            "ctx_window_sha256": ctx_retrieve.file_sha256(ctx_window_tif),
+            "hirise_mask_tif": str(mask_tif),
+            "hirise_mask_sha256": ctx_retrieve.file_sha256(mask_tif),
+            "coverage_mask": stage2_mask_prov,
+        },
         "ctx_transform": list(ctx_transform)[:6],
         "ctx_crs_wkt": ctx_crs.to_wkt() if ctx_crs else None,
         "method": method,
@@ -433,8 +450,32 @@ def stage3_one_image(
 
     out_dir = cache_dir / COREGISTRATION_SUBDIR
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / f"{obs_id}.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
+    out_json = out_dir / f"{obs_id}.json"
+    out_json.write_text(json.dumps(provenance, indent=2), encoding="utf-8")
+    # A stable identity for *this* solve, so Stage 4 can record which shift it applied
+    # rather than just that it applied one. Computed over the shift + the input digests,
+    # not over the file, because the file also carries a timestamp.
+    provenance["shift_id"] = shift_identity(provenance)
+    out_json.write_text(json.dumps(provenance, indent=2), encoding="utf-8")
     return provenance
+
+
+def shift_identity(provenance: dict) -> str:
+    """Content digest of a Stage 3 solve: its shift plus the inputs that produced it.
+
+    Deliberately excludes `solved_at_iso` and any `shift_id` already present, so re-running
+    Stage 3 on unchanged inputs yields the same identity.
+    """
+    payload = {
+        "obs_id": provenance.get("obs_id"),
+        "shift_px": provenance.get("shift_px"),
+        "shift_m": provenance.get("shift_m"),
+        "method": provenance.get("method"),
+        "fft_window": provenance.get("fft_window"),
+        "inputs": provenance.get("inputs"),
+    }
+    canonical = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def warp_hirise_to_ctx_grid(

@@ -17,7 +17,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from src import manifest as M
 from src.config import load_config
-from src.ctx_retrieve import stage2_one_image
+from src.ctx_retrieve import DEFAULT_MAX_INTERIOR_HOLE_PX, stage2_one_image
 
 
 def _make_progress(prefix: str):
@@ -70,6 +70,11 @@ def main() -> int:
         nominal_width_m=float(cfg_retrieve["nominal_hirise_width_m"]),
         nominal_length_m=float(cfg_retrieve["nominal_hirise_length_m"]),
         config_hash=cfg.hash,
+        # R74: explicit, config-driven, and recorded in the sidecar rather than left to a
+        # default nobody can see from the artifact.
+        max_interior_hole_px=int(
+            cfg_retrieve.get("max_interior_hole_px", DEFAULT_MAX_INTERIOR_HOLE_PX)
+        ),
         on_progress=_make_progress(obs_id),
     )
 

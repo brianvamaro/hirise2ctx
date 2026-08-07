@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import json
 import math
 import re
@@ -509,6 +510,31 @@ def _fill_interior_shadow_holes(
     return out, int(small.sum())
 
 
+def file_sha256(path: str | Path) -> str:
+    """SHA-256 of a file's bytes, streamed. Used to bind stage provenance to exact inputs.
+
+    **R74.** A config hash over the YAML cannot distinguish a pre-R74 coverage mask from a
+    post-R74 one -- the config is identical and only the algorithm changed. Recording a
+    pathname cannot either. Only a content digest can, so Stage 2 records the mask's digest
+    and Stages 3 and 4 record the digest of every derived input they consumed.
+    """
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+# Identity of the coverage-mask algorithm. Bump the version whenever the *output* can
+# change for unchanged inputs; the mask digest then distinguishes generations even where
+# two runs share a config hash.
+#   1 -- pre-R74: `hirise_decimated > 0`, deep shadow counted as missing coverage.
+#   2 -- R74 (2026-08-05): small enclosed zero regions re-marked valid.
+COVERAGE_MASK_METHOD = "decimated_nonzero_with_interior_shadow_fill"
+COVERAGE_MASK_VERSION = 2
+DEFAULT_MAX_INTERIOR_HOLE_PX = 16
+
+
 def build_hirise_coverage_mask(
     obs_id: str,
     *,
@@ -516,8 +542,8 @@ def build_hirise_coverage_mask(
     cache_dir: str | Path,
     ctx_window_tif: str | Path,
     out_path: str | Path,
-    max_interior_hole_px: int = 16,
-) -> tuple[Path, float]:
+    max_interior_hole_px: int = DEFAULT_MAX_INTERIOR_HOLE_PX,
+) -> tuple[Path, float, dict]:
     """Write a uint8 HiRISE-coverage mask aligned to the CTX window grid.
 
     The mask is 1 where the decimated HiRISE (5 m/px) has a valid (non-zero) pixel after
@@ -539,8 +565,10 @@ def build_hirise_coverage_mask(
     a one-time ~200-500 MB hit per ObsId. Subsequent calls reuse the local JP2 and the
     cached decimated GeoTIFF in `cache/hirise_decimated/{ObsId}_5mpp_full.tif`.
 
-    Returns `(mask_path, coverage_fraction)` where `coverage_fraction` is the share of
-    CTX-window pixels with HiRISE coverage.
+    Returns `(mask_path, coverage_fraction, mask_provenance)`. `coverage_fraction` is the
+    share of CTX-window pixels with HiRISE coverage; `mask_provenance` carries the
+    algorithm identity, threshold, filled-pixel count and output digest that let a later
+    stage tell a pre-R74 mask from a post-R74 one (R74 -- a YAML config hash cannot).
     """
     import numpy as np
     import rasterio
@@ -597,7 +625,15 @@ def build_hirise_coverage_mask(
         dst.write(mask, 1)
 
     coverage_fraction = float(mask.mean())
-    return out_path, coverage_fraction
+    mask_provenance = {
+        "method": COVERAGE_MASK_METHOD,
+        "version": COVERAGE_MASK_VERSION,
+        "max_interior_hole_px": int(max_interior_hole_px),
+        "n_interior_shadow_px_filled": int(n_shadow_filled),
+        "coverage_fraction": coverage_fraction,
+        "sha256": file_sha256(out_path),
+    }
+    return out_path, coverage_fraction, mask_provenance
 
 
 def stage2_one_image(
@@ -611,6 +647,7 @@ def stage2_one_image(
     nominal_width_m: float,
     nominal_length_m: float,
     config_hash: str,
+    max_interior_hole_px: int = DEFAULT_MAX_INTERIOR_HOLE_PX,
     on_progress=None,
 ) -> dict:
     """End-to-end Stage 2 for one ObsId. Mirrors `detections.stage1_one_image`.
@@ -665,12 +702,13 @@ def stage2_one_image(
     # avoid emitting "boulder absence" labels outside the HiRISE swath (or on the
     # NaN/0 corners inside the swath's rotated-rectangle outline).
     mask_path = out_dir / f"{obs_id}_hirise_mask.tif"
-    _, coverage_fraction = build_hirise_coverage_mask(
+    _, coverage_fraction, mask_provenance = build_hirise_coverage_mask(
         obs_id,
         jp2_url=str(manifest_row["JP2_URL"]),
         cache_dir=cache_dir,
         ctx_window_tif=out_tif,
         out_path=mask_path,
+        max_interior_hole_px=int(max_interior_hole_px),
     )
 
     provenance = {
@@ -687,6 +725,12 @@ def stage2_one_image(
         "n_polygons_anchor": int(len(gdf)),
         "hirise_mask_path": str(mask_path),
         "hirise_coverage_fraction": coverage_fraction,
+        # R74: content-addressed identity of both derived outputs. A config hash over the
+        # YAML is identical either side of the R74 algorithm change, so without these two
+        # digests a pre-R74 and a post-R74 generation have indistinguishable sidecars --
+        # the Pattern-D provenance failure PENDING_REBUILD.md exists to control.
+        "ctx_window_sha256": file_sha256(out_tif),
+        "hirise_mask": mask_provenance,
         "config_hash": config_hash,
         "extracted_at_iso": _dt.datetime.now(_dt.timezone.utc).isoformat(),
     }

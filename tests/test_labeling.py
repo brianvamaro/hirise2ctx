@@ -588,6 +588,51 @@ def test_tile_bounds_align_with_mosaic_pixel_grid(tmp_path):
 # Idempotency
 # ----------------------------------------------------------------------------
 
+def test_stage4_sidecar_binds_to_the_exact_upstream_bytes(tmp_path):
+    """R74. Stage 4's `mask_min == 1` rule means the coverage mask decides which tiles exist
+    at all, so a pre-R74 and a post-R74 label table differ in *row set* while sharing a
+    config hash — the Pattern-D provenance failure PENDING_REBUILD.md exists to control.
+    The sidecar must therefore record what it actually read, by content.
+    """
+    from src.ctx_retrieve import CTX_WINDOWS_SUBDIR, file_sha256
+
+    cache_dir, out_dir, info, obs = _make_window(tmp_path, height=192, width=192)
+    _write_polygons(info, [])
+    row = _make_manifest_row(info)
+    window_tif = cache_dir / CTX_WINDOWS_SUBDIR / f"{obs}.tif"
+    mask_tif = cache_dir / CTX_WINDOWS_SUBDIR / f"{obs}_hirise_mask.tif"
+
+    from unittest.mock import patch
+
+    def _run():
+        with patch("src.ctx_tiles.murray_tile_for_manifest_row", return_value=info["murray_tile"]):
+            return stage4_one_image(
+                obs, cache_dir=cache_dir, output_dir=out_dir, manifest_row=row,
+                target_crs=info["crs"].to_wkt(), labeling_cfg=_labeling_cfg(),
+                config_hash="hash_v1", apply_coreg_shift=False,
+            )
+
+    prov = _run()
+    inputs = prov["inputs"]
+    assert inputs["ctx_window_sha256"] == file_sha256(window_tif)
+    assert inputs["hirise_mask_sha256"] == file_sha256(mask_tif)
+
+    # Now change the mask the way an algorithm change would: re-mark one interior pixel as
+    # covered. The config hash is untouched; the recorded identity must move anyway.
+    with rasterio.open(mask_tif) as src:
+        prof, mask = src.profile, src.read(1)
+    mask[mask.shape[0] // 2, mask.shape[1] // 2] ^= 1
+    with rasterio.open(mask_tif, "w", **prof) as dst:
+        dst.write(mask, 1)
+
+    prov2 = _run()
+    assert prov2["config_hash"] == prov["config_hash"], "fixture drifted: config must be equal"
+    assert prov2["inputs"]["hirise_mask_sha256"] != inputs["hirise_mask_sha256"], (
+        "the sidecar cannot distinguish two coverage-mask generations — recording only "
+        "pathnames and a YAML config hash is exactly the R74 provenance gap"
+    )
+
+
 def test_stage4_is_idempotent(tmp_path):
     # R78: 192 px at the real mosaic phase; polygons placed in the working region.
     cache_dir, out_dir, info, obs = _make_window(tmp_path, height=192, width=192)

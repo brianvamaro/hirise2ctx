@@ -179,6 +179,31 @@ def _compute_grid_alignment(
     }
 
 
+def _upstream_identity(
+    cache_dir: Path, obs_id: str, ctx_window_tif: Path, mask_tif: Path, shift: dict | None,
+) -> dict:
+    """Content identity of the Stage 2 / Stage 3 artifacts these labels were built from.
+
+    **R74.** Recording pathnames cannot distinguish generations, and a YAML config hash is
+    identical either side of an algorithm change. This records the digests of the CTX
+    window and coverage mask actually read, the coverage-mask algorithm identity copied
+    from the Stage 2 sidecar, and the Stage 3 solve's `shift_id`.
+    """
+    from . import ctx_retrieve
+    from .ctx_retrieve import CTX_WINDOWS_SUBDIR
+
+    stage2 = cache_dir / CTX_WINDOWS_SUBDIR / f"{obs_id}.json"
+    mask_prov = None
+    if stage2.exists():
+        mask_prov = json.loads(stage2.read_text(encoding="utf-8")).get("hirise_mask")
+    return {
+        "ctx_window_sha256": ctx_retrieve.file_sha256(ctx_window_tif),
+        "hirise_mask_sha256": ctx_retrieve.file_sha256(mask_tif),
+        "coverage_mask": mask_prov,
+        "coreg_shift_id": (shift or {}).get("shift_id"),
+    }
+
+
 def _rasterize_boulders_subpixel(
     gdf,
     window_transform,
@@ -584,6 +609,11 @@ def stage4_one_image(
         "label_type_primary": labeling_cfg.get("label_type", "fractional_area"),
         "ctx_window_tif": str(ctx_window_tif),
         "hirise_mask_tif": str(mask_tif),
+        # R74: which *generation* of the upstream artifacts these labels were built from.
+        # Stage 4's `mask_min == 1` eligibility rule means the coverage mask decides which
+        # tiles exist at all, so a pre-R74 and a post-R74 label table differ in row set
+        # while sharing a config hash. Pathnames cannot distinguish them; these can.
+        "inputs": _upstream_identity(cache_dir, obs_id, ctx_window_tif, mask_tif, shift),
         "parquet_path": str(parquet_path),
         "config_hash": config_hash,
         "written_at_iso": _dt.datetime.now(_dt.timezone.utc).isoformat(),

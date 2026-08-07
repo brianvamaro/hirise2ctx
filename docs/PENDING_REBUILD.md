@@ -28,7 +28,27 @@ known, accepted divergence — do not re-file it as a finding.**
 | 2 | **R27** — `lacunarity_shadow_b*` emitted `0.0`, an out-of-range sentinel, for shadow-free tiles | `src/features.py::_lacunarity_per_tile` — a tile with `M1 == 0` now stays NaN (the array is NaN-prefilled) instead of being written `0.0`. `dataset/DATA_DICTIONARY.md` documents the case. Verified read-only before the change: **42,015 / 198,320 = 21.2 %** of S ≥ 32 rows in `dataset_v2/features/` were exactly `0.0`, **every one** with `shadow_fraction == 0`, smallest non-zero value exactly `1.0`, **zero** rows in `(0, 1)`. | Stage 4b features for all 38 v2 images, then every Stage-6a `features_nbr_*` derived from them, then any model/metric trained on those columns | **Two columns directly, six downstream.** `lacunarity_shadow_b2/_b4` change from `0.0` to NaN on 21.2 % of S ≥ 32 rows. The real damage is Stage 6a: its neighbour aggregation is NaN-aware (`np.isfinite`) but not sentinel-aware, so it averaged the sentinel with real measurements — **2.16 %** of `nbr_mean_lacunarity_*` rows pooled, and **16.7 %** for `ESP_068402_2240`, currently sit in the impossible interval `(0, 1)`. `nbr_{mean,max,std}_lacunarity_shadow_b{2,4}` all change. LightGBM can split away a `0.0` in the base column; nothing can undo an average. |
 | 3 | **R28** — Canny thresholds were absolute, and the config asserted the opposite | `src/features.py::_compute_canny_window` gained a config-driven `use_quantiles` (hard error if enabled without explicit percentile thresholds), and **the default is now `use_quantiles: true`, `0.80 / 0.90`** (Brian's choice, 2026-08-06) in `DEFAULT_FEATURES_CFG`, `config.yaml` and `config_v2.yaml`. `dataset/DATA_DICTIONARY.md` corrected. A test asserts the two YAMLs agree with the default, since a YAML `features:` block overrides key-by-key. | Stage 4b for all 38 images → every Stage-6a `features_nbr_*` → every GBM / W1 number and error atlas computed from an `edge_*` column | **Both `edge_*` columns for every tile, plus six `nbr_*` derivatives.** Verified before the change: per-image `edge_density` tracked per-image `intensity_std` at Spearman **ρ = 0.965** across the 38 images with a **12.2×** spread, and **33.8 %** of `ESP_068402_2240`'s S = 64 tiles had zero Canny edge pixels. On a synthetic scene a ~3× DN-spread cut collapsed edge density **×0.01** under absolute thresholds and **×1.00** under quantiles. Expect the cohort spread in `edge_density` to shrink sharply; that is the point. Trap: an explicit `0.1` is **not** the old behaviour — skimage divides explicit *absolute* thresholds by `dtype_max`, i.e. 0.1/255 on a uint8 window. |
 
-### R74 — read-only validation done at fix time (tests/provenance still required before rebuild)
+### R74 — tests and provenance landed 2026-08-06
+
+The audit's two pre-rebuild conditions are met, so R74 can now serve as a rebuild boundary:
+
+- **Ten direct synthetic tests** (`tests/test_coverage_mask_shadow_fill.py`): small enclosed hole,
+  hole above the threshold, inclusive threshold boundary, edge-connected invalid region, the mixed
+  enclosed-plus-edge-connected case, `max_interior_hole_px <= 0` as an exact no-op, add-only over
+  random fields, all-valid and all-nodata.
+- **Machine-readable identity.** `ctx_retrieve.max_interior_hole_px` is a config key wired through
+  `scripts/run_stage2.py`. `build_hirise_coverage_mask` returns `(path, fraction, provenance)` with
+  `method`, `version` (1 = pre-R74, 2 = post-R74), threshold, filled-pixel count and the mask's
+  SHA-256. Stage 2 persists that plus `ctx_window_sha256`; Stage 3 records both input digests, the
+  mask identity, and a `shift_id` digest over its own shift + inputs; Stage 4 records
+  `inputs.{ctx_window_sha256, hirise_mask_sha256, coverage_mask, coreg_shift_id}`.
+- A regression test flips one mask pixel and asserts the Stage 4 sidecar changes while the config
+  hash does not — the Pattern-D gap in one assertion.
+
+**Every existing sidecar predates these fields**, so absence of `inputs` / `hirise_mask` is itself the
+marker of a pre-2026-08-06 generation.
+
+### R74 — read-only validation done at fix time
 
 Run read-only against the 138 **cached decimated** 5 m/px arrays (never a JP2, never the producer):
 

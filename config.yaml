@@ -51,6 +51,15 @@ ctx_retrieve:
   buffer_m: 1000              # buffer around polygon-footprint bbox, in CTX CRS metres
   nominal_hirise_width_m: 6000     # used only when shapefile has 0 polygons
   nominal_hirise_length_m: 16000   # (ESP_065711_1545; diversity pick)
+  # R74. Small ENCLOSED zero regions in the decimated HiRISE are boulder shadow, not
+  # unimaged ground -- HiRISE RDR DN is continuous through 0, so a shadowed pixel is
+  # indistinguishable by value from a data gap. Regions no larger than this are re-marked
+  # as observed; exterior/edge-connected nodata is untouched because it reaches the array
+  # border. Measured shadow holes are 1-2 px (99 % single-pixel), so 16 is ~8x the observed
+  # scale and far below any plausible dropout. 0 restores the pre-R74 behaviour. Recorded in
+  # the Stage 2 sidecar together with the mask algorithm version and output digest, because
+  # a config hash alone cannot tell a pre-R74 mask from a post-R74 one.
+  max_interior_hole_px: 16
 
 coregistration:
   enabled: false                  # nominal geolocation first; CLAUDE.md default
