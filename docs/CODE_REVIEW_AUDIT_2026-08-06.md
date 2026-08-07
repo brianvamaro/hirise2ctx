@@ -162,7 +162,7 @@ evidence strength, affected object, and the exact stage/product blocked.
 | Finding | Correct current interpretation |
 |---|---|
 | **R01** | OPEN and required for both regional products. Define one globally anchored coarse grid before per-tile inference. Reprojecting already local-phase prediction TIFFs only at merge time is a stopgap, not the fresh-build fix. |
-| **R04** | OPEN. Stage 5 must fail nonzero and bind each package to label and feature content digests/generation IDs; cohort, split, and YAML hashes alone cannot detect pre-R74 package contents. Loaders must verify those bindings. |
+| **R04** | **FIXED 2026-08-06.** Stage 5 returns 1 and names the schemes whose packaged output is now stale; packages record per-obs labels/features SHA-256 plus each label sidecar's R74 `inputs` block; `loaders.verify_package_freshness` runs from `load_metadata`/`load_fold` and raises on split-hash drift, cohort drift, or content drift. Packages predating the field warn instead of failing — all seven live packages pass with that warning. |
 | **R06** | OPEN for the active A1 deliverable. `reports/map_a1/` does not exist, so A1 is planned, not shipped. |
 | **R07** | OPEN and verified, but the old fix wording is incomplete. Training used one native-resolution statistic per Stage-2 observation window, while deployment partitions by SeamMap source frame and currently derives statistics from 160 m data. Choose and version one statistical unit, re-embed/retrain or prove equivalence, and make training and deployment identical; resolution alone is not parity. |
 | **R08** | OPEN. Define and test how A1 handles unlabelled/small frames; do not emit a mixture of raw and normalized DN. |

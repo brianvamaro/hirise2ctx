@@ -625,6 +625,52 @@ def _split_columns(df: pd.DataFrame) -> tuple[list[str], list[str]]:
     return x_cols, label_cols + context_cols
 
 
+def _file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+# Bump when the *meaning* of the recorded source identity changes.
+SOURCE_DIGEST_VERSION = 1
+
+
+def source_digests(obs_ids, labels_dir: Path, features_dir: Path | None) -> dict:
+    """Content identity of the Stage 4 / 4b inputs a package was built from.
+
+    **R04 + R74.** A package records its scheme name, `split_hash` and `config_hash`, and
+    none of the three can detect that the *contents* of `labels/` changed underneath it.
+    They cannot, in particular, distinguish pre-R74 labels from post-R74 labels: the config
+    is identical and only the coverage-mask algorithm moved, yet the label row set differs
+    because Stage 4's eligibility rule is unanimous over the mask. This records the digest
+    of every labels/features parquet consumed, plus each label sidecar's R74 `inputs`
+    block, and rolls them into one `digest` that a loader can compare cheaply.
+    """
+    per_obs: dict[str, dict] = {}
+    labels_dir = Path(labels_dir)
+    for obs in sorted(obs_ids):
+        entry: dict = {}
+        lp = labels_dir / f"{obs}.parquet"
+        if lp.exists():
+            entry["labels_sha256"] = _file_sha256(lp)
+        ls = labels_dir / f"{obs}.json"
+        if ls.exists():
+            entry["labels_inputs"] = json.loads(ls.read_text(encoding="utf-8")).get("inputs")
+        if features_dir is not None:
+            fp = Path(features_dir) / f"{obs}.parquet"
+            if fp.exists():
+                entry["features_sha256"] = _file_sha256(fp)
+        per_obs[obs] = entry
+    canonical = json.dumps(per_obs, sort_keys=True, default=str, separators=(",", ":"))
+    return {
+        "version": SOURCE_DIGEST_VERSION,
+        "digest": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        "per_obs": per_obs,
+    }
+
+
 def package_split(
     metadata: dict,
     *,
@@ -737,6 +783,13 @@ def package_split(
         "scale_filter": list(scale_filter) if scale_filter is not None else None,
         "emit_all_parquet": bool(emit_all_parquet),
         "obs_to_int": obs_to_int,
+        # R04/R74: bind this package to the exact bytes of the labels/features it was
+        # built from. Scheme name, split_hash and config_hash cannot detect that the
+        # contents of labels/ changed underneath -- pre-R74 and post-R74 labels share a
+        # config hash and differ in row set. Loaders verify this.
+        "source_digests": source_digests(
+            metadata["manifest_obs_ids"], labels_dir, features_dir,
+        ),
         "per_fold": per_fold_counts,
         "all_parquet_path": all_path,
         "written_at_iso": _dt.datetime.now(_dt.timezone.utc).isoformat(),
@@ -855,6 +908,13 @@ def _package_within_image_split(
         "scale_filter": list(scale_filter) if scale_filter is not None else None,
         "emit_all_parquet": bool(emit_all_parquet),
         "obs_to_int": obs_to_int,
+        # R04/R74: bind this package to the exact bytes of the labels/features it was
+        # built from. Scheme name, split_hash and config_hash cannot detect that the
+        # contents of labels/ changed underneath -- pre-R74 and post-R74 labels share a
+        # config hash and differ in row set. Loaders verify this.
+        "source_digests": source_digests(
+            metadata["manifest_obs_ids"], labels_dir, features_dir,
+        ),
         "n_folds_per_image": int(metadata.get("n_folds_per_image", 4)),
         "buffer_tiles": buffer_tiles,
         "per_fold": per_fold_counts,

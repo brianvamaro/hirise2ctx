@@ -6308,3 +6308,40 @@ digest moves while its `config_hash` does not.
 the marker of a pre-2026-08-06 generation — useful during the rebuild.
 
 `pytest -m "not slow"`: 540 passed, 21 deselected; artifact manifest unchanged. No producer was run.
+
+## 2026-08-06i — R04 CLOSED: Stage 5 fails loudly, and a stale package can no longer hide
+
+Two halves, and the review was right that the second is the consequential one.
+
+**The exit code.** `_run_one` swallowed `build_split`'s `ValueError`, `main` discarded its return and
+`return 0`d unconditionally, so `raise SystemExit(main())` reported success. `main` now collects the
+failed schemes, returns 1, and says explicitly that any existing `packaged/` output for them is stale.
+
+**The staleness detector.** A package recorded its scheme name, `split_hash` and `config_hash`; none
+of the three can see that the *contents* of `labels/` changed underneath it — which is exactly the
+pre-R74 case, where the config is identical and only the label row set moves. `package_split` and
+`_package_within_image_split` now record `source_digests`: a SHA-256 per labels and features parquet,
+each label sidecar's R74 `inputs` block, and one rolled-up digest.
+`loaders.verify_package_freshness` runs from `load_metadata` and therefore from `load_fold`, and
+raises `StalePackageError` on:
+
+1. `split_hash` disagreeing with `splits/{scheme}.json`;
+2. the package's cohort disagreeing with the ObsIds in `labels/`, allowing the scheme's declared
+   `excluded_obs_ids` — this is the R04 scenario, a cohort expansion whose Stage 5 run failed;
+3. recorded source digests disagreeing with the files on disk.
+
+Verification is cached per `(scheme, dataset_dir)` per process, so a 38-fold sweep hashes once, and
+`force=True` re-checks.
+
+**Why it warns rather than raises for older packages.** Every package on disk predates
+`source_digests`. Verified read-only: all seven (`dataset/{loio_9fold, loio_3fold_balanced,
+within_image_4fold}`, `dataset_v2/{loio_nfold, loio_nfold_ctx_illum, loio_nfold_nbr_s5,
+within_image_4fold}`) pass checks 1 and 2 and warn on 3. Bricking every existing artifact would have
+been worse than the defect; naming them as unverifiable is the honest middle. The v1 within-image
+package legitimately covers 8 of 9 ObsIds, which is why the cohort check consults `excluded_obs_ids`.
+
+Ten tests, notably: the driver returning 1 on a build failure and 0 on a healthy run; the
+cohort-expansion scenario; and a fixed-cohort label-content change where the test asserts the split
+hash and config hash are provably unmoved, so only the content digest can see it.
+
+`pytest -m "not slow"`: 551 passed, 21 deselected; artifact manifest unchanged.

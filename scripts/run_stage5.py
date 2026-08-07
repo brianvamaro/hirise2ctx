@@ -134,9 +134,25 @@ def main() -> int:
             return 2
         targets = [(args.scheme, schemes[args.scheme])]
 
+    # R04: a scheme that fails to build must not leave the previous cohort's packaged
+    # folds in place and exit 0. `_run_one` swallowed the ValueError, `main` discarded its
+    # return, and `raise SystemExit(main())` reported success -- so a cohort expansion with
+    # a stale hand-edited `n_folds` would print "FAILED to build" and the next sweep would
+    # train on the OLD folds with no warning. Both guards that can raise are live-data
+    # driven, so this is reachable from ordinary operation.
+    failed: list[str] = []
     for scheme_name, scheme in targets:
         print(f"\n=== {scheme_name} ===", flush=True)
-        _run_one(cfg, scheme_name, scheme, inv, do_package=not args.no_package)
+        if _run_one(cfg, scheme_name, scheme, inv, do_package=not args.no_package) is None:
+            failed.append(scheme_name)
+    if failed:
+        print(
+            f"\nStage 5 FAILED for {len(failed)} of {len(targets)} scheme(s): "
+            f"{', '.join(failed)}.\nAny existing packaged/ output for those schemes is now "
+            "STALE -- it belongs to the previous cohort. Do not train on it.",
+            flush=True,
+        )
+        return 1
     return 0
 
 

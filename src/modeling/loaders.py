@@ -15,6 +15,7 @@ parquets so split definition is single-sourced.
 from __future__ import annotations
 
 import json
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
@@ -88,8 +89,104 @@ def package_dir(scheme: str, dataset_dir: Path | str | None = None) -> Path:
     return base / PACKAGED_SUBDIR / scheme
 
 
-def load_metadata(scheme: str, dataset_dir: Path | str | None = None) -> dict:
-    """Read `dataset/packaged/{scheme}/metadata.json`."""
+class StalePackageError(RuntimeError):
+    """A packaged split no longer matches the splits/labels it claims to come from."""
+
+
+# One verification per (scheme, dataset_dir) per process: re-hashing the label and feature
+# parquets is ~1 s, and a sweep calls `load_fold` once per fold.
+_VERIFIED: set[tuple[str, str]] = set()
+
+
+def verify_package_freshness(
+    scheme: str, dataset_dir: Path | str | None = None, *, force: bool = False,
+) -> None:
+    """Raise `StalePackageError` if a packaged split is stale. **R04.**
+
+    Stage 5 used to swallow a `build_split` failure and exit 0, leaving the *previous*
+    cohort's `packaged/{scheme}/` in place; nothing downstream compared a package against
+    the split metadata or the labels it was built from, so the next sweep trained and
+    reported on the old folds with no warning. Three checks, cheapest first:
+
+    1. `split_hash` must equal the one in `splits/{scheme}.json`, when that file exists.
+    2. The package's cohort must equal the ObsIds with labels on disk, allowing for the
+       scheme's declared `excluded_obs_ids`.
+    3. When the package records `source_digests` (packages written from 2026-08-06), the
+       labels/features parquets must still hash to what it recorded. This is the only
+       check that can see a *content* change at a fixed cohort — which is exactly the
+       pre-R74/post-R74 case, where the config hash is identical and the label row set is
+       not.
+
+    Packages written before `source_digests` existed pass 1 and 2 and warn on 3.
+    """
+    key = (scheme, str(package_dir(scheme, dataset_dir)))
+    if key in _VERIFIED and not force:
+        return
+
+    from src.dataset import LABELS_SUBDIR, SPLITS_SUBDIR, discover_obs_ids, source_digests
+
+    pdir = package_dir(scheme, dataset_dir)
+    meta = json.loads((pdir / "metadata.json").read_text(encoding="utf-8"))
+    base = Path(dataset_dir) if dataset_dir is not None else DEFAULT_DATASET_DIR
+
+    split_path = base / SPLITS_SUBDIR / f"{scheme}.json"
+    split_meta = {}
+    if split_path.exists():
+        split_meta = json.loads(split_path.read_text(encoding="utf-8"))
+        if split_meta.get("split_hash") != meta.get("split_hash"):
+            raise StalePackageError(
+                f"R04: packaged/{scheme} was built from split_hash "
+                f"{meta.get('split_hash')!r} but {split_path.name} now says "
+                f"{split_meta.get('split_hash')!r}. Re-run Stage 5 for this scheme."
+            )
+
+    labels_dir = base / LABELS_SUBDIR
+    if labels_dir.is_dir():
+        cohort = set(discover_obs_ids(labels_dir))
+        packaged = set(meta.get("obs_to_int", {}))
+        excluded = set(split_meta.get("excluded_obs_ids", []) or [])
+        unseen = cohort - packaged - excluded
+        vanished = packaged - cohort
+        if unseen or vanished:
+            raise StalePackageError(
+                f"R04: packaged/{scheme} covers {len(packaged)} ObsIds but "
+                f"{labels_dir} holds {len(cohort)}. Never packaged: {sorted(unseen)[:5]}; "
+                f"packaged but no labels: {sorted(vanished)[:5]}. This is the stale-cohort "
+                "case Stage 5 used to leave behind silently. Re-run Stage 5."
+            )
+
+    recorded = meta.get("source_digests")
+    if not recorded:
+        warnings.warn(
+            f"packaged/{scheme} predates source-digest provenance (R04/R74): its label and "
+            "feature contents cannot be verified, so a pre-R74 label generation would be "
+            "undetectable here. Re-package it before quoting numbers from it.",
+            UserWarning, stacklevel=2,
+        )
+    else:
+        actual = source_digests(
+            sorted(meta.get("obs_to_int", {})), labels_dir, base / "features",
+        )
+        if actual["digest"] != recorded.get("digest"):
+            changed = [
+                obs for obs, entry in actual["per_obs"].items()
+                if recorded.get("per_obs", {}).get(obs) != entry
+            ]
+            raise StalePackageError(
+                f"R04/R74: packaged/{scheme} was built from different label/feature "
+                f"content than is on disk now. {len(changed)} ObsId(s) differ, e.g. "
+                f"{changed[:5]}. Cohort, split and YAML hashes cannot see this -- it is how "
+                "a pre-R74 package would look. Re-run Stage 5."
+            )
+    _VERIFIED.add(key)
+
+
+def load_metadata(
+    scheme: str, dataset_dir: Path | str | None = None, *, verify: bool = True,
+) -> dict:
+    """Read `dataset/packaged/{scheme}/metadata.json`, verifying freshness first (R04)."""
+    if verify:
+        verify_package_freshness(scheme, dataset_dir)
     return json.loads((package_dir(scheme, dataset_dir) / "metadata.json").read_text(encoding="utf-8"))
 
 

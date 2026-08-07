@@ -420,7 +420,7 @@ this is about the *model's* level calibration, not a crude label-magnitude shift
 ---
 
 ### R04 — Stage-5 split failure is swallowed, and stale packaged splits are undetectable downstream
-- **Status:** OPEN · **Severity:** medium · **Liveness:** live-shipped · **Verified:** yes
+- **Status:** **FIXED 2026-08-06.** `main` collects per-scheme failures and returns 1, naming the schemes whose `packaged/` output is consequently stale. `package_split` and `_package_within_image_split` record `source_digests` — a SHA-256 per labels/features parquet plus each label sidecar's R74 `inputs` block, rolled into one digest. `loaders.verify_package_freshness`, called from `load_metadata`/`load_fold`, raises `StalePackageError` on split-hash drift, on a cohort that no longer matches `labels/` (allowing the scheme's declared `excluded_obs_ids`), and on recorded-vs-actual content mismatch; it warns for packages predating the field rather than bricking them. Verified read-only against all seven live packages: all PASS, all warn. Ten tests, including the cohort-expansion scenario below and a fixed-cohort label-content change in which the split hash and config hash are asserted unmoved. · **Severity:** medium · **Liveness:** live-shipped · **Verified:** yes
 - **Where:** [scripts/run_stage5.py:58-71](../scripts/run_stage5.py#L58-L71),
   [:137-140](../scripts/run_stage5.py#L137-L140); [src/modeling/loaders.py:74-80](../src/modeling/loaders.py#L74-L80),
   [:112-168](../src/modeling/loaders.py#L112-L168)
