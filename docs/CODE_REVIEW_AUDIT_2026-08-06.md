@@ -287,15 +287,15 @@ For the baseline-versus-A1 comparison:
 
 | Gate | Must be true before regeneration starts |
 |---|---|
-| Safety | The isolation criteria above pass; scripts accept explicit absolute scratch roots; ignored live artifacts are separately backed up. |
+| Safety | Isolation criteria 1–3 ✅ **CLOSED 2026-08-06** (copy-staging, runtime write guard, static AST scan). Still open: criteria 4–5 — scripts/notebooks accept explicit absolute scratch roots (the guard is test-only), and ignored live artifacts are separately backed up. |
 | Review state | Stale statuses and rejected fix alternatives are normalized; R91 is closed, R78 is marked partial, and R97 is in the live queue. |
 | Label semantics | R56 is re-scored with the target held fixed and R23 is resolved; mixed-floor metadata is defined. The optional common-floor target is either numerically specified or explicitly deferred. |
 | Stage 1 | Run it if source geometry/filtering, CRS logic, or Stage-1 provenance changes. It is required if the R23 filtering/provenance fix lands. |
-| Stage 2 | R31 and R67 are fixed; R74 tests and provenance land. Resolve R66 before using any download/cold-cache path. |
-| Stage 3 | R65 is fixed and Stage-3 provenance binds its CTX-window and coverage-mask inputs. |
+| Stage 2 | R74 tests and provenance ✅ **landed 2026-08-06**. Still open: R31 and R67; resolve R66 before using any download/cold-cache path. |
+| Stage 3 | Provenance binding ✅ **landed 2026-08-06** (input digests + coverage-mask identity + a `shift_id` propagated into Stage 4). Still open: R65. |
 | Stage 4 | R29 and R68 are fixed before labels are generated. R80 is reproduced and covered end to end with projected units, a non-`None` size filter, and a fixture that distinguishes diameter from radius; retained mixed-floor semantics make this path load-bearing. |
-| Stage 4b | Patches are regenerated from current labels. The current producer writes handcrafted features and patches together, so R27/R28 must land before using it. Alternatively, implement/test an explicit patch-only path and retire rather than regenerate the stale handcrafted-feature products. |
-| Stage 5 | R04 propagates failure as a nonzero exit. Package metadata binds exact label and feature content digests/generation IDs, and loaders enforce them. R87/R88 guards exist. Fix R97 before regenerating within-image splits; it is not a product-LOIO blocker. |
+| Stage 4b | R27 and R28 ✅ **landed 2026-08-06**, so an ordinary Stage-4b regeneration is now the right move — no patch-only path is needed. Patches are regenerated from current labels alongside the corrected `lacunarity_*` (NaN, not the `0.0` sentinel) and `edge_*` (quantile thresholds 0.80/0.90). |
+| Stage 5 | ✅ **CLOSED 2026-08-06.** R04 propagates failure as a nonzero exit; package metadata binds per-obs label/feature content digests plus each label sidecar's R74 `inputs`, and `loaders.verify_package_freshness` enforces them from `load_fold`. R87/R88 guards exist and are mutation-verified. R97 is fixed, so within-image splits regenerate onto the correct snap step. |
 | Modeling/calibration | `fm-embeddings-3`/`fm-embeddings-4` are fixed so arm/suffix, store provenance, existence-only resume, persisted model hash, and nuisance-basis consistency are enforced. LOIO artifacts retain unique tile keys; calibration asserts a complete one-to-one join. R09 plus `calibration-3`/`calibration-4` compatibility and fail-before-write defects are fixed. R54's corrected per-image `mean(pred)/mean(true)` level instrument is emitted beside pooled results, and the pooled-vs-per-place shipping rule is explicit. |
 | Mapping | R01 creates the globally anchored grid before inference; R13 records/enforces context nodata; R14 prevents false resume; R84 product metadata is emitted. |
 | A1 | R07's statistical unit and R08 pixel-level fallback contract are fixed/tested; R38 uses an explicit nodata mask; all 26 tile-level inputs/outputs and A1-specific head/calibration artifacts are required; parity passes end to end. |
@@ -347,6 +347,14 @@ deployable head; calibration; and raster grid/footprint. A git commit or YAML-on
 sufficient when cached derived inputs can change independently.
 
 ## Recommended fixing-stage order
+
+> **Progress 2026-08-06 (fixing session).** Steps 1 and 3 are **DONE**: R77 (test-side isolation),
+> R78, R87, R88, R27, R28, R97, R74 tests+provenance and R04 are all closed, with mutation
+> verification where the finding was about absent coverage. Step 1's *script/notebook* half remains —
+> the runtime guard is test-only. Step 2 is partly done (register statuses, PENDING_REBUILD,
+> DATA_DICTIONARY, CLAUDE.md); README/ROADMAP/SHERLOCK were not touched. Steps 4–6 are untouched.
+> The fast loop is 551 passed / 21 deselected and the artifact manifest was bit-identical across
+> every run.
 
 1. Close the mutation/isolation hole and parameterize artifact roots. Update the operating manual and
    command permissions before anyone runs a broad test command.
