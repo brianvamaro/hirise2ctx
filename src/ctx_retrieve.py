@@ -205,15 +205,47 @@ def _download_to(url: str, dest_path: Path, *, on_progress=None, timeout: float 
                 downloaded += len(chunk)
                 if on_progress is not None:
                     on_progress(downloaded, total)
-    if tmp.stat().st_size < _TILE_MIN_BYTES:
-        size = tmp.stat().st_size
-        tmp.unlink()
-        raise RuntimeError(
-            f"download of {url} returned only {size} bytes (< {_TILE_MIN_BYTES}); "
-            "treating as malformed and refusing to commit to cache."
-        )
+    # R66: the size floor alone cannot detect truncation -- a partial 1.5 GB tile clears
+    # any floor. `total` was already read from Content-Length above and, before this, was
+    # only ever forwarded to the progress callback. Compare it.
+    from . import net
+
+    net.verify_download(
+        tmp, url=url,
+        declared_length=total or None,
+        min_bytes=_TILE_MIN_BYTES,
+        validate=_zip_is_readable,
+    )
     tmp.replace(dest_path)
     return dest_path
+
+
+def _zip_is_readable(path: Path) -> str | None:
+    """Reject a zip whose central directory is missing/corrupt, before it is cached.
+
+    R66. Previously the structural check ran only in `ensure_tile_cached`, and only when
+    the *sidecar* was absent -- so a committed-then-rejected zip wedged forever: the
+    re-download is gated on `not zip_path.exists()`, which was now false. Checking here
+    means a bad zip is never committed in the first place.
+
+    NB this reads the central directory only -- `testzip()` would decompress every member
+    to CRC-check it, which on a 1.5 GB Murray Lab tile costs minutes. The central directory
+    is written last, so a truncated download loses it; opening is the cheap exact test.
+    """
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(path) as zf:
+            if not zf.namelist():
+                return "zip has an empty central directory"
+    except zipfile.BadZipFile as exc:
+        return (
+            f"not a readable zip ({exc}) -- the central directory is written last, so "
+            "this is exactly what a truncated download looks like"
+        )
+    except OSError as exc:
+        return f"could not open the staged zip ({exc})"
+    return None
 
 
 def _padded_manifest_form(murray_tile: str) -> str | None:

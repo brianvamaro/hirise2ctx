@@ -49,6 +49,8 @@ from pyproj import CRS as _PyprojCRS
 from rasterio.transform import Affine
 from rasterio.windows import from_bounds
 
+from . import net
+
 # Match the standard parallel under either name pyproj might emit:
 #   ESRI WKT1:  PARAMETER["Standard_Parallel_1",20]
 #   EPSG/WKT2:  PARAMETER["Latitude of 1st standard parallel",20,...]
@@ -129,6 +131,180 @@ def _jp2_cache_path(cache_dir: str | Path, obs_id: str) -> Path:
     return out
 
 
+_JP2_SIGNATURE = bytes.fromhex("0000000C6A5020200D0A870A")
+# Codestream markers that stand alone -- no 2-byte length segment follows them.
+_J2K_NO_SEGMENT = {0xFF4F, 0xFFD9, 0xFF93} | {0xFF30 + i for i in range(16)}
+
+
+def inspect_jp2_integrity(path: str | Path) -> dict:
+    """Is this JP2 a byte-complete JPEG2000 file? Pure bytes -- never raises.
+
+    R66, mirroring `detections.inspect_shapefile_integrity`. Motivation: a truncated
+    download is *not* detectable by opening the file. GDAL reports the full declared
+    dimensions and `read()` returns a full-shape array with the missing region silently
+    **zero-filled** -- which Stage 2 then converts into "no HiRISE coverage". So the file
+    has to be asked about itself, at the byte level.
+
+    Deliberately does NOT use rasterio/GDAL: opening a JP2 through GDAL can write an
+    `.aux.xml` PAM sidecar next to it, and these files live in artifact roots.
+
+    The trap: a JP2 box header may carry `Lbox == 0`, meaning "this box extends to EOF",
+    and **all 46 PDS JP2s in this project use exactly that for their `jp2c` box**. So the
+    box walk alone can never detect truncation. The real test is inside the codestream:
+    walk the SOT tile-part chain via each `Psot` and require it to land on the `EOC`
+    marker (`FFD9`) at exactly `size - 2`.
+
+    Returns a dict whose `status` is one of:
+      "complete"   -- the tile-part chain lands exactly on EOC at EOF
+      "truncated"  -- it does not, including every mid-marker ran-off-the-end case
+      "not_jp2"    -- no JP2 signature box (e.g. the GeoTIFF the isolation suite writes
+                      under a `.JP2` name); a caller may still choose to accept it
+      "unreadable" -- the file could not be read at all
+    """
+    path = Path(path)
+    out: dict = {"status": "unreadable", "path": str(path)}
+    try:
+        size = path.stat().st_size
+        out["actual_bytes"] = int(size)
+        with open(path, "rb") as fh:
+            head = fh.read(12)
+            if head[:12] != _JP2_SIGNATURE:
+                out["status"] = "not_jp2"
+                out["note"] = "no JPEG2000 signature box"
+                return out
+
+            # --- walk top-level boxes to find the contiguous codestream box -------------
+            pos, cs_start, cs_end = 12, None, None
+            while pos + 8 <= size:
+                fh.seek(pos)
+                hdr = fh.read(8)
+                if len(hdr) < 8:
+                    break
+                lbox = int.from_bytes(hdr[0:4], "big")
+                tbox = hdr[4:8]
+                body = pos + 8
+                if lbox == 1:                      # 64-bit XLBox follows the type
+                    xl = fh.read(8)
+                    if len(xl) < 8:
+                        out.update(status="truncated", note="ran off the end in an XLBox")
+                        return out
+                    lbox = int.from_bytes(xl, "big")
+                    body = pos + 16
+                if lbox == 0:                      # "extends to EOF" -- the PDS case
+                    end = size
+                elif lbox < 8:
+                    out.update(status="truncated", note=f"nonsense box length {lbox}")
+                    return out
+                else:
+                    end = pos + lbox
+                if tbox == b"jp2c":
+                    cs_start, cs_end = body, min(end, size)
+                    break
+                if end <= pos:
+                    break
+                pos = end
+            if cs_start is None:
+                out.update(status="truncated", note="no jp2c codestream box found")
+                return out
+            out["codestream_start"] = int(cs_start)
+
+            # --- main header: SOC, SIZ, then marker segments up to the first SOT --------
+            fh.seek(cs_start)
+            if fh.read(2) != b"\xff\x4f":
+                out.update(status="truncated", note="codestream does not start with SOC")
+                return out
+            if fh.read(2) != b"\xff\x51":
+                out.update(status="truncated", note="SIZ does not follow SOC")
+                return out
+            lsiz = int.from_bytes(fh.read(2), "big")
+            p = cs_start + 4 + lsiz
+            while True:
+                if p + 2 > size:
+                    out.update(status="truncated",
+                               note="ran off the end walking the main header")
+                    return out
+                fh.seek(p)
+                marker = int.from_bytes(fh.read(2), "big")
+                if marker == 0xFF90:               # SOT -- main header is done
+                    break
+                if marker >> 8 != 0xFF:
+                    out.update(status="truncated",
+                               note=f"not a marker at offset {p} (got {marker:#06x})")
+                    return out
+                if marker in _J2K_NO_SEGMENT:
+                    p += 2
+                    continue
+                seg = fh.read(2)
+                if len(seg) < 2:
+                    out.update(status="truncated", note="ran off the end in a segment length")
+                    return out
+                p += 2 + int.from_bytes(seg, "big")
+
+            # --- tile-part chain: each SOT's Psot must chain to the next, then EOC ------
+            n_parts = 0
+            while True:
+                if p + 12 > size:
+                    out.update(status="truncated", n_tile_parts=n_parts,
+                               note="ran off the end inside an SOT segment")
+                    return out
+                fh.seek(p)
+                if fh.read(2) != b"\xff\x90":
+                    out.update(status="truncated", n_tile_parts=n_parts,
+                               note=f"expected SOT at offset {p}")
+                    return out
+                fh.read(2)                          # Lsot (always 10)
+                fh.read(2)                          # Isot
+                psot = int.from_bytes(fh.read(4), "big")
+                n_parts += 1
+                if psot == 0:
+                    # "runs to EOC" -- legal for the last tile-part.
+                    p = size - 2
+                    break
+                p += psot
+                if p > size:
+                    out.update(status="truncated", n_tile_parts=n_parts,
+                               note=f"tile-part {n_parts} claims {psot} bytes, past EOF")
+                    return out
+                if p + 2 <= size:
+                    fh.seek(p)
+                    if fh.read(2) == b"\xff\xd9":
+                        break
+
+            out["n_tile_parts"] = n_parts
+            fh.seek(max(0, size - 2))
+            if fh.read(2) != b"\xff\xd9":
+                out.update(status="truncated", note="file does not end with the EOC marker")
+                return out
+            if p != size - 2:
+                out.update(status="truncated",
+                           note=f"tile-part chain ends at {p}, EOC is at {size - 2}")
+                return out
+            out["status"] = "complete"
+    except OSError as exc:
+        out["note"] = f"{type(exc).__name__}: {exc}"
+    return out
+
+
+def _reject_if_truncated(path: Path, *, context: str) -> None:
+    """Raise if a cached JP2 is positively truncated. Lenient by design.
+
+    Only a **positive** `"truncated"` verdict is fatal. `"not_jp2"` is let through: the
+    artifact-isolation suite deliberately stages a GeoTIFF under a `{OBS}_RED.JP2` name,
+    and more importantly a structurally unusual but legitimate JP2 must not be rejected by
+    a walker that merely failed to parse it. Strict at commit time, lenient at reuse time
+    -- the same split `detections.describe_null_geometry_drop` uses.
+    """
+    verdict = inspect_jp2_integrity(path)
+    if verdict.get("status") == "truncated":
+        raise RuntimeError(
+            f"{context}: cached JP2 {path} is TRUNCATED "
+            f"({verdict.get('note')}; {verdict.get('actual_bytes', -1):,} bytes on disk). "
+            "GDAL would not complain -- it zero-fills the missing region, which Stage 2 "
+            "reads as 'no HiRISE coverage'. Delete the file and re-run to re-download it. "
+            "See DECISIONS 2026-08-06t."
+        )
+
+
 def ensure_jp2_local(obs_id: str, jp2_url: str, cache_dir: str | Path) -> Path:
     """Ensure the full HiRISE JP2 is cached locally at `cache/hirise_jp2/{obs_id}_RED.JP2`.
 
@@ -136,16 +312,34 @@ def ensure_jp2_local(obs_id: str, jp2_url: str, cache_dir: str | Path) -> Path:
     Subsequent calls are no-ops. After this, all reads of the same image happen against
     a local file — fast crops, no network.
 
+    R66: the download is verified against `Content-Length` **and** structurally before it
+    is published, and a already-cached file that is positively truncated raises rather
+    than being silently preferred over `/vsicurl/` forever.
+
     Returns the local path.
     """
     out_path = _jp2_cache_path(cache_dir, obs_id)
     if out_path.exists() and out_path.stat().st_size > 1_000_000:  # > 1 MB sanity
+        _reject_if_truncated(out_path, context=f"{obs_id}")
         return out_path
     tmp = out_path.with_suffix(".JP2.partial")
     req = urllib.request.Request(jp2_url, headers={"User-Agent": "hirise2ctx/0.1"})
-    with urllib.request.urlopen(req, timeout=120) as resp, tmp.open("wb") as f:
-        shutil.copyfileobj(resp, f, length=1 << 20)  # 1 MB chunks
-    tmp.replace(out_path)
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp, tmp.open("wb") as f:
+            declared = net.content_length_of(resp)
+            shutil.copyfileobj(resp, f, length=1 << 20)  # 1 MB chunks
+        # R66: `copyfileobj` reads until EOF and a premature EOF is not an error, so
+        # without this the partial file would be published and thereafter trusted.
+        net.verify_download(
+            tmp, url=jp2_url, declared_length=declared, min_bytes=1_000_000,
+            validate=lambda p: (
+                None if inspect_jp2_integrity(p)["status"] != "truncated"
+                else f"incomplete JPEG2000 codestream ({inspect_jp2_integrity(p).get('note')})"
+            ),
+        )
+        tmp.replace(out_path)
+    finally:
+        tmp.unlink(missing_ok=True)
     return out_path
 
 
@@ -153,6 +347,7 @@ def _open_source(obs_id: str, jp2_url: str, cache_dir: str | Path):
     """Return a `rasterio.open` target preferring a local cached JP2 over /vsicurl/."""
     local = _jp2_cache_path(cache_dir, obs_id)
     if local.exists() and local.stat().st_size > 1_000_000:
+        _reject_if_truncated(local, context=f"{obs_id}")
         return rasterio.open(local)
     return rasterio.open(_vsicurl(jp2_url))
 

@@ -81,13 +81,24 @@ def _download_raster(url: str, dest_path: Path, *, timeout: float = 120.0) -> Pa
     req = urllib.request.Request(
         url, headers={"User-Agent": "hirise2ctx/0.1 (research; brianvamaro@gmail.com)"}
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp, tmp.open("wb") as f:
-        while True:
-            chunk = resp.read(_DOWNLOAD_CHUNK)
-            if not chunk:
-                break
-            f.write(chunk)
-    tmp.replace(dest_path)
+    from . import net
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp, tmp.open("wb") as f:
+            declared = net.content_length_of(resp)
+            while True:
+                chunk = resp.read(_DOWNLOAD_CHUNK)
+                if not chunk:
+                    break
+                f.write(chunk)
+        # R66: `resp.read(amt)` returns b"" on a premature EOF rather than raising, so this
+        # loop cannot tell a finished download from a dropped connection. This path had no
+        # size floor at all, so a short file was committed silently. Measured before the
+        # fix: 4,883,003 bytes committed against a declared 8,878,189.
+        net.verify_download(tmp, url=url, declared_length=declared)
+        tmp.replace(dest_path)
+    finally:
+        tmp.unlink(missing_ok=True)
     return dest_path
 
 

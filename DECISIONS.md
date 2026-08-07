@@ -6913,3 +6913,89 @@ passing input. Re-derived on all 38 v2 images: the guard passes 38/38. Eight tes
 mutants die — tolerance→0 (2 failed), tolerance→1.0 (5), row-sign flip (15), drop the negative-origin
 clause (3), drop the pixel-size clause (1). The tolerance→0 mutant is the one that matters: a fixture
 exercising only an exactly-zero residual would not have killed it. Fast suite: **603 passed**.
+
+## 2026-08-06s — R80 partial: "the size filter is a no-op" is false
+
+Recorded while diagnosing R80 (the size-floor filter's test coverage). The 2026-05-28 vClaire filter
+decision says *"~0% below the `min_size_m=1.4105` floor, so that filter is a no-op"*. **It is not.**
+The shipped Stage-4 sidecars record **19,757 polygons dropped** by `min_size_m` across **12 images**.
+The pooled p5 ≈ 1.9 m that justified the claim is dominated by the 26 coarse (0.50 m/px) images, where
+the filter genuinely is inert; on the 12 fine (0.25 m/px) images it drops **0.006–8.26 % each**.
+
+That is R03's mechanism operating exactly where the record says nothing is happening, and it is why the
+mixed size floor Brian chose to retain and document is a **live convention**, not an inert setting. The
+2026-05-28 paragraph is annotated in place. R80's remaining work — the end-to-end test with projected
+units and a diameter/radius-separating fixture, and a realised **size**-floor provenance analogue to
+`realised_label_basis` — is still open; the diagnosis pass's proposed `detector_min_size_px` design was
+refuted by measurement and must not ship as drafted.
+
+## 2026-08-06t — R66 CLOSED: a truncated download can no longer reach a permanent cache
+
+Audit step 5, Stage 2. `ensure_jp2_local` streamed a JP2 into a `.partial` sibling and then
+`Path.replace`d it onto the cache path **unconditionally**. `HTTPResponse.read(amt)` returns `b""` on a
+premature EOF rather than raising, so a dropped connection published a short file that was thereafter
+trusted forever.
+
+**The register understated the downstream, and mischaracterised the defect.** The atomicity was never
+at fault — `ensure_jp2_local` already wrote to a same-directory `.partial` and renamed atomically. The
+*unconditional* rename was the bug. And the consequence is not "best case GDAL raises": measured, it is
+deterministically the worst case — **GDAL opens a truncated JPEG2000 happily, reports full dimensions,
+and `read()` returns a full-shape array with the missing region silently zero-filled**, which Stage 2
+converts straight into "no HiRISE coverage". Same class as R23, and quieter.
+
+**Fix.** New `src/net.py` holding the one check that has to happen between the stream and the rename:
+`verify_download` compares bytes received against `Content-Length`, applies any existing size floor,
+runs a caller-supplied content validator, and **unlinks the staging file on failure** so a re-run starts
+clean. Plus `hirise_imagery.inspect_jp2_integrity`, a pure-bytes JPEG2000 walker on the R23 template.
+
+Two things that make the walker non-obvious, both measured:
+
+- **A JP2 box may carry `Lbox == 0`, meaning "extends to EOF", and all 46 PDS JP2s use exactly that for
+  their `jp2c` box.** So the box walk alone can *never* detect truncation. The real test is inside the
+  codestream: walk the SOT tile-part chain via each `Psot` and require it to land on the `EOC` marker
+  at exactly `size - 2`.
+- **No GDAL.** Opening a JP2 through GDAL can write an `.aux.xml` PAM sidecar beside it, and these live
+  in artifact roots — three such sidecars already exist in both `hirise_jp2/` dirs, which is also why
+  the register counted "48 cached JP2s": 46 `.JP2` + 3 PAM sidecars = 49 entries.
+
+**Strict at commit, lenient at reuse.** Commit-time rejects a truncated download outright. Reuse-time
+rejects only a *positive* `"truncated"` verdict and lets `"not_jp2"` through — because
+`tests/test_artifact_isolation.py` deliberately stages a GeoTIFF under a `{OBS}_RED.JP2` name, and more
+importantly a structurally unusual but legitimate JP2 must not be rejected by a walker that merely
+failed to parse it. A truncated *cached* file now raises with the remedy rather than being silently
+preferred over `/vsicurl/`; it does not self-repair, because this repo has been bitten twice by writes
+to live artifacts and an implicit 500 MB re-download is not something to trigger silently.
+
+**A size floor is not a truncation detector at any value** — a 55 % truncation of the 1.31 GB
+`ESP_068483_2280` is 719 MB and clears any floor below the 149 MB smallest genuine file. The floors are
+kept because they are free, not because they help.
+
+**Siblings, all verified rather than assumed.** `validation_retrieve._download_raster` had the identical
+hole with **no floor at all** (measured pre-fix: 4,883,003 bytes committed against a declared
+8,878,189) — fixed. `ctx_retrieve._download_to` read `Content-Length` and only ever forwarded it to the
+progress callback — now compared, plus a central-directory check so a truncated zip is never committed
+(previously it *was* committed above the 50 MB floor, and because the re-download is gated on
+`not zip_path.exists()` while the structural check ran only when the sidecar was absent, a
+committed-then-rejected zip **wedged forever**). The PDS `.LBL` path is **safe** and needs no change:
+`pds_labels` uses `resp.read()` with no `amt`, which routes to `_safe_read` and raises `IncompleteRead`.
+Still unguarded and noted for follow-up: `scripts/probes/_fetch_color.py`,
+`scripts/run_stage7a_fetch.py`, `scripts/probes/_fetch_cumindex.py` — three verbatim copies of the same
+pattern that write into live roots.
+
+**Nothing on disk is corrupt.** All **46** cached JP2s in each of `cache/` and `cache_v2/` walk to
+`complete` (identical sizes across both roots; min 149,019,114 B `ESP_045390_2215`, max 1,306,649,437 B
+`ESP_068483_2280`). So no artifact changes, no number moves, and **no rebuild is forced** — this is a
+pure guard. It is also not a rebuild blocker for the current cohort: all 39 manifest rows already have a
+cached JP2 and both roots hold 24/24 tile zips, so a rebuild on this manifest downloads nothing.
+
+**Deferred deliberately:** the derived-cache staleness key (tagging `hirise_decimated/*.tif` with the
+source JP2's size). It addresses staleness, not truncation, and a spurious "stale" verdict would rewrite
+files inside two live roots. If it is done later, key on **bytes only** — not mtime, which does not
+survive an rsync, a restore or the drive migration that is currently pending.
+
+21 tests in `tests/test_download_integrity.py`, hermetic (a localhost server, synthetic payloads,
+`tmp_path`), including an end-to-end dropped-connection simulation. All five mutants die: drop the
+length check (4 failures), drop the validator (1), reuse gate no-op (1), walker always "complete" (10),
+and reuse gate over-strict on `not_jp2` (1 — the isolation-suite fixture). The live-cache regression
+guard is deliberately **not** marked `slow`: it reads only marker headers, 3 ms for all 46 files.
+Fast suite: **624 passed**, 21 deselected.
