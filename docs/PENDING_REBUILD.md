@@ -101,10 +101,23 @@ leaves a conditional write-through path, documented in the 2026-08-06 audit.
 | `dataset_v2/features/**` derived caches | `features-deep` | Two generations stale (the sidecars themselves are clean). |
 | `dataset_v2/splits/within_image_4fold.json` + `packaged/within_image_*` | **R97** | **Now stale.** The persisted cuts match the R97-inflated step-16 splitter **38 of 38** images; with the snap step derived from the scales actually present, the cut moves for **29 of 38**. Regenerate with Stage 5 (within-image only — the LOIO split and the regional product are unaffected). |
 
+- All Stage-1 sidecars (`cache_v2/reprojected_detections/*.json`) and all Stage-4 label sidecars
+  (`dataset_v2/labels/*.json`) | **R23** | **Provenance-stale, not numerically stale.** The
+  2026-08-06 fix adds `source_integrity` + `null_geometry_basis` (Stage 1) and `realised_label_basis`
+  (Stage 4); **zero banked sidecars carry any of them**, so the mixed confidence floor is currently
+  undocumented on disk. Re-run Stage 1 for all 39, then Stage 4. **Invalidates nothing numeric** — no
+  label value, polygon set, or downstream metric changes (verified: `src.dataset.source_digests` is
+  bit-identical with and without the new key, so the R04 content digests and the 7 live packages are
+  untouched). Until it runs, absence of these keys means *unknown*, not *clean*.
+
 ## Not yet fixed — will add rebuild cost when they are
 
-- **R23** (blocker) — two cohort images' labels are a score-rank truncation. Its natural fix is blocked
-  by **R56**, whose comparison must be re-run with the target held fixed first.
+- ~~**R23** (blocker) — two cohort images' labels are a score-rank truncation. Its natural fix is
+  blocked by **R56**~~ **R56 CLOSED and R23's remedy DECIDED 2026-08-06** (Brian: retain the mixed
+  confidence floor + document it, temporary pending the v3 re-detection). Root cause is **three
+  byte-truncated `.shp` files**, not a BoulderNet export artefact, so recovering the 659 MB remains
+  a live option. The provenance/documentation half is built; see the row above for its rebuild cost
+  and **DECISIONS 2026-08-06b** for the full pricing of all four remedies.
 - **R38** — A1's clip floor collides with the nodata sentinel. A1 is now an active planned parallel
   regional product, so land the explicit-nodata-mask fix before generating it. `[1,255]` may be used
   diagnostically but does not satisfy the product gate because it moves information loss to DN 1.

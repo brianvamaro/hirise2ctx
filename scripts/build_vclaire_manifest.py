@@ -31,6 +31,7 @@ if str(REPO_ROOT) not in sys.path:
 import pandas as pd
 import pyogrio
 
+from src import detections
 from src import manifest as M
 from src import pds_labels
 
@@ -141,6 +142,28 @@ def integrity_check(obs_id: str) -> dict:
         out["dbf_error"] = str(e)
         dbf_ok = False
     out["dbf_ok"] = dbf_ok
+    # --- .shp byte-completeness (R23, added 2026-08-06) -------------------------------
+    # The three checks above are all satisfied by a shapefile whose .shp is truncated but
+    # whose .dbf and .shx are intact: the record count agrees, the .dbf is self-consistent,
+    # and pyogrio happily reports every feature because the .shx says they exist. That is
+    # exactly how ESP_017355_2260 / ESP_046803_2325 / ESP_068483_2280 passed this gate
+    # while missing 354/132/173 MB of polygon bytes, surfacing downstream only as "null
+    # geometry" (R23; DECISIONS 2026-08-06b). ESP_028537_2270 was caught only because its
+    # .dbf was short too. Ask the .shp about itself.
+    integrity = detections.inspect_shapefile_integrity(shp)
+    out["shp_status"] = integrity.get("status")
+    out["shp_declared_bytes"] = integrity.get("declared_bytes")
+    out["shp_actual_bytes"] = integrity.get("actual_bytes")
+    out["shp_missing_bytes"] = integrity.get("missing_bytes")
+    out["shp_records_present"] = integrity.get("n_records_present")
+    shp_ok = integrity.get("status") == "complete"
+    out["shp_ok"] = shp_ok
+    if not shp_ok:
+        out["shp_error"] = (
+            f"{integrity.get('status')}: declares {integrity.get('declared_bytes')} bytes, "
+            f"{integrity.get('actual_bytes')} present "
+            f"({(integrity.get('missing_bytes') or 0) / 1e6:.1f} MB missing)"
+        )
     # Layer metadata without loading geometry.
     try:
         info = pyogrio.read_info(shp)
@@ -155,7 +178,15 @@ def integrity_check(obs_id: str) -> dict:
     import re
     m = re.search(r'Standard_Parallel_1",([-\d.eE]+)', prj)
     out["prj_sp1"] = float(m.group(1)) if m else None
-    out["ok"] = bool(dbf_ok and "info_features" in out and out.get("info_features", -1) == shx_records)
+    # `ok` gates INGESTION -- "can this folder be read at all". A byte-truncated .shp is
+    # readable (GDAL returns every .shx-indexed record, with null geometry for the missing
+    # tail), and the three affected images are RETAINED by decision (Brian, 2026-08-06:
+    # retain + document, temporary pending the v3 re-detection). So `shp_ok` is reported
+    # and printed loudly but deliberately NOT folded into `ok` -- doing so would silently
+    # shrink the manifest 39 -> 36 rows and invert that decision. See DECISIONS 2026-08-06b.
+    out["ok"] = bool(
+        dbf_ok and "info_features" in out and out.get("info_features", -1) == shx_records
+    )
     return out
 
 
@@ -225,12 +256,44 @@ def main() -> int:
         feats = r.get("info_features", r.get("shx_records", "?"))
         extra = ""
         if not r["ok"]:
-            extra = r.get("error") or r.get("info_error") or r.get("dbf_error") or "dbf/shx mismatch"
+            extra = (
+                r.get("error") or r.get("info_error") or r.get("dbf_error")
+                or r.get("shp_error") or "dbf/shx mismatch"
+            )
             extra = f"  <-- {extra}"
         sp1 = "SP1bug" if r.get("prj_d_unnamed") else "prjOK"
+        if r.get("shp_status") == "truncated" and r["ok"]:
+            extra += (
+                f"  <-- .shp TRUNCATED, {(r.get('shp_missing_bytes') or 0) / 1e6:.1f} MB missing "
+                f"({r.get('shp_records_present')}/{r.get('shx_records')} records present) "
+                "[RETAINED per DECISIONS 2026-08-06b]"
+            )
         print(f"  [{flag}] {obs}  n_polys={feats:<9} {sp1}{extra}")
     n_bad = sum(1 for r in integ.values() if not r["ok"])
     print(f"\nIntegrity: {len(obs_ids) - n_bad}/{len(obs_ids)} OK, {n_bad} need attention.")
+
+    # R23: a truncated .shp is READABLE, so it does not fail `ok` and is not excluded --
+    # but it silently truncates that image's label basis at a high confidence floor, so it
+    # must never pass unremarked. See DECISIONS 2026-08-06b.
+    truncated = [o for o in obs_ids if integ[o].get("shp_status") == "truncated"]
+    if truncated:
+        print(
+            f"\n  !! {len(truncated)} .shp file(s) are BYTE-TRUNCATED (readable, retained, "
+            "label basis affected):"
+        )
+        for o in truncated:
+            r = integ[o]
+            print(
+                f"       {o}: {(r.get('shp_missing_bytes') or 0) / 1e6:7.1f} MB missing of "
+                f"{(r.get('shp_declared_bytes') or 0) / 1e6:7.1f} MB; "
+                f"{r.get('shp_records_present')}/{r.get('shx_records')} records present"
+            )
+        print(
+            "     Records are stored score-descending, so the survivors are the "
+            "highest-scoring\n     detections and these images' abundance LEVEL is biased "
+            "low. Rank-only use is safe.\n     Remedy decided: retain + document, temporary "
+            "pending v3 (DECISIONS 2026-08-06b)."
+        )
 
     print("\n========== PHASE 2: manifest ==========")
     lut = load_spreadsheet_lookup()

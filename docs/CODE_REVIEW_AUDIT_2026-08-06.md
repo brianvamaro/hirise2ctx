@@ -249,8 +249,11 @@ evidence strength, affected object, and the exact stage/product blocked.
 - **R54:** the original 11/37 `top_ratio` statement is wrong. `top_ratio` is 12/38; the appropriate
   per-place level comparison is 11/38. Report `mean(pred)/mean(true)` for the level instrument rather
   than promoting per-image `top_ratio` into an impossible new gate.
-- **R56:** the finding was verified but belongs at medium severity and on a dead-closed comparison. Its
-  fixed-target re-score is still relevant to the R23 decision.
+- **R56:** ✅ **CLOSED 2026-08-06.** The finding was verified but belongs at medium severity and on a
+  dead-closed comparison. The fixed-target re-score has now been run (DECISIONS 2026-08-06b): the
+  "HARMFUL / monotonically degrading" verdict is withdrawn, `conf ≥ 0.5` is a null on the common
+  target, and the ruling no longer blocks R23 — but it does not license R23's 0.6173 floor either,
+  which was never measured.
 - **R60:** Brian's later caveat-header directive supersedes the proposed rerun of the historical PDF.
 - **R61:** verified/confirmed but medium, not high.
 - The old finding-area totals, pass counts, statements that no reviewer ran GDAL/tests, and the old
@@ -341,7 +344,7 @@ For the baseline-versus-A1 comparison:
 |---|---|
 | Safety | Isolation criteria 1–4 ✅ **CLOSED 2026-08-06** (copy-staging, runtime write guard, static AST scan, every rebuild-DAG script root now a flag), and the full suite verified non-mutating at 581 passed. Still open: criterion 5 — an independent ≈110 GB backup of the ignored trees. The guard is test-only, so notebooks and hand-run producers still rely on the absolute-scratch-root discipline. |
 | Review state | Stale statuses and rejected fix alternatives are normalized; R91 is closed, R78 is marked partial, and R97 is in the live queue. |
-| Label semantics | R56 is re-scored with the target held fixed and R23 is resolved; mixed-floor metadata is defined. The optional common-floor target is either numerically specified or explicitly deferred. |
+| Label semantics | R56 ✅ **CLOSED 2026-08-06** — re-scored with the target held fixed; verdict withdrawn. R23 remedy ✅ **DECIDED** (Brian: retain + document, temporary pending v3). Mixed-floor metadata contract ✅ **BUILT** (`source_integrity` / `null_geometry_basis` / `realised_label_basis`) but ⬜ **not yet emitted** — zero banked sidecars carry it, so Stage 1 + Stage 4 must re-run. Common-floor target ✅ numerically specified (**0.617257475852966**) and priced, and explicitly **deferred**. All: DECISIONS 2026-08-06b. |
 | Stage 1 | Run it if source geometry/filtering, CRS logic, or Stage-1 provenance changes. It is required if the R23 filtering/provenance fix lands. |
 | Stage 2 | R74 tests and provenance ✅ **landed 2026-08-06**. Still open: R31 and R67; resolve R66 before using any download/cold-cache path. |
 | Stage 3 | Provenance binding ✅ **landed 2026-08-06** (input digests + coverage-mask identity + a `shift_id` propagated into Stage 4). Still open: R65. |
@@ -408,31 +411,82 @@ sufficient when cached derived inputs can change independently.
 > DATA_DICTIONARY, CLAUDE.md, index); **README/ROADMAP/SHERLOCK were not touched**. Steps 5–6
 > untouched. Full suite: **581 passed**, artifact manifest bit-identical across every run.
 >
-> ### Start the next session at step 4: R56, then R23
+> ### Step 4 — R56 **DONE 2026-08-06**; R23 root cause **FOUND**, remedy **awaiting Brian**
 >
-> R23 is independently confirmed and is the register's #1 remaining blocker, but **its fix is blocked
-> by R56**, so R56 goes first.
+> Full measurements and corrected numbers: **DECISIONS 2026-08-06b**. Both passes were read-only on
+> banked artifacts — no producer ran and no live artifact changed.
 >
-> **R56 — re-run the `min_confidence` comparison with the target held fixed.** The record says
-> confidence filtering is "monotonically degrading ranking" and that is why `min_confidence: null`
-> ships. The comparison behind it varied **both the model and the target**; with the target fixed,
-> `conf ≥ 0.5` is not harmful. Vary only the confidence floor, hold the target, and report the
-> project's standard metrics (`meaningful_auc` / `pr_auc@1e-2` / `precision@5%` + Spearman ρ + per-bin
-> RMSE — never presence AUC).
+> **R56 — RESOLVED, verdict withdrawn.** Re-scored the three banked arms against **one common
+> target** (161,005 tiles × 38 images, keys row-aligned; the `none` arm's `y_true` is bit-identical to
+> the shipped `dataset_v2` S=32 labels). The reviewer's decomposition reproduces to 4 dp: of the
+> recorded −0.021 per-image Spearman loss at `conf ≥ 0.5`, **−0.0172 (82 %) is the target moving** and
+> only −0.0034 (17/38, p=0.43) is the model. On the project's standard metrics `conf ≥ 0.5` is a
+> **null** (`meaningful_auc` −0.0028 p=0.31; `pr_auc@1e-2` −0.0007 p=0.44; `precision@5%` 0.0000
+> p=0.41; min p over nine metrics 0.178). `conf ≥ 0.7` is directionally harmful but survives no Holm
+> correction. "Monotonically" is false in the probe's own scorecard (per-image ρ 0.4333 → **0.4563** →
+> 0.3044), and the dynamic-range collapse is 53–59 % population artefact — after the **shipped**
+> quantile-match layer `top_ratio` is 0.870 → 0.859 → 0.829, essentially flat.
+> **The R56 ruling no longer forbids harmonising a confidence floor.** It does **not**, however,
+> license 0.6173: no arm was measured there, and it interpolates to 56–70 % of the `conf070` harm.
+> Amended in `PLAN_Calibration.md` (§L2 lever, stage table, order rationale), `notebooks/_build_23.py`
+> §8/§9 and its verdict table, and `DECISIONS.md:3916-3925`.
+> ⚠ `notebooks/23_calibration_diagnostic.ipynb` is now **stale** against its `_build_23.py` source and
+> needs regeneration; it was deliberately not executed (notebooks are uncovered by the runtime guard).
 >
-> **R23 — then decide the remedy, and note there are three, not one.** Two cohort images (three by the
-> re-derivation: `ESP_017355_2260`, `ESP_046803_2325`, `ESP_068483_2280`) are labelled at score floors
-> of 0.6173 / 0.4734 / 0.4067 while the other 36 reach 0.1000. The register's proposed fix —
-> harmonise by setting the global `min_confidence` to the max kept-score minimum, i.e. **0.6173** —
-> would discard a large share of every unaffected image's detections (their score min is 0.1000,
-> p1 ≈ 0.253). Before defaulting to it, weigh:
-> 1. harmonise upward to 0.6173 (safe, expensive, and Stage 1 must re-run);
-> 2. exclude the three truncated images from the cohort;
-> 3. **retain and document a mixed confidence floor** — the exact shape of the decision Brian already
->    took for the mixed *size* floor (R03/R83/R84), where the answer was "retain and document, don't
->    silently harmonise". This option is not in the register and should be on the table.
+> **R23 — the register's framing of the root cause is wrong, and it changes the menu.** This is not a
+> BoulderNet export artefact. The three `.shp` files are **byte-truncated**: each one's own header
+> declares a length far larger than what is on disk, while `.dbf` and `.shx` are complete. Records are
+> stored **score-descending**, so the records whose bytes physically fit are exactly the highest-scoring
+> prefix — and that count equals the pipeline's kept count with **zero** delta in all three images.
 >
-> Either way, R23's fix lands in Stage 1 filtering/provenance, so the Stage-1 gate below fires.
+> | ObsId | header declares | on disk | missing | records that fit | pipeline kept | Δ |
+> |---|---|---|---|---|---|---|
+> | ESP_017355_2260 | 569,266,636 B | 214,884,317 B | 354.4 MB | 359,933 | 359,933 | **0** |
+> | ESP_046803_2325 | 323,962,020 B | 192,091,266 B | 131.9 MB | 367,140 | 367,140 | **0** |
+> | ESP_068483_2280 | 616,023,244 B | 443,015,777 B | 173.0 MB | 727,160 | 727,160 | **0** |
+>
+> Three control images are byte-exact complete. `drop_null_geometries` was faithfully reporting a
+> **truncated file**. So there is a **fourth remedy the register does not list — re-copy the 659 MB of
+> missing bytes and restore the data** rather than working around its absence. Whether that is possible
+> depends on a complete source copy existing off this disk; nothing in the repo can establish that, and
+> criterion 5 already flags these 4.18 GB as un-backed-up and outside every artifact manifest.
+>
+> The three original remedies, priced read-only (adversarially verified; several first-pass numbers
+> were wrong and are not carried forward):
+> 1. **harmonise upward** to the true max-of-minima **0.617257** (the register's rounded 0.6173 is
+>    4.25e-05 *above* it and would drop 86 polygons from `ESP_017355_2260` itself) — the 36 unaffected
+>    images retain a median **33.1 %** of kept detection area, **53 %** of cohort label mass is
+>    discarded, ~24,000 of 161,005 tiles change rich/poor class;
+> 2. **exclude the truncated images** — costs **2** images, not 3 (`ESP_046803_2325` has no labels and
+>    was dropped for a coregistration failure, `DECISIONS.md:1258`): 18,754 tiles (11.65 %), 21.9 % of
+>    rich tiles, 19.9 % of labelled boulder mass, LOIO 38→36 folds, and it deletes the cohort's largest
+>    observation (13,457 S=32 tiles, 1.84× the runner-up);
+> 3. **retain and document a mixed confidence floor** — keeps ~2,000–2,250 mis-classed tiles (1.2–1.4 %)
+>    and leaves all 18,754 tiles in those two folds carrying a level-biased target (low by ≈2.4× and
+>    ≈1.35× on own-anchored estimates).
+>
+> **Correction to this document's own earlier wording:** confidence filtering is a **Stage 4**
+> operation (`src/labeling.py:96` `_apply_detection_filters`, called at `:496` inside
+> `stage4_one_image`) — `DECISIONS.md:813` already said so. Only the *provenance* half of R23's fix
+> (recording dropped-vs-kept score distributions, flagging rank truncation in `drop_null_geometries`)
+> is Stage 1. The Stage-1 gate still fires for that half under every remedy.
+>
+> **REMEDY DECIDED (Brian, 2026-08-06): retain and document, as a temporary measure pending the v3
+> re-detection.** Not adopted as a target definition; harmonisation, exclusion and byte-range
+> recovery all remain open. The provenance/documentation half is **built** —
+> `inspect_shapefile_integrity` + `describe_null_geometry_drop` in Stage 1 (persisted as
+> `source_integrity` / `null_geometry_basis`, both warning loudly), `realised_label_basis` in the
+> Stage-4 sidecar, `DATA_DICTIONARY` entries, 9 tests, fast suite 569 passed. Full detail:
+> **DECISIONS 2026-08-06b**.
+>
+> **A fourth truncated export, and a gate that checked the wrong file.** Scanning all 40 vClaire
+> exports with the new check finds **`ESP_028537_2270`** truncated too (513.4 MB of 571.9 MB
+> missing). That one was already known and excluded, and `scripts/build_vclaire_manifest.py` carries
+> an integrity gate written *for* it — but the gate validates `.dbf` self-consistency, `.dbf`↔`.shx`
+> agreement and pyogrio's feature count, **all of which pass** when only the `.shp` is short.
+> `ESP_028537_2270` was caught because its `.dbf` was truncated as well. The gate now also checks the
+> `.shp`. This is a Pattern-D instance worth carrying into the register: the failure mode was
+> diagnosed, named, and guarded, and three further instances still reached the shipped label basis.
 
 1. Close the mutation/isolation hole and parameterize artifact roots. Update the operating manual and
    command permissions before anyone runs a broad test command.

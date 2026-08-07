@@ -511,10 +511,21 @@ Two more levers, same LOIO + paired-Wilcoxon discipline:
   reweighting is **strictly dominated**.
 - **min_confidence label-noise (Stage 2b, L2):** regenerate the Stage-4 labels keeping
   only detections with BoulderNet `score ≥ t` (cached Stage-1/2/3 inputs; tile grid is
-  detection-independent so the embeddings still join). Filtering **monotonically harms**
-  both ranking and dynamic range — `conf≥0.7` collapses the rich share 36 %→11 %,
-  top_ratio 0.66→0.31, paired p < 0.001. Low-confidence detections are **real boulders**,
-  not removable noise.
+  detection-independent so the embeddings still join).
+  > ⚠ **AMENDED 2026-08-06 (review finding R56). The verdict printed below is a
+  > two-factor comparison and is withdrawn.** Each arm was trained on labels regenerated
+  > at `score ≥ t` **and scored against those same labels**, so the paired Wilcoxon varied
+  > both the predictor *and* the target. Re-scored against **one common target** (the
+  > unfiltered `fractional_area`): `conf≥0.5` is a **null** on every project metric
+  > (`meaningful_auc` −0.0028 p=0.31; `pr_auc@1e-2` −0.0007 p=0.44; `precision@5%` 0.0000
+  > p=0.41; Spearman −0.0034 p=0.43; n=38) — **82 % of the recorded −0.021 is the target
+  > moving, not the model**. `conf≥0.7` is directionally harmful but survives no Holm
+  > correction. "Monotonically" is contradicted by the scorecard printed below
+  > (per-image ρ 0.4333 → **0.4563** → 0.3044), and the `top_ratio` collapse is largely a
+  > population artefact: at a matched 36 % top fraction it is 0.664 → 0.623 → 0.519, and
+  > after the **shipped** quantile-match layer it is 0.870 → 0.859 → 0.829. What survives
+  > is that filtering **thins** the target rather than cleaning it, so nothing shows
+  > filtering *helps* and `min_confidence: null` stays. See DECISIONS 2026-08-06b.
 """, "label_rw_md"))
 
 cells.append(code(
@@ -553,7 +564,7 @@ ax[0].set_title("LDS reweighting: de-compress bought with ranking"); ax[0].legen
 ax[1].plot(mc.label, mc.raw_top, "o-", color="tab:red", label="raw top_ratio")
 ax[1].plot(mc.label, mc.raw_perimg_rho, "s-", color="tab:blue", label="per-img rho")
 ax[1].plot(mc.label, mc.rich_share, "^--", color="tab:green", label="rich share")
-ax[1].set_ylim(0, 1.0); ax[1].set_title("min_confidence: filtering harms both"); ax[1].legend(fontsize=8)
+ax[1].set_ylim(0, 1.0); ax[1].set_title("min_confidence: rho non-monotone; top_ratio confounded by rich share"); ax[1].legend(fontsize=8)
 fig.tight_layout(); fig.savefig(FIG / "23_tier2_label_reweight.png", dpi=130)
 """, "label_rw_code"))
 
@@ -567,9 +578,12 @@ cells.append(md(
   targeted functional moves the *value* (de-compresses), never the *rank*.
 - **Every L2/2c lever is now exhausted, none beats `mlp_reg`:** coarser scale (S=64)
   is directional-only (paired +0.025, p=0.19); LDS reweighting is **dominated** (de-
-  compresses raw, costs ranking p≈0.015); `min_confidence` filtering is **harmful**
-  (monotonically worse, conf≥0.7 paired p<0.001). The ~0.43 per-image ceiling is the
-  **5 m/px CTX magnitude floor**, confirmed five independent ways.
+  compresses raw, costs ranking p≈0.015); `min_confidence` filtering is
+  ~~**harmful** (monotonically worse, conf≥0.7 paired p<0.001)~~ **a null at conf≥0.5 on a
+  common target (R56, amended 2026-08-06) — it neither helps nor hurts.** The ~0.43
+  per-image ceiling is the **5 m/px CTX magnitude floor**, ~~confirmed five independent
+  ways~~ **on the frozen Fang-ViT/GeM-96/S=32 embedding — all five "ways" hold that
+  representation fixed (R55), and this one has now been withdrawn as evidence.**
 - **Independent proof the wall is the data:** Tier-1 `P(rich)` — a classifier — ranks
   abundance as well as the dedicated regressor (0.437 vs 0.433). The one-model
   simplification (qmatch the `P(rich)` instead of running a Tier-2 head) is **viable but
@@ -586,7 +600,7 @@ cells.append(md(
 | L1 cheap swaps (log1p, count) | wash |
 | L1 distributional heads (HL-Gauss/pinball/ZILN) | wash |
 | L1+L2 reweighting (LDS) | dominated |
-| L2 label-noise (min_confidence) | harmful |
+| L2 label-noise (min_confidence) | ~~harmful~~ **null at conf≥0.5 (R56, amended 2026-08-06)** |
 | L2 coarser scale (S=64) | directional only (p=0.19) |
 
 Figures: `reports/figures/23_{tier2_l1_bakeoff,tier2_scale_sweep,prich_vs_abundance,prich_qmatch_confirm,tier2_label_reweight}.png`.

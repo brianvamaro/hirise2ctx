@@ -170,7 +170,7 @@ findings with an audience outside the project:
 
 **Then — they change numbers or decisions:**
 
-1. **R23** two cohort images' labels are a score-rank truncation of the detection set (11.6 % of tiles) — **independently confirmed**. *Read **R56** first: the ruling that currently forbids the natural fix is itself a confounded comparison.*
+1. **R23** two cohort images' labels are a score-rank truncation of the detection set (11.6 % of tiles) — **independently confirmed**. ~~*Read **R56** first: the ruling that currently forbids the natural fix is itself a confounded comparison.*~~ **R56 is CLOSED 2026-08-06 and no longer blocks it. Root cause found: three byte-truncated `.shp` files, so a fourth remedy — recover the 659 MB — is on the table. Remedy awaiting Brian.**
 2. **R54** the shipped abundance layer's calibration PASS is pooled; per image only **11 of 37** images are inside the declared band
 3. **R32** the Tier-1 reference classifier early-stops on AUC and ships 1-tree boosters on 11 of 38 folds — *the FM-vs-Tier-1 margin rests on it*
 4. **R55** the "5 m/px CTX ceiling, confirmed five ways" shares one embedding and trunk across all five — *this premise closed an improvement avenue*
@@ -284,6 +284,9 @@ gated statistic was ever given a sampling uncertainty, so several PASS/FAIL call
 a two-factor comparison. That ruling is what currently forbids the natural fix for **R23** (harmonising
 the cohort's confidence floor). Re-run that comparison with the target held fixed *before* deciding how
 to fix R23 — otherwise the top-priority finding gets fixed against a confounded constraint.
+**RESOLVED 2026-08-06:** the re-score was run on a common target; the verdict is withdrawn and the
+constraint is lifted (`conf ≥ 0.5` is a null). The dependency is discharged — but the re-score covers
+0.5 and 0.7 only, so it does **not** license R23's 0.6173 floor. See **DECISIONS 2026-08-06b**.
 
 ---
 
@@ -930,10 +933,31 @@ but unused" with a ~50-**image** switch trigger (the cohort is 38); every within
 > in the linked area file; only the summary is duplicated here.
 
 ### R23 — Two cohort images' labels are a score-rank truncation of the detection set, documented as benign density hygiene
-- **Status:** OPEN · **Severity:** high · **Liveness:** live-shipped · **Verified:** ✅ **INDEPENDENTLY
+- **Status:** OPEN (remedy is Brian's call) · **Severity:** high · **Liveness:** live-shipped · **Verified:** ✅ **INDEPENDENTLY
   CONFIRMED 2026-07-31** — I re-derived it from the source `.dbf`s and the cached GPKGs. The split is
   exact in all three images: **zero** kept rows score below the dropped maximum, and
   `min(kept) − max(dropped)` = +1e-6:
+
+> ### ⚠ ROOT CAUSE FOUND 2026-08-06 — this is **not** an upstream BoulderNet export artefact
+>
+> The three `.shp` files are **byte-truncated**. Each declares its own length in its 100-byte header;
+> all three declare far more than is on disk, while `.dbf` and `.shx` are complete. Records are stored
+> **score-descending**, so the records whose bytes physically fit are exactly the top-scoring prefix —
+> and that count equals the pipeline's kept count with **zero** delta in all three images:
+>
+> | ObsId | header declares | on disk | missing | records that fit | kept | Δ | measured cut |
+> |---|---|---|---|---|---|---|---|
+> | ESP_017355_2260 | 569,266,636 B | 214,884,317 B | 354.4 MB | 359,933 | 359,933 | **0** | 0.617257 |
+> | ESP_046803_2325 | 323,962,020 B | 192,091,266 B | 131.9 MB | 367,140 | 367,140 | **0** | 0.473420 |
+> | ESP_068483_2280 | 616,023,244 B | 443,015,777 B | 173.0 MB | 727,160 | 727,160 | **0** | 0.406699 |
+>
+> Controls (`ESP_045139_2270`, `ESP_054622_2240`, `ESP_076499_1160`) are byte-exact complete.
+> `drop_null_geometries` was faithfully reporting a truncated file. **A fourth remedy therefore exists
+> that the `Fix:` bullet below does not list: re-copy the 659 MB of missing bytes.** Also: the
+> harmonisation floor is **0.617257475852966**, and the register's rounded **0.6173 is 4.25e-05 above
+> it** — harmonising at 0.6173 would drop 86 polygons from `ESP_017355_2260` itself.
+> Full pricing of all four options: **DECISIONS 2026-08-06b** and the step-4 block in
+> [CODE_REVIEW_AUDIT_2026-08-06.md](CODE_REVIEW_AUDIT_2026-08-06.md).
 
   | ObsId | src rows | null-geom | kept | dropped score max | kept score min | kept rows below dropped max |
   |---|---|---|---|---|---|---|
@@ -1695,7 +1719,18 @@ information" from "this representation extracts no more information".
   test the physical claim (a different backbone, or a native-resolution upper bound).
 
 ### R56 — "`min_confidence` filtering is HARMFUL, ruled out" is a two-factor comparison — and this is what blocks R23's fix
-- **Status:** OPEN · **Severity:** high · **Liveness:** dead-closed programme, but it is the recorded justification for the **live** `min_confidence: null` · **Verified:** no
+- **Status:** ✅ **CLOSED 2026-08-06 — CONFIRMED and the record amended** · **Severity:** medium (corrected down) · **Liveness:** dead-closed programme, but it was the recorded justification for the **live** `min_confidence: null` · **Verified:** ✅ re-scored on a common target; see **DECISIONS 2026-08-06b**
+  > **Resolution.** The decomposition reproduces to 4 dp. Of the recorded −0.021 per-image Spearman
+  > loss at `conf ≥ 0.5`, **−0.0172 (82 %) is the target moving**; the model factor is −0.0034
+  > (17/38, p=0.43). On the project's standard metrics against the common target, `conf ≥ 0.5` is a
+  > **null** (`meaningful_auc` −0.0028 p=0.31, `pr_auc@1e-2` −0.0007 p=0.44, `precision@5%` 0.0000
+  > p=0.41; min p over nine metrics 0.178); `conf ≥ 0.7` is directionally harmful but survives no
+  > Holm correction. "Monotonically" is false in the probe's own scorecard (ρ 0.4333 → **0.4563** →
+  > 0.3044) and 53–59 % of the `top_ratio` collapse is the population change — after the shipped
+  > quantile-match layer it is 0.870 → 0.859 → 0.829. Amended in `PLAN_Calibration.md`,
+  > `notebooks/_build_23.py` §8/§9 and `DECISIONS.md:3916-3925`. **This no longer blocks R23** — but
+  > it does not license R23's 0.6173 floor, which was never measured and interpolates to 56–70 % of
+  > the `conf070` harm.
 - **Detail:** [probes-tier2-calibration.md](review_2026-07-31/probes-tier2-calibration.md) `probes-tier2-calibration-2`
 
 The record rules out confidence filtering as "monotonically degrading ranking". The comparison changed

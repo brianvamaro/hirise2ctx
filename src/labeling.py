@@ -114,6 +114,98 @@ def _apply_detection_filters(gdf, filters: dict | None):
     return gdf.iloc[keep].reset_index(drop=True)
 
 
+def _describe_realised_label_basis(gdf, cache_dir, obs_id: str, detection_filters=None) -> dict:
+    """The confidence floor these labels were ACTUALLY built at, per image.
+
+    `detection_filters` records the *configured* floor, which is byte-identical across all
+    38 vClaire sidecars (`min_confidence: null`) and therefore cannot distinguish an image
+    labelled at score >= 0.10 from one labelled at score >= 0.617. The realised floor --
+    the minimum `score` actually surviving into the labels -- can, and that difference is
+    R23. Brian's 2026-08-06 decision is to RETAIN the resulting mixed floor and DOCUMENT
+    it (a temporary measure pending the v3 re-detection), which makes this record the
+    thing that carries the decision downstream. See DECISIONS 2026-08-06b.
+
+    Mirrors the shape of the mixed *size*-floor convention (R03/R83/R84): per-image basis
+    persisted, product-level mixture describable by aggregating over images.
+    """
+    out: dict = {
+        "convention": "mixed_per_image_confidence_floor",
+        "temporary_pending": "v3 re-detection",
+        "decision": "DECISIONS 2026-08-06b (retain + document; do not silently harmonise)",
+    }
+    if len(gdf) and "score" in gdf.columns:
+        s = pd.to_numeric(gdf["score"], errors="coerce").to_numpy(dtype=float)
+        s = s[np.isfinite(s)]
+        if s.size:
+            out["realised_score_floor"] = float(s.min())
+            out["score_max"] = float(s.max())
+            out["score_p1"] = float(np.percentile(s, 1))
+            out["score_median"] = float(np.percentile(s, 50))
+    else:
+        out["note"] = "no `score` column on the cached detections; floor not derivable"
+
+    # `level_claims_unsafe` must NOT depend solely on the Stage-1 sidecar: every sidecar
+    # banked before 2026-08-06 predates `source_integrity`, so keying off it alone would
+    # leave the flag absent on exactly the affected images, and absence would be
+    # indistinguishable from "checked and clean". Derive it from the realised floor first
+    # -- that is measured right here, from the labels themselves.
+    #
+    # The comparison floor is the CONFIGURED cut when one is set, else BoulderNet's own
+    # detector floor, measured 2026-08-06 as exactly 0.100000 in all 39 readable v2 .dbf
+    # files. A realised floor materially above that means detections were lost upstream.
+    detector_floor = 0.100000
+    configured = (detection_filters or {}).get("min_confidence")
+    expected_floor = float(configured) if configured is not None else detector_floor
+    realised = out.get("realised_score_floor")
+    if realised is not None and realised > expected_floor + 1e-6:
+        out["level_claims_unsafe"] = True
+        out["realised_floor_exceeds_expected_by"] = float(realised - expected_floor)
+
+    # Corroborate from Stage 1 where available; where the sidecar predates the field, say
+    # so explicitly and re-derive from the source path it does record, so a Stage-4-only
+    # re-run still gets the finding without a Stage-1 rebuild.
+    from . import detections as _det
+
+    s1: dict = {}
+    try:
+        s1 = json.loads(
+            (Path(cache_dir) / _det.CACHE_SUBDIR / f"{obs_id}.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        out["stage1_provenance"] = "unavailable (Stage-1 sidecar missing or unreadable)"
+
+    integrity = s1.get("source_integrity")
+    if integrity is None and s1.get("source_path"):
+        integrity = _det.inspect_shapefile_integrity(s1["source_path"])
+        out["stage1_provenance"] = (
+            "re-derived from source_path (sidecar predates 2026-08-06 `source_integrity`)"
+        )
+    integrity = integrity or {}
+    basis = s1.get("null_geometry_basis") or {}
+
+    if integrity.get("status") == "truncated":
+        out["source_truncated"] = True
+        out["source_missing_bytes"] = integrity.get("missing_bytes")
+    elif integrity.get("status") == "complete":
+        out["source_truncated"] = False
+    else:
+        out["source_truncated"] = None  # unknown -- never read absence as safety
+    if basis:
+        out["stage1_rank_truncation"] = bool(basis.get("is_rank_truncation"))
+        out["stage1_dropped_fraction"] = basis.get("dropped_fraction")
+
+    if out.get("source_truncated") or out.get("stage1_rank_truncation"):
+        out["level_claims_unsafe"] = True
+    if out.get("level_claims_unsafe"):
+        out["level_claims_note"] = (
+            "This image's labels are a high-confidence subset of its detections, so its "
+            "per-image abundance LEVEL is biased low. Safe for rank-only statistics; "
+            "exclude from per-image level claims (calibration pool, mean(pred)/mean(true), "
+            "thermal comparisons) unless the bias is corrected."
+        )
+    return out
+
+
 def _compute_grid_alignment(
     window_transform,
     mosaic_transform: list[float],
@@ -495,6 +587,9 @@ def stage4_one_image(
     gdf_pre_filter_n = len(gdf)
     gdf = _apply_detection_filters(gdf, labeling_cfg.get("detection_filters"))
     n_after_filter = len(gdf)
+    realised_basis = _describe_realised_label_basis(
+        gdf, cache_dir, obs_id, labeling_cfg.get("detection_filters"),
+    )
 
     shift = coregister.load_shift(obs_id, cache_dir) if apply_coreg_shift else None
     gdf = _apply_coreg_shift(gdf, shift)
@@ -581,6 +676,10 @@ def stage4_one_image(
         "detection_filters": labeling_cfg.get("detection_filters") or {
             "min_confidence": None, "min_size_m": None,
         },
+        # The CONFIGURED filter above is identical across every image and so cannot
+        # express the mixed basis R23 found; this is the REALISED one. See DECISIONS
+        # 2026-08-06b.
+        "realised_label_basis": realised_basis,
         "coreg_shift_applied": bool(shift is not None),
         "coreg_shift_m": (
             {

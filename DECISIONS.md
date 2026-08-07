@@ -1191,7 +1191,7 @@ headless Stage 1 driver — Stage 1 had only ever been run from notebook 01).
   count implies; read fails). Unfixable upstream → **excluded** from the manifest →
   39 rows. `ESP_045878_2235` initially shipped the wrong `-bbox-nms` variant; Brian
   re-exported the `-mask-nms` version (now included).
-- **BoulderNet emits many null-geometry records** at this density: rows with a DBF
+- ~~**BoulderNet emits many null-geometry records** at this density~~: rows with a DBF
   entry (score/id) but no polygon. `ESP_017355_2260` is 1.1M rows but only **359,933
   real polygons** (745k null); `ESP_068483_2280` 1.06M → 727k. The priority10 set had
   zero. Confirmed present in the SOURCE shapefiles (not introduced by reproject).
@@ -1199,12 +1199,25 @@ headless Stage 1 driver — Stage 1 had only ever been run from notebook 01).
   ingest (no-op on v1; detection tests still green) and records `n_polygons_raw` +
   `n_dropped_null_geometry` in the Stage-1 sidecar. True per-image boulder counts span
   9.6k → 727k (≈100–500× v1).
+  **⚠ SUPERSEDED 2026-08-06b — BoulderNet emits nothing of the sort. The three affected
+  `.shp` files are BYTE-TRUNCATED (incomplete copies, −354/−132/−173 MB); their `.dbf`
+  and `.shx` are complete, so GDAL returns every indexed record and the ones whose
+  polygon bytes were never copied read as null geometry. Records are stored
+  score-descending, so the survivors are the top-scoring prefix and these images' label
+  basis is truncated at a per-image confidence floor. 36 of 39 readable exports drop
+  exactly ZERO rows — "at this density" was never the mechanism. See the 2026-08-06b
+  entry; `inspect_shapefile_integrity` now detects this at ingest.**
 
 **Filter decision (`detection_filters`).** Reprojected equivalent-circle diameters are
 large (pooled median 3.4 m, p5 ≈ 1.9 m) → **~0% below the `min_size_m=1.4105` floor**, so
 that filter is a no-op (kept, consistent with v1). Scores: 100% ≥ 0.2, 89% ≥ 0.3,
 52% ≥ 0.5 — `min_confidence` kept `null`. The denser set is *more* boulders, not
 *smaller*.
+**⚠ CAVEAT 2026-08-06b (R58): those score percentages were computed over the PRE-drop
+population — i.e. including the rows the pipeline then deletes. On the post-drop
+population they read 100 / 97.4 / 77.1 %. The `min_confidence: null` decision is
+unaffected, but the statistic quoted here is the exact one that would have exposed R23,
+computed on the wrong population.**
 
 **Stage 1 result:** 39/39 reprojected, 0 failures, 32 SP1-corrected. The 1.1M-row
 reproject runs in ~16 s — no scale problem. `splits.*` `n_folds` in `config_v2.yaml` are
@@ -3903,7 +3916,7 @@ median-of-medians glance is misleading — both "wins" below shrank under pairin
   label-noise sweep + Stage 2c density/LDS reweighting. PLAN_Calibration §3/§5 + notebook
   23 updated.
 
-## 2026-06-16 -- Calibration Stage 2b/2c CLOSED: reweighting dominated, label-noise harmful -> ceiling is the data
+## 2026-06-16 -- Calibration Stage 2b/2c CLOSED: reweighting dominated, label-noise ~~harmful~~ [NULL, amended 2026-08-06b] -> ceiling is the data
 
 The last two greenlit Tier-2 levers, same emb-only S=32 LOIO + paired per-image
 Wilcoxon. Both NEGATIVE -> the expensive de-compression investigation is complete.
@@ -3920,14 +3933,20 @@ Wilcoxon. Both NEGATIVE -> the expensive de-compression investigation is complet
   diff, 0 key-misses). Result **HARMFUL, ruled out**: filtering monotonically degrades
   BOTH ranking and dynamic range -- conf>=0.5 paired Δ −0.021 (p=0.010); conf>=0.7
   collapses rich share 36%->11%, top_ratio 0.66->0.31, paired Δ −0.070 (p<0.001).
-  Low-confidence detections are REAL boulders, not removable noise. (Built with
+  Low-confidence detections are REAL boulders, not removable noise.
+  **⚠ SUPERSEDED 2026-08-06 (R56) — this verdict is a two-factor artefact; see the
+  2026-08-06 entry "R56 re-scored". The Δ −0.021 varied both the model and the target;
+  82 % of it is the target moving. On a common target conf>=0.5 is a NULL and
+  "monotonically" is false in the probe's own scorecard.** (Built with
   config_v2.yaml / hirise_40_vclaire.csv -- NOT the v1 config.yaml/priority10 manifest;
   the regen is CPU-only and was run concurrently with the GPU reweight via `--regen-only`.)
 - **STAGE 2 COMPLETE -- the whole levers table:** L1 cheap swaps = wash; L1 distributional
-  heads = wash; L1+L2 reweighting = dominated; L2 label-noise = harmful; L2 coarser scale
+  heads = wash; L1+L2 reweighting = dominated; L2 label-noise = ~~harmful~~ **NULL at
+  conf>=0.5 (amended 2026-08-06, R56 -- see the 2026-08-06b entry)**; L2 coarser scale
   = directional only (p=0.19). **No in-cohort retraining lever beats mlp_reg+qmatch on
-  ranking.** The ~0.43 per-image ceiling is the 5 m/px CTX magnitude floor, confirmed five
-  ways. **Path forward is NOT a better model:** ship Stage 1 (productize qmatch + isotonic
+  ranking.** The ~0.43 per-image ceiling is the 5 m/px CTX magnitude floor, ~~confirmed five
+  ways~~ **on the frozen Fang-ViT/GeM-96/S=32 embedding -- all five "ways" hold that
+  representation fixed (R55), and the label-noise one is now withdrawn as evidence.** **Path forward is NOT a better model:** ship Stage 1 (productize qmatch + isotonic
   into the map) + §2.3 expansion cohort (the only thing that can raise the ranking ceiling).
   PLAN §3/§5 + notebook 23 (§8 + §9 verdict, +figure) updated.
 
@@ -6536,3 +6555,211 @@ the rebuild.
 
 Loose ends: `models/pretrained`'s Fang ViT download URL is recorded nowhere; README/ROADMAP/SHERLOCK
 still carry pre-audit claims; the runtime write guard is test-only, so notebooks are uncovered.
+
+## 2026-08-06b — R56 re-scored (verdict withdrawn) and R23's root cause found: three `.shp` files are byte-truncated
+
+Audit step 4. Both results are read-only measurements on banked artifacts; no producer ran, no live
+artifact changed.
+
+### R56 — the `min_confidence` verdict was a two-factor comparison, and it does not survive
+
+`_diag_tier2_minconf_sweep.py` trained on labels regenerated at `score >= t` **and scored against
+those same regenerated labels**, so its paired per-image Wilcoxon compared `rho(pred_t, y_t)` against
+`rho(pred_none, y_none)` — two predictors *and* two targets. Re-scored against **one common target**
+(the unfiltered `fractional_area`, verified bit-identical to the shipped `dataset_v2` S=32 labels:
+0 key misses, max |diff| = 0.000e+00) on the banked per-tile parquets, 161,005 tiles × 38 images,
+keys row-aligned. The reviewer's three-way decomposition reproduces to 4 dp on all six values.
+
+| factor varied (conf ≥ 0.5) | median Δ per-image ρ | wins | p |
+|---|---|---|---|
+| both (as the probe measured, and what the record quotes) | −0.0210 | 11/38 | 0.0100 |
+| **target only** (fixed model, filtered target) | **−0.0172** | 7/38 | **0.0002** |
+| **training-label only** (filtered model, COMMON target) | **−0.0034** | 17/38 | **0.4294** |
+
+**82 % of the recorded "harm" is the target moving.** The deliverable — the fixed-target re-score on
+the project's standard metrics (`src.modeling.evaluate.per_fold_metrics`, `meaningful_threshold=1e-2`;
+no presence AUC anywhere; `n_dropped = 0`, no silent fold loss):
+
+| metric (paired vs `none`, COMMON target, n=38) | conf ≥ 0.5 | conf ≥ 0.7 |
+|---|---|---|
+| `meaningful_auc` | −0.0028 (15/38, **p=0.314**) | −0.0104 (13/38, p=0.014) |
+| `pr_auc@1e-2` | −0.0007 (17/38, **p=0.438**) | −0.0068 (13/38, p=0.015) |
+| `precision@5%` | 0.0000 (14/38, **p=0.411**) | −0.0096 (11/38, p=0.018) |
+| Spearman ρ | −0.0034 (17/38, **p=0.429**) | −0.0213 (13/38, **p=0.061**) |
+
+Pooled per-bin RMSE and the `rmse_*` rows are reported in the run artifact but must be read as
+marginal-calibration diagnostics, not ranking: an arm trained on a 35–77 % smaller-mass target
+predicts systematically lower (rich-bin `mean_pred` 0.0247 → 0.0156 → 0.0052 against `mean_true`
+0.0373). The scale-invariant metrics above are the clean read.
+
+- **conf ≥ 0.5 is a null**, min p over nine metrics = 0.178 (0.257 under Pratt). It is a *bounded*
+  null on the AUC family (95 % CI of the mean Δ `meaningful_auc` [−0.0116, +0.0029]), not merely an
+  underpowered one — though the Spearman CI [−0.0186, +0.0099] is wide. Caveat recorded: the **pooled**
+  `precision@5%` loss (−0.0143) *is* distinguishable from zero under an image-clustered bootstrap
+  (p ≈ 0.03–0.04), so the null holds under equal-per-image weighting, which is the project's
+  group-aware reporting basis.
+- **conf ≥ 0.7 is directionally harmful** and consistent in sign across all nine metrics, but **no
+  metric survives Holm** across the nine (all adj. p ≈ 0.12); across just the four reporting-standard
+  metrics the smallest adjusted p is 0.054. Report it as directional, not established.
+- **"Monotonically degrades ranking" is false in the probe's own banked scorecard:** per-image ρ
+  0.4333 → **0.4563** → 0.3044.
+- **"Degrades dynamic range" is a population artefact plus a missing calibrator.** `top_ratio` was read
+  at a fixed `fa > 1e-2` while the filter moved the rich share 36 %→27 %→11 %. At a **matched 36 % top
+  fraction**: 0.6637 → 0.6231 → 0.5191 (53–59 % of the collapse is the population change). And after
+  the **shipped** quantile-match layer, against the common target: **0.8699 → 0.8595 → 0.8294** —
+  essentially flat. The record's 0.66 → 0.58 → 0.31 is a raw-marginal number the product never ships.
+- Excluding the two R23-truncated images (`ESP_017355_2260` retained mass **1.000000** — literally
+  untreated — and `ESP_068483_2280` 0.803) **strengthens** the null (p 0.314→0.550, 0.429→0.681).
+  Under LOIO an image's own retained mass governs its *target* treatment, not the training treatment
+  of the model scoring it.
+
+**What survives:** filtering *thins* the target rather than cleaning it — the target factor is real and
+significant on its own — so nothing shows filtering **helps**, and keeping `min_confidence: null`
+remains defensible. **What is withdrawn:** "monotonically degrades", "harmful at conf ≥ 0.5", the
+dynamic-range collapse as stated, and the causal claim that this proves low-confidence detections are
+real boulders. **The ruling no longer forbids harmonising a confidence floor.**
+
+**But it does not license R23's 0.6173 either.** No arm was ever measured there. 0.6173 sits 45–59 %
+of the way from 0.5 to 0.7 (basis-dependent) and interpolates to **56–70 % of the conf070 harm**; three
+headline metrics are non-monotone across the arms, so interpolation is not even guaranteed to bracket.
+
+### R23 — the root cause is not BoulderNet. Three `.shp` files were never fully copied.
+
+The register frames R23 as a "score-rank truncation of the detection set" in the upstream export. It is
+not. Measured directly on the source shapefiles (read-only, header + `.shx` arithmetic):
+
+| ObsId | `.shp` header declares | on disk | missing | `.dbf` / `.shx` | records whose bytes FIT | pipeline kept | Δ |
+|---|---|---|---|---|---|---|---|
+| ESP_017355_2260 | 569,266,636 B | 214,884,317 B | **354.4 MB** | complete (1,105,447) | **359,933** | 359,933 | **0** |
+| ESP_046803_2325 | 323,962,020 B | 192,091,266 B | **131.9 MB** | complete (658,290) | **367,140** | 367,140 | **0** |
+| ESP_068483_2280 | 616,023,244 B | 443,015,777 B | **173.0 MB** | complete (1,057,153) | **727,160** | 727,160 | **0** |
+
+Three control images (`ESP_045139_2270`, `ESP_054622_2240`, `ESP_076499_1160`) are byte-exact complete.
+The records are stored **score-descending** (verified over the full `score` column of all three files),
+so the records whose bytes survive are exactly the highest-scoring prefix — and the measured cut is
+`0.617257 / 0.473420 / 0.406699`, matching the register's floors. The `.shx` index and `.dbf` are
+complete, which is why GDAL returns all ~1.1 M rows and the missing tail appears as *null geometry*:
+`drop_null_geometries` was faithfully reporting a **truncated file**, not an export artefact.
+
+**Consequences.** (i) The "benign density hygiene" reading in `DECISIONS.md:1194` was wrong for a
+different reason than the register says. (ii) The register's rounded floor **0.6173 is 4.25e-05 above**
+the true max-of-minima `0.617257475852966`, so "harmonise exactly" at 0.6173 would itself drop 86
+polygons from `ESP_017355_2260`. (iii) `ESP_046803_2325`'s exclusion is unrelated — `DECISIONS.md:1258`
+records a coregistration failure. (iv) A **fourth remedy** exists that the register does not list:
+**re-copy the 659 MB of missing bytes**, which restores the data instead of working around it. Whether
+that is possible depends on a complete source copy existing off this disk — nothing in the repo can
+establish that, and the audit already flags these 4.18 GB as outside every artifact manifest and not
+backed up.
+
+Remedy pricing (read-only; corrected by adversarial verification — several first-pass numbers were
+wrong and are not carried forward). At the true floor 0.617257 the 36 unaffected images retain a median
+**33.1 %** of kept detection area (**53 %** of cohort label mass discarded, not the 66 % first
+reported); ~24,000 of 161,005 tiles change rich/poor class (est., band 23,550–30,657). Excluding the
+truncated images costs **2** images (not 3), 18,754 tiles (11.65 %), 21.9 % of rich tiles, 19.9 % of
+labelled boulder mass, and drops LOIO 38→36 folds; `ESP_017355_2260` is confirmed the largest
+observation at 13,457 S=32 tiles (1.84× the runner-up). Retaining and documenting the mixed floor keeps
+~2,000–2,250 mis-classed tiles (1.2–1.4 %) and leaves all 18,754 tiles in those two folds carrying a
+level-biased target (low by ≈2.4× and ≈1.35× on own-anchored estimates, not the transported 2.6×/1.46×).
+
+**Also corrected:** confidence filtering is a **Stage 4** operation (`src/labeling.py:96`
+`_apply_detection_filters`, called at `:496` inside `stage4_one_image`), not Stage 1 — `DECISIONS.md:813`
+already said so. Only the *provenance* half of R23's fix (recording dropped-vs-kept score distributions
+and flagging rank truncation in `drop_null_geometries`) is Stage 1. And R76's 41.3 % is a flip rate on
+an 8-image prevalence-matched surrogate of **clean** images, never applied to `ESP_017355_2260`; its
+~2,200 has denominator all 13,457 tiles.
+
+### R23 REMEDY — DECIDED (Brian, 2026-08-06): **retain and document, temporarily**
+
+> "Not sure if the non-truncated version exists. The end goal is to get new detections (i.e. a V3
+> dataset), so for now we can just have a temporary solution of retaining for now and documenting
+> this." Fallback if recovery proves impossible: **decide later**.
+
+So the mixed confidence floor is **retained**, exactly as the mixed *size* floor was (2026-08-06
+decision 2), and marked **temporary pending the v3 re-detection** — not adopted as a target
+definition. Harmonising to 0.617257, excluding the two images, and the byte-range recovery all stay
+on the table and are priced above. What shipped for the "document" half:
+
+- **`src/detections.inspect_shapefile_integrity`** — asks the `.shp` header whether the file is
+  byte-complete. **`src/detections.describe_null_geometry_drop`** — characterises the dropped
+  population on `score` and sets `is_rank_truncation` when every dropped row scores at or below
+  every kept row. `stage1_one_image` calls both, **warns loudly** on either finding (it does not
+  raise — the cohort is retained by decision), and persists both to the Stage-1 sidecar as
+  `source_integrity` / `null_geometry_basis`.
+- **`src/labeling._describe_realised_label_basis`** → the Stage-4 sidecar's new
+  **`realised_label_basis`**, carrying the per-image `realised_score_floor` plus
+  `level_claims_unsafe` + a note for affected images. This is the field that makes the mixed floor
+  visible downstream: `detection_filters` is byte-identical across all 38 sidecars and structurally
+  cannot express it.
+- **`dataset/DATA_DICTIONARY.md`** documents all three blocks, and two long-standing errors there
+  are corrected: `n_polygons_after_filter` "equal when both are null, the current default" (both
+  configs set `min_size_m: 1.4105`), and the `score` range — **measured 0.100000–0.955996** over the
+  39 readable v2 exports (7,645,643 detections), not "0.10–0.83".
+- 9 new tests in `tests/test_detections_reprojection.py`. Fast suite **569 passed**, 21 deselected.
+
+**A fourth truncated file, and why the existing gate missed three.** Running the new check over all
+40 vClaire exports finds **`ESP_028537_2270` truncated too** — 513.4 MB of 571.9 MB missing (90 %).
+That one was already known and excluded (`DECISIONS.md:1190`, `config_v2.yaml:6`), and
+`scripts/build_vclaire_manifest.py` was written with an integrity gate specifically for it. **The
+gate checked the wrong file.** It validates `.dbf` self-consistency, `.dbf`↔`.shx` record agreement,
+and pyogrio's feature count against `.shx` (`:139`, `:158`) — and *all three pass* on a shapefile
+whose `.shp` alone is short, because the `.shx` is intact and GDAL reports every record it indexes.
+`ESP_028537_2270` was caught only because its `.dbf` was truncated as well. The gate now also calls
+`inspect_shapefile_integrity` and fails a folder on `shp_status != "complete"`.
+So the same failure mode was diagnosed once, given a name, and given a check — and three further
+instances of it still reached the shipped label basis. Corroboration: every readable export's `.dbf`
+bottoms out at exactly `0.100000`, including all three truncated ones, so the low-score tail exists
+in the tables and is missing only from the geometry.
+
+**Still open on R23:** whether a complete source copy exists off this disk (recovery), and the
+product-level statement of the mixture for reader-facing docs. The two affected images should be
+excluded from per-image **level** claims (calibration pool, R54's `mean(pred)/mean(true)`,
+PLAN_RegionalMap's thermal legs) while remaining valid for rank-only statistics —
+`realised_label_basis.level_claims_unsafe` is the machine-readable flag for that, but no consumer
+reads it yet. Also: **zero banked sidecars carry any of the new provenance**, so Stage 1 + Stage 4
+must re-run before the mixed floor is documented *on disk*. That re-run changes nothing numeric —
+verified that `src.dataset.source_digests` is bit-identical with and without the new key, so R04's
+content digests and the 7 live packages are untouched.
+
+### Adversarial review of the above — and the bug it caught in the fix itself
+
+Four independent lenses over the diff (correctness / behaviour-change / gap-hunt / docs-honesty).
+The measurements survived: every headline number was re-derived from the artifacts, the `.shx`
+arithmetic was validated against an independent parse and against geopandas' own non-null count at
+21 truncation points, and the R56 re-score reproduced to 4 dp. Two findings were load-bearing and
+both are fixed:
+
+1. **HIGH — the fix inverted the decision it was implementing.** Folding `shp_ok` into
+   `integrity_check`'s `ok` flag turned the new detector into a *cohort gate*: the next manifest
+   rebuild would have written **36 rows instead of 39**, silently deleting the three images Brian
+   had just decided to retain. `ok` now means "can this folder be read at all" (a truncated `.shp`
+   is readable); truncation is reported, printed loudly, and carried as manifest provenance instead.
+   Verified against the real data: 39 kept, set-identical to the committed manifest, with the three
+   truncated images retained and `ESP_028537_2270` (unreadable `.dbf`) still excluded.
+2. **HIGH — the safety flag could never fire.** `level_claims_unsafe` was derived solely from the
+   Stage-1 sidecar's `source_integrity`, which **no banked sidecar has**, so it would have been
+   absent on exactly the affected images — and absence is indistinguishable from "checked and
+   clean". It is now derived from the *realised floor itself* (measured from the labels in hand)
+   against BoulderNet's own 0.100000 detector floor, corroborated by Stage 1 where available and
+   re-derived from the sidecar's recorded `source_path` where not. `source_truncated` is now
+   tri-state, so unknown never reads as safe. Verified on the live pre-2026-08-06 cache:
+   `level_claims_unsafe=True` for both truncated images, `None` for a clean control.
+
+Also fixed from the review: `describe_null_geometry_drop` no longer raises on a non-numeric `score`
+column (it ran unguarded inside the producer, against the manifest-driven invariant); a
+`_MIN_DROPPED_FOR_RANK_VERDICT = 100` guard stops tied or single-row drops raising a false
+"LEVEL is biased low" alarm, and the kept-minus-dropped gap is recorded; `actual > declared` and a
+sub-header declared length are now `length_mismatch` / `suspect_header` rather than `complete`; a
+short `.shx` marks `n_records_present` a lower bound; and `drop_null_geometries`' docstring no longer
+teaches that ~67 % null geometry is normal for dense exports — the mental model that hid R23.
+Six wiring/edge tests added on top of the original nine (the review correctly noted the whole
+integration could have been deleted with the suite still green). **Fast suite: 575 passed, 21
+deselected.**
+
+Confirmed clean by the review and worth not re-deriving: the change is provenance-only —
+`src/labeling.py` and the test file have zero deleted lines, the only deleted line in
+`src/detections.py` is a docstring terminator, `drop_null_geometries` is byte-identical, the new
+Stage-4 key sits outside `inputs` so R04 digests do not move, every sidecar reader uses `.get`/named
+access, and there is no `filterwarnings = error` anywhere to trip on the new warnings. The v1
+priority10 detection set was scanned and is **clean** — all 10 `.shp`/`.shx`/`.dbf`/`.prj` complete.
+A short `.shx`, `.dbf` or `.prj` all raise loudly at read time, so the `.shp` genuinely is the unique
+silent failure and targeting it alone is the right call.

@@ -16,7 +16,7 @@ mirror the source BoulderNet shapefile DBF schema (see [DECISIONS.md](../DECISIO
 | Column | Type | Meaning |
 |---|---|---|
 | `geometry` | Polygon | Boulder outline in **target CRS** (Mars 2000 Equidistant Cylindrical, metres) |
-| `score` | float | BoulderNet confidence, 0.10–0.83 in our manifest |
+| `score` | float | BoulderNet confidence. **Measured range 0.100000–0.955996** over the 39 readable v2 vClaire exports (7,645,643 detections, 2026-08-06); the previously documented "0.10–0.83" was wrong at the top end. Every readable export's `.dbf` bottoms out at exactly 0.100000 — the detector's own floor. ⚠ Three images' **cached polygons** nevertheless start at 0.617257 / 0.473420 / 0.406699 because their source `.shp` is byte-truncated (R23); see `realised_label_basis` in the Stage-4 sidecar and **DECISIONS 2026-08-06b**. |
 | `cat_id` | int | Always 0 |
 | `cat_name` | str | Always `"boulder"` |
 | `isin_slice` | bool | True if polygon lies within a BoulderNet slice (not at the slice border) |
@@ -28,6 +28,10 @@ mirror the source BoulderNet shapefile DBF schema (see [DECISIONS.md](../DECISIO
 |---|---|---|
 | `obs_id` | str | HiRISE Observation ID |
 | `n_polygons` | int | Polygon count in the cached GeoPackage |
+| `n_polygons_raw` | int | Polygon count read from the source, before null-geometry rows were dropped |
+| `n_dropped_null_geometry` | int | Rows with a `.dbf` record but no polygon, dropped at ingest |
+| `source_integrity` | obj | **Is the source `.shp` byte-complete?** (added 2026-08-06). A shapefile's 100-byte header declares its own total length, so a partially-copied `.shp` is self-diagnosing. `status` ∈ `complete` / `truncated` / `unreadable`; when truncated also `declared_bytes`, `actual_bytes`, `missing_bytes`, `n_records_index`, `n_records_present`. **4 of 40 v2 exports are truncated** — `ESP_017355_2260` (−354 MB), `ESP_046803_2325` (−132 MB), `ESP_068483_2280` (−173 MB) and the long-excluded `ESP_028537_2270` (−513 MB). See **DECISIONS 2026-08-06b**. |
+| `null_geometry_basis` | obj or null | **What population was dropped** (added 2026-08-06). Null when nothing was dropped. Carries `n_rows` / `n_dropped` / `n_kept` / `dropped_fraction` and the kept-vs-dropped `score` distributions, plus `is_rank_truncation` — True when every dropped row scores at or below every kept row, the fingerprint of a score-ordered truncation rather than sparse export noise. When True, `realised_score_floor` is the confidence floor this image's labels actually sit at. This is the record whose absence let R23 be filed as "benign density hygiene". |
 | `source_path` | str | Absolute path of the BoulderNet shapefile that was read |
 | `source_mtime_iso` | str | mtime of the source shapefile when cached (UTC ISO) |
 | `source_crs_wkt` | str | The shapefile's `.prj` WKT (after SP1 correction if applied) |
@@ -173,8 +177,9 @@ any sub-tile ineligible at coarser scales) are dropped, not written as NaN.
 |---|---|---|
 | `obs_id` | str | HiRISE Observation ID |
 | `n_polygons_stage1` | int | Polygon count in the Stage 1 cache (pre-filter) |
-| `n_polygons_after_filter` | int | Polygon count after applying `detection_filters.min_confidence` / `min_size_m` (equal to `n_polygons_stage1` when both are null, the current default) |
-| `detection_filters` | obj | Snapshot of `labeling.detection_filters` (`min_confidence`, `min_size_m`) |
+| `n_polygons_after_filter` | int | Polygon count after applying `detection_filters.min_confidence` / `min_size_m`. Equal to `n_polygons_stage1` only when **both** are null — which is **not** the current default: both live configs set `min_size_m: 1.4105` (`min_confidence` is null). |
+| `detection_filters` | obj | Snapshot of the **configured** `labeling.detection_filters` (`min_confidence`, `min_size_m`). ⚠ This is byte-identical across all 38 v2 sidecars, so it **cannot** tell you what basis a given image was actually labelled at — use `realised_label_basis` for that. |
+| `realised_label_basis` | obj | **The confidence floor these labels were actually built at, per image** (added 2026-08-06). `detection_filters` records the *configured* floor; this records the *realised* one — `realised_score_floor` is the minimum BoulderNet `score` surviving into the labels. For **36 of 38** v2 cohort images that is ~0.10; for `ESP_017355_2260` it is **0.617257** and for `ESP_068483_2280` **0.406699**, because those source `.shp` files are byte-truncated (R23). (The third truncated export, `ESP_046803_2325`, has no labels, hence 38 − 2 = 36.) Always present: `convention` (always `mixed_per_image_confidence_floor`), `temporary_pending`, `decision`, `realised_score_floor`, `score_max`, `score_p1`, `score_median`, `source_truncated` (True / False / **null when unknown — never read null as safe**), `stage1_provenance`. Present when the image is affected: `level_claims_unsafe`, `level_claims_note`, `source_missing_bytes`, `realised_floor_exceeds_expected_by`, `stage1_rank_truncation`, `stage1_dropped_fraction`. `level_claims_unsafe` is derived from the realised floor itself, so it does **not** require a Stage-1 re-run. See **DECISIONS 2026-08-06b**. |
 | `coreg_shift_applied` | bool | Whether the Stage 3 (dx, dy) was applied to polygons before rasterization |
 | `coreg_shift_m` | obj or null | `{dx, dy, magnitude}` in metres if `coreg_shift_applied` and Stage 3 cache exists |
 | `coreg_peak_correlation` | float or null | Stage 3 peak correlation when shift was applied |
@@ -196,6 +201,12 @@ any sub-tile ineligible at coarser scales) are dropped, not written as NaN.
 | `parquet_path` | str | Absolute path of the per-tile parquet (companion to this sidecar) |
 | `config_hash` | str | Provenance |
 | `written_at_iso` | str | When the parquet was written (UTC ISO) |
+
+> ⚠ **`source_integrity` and `null_geometry_basis` (Stage 1) and `realised_label_basis` (Stage 4)
+> are emitted from 2026-08-06 onward and appear in ZERO currently banked sidecars** — the live
+> `cache_v2` and `dataset_v2` trees predate them. Until Stage 1 / Stage 4 re-run, **absence of these
+> keys does not mean the source was checked and found clean.** Treat a missing key as *unknown*.
+> See **DECISIONS 2026-08-06b** and [PENDING_REBUILD.md](../docs/PENDING_REBUILD.md).
 
 ## Stage 4b — `dataset/features/`
 

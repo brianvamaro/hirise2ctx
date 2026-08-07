@@ -176,14 +176,37 @@ strategically important even though each item is more work.
   alone. Count-Poisson would only make sense **if the product itself is count-density**
   (Serrano hazard classes), not area-fraction.
 - **Reduce label noise.** The `min_confidence` BoulderNet `score` filter
-  ([CLAUDE.md §11]). **TESTED 2026-06-16 (`_diag_tier2_minconf_sweep.py`): HARMFUL,
-  ruled out.** Regenerating S=32 labels at `score ≥ {0.5, 0.7}` (Stage-4 regen,
-  cached inputs; baseline reproduced exactly, 0 key-misses) **monotonically degrades**
-  both ranking and dynamic range: conf≥0.5 paired Δ −0.021 (p=0.010); conf≥0.7
-  collapses the rich share 36 %→11 %, top_ratio 0.66→0.31, paired Δ −0.070 (p<0.001).
-  Low-confidence detections are **real boulders**, not removable noise — filtering
-  thins the target rather than cleaning it. (Noise-robust losses untried but
-  unmotivated given this.)
+  ([CLAUDE.md §11]). **TESTED 2026-06-16 (`_diag_tier2_minconf_sweep.py`)** →
+  **AMENDED 2026-08-06 (R56): the original "HARMFUL, monotonically degrading" verdict was a
+  two-factor comparison and does not survive.** The probe trained on labels regenerated at
+  `score ≥ t` *and* scored against those same regenerated labels, so its paired Wilcoxon varied
+  **both the predictor and the target**. Re-scored on the banked per-tile parquets against **one
+  common target** (the unfiltered `fractional_area`; 161,005 tiles × 38 images, keys row-aligned):
+  - **conf ≥ 0.5 is a null on every project metric** (paired per-image, n=38): `meaningful_auc`
+    Δ −0.0028 (15/38, p=0.31), `pr_auc@1e-2` −0.0007 (17/38, p=0.44), `precision@5%` 0.0000
+    (14/38, p=0.41), Spearman −0.0034 (17/38, p=0.43). Min p over nine metrics = 0.178.
+    Of the recorded −0.021 Spearman loss, **−0.017 (82 %) is the target moving**, not the model.
+    Precisely: a **bounded** null under the project's group-aware equal-per-image weighting
+    (95 % CI on mean Δ `meaningful_auc` [−0.0116, +0.0029]) — not a claim of exact zero. The
+    **pooled** `precision@5%` does fall −0.0143, which an image-clustered bootstrap distinguishes
+    from zero (p ≈ 0.03–0.04); the per-image basis is the one the project reports on.
+  - **conf ≥ 0.7 is directionally harmful** — `meaningful_auc` −0.0104 (p=0.014), `pr_auc`
+    −0.0068 (p=0.015), `precision@5%` −0.0096 (p=0.018) — but Spearman falls to p=0.061 and
+    **no metric survives Holm correction** across the nine (all adj. p ≈ 0.12).
+  - **"Degrades dynamic range" is a population artefact plus a missing calibrator.** `top_ratio`
+    was read at a fixed `fa > 1e-2` while the filter moved the rich share 36 %→27 %→11 %; at a
+    **matched 36 % top fraction** the sequence is 0.664 → 0.623 → 0.519, not 0.664 → 0.578 → 0.314
+    (53–59 % of the collapse is the population change). After the **shipped** quantile-match layer,
+    against the common target, `top_ratio` is **0.870 → 0.859 → 0.829** — essentially flat.
+  - **Not monotone even in the probe's own scorecard:** per-image ρ 0.4333 → **0.4563** → 0.3044.
+
+  What survives: filtering **thins** the target rather than cleaning it (the target factor is real
+  and significant on its own), so there is still no evidence filtering *helps*, and keeping
+  `min_confidence: null` remains defensible. What does **not** survive: "monotonically degrades",
+  "harmful at conf ≥ 0.5", and the causal claim that this proves low-confidence detections are real
+  boulders. **This ruling no longer forbids harmonising a confidence floor** — see R23. Note the
+  re-score covers 0.5 and 0.7 only; **0.6173 was never measured** and interpolates to 56–70 % of the
+  conf070 harm. (Noise-robust losses untried.)
 - **Better representation.** (a) Multi-scale embedding fusion (S=16/32/64) for more
   context to disambiguate high tiles; (b) a small **spatial head** over the 3×3
   embedding field (already partly present); (c) **ViT fine-tune** (LoRA/last block)
@@ -271,7 +294,7 @@ behind HL-Gauss and the L2 items unless they stall.
 | **0 DONE** | diagnose | `src/calibration.py`, notebook 23, scorecard | — |
 | **1 (next)** | L3 (+Tier-1) | bank a `CalibrationLayer` (isotonic Tier-1 + **global** quantile-match Tier-2), wire into `predict_window`/map as an **optional** step (raw toggle); ship for the **regional map**. Design resolved 2026-06-16 — see below. | low, no GPU |
 | **2 DONE** | L1 | **HL-Gauss + pinball + neural-ZILN bake-off** (`_diag_tier2_l1_bakeoff.py`): all a **WASH on ranking** vs `mlp_reg` (best = pinball.median, paired p=0.48). Keepers: pinball.P90 = raw tail-calibrated point (top_ratio 0.98); intervals under-dispersed (58 % vs 80 %). **L1 ruled out as a ranking lever.** | head re-train, ~10 min/head GPU |
-| **2b DONE** | L2 | **scale sweep** (`_diag_tier2_scale_sweep.py`) S=32→64: directional-up (paired +0.025, **p=0.19 n.s.**), partly easier-target. **`min_confidence` sweep** (`_diag_tier2_minconf_sweep.py`): **HARMFUL** — monotonically worse (conf≥0.7 paired Δ −0.070, p<0.001; rich share 36 %→11 %). S=128 still untested (needs P384 embed + 128-px grid). | cheap re-runs |
+| **2b DONE** | L2 | **scale sweep** (`_diag_tier2_scale_sweep.py`) S=32→64: directional-up (paired +0.025, **p=0.19 n.s.**), partly easier-target. **`min_confidence` sweep** (`_diag_tier2_minconf_sweep.py`): ~~**HARMFUL** — monotonically worse~~ **AMENDED 2026-08-06 (R56): two-factor comparison; on a common target conf≥0.5 is a NULL (min p=0.178, n=38) and conf≥0.7 is directionally harmful but does not survive Holm.** S=128 still untested (needs P384 embed + 128-px grid). | cheap re-runs |
 | **2c DONE** | L1+L2 | **LDS density reweighting** (`_diag_tier2_reweight.py`): **DOMINATED** — de-compresses raw (top 0.67→0.88) but costs ranking (paired p≈0.015); qmatch gives the marginal free. | small |
 | **3** | L4 | uncertainty product: intervals + coverage validation + map overlay | small |
 | **4** | — | freeze the Tier-2 head + calibrator into the deployable path; re-render docs §8; hand to THEMIS (W3) | — |
@@ -285,9 +308,12 @@ dedicated Tier-2 regressor** (per-image 0.437 vs 0.433; within-rich only 0.34) �
 *classifier* hits the same ~0.43 wall, so the wall is the data, not the head. **The L2/2c levers are now also exhausted (2026-06-16) and none beats `mlp_reg`:**
 coarser scale (S=64) is directional-only (paired +0.025, p=0.19); LDS reweighting is
 **dominated** (de-compresses raw, costs ranking p≈0.015); `min_confidence` filtering is
-**harmful** (monotonically worse, conf≥0.7 p<0.001). So **no in-cohort retraining lever
-moves the per-image ranking ceiling** — it is the 5 m/px CTX magnitude floor, confirmed
-five ways. **The path forward is not a better model:** ship **Stage 1** (productize
+~~**harmful** (monotonically worse, conf≥0.7 p<0.001)~~ **a null at conf≥0.5 on a common target
+(R56, amended 2026-08-06) — it neither helps nor hurts, so it is not evidence about the ceiling
+at all.** So **no in-cohort retraining lever moves the per-image ranking ceiling** — it is the
+5 m/px CTX magnitude floor, ~~confirmed five ways~~ **on the frozen Fang-ViT/GeM-96/S=32
+embedding; the "five ways" all hold that representation fixed (R55) and one of them (this row)
+has now been withdrawn as evidence.** **The path forward is not a better model:** ship **Stage 1** (productize
 qmatch + isotonic into the map — the marginal *is* fixable, the visible win) and pursue
 the **§2.3 expansion cohort** (the only thing that can raise the ranking ceiling — more
 data, more tail). L3 stays the product win (Tier-1 = isotonic, Tier-2 = quantile-match);
