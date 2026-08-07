@@ -6804,3 +6804,57 @@ parquets, so materialising them requires the Stage-4 re-run already in the rebui
 7 tests in `tests/test_labeling.py`, including one that pins the **sign** (north = decreasing row):
 flip it and the mask moves the wrong way, doubling the misalignment instead of removing it.
 Fast suite: **582 passed**, 21 deselected.
+
+## 2026-08-06q — R31 FIXED: a cropped window read can no longer be stamped with the un-cropped transform
+
+Audit step 5, Stage 2. `extract_ctx_window` built a rasterio `Window` from the requested bounds and
+then did `src.read(window=window)` — which silently **crops** an overhanging window to the dataset —
+while stamping the output with `src.window_transform(window)` on the **un-cropped** window. So a
+west/north overhang wrote real in-tile pixels carrying the overhang's coordinates.
+
+**Which directions are actually broken (measured on a synthetic 400×300 px tile, pixel value encoding
+its own row/col so the landed source pixel is recoverable):**
+
+| overhang | georeferencing error | also truncated? |
+|---|---|---|
+| **west** (300 px) | **−1500.0 m** | yes, 400 → 100 cols |
+| **north** (200 px) | **+1000.0 m** | yes, 400 → 200 rows |
+| east | 0.0 m — correct | yes, silently short |
+| south | 0.0 m — correct | yes, silently short |
+
+So west/north are **mis-georeferenced**; east/south are correctly georeferenced but silently *short* —
+missing tiles rather than wrong ones. This is also why the audit's "reconstructing bounds from array
+shape cannot repair west/north overhang" is right, and now with a mechanism: for west/north the shape
+is right and the **origin** is wrong, so shape × wrong-transform reproduces the falsified bounds
+exactly — which is precisely what `stage2_one_image` then filed as provenance.
+
+**Fix.** Clip once (`window.crop(src.height, src.width)` — note the argument order; `crop(width,
+height)` silently returns a different window) and derive **both** the read and the transform from the
+clipped window. Production **raises** on any overhang rather than writing a window that would be
+mis-georeferenced or short; a test-only `_allow_partial_tile` hatch exercises the corrected transform
+derivation, and a test asserts nothing in `src/` or `scripts/` ever passes it. Plus defence in depth in
+`stage2_one_image`: the written bounds must match the requested bounds to 1e-3 m (measured drift on all
+49 cached windows is < 1e-6 m).
+
+`crop` not `intersection`: measured, `intersection` raises rasterio's own `WindowError("Intersection is
+empty")` when the window is fully disjoint — exactly the "manifest names the wrong CTX_TileName" case —
+so the caller would get a generic message instead of the actionable one. `crop` returns a zero-size
+window and lets our raise fire.
+
+**Blast radius: none.** Re-derived read-only over every cached window: **cache_v2 39/39 pass, 0 would
+raise** — the fix is a genuine no-op for the v2 rebuild and no shipped v2 label is mis-georeferenced by
+R31. In v1, **9/10 pass and exactly one raises**: `ESP_057469_2215`, requested `col_off = −1924`
+(a 1,924 px = **9,620 m** west overhang) cropped to 204 columns — the register's number, reproduced.
+That image is already excluded, and v1 is superseded and not being rebuilt; a v1 Stage-2 re-run would
+now abort on it, which is the correct outcome for a window that was producing garbage.
+
+Worth keeping: the a-priori hazard is not small. Murray tiles are 237.1 × 237.1 km and the v2 windows
+are median 11.5 × 17.4 km, so for a uniformly placed centre P(overhang) ≈ 11.8 %; observed 1 in 49.
+Six of 39 v2 windows sit within 10 km of a tile edge and one within 2 km (`ESP_054134_2265`, 915 m
+west). And `hirise_coverage_fraction` is **not** a detector for a partial straddle — the v2 cohort
+spans 0.4665–0.6313, so a ~50/50 straddle lands inside the normal band. `ESP_057469_2215` was only
+visible at 0.001 because ~90 % of its footprint was outside the tile.
+
+15 tests in `tests/test_ctx_window_geometry.py` (the file previously never called `extract_ctx_window`
+at all), on a deliberately non-square synthetic tile so a `crop` argument swap cannot pass by symmetry.
+Fast suite: **591 passed**, 21 deselected.

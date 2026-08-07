@@ -152,3 +152,130 @@ def test_compute_window_bounds_accepts_list_transform():
     bounds_via_list = compute_window_bounds(gdf, 500.0, list_transform)
     bounds_via_affine = compute_window_bounds(gdf, 500.0, TILE_TRANSFORM)
     assert bounds_via_list == bounds_via_affine
+
+
+# ----------------------------------------------------------------------------
+# R31 — extract_ctx_window must not stamp a cropped read with the un-cropped
+# transform. Measured on a synthetic tile (DECISIONS 2026-08-06q): a 300 px west
+# overhang put the origin exactly 1500 m too far west and a 200 px north overhang
+# 1000 m too far north, while east/south overhang georeferenced correctly but
+# truncated silently. These use a real (tiny) GeoTIFF in a zip — no network, no
+# live root, ~40 ms.
+# ----------------------------------------------------------------------------
+import zipfile
+
+import numpy as np
+import rasterio
+
+from src.ctx_retrieve import extract_ctx_window
+
+# Deliberately NON-SQUARE so a crop(height, width) / crop(width, height) argument
+# swap cannot pass by symmetry.
+_TILE_H, _TILE_W = 300, 400
+
+
+def _make_tile_zip(tmp_path):
+    """A 400x300 px, 5 m/px tile whose pixel value encodes its own (row, col)."""
+    inner = "tile.tif"
+    tif = tmp_path / inner
+    rows, cols = np.mgrid[0:_TILE_H, 0:_TILE_W]
+    data = (rows * 1000 + cols).astype("uint32")
+    transform = Affine(PX, 0.0, TILE_ORIGIN_X, 0.0, -PX, TILE_ORIGIN_Y)
+    with rasterio.open(
+        tif, "w", driver="GTiff", height=_TILE_H, width=_TILE_W, count=1,
+        dtype="uint32", crs=TARGET_CRS, transform=transform,
+    ) as dst:
+        dst.write(data, 1)
+    zp = tmp_path / "tile.zip"
+    with zipfile.ZipFile(zp, "w") as zf:
+        zf.write(tif, inner)
+    return zp, inner
+
+
+def _bounds_px(c0, r0, w, h):
+    """Window in tile-pixel units -> world bounds (left, bottom, right, top)."""
+    return (
+        TILE_ORIGIN_X + c0 * PX,
+        TILE_ORIGIN_Y - (r0 + h) * PX,
+        TILE_ORIGIN_X + (c0 + w) * PX,
+        TILE_ORIGIN_Y - r0 * PX,
+    )
+
+
+def test_extract_ctx_window_is_exact_on_a_fully_interior_window(tmp_path):
+    zp, inner = _make_tile_zip(tmp_path)
+    out = extract_ctx_window(zp, inner, _bounds_px(50, 40, 100, 80), tmp_path / "w.tif")
+    with rasterio.open(out) as src:
+        assert (src.height, src.width) == (80, 100)
+        # The pixel at output (0,0) must be the source pixel the transform claims.
+        assert int(src.read(1)[0, 0]) == 40 * 1000 + 50
+        assert src.transform.c == pytest.approx(TILE_ORIGIN_X + 50 * PX)
+        assert src.transform.f == pytest.approx(TILE_ORIGIN_Y - 40 * PX)
+
+
+@pytest.mark.parametrize(
+    "name,c0,r0,w,h",
+    [
+        ("west", -300, 40, 400, 80),    # origin would be stamped 1500 m too far west
+        ("north", 50, -200, 100, 280),  # origin would be stamped 1000 m too far north
+        ("east", 350, 40, 300, 80),     # correct origin, silently short
+        ("south", 50, 250, 100, 300),   # correct origin, silently short
+        ("nw_corner", -200, -300, 400, 400),
+    ],
+)
+def test_extract_ctx_window_refuses_an_overhanging_window(tmp_path, name, c0, r0, w, h):
+    zp, inner = _make_tile_zip(tmp_path)
+    with pytest.raises(ValueError, match="overhangs the source raster"):
+        extract_ctx_window(zp, inner, _bounds_px(c0, r0, w, h), tmp_path / f"{name}.tif")
+
+
+def test_west_overhang_would_otherwise_be_misgeoreferenced(tmp_path):
+    """The defect itself, via the test-only escape hatch.
+
+    This is the assertion that pins the fix: with the clip allowed, the transform must
+    still describe the pixels actually written. Revert to `src.window_transform(window)`
+    on the un-cropped window and the origin lands 1500 m west of the truth, and this
+    fails.
+    """
+    zp, inner = _make_tile_zip(tmp_path)
+    out = extract_ctx_window(
+        zp, inner, _bounds_px(-300, 40, 400, 80), tmp_path / "w.tif",
+        _allow_partial_tile=True,
+    )
+    with rasterio.open(out) as src:
+        assert (src.height, src.width) == (80, 100)      # cropped 400 -> 100 cols
+        first = int(src.read(1)[0, 0])
+        assert first == 40 * 1000 + 0                    # source col 0 landed at output 0
+        # ...so the origin must be the tile's own left edge, NOT 300 px west of it.
+        assert src.transform.c == pytest.approx(TILE_ORIGIN_X)
+        assert src.transform.c != pytest.approx(TILE_ORIGIN_X - 300 * PX)
+
+
+def test_north_overhang_would_otherwise_be_misgeoreferenced(tmp_path):
+    zp, inner = _make_tile_zip(tmp_path)
+    out = extract_ctx_window(
+        zp, inner, _bounds_px(50, -200, 100, 280), tmp_path / "n.tif",
+        _allow_partial_tile=True,
+    )
+    with rasterio.open(out) as src:
+        assert (src.height, src.width) == (80, 100)      # cropped 280 -> 80 rows
+        assert int(src.read(1)[0, 0]) == 0 * 1000 + 50   # source row 0 landed at output 0
+        assert src.transform.f == pytest.approx(TILE_ORIGIN_Y)
+        assert src.transform.f != pytest.approx(TILE_ORIGIN_Y + 200 * PX)
+
+
+def test_production_never_passes_the_escape_hatch():
+    """`_allow_partial_tile` is test-only; nothing in src/ or scripts/ may set it."""
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1]
+    # Look for it being PASSED (`_allow_partial_tile=...`), not merely named — the
+    # parameter declaration and the docstring that warns about it both mention it.
+    hits = [
+        f"{p.relative_to(repo)}:{i}"
+        for d in ("src", "scripts")
+        for p in (repo / d).rglob("*.py")
+        for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
+        if "_allow_partial_tile=" in line and not line.lstrip().startswith("#")
+    ]
+    assert hits == [], f"production code sets the test-only escape hatch: {hits}"

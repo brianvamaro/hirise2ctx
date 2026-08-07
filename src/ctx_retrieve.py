@@ -407,6 +407,8 @@ def extract_ctx_window(
     inner_tif: str,
     bounds: tuple[float, float, float, float],
     out_path: str | Path,
+    *,
+    _allow_partial_tile: bool = False,
 ) -> Path:
     """Window-read `/vsizip/{zip_path}/{inner_tif}` to `bounds` and write a small GeoTIFF.
 
@@ -414,6 +416,11 @@ def extract_ctx_window(
     origin and shape change. The output is integer-pixel-aligned because `bounds` should
     already have been snapped via `_snap_bounds_to_pixel_grid` — this function additionally
     rounds the rasterio window object as a defense in depth.
+
+    Raises `ValueError` when the requested window overhangs the source tile (R31), because
+    the result would be either mis-georeferenced or silently short. `_allow_partial_tile`
+    is a **test-only** escape hatch that permits the cropped read; production must never
+    set it, and nothing in `src/` or `scripts/` does.
     """
     import rasterio
     from rasterio.windows import from_bounds
@@ -431,8 +438,29 @@ def extract_ctx_window(
         width = int(round(window.width))
         height = int(round(window.height))
         window = window.__class__(col_off=col_off, row_off=row_off, width=width, height=height)
-        data = src.read(window=window)
-        new_transform = src.window_transform(window)
+        # R31. `src.read(window=...)` silently CROPS an overhanging window to the dataset,
+        # but `src.window_transform(window)` on the *un-cropped* window keeps the negative
+        # offset -- so a west/north overhang writes real in-tile pixels stamped with the
+        # overhang's coordinates. Measured on a synthetic tile: a 300 px west overhang put
+        # the origin exactly 1500 m too far west; a 200 px north overhang 1000 m too far
+        # north. East/south overhang georeferences correctly but truncates silently --
+        # missing tiles rather than wrong ones. Rebuilding bounds from `data.shape` cannot
+        # repair west/north: the shape is right and the origin is wrong, so shape x
+        # wrong-transform reproduces the falsified bounds exactly, which is precisely what
+        # `stage2_one_image` then files as provenance. Clip once, and derive BOTH the read
+        # and the transform from the clipped window. See DECISIONS 2026-08-06q.
+        clipped = window.crop(src.height, src.width)  # NB crop(height, width), not (w, h)
+        if clipped != window and not _allow_partial_tile:
+            raise ValueError(
+                f"{out_path.name}: requested window {window} overhangs the source raster "
+                f"({src.width} x {src.height} px, {vsizip}); it would be cropped to "
+                f"{clipped}. Requested bounds = {tuple(bounds)}. The footprint spans more "
+                "than one Murray Lab tile, so this window would be mis-georeferenced "
+                "(west/north overhang) or silently short (east/south). Multi-tile "
+                "mosaicking is required -- refusing to write it."
+            )
+        data = src.read(window=clipped)
+        new_transform = src.window_transform(clipped)
         profile = src.profile.copy()
         # The source CTX mosaic tiles are stored as a single ~47420-px-wide internal TIFF
         # block; copying that block size into our small (~1500 px) output is invalid
@@ -697,6 +725,20 @@ def stage2_one_image(
         actual_transform = list(src.transform)[:6]
         actual_shape = [int(src.height), int(src.width)]
         actual_bounds = list(src.bounds)
+
+    # R31 defence in depth: the window we asked for must be the window we got. Before the
+    # clip guard above, an overhanging read was written with the un-cropped transform and
+    # this readback dutifully recorded the falsified bounds as provenance -- which is how
+    # v1's ESP_057469_2215 came to carry a 9,620 m west offset in its own sidecar. Measured
+    # drift across all 49 cached windows is < 1e-6 m, so 1e-3 m leaves three orders of
+    # margin for the float round-trip through the GeoTIFF header.
+    drift = max(abs(a - b) for a, b in zip(actual_bounds, bounds))
+    if drift > 1e-3:
+        raise ValueError(
+            f"{obs_id}: the written CTX window bounds {actual_bounds} differ from the "
+            f"requested {list(bounds)} by {drift:.3f} m. The read was cropped against "
+            f"Murray tile {murray_tile}, so this window's georeferencing cannot be trusted."
+        )
 
     # HiRISE coverage mask, aligned to the CTX window. Stage 4 must consume this to
     # avoid emitting "boulder absence" labels outside the HiRISE swath (or on the
