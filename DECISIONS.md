@@ -1209,10 +1209,16 @@ headless Stage 1 driver — Stage 1 had only ever been run from notebook 01).
   entry; `inspect_shapefile_integrity` now detects this at ingest.**
 
 **Filter decision (`detection_filters`).** Reprojected equivalent-circle diameters are
-large (pooled median 3.4 m, p5 ≈ 1.9 m) → **~0% below the `min_size_m=1.4105` floor**, so
-that filter is a no-op (kept, consistent with v1). Scores: 100% ≥ 0.2, 89% ≥ 0.3,
+large (pooled median 3.4 m, p5 ≈ 1.9 m) → ~~**~0% below the `min_size_m=1.4105` floor**, so
+that filter is a no-op~~ (kept, consistent with v1). Scores: 100% ≥ 0.2, 89% ≥ 0.3,
 52% ≥ 0.5 — `min_confidence` kept `null`. The denser set is *more* boulders, not
 *smaller*.
+**⚠ SUPERSEDED 2026-08-06s (R80): "the size filter is a no-op" is FALSE. The shipped
+Stage-4 sidecars record 19,757 polygons dropped by `min_size_m` across 12 images. The
+pooled p5 ≈ 1.9 m is dominated by the 26 coarse (0.50 m/px) images, where the filter
+genuinely is a no-op; on the 12 fine (0.25 m/px) images it drops 0.006–8.26 % each. That
+is R03's mechanism operating exactly where the record says nothing is happening, and it
+is why the mixed size floor is a real convention rather than an inert setting.**
 **⚠ CAVEAT 2026-08-06o (R58): those score percentages were computed over the PRE-drop
 population — i.e. including the rows the pipeline then deletes. On the post-drop
 population they read 100 / 97.4 / 77.1 %. The `min_confidence: null` decision is
