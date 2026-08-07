@@ -176,7 +176,11 @@ Before running slow tests or a rebuild:
      arm-specific head/calibration parameterization the "Product semantics" section requires.
    - ⬜ The runtime write guard is **test-only**. Scripts and notebooks are not covered by it, so the
      absolute-scratch-root discipline is the only control there.
-5. ⬜ Snapshot ignored caches, datasets, models, and reports separately before regeneration. Pushing git
+5. ⬜ Snapshot ignored caches, datasets, models, and reports separately before regeneration.
+   **Deferred 2026-08-06** pending an external drive; the interim reconstruction plan is
+   [ARTIFACT_RECOVERY.md](ARTIFACT_RECOVERY.md), which also records the ~30 GB that **no** plan can
+   reconstruct -- including the 4.18 GB of BoulderNet detections that live outside the repo and were
+   outside every artifact manifest taken during this review. Pushing git
    commits does not back up those artifacts, and hard links are not independent backups.
    Scale, measured 2026-08-06 (`Get-ChildItem -Recurse` does not follow the reparse points, so
    `cache_v2`'s figure excludes the archive subdirs it shares with `cache` by junction):

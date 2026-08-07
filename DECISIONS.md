@@ -6450,3 +6450,38 @@ Two things the run confirmed that only a real execution could:
 A producer invoked by hand from a notebook or a script against a repository root is unaffected by any
 of this. The controls there are the absolute-scratch-root recipe (asserted in
 `tests/test_artifact_isolation.py`) and, before the rebuild, criterion 5's backup.
+
+## 2026-08-06m — criterion 5 deferred to a drive; recovery plan written, and a gap it exposed
+
+Brian is getting an external drive, so the backup is deferred and
+[docs/ARTIFACT_RECOVERY.md](docs/ARTIFACT_RECOVERY.md) is the interim record: what could be
+re-downloaded, what could be regenerated, and what could not.
+
+**The gap the exercise exposed.** The BoulderNet detection shapefiles — the ground truth every label,
+model, metric and map in this project derives from — live *outside* the repo at
+`../hirise_priority10_detections` (0.01 GB) and `../hirise_40_vClaire` (**4.17 GB**), which means they
+were outside every artifact manifest taken during this entire review. All six roots I have been
+diffing before and after each test run are the *derived* trees. The irreplaceable input was never
+being watched.
+
+**Tiers, all measured:**
+
+- **Tier 0, ≈30 GB, unrecoverable.** The detections (4.18 GB); `dataset/` v1 (5.0 GB, explicitly
+  non-reproducible under current code — regenerating it destroys what R81 preserves); the F-programme
+  reports (20.2 GB from ~333 Sherlock CPU-h on a CLOSED programme, so the only surviving evidence for
+  the HARD ABORT); current figures and `map_region` (0.98 GB).
+- **Tier 1, ≈64 GB, re-downloadable.** CTX tile zips (41.4 GB, Murray Lab template in both configs,
+  and `ensure_tile_cached` rebuilds the sidecars from the zip header); HiRISE JP2s (19.8 GB, `JP2_URL`
+  column of the git-tracked manifests); MOLA/THEMIS (2.4 GB); craters; PDS index/labels. The one soft
+  spot is `models/pretrained` — the Fang ViT checkpoint's download URL is not recorded anywhere in the
+  repo.
+- **Tier 2, ≈84 GB, regenerable — with an asterisk.** Re-running today's code does not reproduce
+  today's artifacts: R74, R27, R28 and R97 all changed producer behaviour. Tier 2 recovers *a* dataset,
+  not *this* one. For any cited value, treat it as Tier 0.
+
+**Recommended stopgap, not yet executed:** ~11.3 GB of the small Tier-0 set (detections, `dataset/`,
+trained models, current figures) copied onto C:. A same-volume copy is not disaster protection, but it
+does defend against the failure that actually happened twice here — a producer silently overwriting a
+live artifact — and 600 GB is free.
+
+Criterion 5 stays **open**. A recovery plan is not a backup, and the rebuild must not start on one.
