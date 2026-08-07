@@ -30,6 +30,23 @@ PACKAGED_SUBDIR = "packaged"
 # is consumed by training code; src.dataset is consumed by the pipeline build).
 TILE_KEY_COLUMNS = ["obs_id", "scale_idx", "tile_size_px", "ti", "tj"]
 
+# Mirrors src.dataset.LABEL_COLUMNS + LABEL_CONTEXT_COLUMNS, duplicated for the same
+# reason. **R88.** Stage 5's `_split_columns` is the only thing keeping targets out of the
+# X parquets, and nothing downstream re-checked: dropping `label_cols` from its exclusion
+# set puts `fractional_area` straight into the feature matrix, and the result is a silent
+# perfect score — the single most misleading number this codebase could produce. This is
+# the second, independent filter. It raises rather than dropping, because a target in X
+# means the package is corrupt and quietly training on the remaining columns would hide
+# that. Verified 2026-08-06 against all 620 packaged X parquets under `dataset/` and
+# `dataset_v2/`: none carries any of these, so the check is a regression guard, not a
+# migration.
+FORBIDDEN_X_COLUMNS = frozenset({
+    "boulder_area", "boulder_count", "tile_area",
+    "fractional_area", "binary_by_area", "binary_by_count", "count_density",
+    "categorical",
+    "xmin", "ymin", "xmax", "ymax", "tile_size_m",
+})
+
 
 # ============================================================================
 # Fold loading
@@ -87,7 +104,17 @@ def _feature_columns(x_df: pd.DataFrame) -> list[str]:
     (`dataset/context_patches/{obs}_S{size}.npy`); they're not predictive features
     themselves, so we keep them out of the model's X matrix and surface them on the
     keys frame instead (see `_key_columns`).
+
+    Raises `ValueError` if the X frame carries a target or label-context column (R88).
     """
+    leaked = sorted(set(x_df.columns) & FORBIDDEN_X_COLUMNS)
+    if leaked:
+        raise ValueError(
+            f"R88: label column(s) {leaked} are present in a packaged X parquet. Training "
+            "on them would produce a silent perfect score. Stage 5's `_split_columns` is "
+            "supposed to route every LABEL_COLUMNS / LABEL_CONTEXT_COLUMNS entry to y; "
+            "re-package this scheme rather than filtering here."
+        )
     drop = set(TILE_KEY_COLUMNS) | {"config_hash_feat"}
     return [
         c for c in x_df.columns
@@ -140,6 +167,7 @@ def load_fold(
         groups_test = groups_test[test_mask]
 
     feat_cols = _feature_columns(x_train_df)
+    _feature_columns(x_test_df)  # R88: the test side is written separately -- check it too
     key_cols = _key_columns(x_train_df)
 
     X_train = x_train_df[feat_cols].to_numpy(dtype=np.float32, copy=False)

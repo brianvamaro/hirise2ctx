@@ -6130,3 +6130,40 @@ case ("Window origin exactly at mosaic origin"), and `test_alignment_offset_wind
 one.
 
 Fast suite green. The producers were not run: every test involved uses `tmp_path` and synthetic data.
+
+## 2026-08-06d — R87/R88 CLOSED: the two catastrophic-regression guards, mutation-verified
+
+Both findings were about *absent guards*, not live wrong numbers, and both checked out clean before
+the guards went in — recorded explicitly so nobody later reads "R87 fixed" as "the splits were broken":
+
+- production splitting is group-aware and the v2 LOIO splits cannot drift (labeling-deep-artifact);
+- **all 620** packaged `X_*.parquet` files under `dataset/` and `dataset_v2/` carry **zero** label
+  columns (read-only scan against `LABEL_COLUMNS ∪ LABEL_CONTEXT_COLUMNS`).
+
+**R87.** Every packaging assertion was a row count or a length, so nothing checked *which* ObsIds
+landed in a fold. Now `test_packaged_folds_contain_exactly_the_split_obs_ids` asserts per-fold `obs_id`
+set membership in all four parquets *and* in `groups_*.npy`, train/test disjointness, and
+held-out-exactly-once across the scheme; `test_within_image_packaged_folds_contain_exactly_the_expected_tiles`
+does the same for the (image, quadrant) arm on exact tile-key sets.
+
+**R88.** Two halves, because one was not enough. Stage-5 side: the emitted X and y column sets are now
+pinned exactly, per fold and per side. Loader side: `src/modeling/loaders.py::_feature_columns` gained
+a `FORBIDDEN_X_COLUMNS` check on both the train and the test parquet. **It raises rather than
+filtering** — a target in X means the package is corrupt, and quietly training on the rest would hide
+the packaging bug that put it there.
+
+Mutation verification, four mutants on independent scratch copies (working-tree `src/` never touched);
+every one of them left the pre-existing suite green:
+
+| mutant | now fails |
+|---|---|
+| LOIO `package_split` → random per-tile re-split, counts preserved | `test_packaged_folds_contain_exactly_the_split_obs_ids` |
+| within-image → random per-tile re-split | `test_within_image_packaged_folds_contain_exactly_the_expected_tiles` |
+| within-image → train rows from the **wrong image** | `test_within_image_packaged_folds_contain_exactly_the_expected_tiles` |
+| `_split_columns` → drop `label_cols` from the exclusion set | `test_packaged_x_columns_are_exactly_the_expected_feature_set` + the within-image column guard |
+
+Plus a data-side mutant: splicing `fractional_area` / `boulder_count` / `tile_size_m` into a packaged
+X parquet now makes `load_fold` raise.
+
+**No artifact impact.** The loader change is a read-side assertion that passes on every existing
+package, so nothing enters `docs/PENDING_REBUILD.md`.

@@ -15,6 +15,8 @@ import pandas as pd
 import pytest
 
 from src.dataset import (
+    LABEL_COLUMNS,
+    LABEL_CONTEXT_COLUMNS,
     LABELS_SUBDIR,
     PACKAGED_SUBDIR,
     SPLITS_SUBDIR,
@@ -264,6 +266,109 @@ def test_package_split_round_trip(tmp_path):
     loaded = load_package_metadata("loio_4fold", out_dir)
     assert loaded["name"] == "loio_4fold"
     assert loaded["split_hash"] == meta["split_hash"]
+
+
+def test_packaged_folds_contain_exactly_the_split_obs_ids(tmp_path):
+    """R87. Every packaging assertion here used to be a row count or a length, so nothing
+    checked *which* ObsIds land in each fold. Demonstrated by mutation: a fallback to a
+    random per-tile split put all 4 fixture images in both train and test while
+    `n_test/n_train` stayed exactly 10/30, and the suite stayed green — an invariant-6
+    violation that would invalidate every number the project reports.
+
+    The v2 LOIO splits are correct today (labeling-deep-artifact); this is the missing
+    catastrophic-regression guard, not evidence of a live defect.
+    """
+    obs_labels = {f"OBS_{i:03d}": "Boulder rich" for i in range(4)}
+    labels_dir, features_dir = _write_synthetic_image_parquets(
+        tmp_path, sorted(obs_labels), n_tiles_per_image=10,
+    )
+    manifest = _synthetic_manifest(obs_labels)
+    inv = build_image_inventory(sorted(obs_labels), manifest, labels_dir)
+    meta = build_split(name="loio_4fold", n_folds=4, stratification="none",
+                       seed=0, inventory=inv, config_hash="test")
+    out_dir = tmp_path / "out"
+    pkg = package_split(meta, labels_dir=labels_dir, features_dir=features_dir,
+                        output_dir=out_dir, emit_all_parquet=True, config_hash="test")
+    pdir = out_dir / PACKAGED_SUBDIR / "loio_4fold"
+    obs_to_int = pkg["obs_to_int"]
+
+    for fold in meta["folds"]:
+        k = fold["fold_idx"]
+        expect_test = set(fold["test_obs_ids"])
+        expect_train = set(fold["train_obs_ids"])
+        assert expect_test and expect_train, "fixture must exercise a non-degenerate fold"
+        assert not (expect_test & expect_train), "the split itself leaks"
+
+        for side, expected in (("test", expect_test), ("train", expect_train)):
+            for matrix in ("X", "y"):
+                got = set(pd.read_parquet(pdir / f"{matrix}_{side}_fold{k}.parquet")["obs_id"])
+                assert got == expected, (
+                    f"{matrix}_{side}_fold{k}: obs_id membership {sorted(got)} != "
+                    f"{sorted(expected)}"
+                )
+            # groups_*.npy is what the model actually groups on -- it must agree.
+            groups = np.load(pdir / f"groups_{side}_fold{k}.npy")
+            assert set(groups.tolist()) == {obs_to_int[o] for o in expected}
+
+        x_train_obs = set(pd.read_parquet(pdir / f"X_train_fold{k}.parquet")["obs_id"])
+        x_test_obs = set(pd.read_parquet(pdir / f"X_test_fold{k}.parquet")["obs_id"])
+        assert not (x_train_obs & x_test_obs), (
+            f"fold {k}: {sorted(x_train_obs & x_test_obs)} appear in BOTH packaged train "
+            "and test — this is the group leak that invalidates every reported number"
+        )
+
+    # Across the scheme, each image is held out exactly once.
+    held_out = [o for f in meta["folds"] for o in f["test_obs_ids"]]
+    assert sorted(held_out) == sorted(obs_labels)
+
+
+def test_packaged_x_columns_are_exactly_the_expected_feature_set(tmp_path):
+    """R88. The X/y column split was unpinned: dropping `label_cols` from
+    `_split_columns`' exclusion set puts `fractional_area` into the feature matrix and the
+    suite stays green. That is a silent perfect-score leak, so pin the emitted set
+    explicitly rather than counting columns.
+    """
+    obs_labels = {f"OBS_{i:03d}": "Boulder rich" for i in range(3)}
+    labels_dir, features_dir = _write_synthetic_image_parquets(
+        tmp_path, sorted(obs_labels), n_tiles_per_image=6,
+    )
+    manifest = _synthetic_manifest(obs_labels)
+    inv = build_image_inventory(sorted(obs_labels), manifest, labels_dir)
+    meta = build_split(name="loio_3", n_folds=3, stratification="none",
+                       seed=0, inventory=inv, config_hash="test")
+    out_dir = tmp_path / "out"
+    package_split(meta, labels_dir=labels_dir, features_dir=features_dir,
+                  output_dir=out_dir, emit_all_parquet=False, config_hash="test")
+    pdir = out_dir / PACKAGED_SUBDIR / "loio_3"
+
+    # The synthetic fixture emits exactly two feature columns beside the tile keys.
+    expected_x = set(TILE_KEY_COLUMNS) | {"intensity_mean", "shadow_fraction", "config_hash_feat"}
+    expected_y = set(TILE_KEY_COLUMNS) | {
+        "boulder_area", "boulder_count", "tile_area", "fractional_area",
+        "binary_by_area", "binary_by_count", "count_density",
+        "xmin", "ymin", "xmax", "ymax", "tile_size_m",
+    }
+    forbidden = (set(LABEL_COLUMNS) | set(LABEL_CONTEXT_COLUMNS)) - set(TILE_KEY_COLUMNS)
+    # `categorical` is emitted only when `labeling.categorical_bins` is non-empty, so the
+    # y-side completeness check is against the labels actually present upstream.
+    source_labels = set(pd.read_parquet(labels_dir / f"{sorted(obs_labels)[0]}.parquet").columns)
+    assert forbidden - source_labels == {"categorical"}, (
+        "fixture drifted from LABEL_COLUMNS; update it rather than relaxing the check"
+    )
+
+    for side in ("train", "test"):
+        for k in range(3):
+            x_cols = set(pd.read_parquet(pdir / f"X_{side}_fold{k}.parquet").columns)
+            y_cols = set(pd.read_parquet(pdir / f"y_{side}_fold{k}.parquet").columns)
+            assert x_cols == expected_x, (
+                f"X_{side}_fold{k} columns drifted: unexpected {sorted(x_cols - expected_x)}, "
+                f"missing {sorted(expected_x - x_cols)}"
+            )
+            assert y_cols == expected_y
+            leaked = x_cols & forbidden
+            assert not leaked, f"X_{side}_fold{k} carries target column(s) {sorted(leaked)}"
+            # ...and every label the joined frame actually had really did reach y.
+            assert (forbidden & source_labels) <= y_cols
 
 
 def test_package_emits_all_parquet_when_enabled(tmp_path):

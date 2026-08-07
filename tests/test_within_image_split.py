@@ -20,6 +20,8 @@ import pytest
 
 from src.dataset import (
     EMPTY_TRUTH_OBS_ID,
+    LABEL_COLUMNS,
+    LABEL_CONTEXT_COLUMNS,
     LABELS_SUBDIR,
     PACKAGED_SUBDIR,
     SPLITS_SUBDIR,
@@ -453,6 +455,73 @@ def test_within_image_groups_have_3_unique_train_codes_per_fold(tmp_path):
         assert len(unique_train) == 3, f"fold {k} ({obs}): unique_train={unique_train}"
         assert len(unique_test) == 1, f"fold {k} ({obs}): unique_test={unique_test}"
         assert not (unique_train & unique_test), f"fold {k} ({obs}): train/test code collision"
+
+
+def test_within_image_packaged_folds_contain_exactly_the_expected_tiles(tmp_path):
+    """R87, within-image arm. `test_within_image_groups_*` pins the quadrant *codes*, and
+    everything else here is a row count — so nothing checked which tiles actually landed
+    in each packaged parquet. A fallback to a random per-tile split would keep every count
+    intact and stay green.
+
+    For this scheme the fold identity is (image, quadrant): every row of fold k must come
+    from that fold's own image, test rows are exactly its test quadrant, train rows are
+    exactly the other three, and the two tile-key sets must be disjoint.
+    """
+    meta, _, labels_dir, features_dir = _build_within_image_meta(tmp_path, n_images=3)
+    out_dir = tmp_path / "out"
+    package_split(
+        meta, labels_dir=labels_dir, features_dir=features_dir,
+        output_dir=out_dir, emit_all_parquet=False, config_hash="test",
+    )
+    pdir = out_dir / PACKAGED_SUBDIR / "within_image_4fold"
+
+    def keyset(df):
+        return set(map(tuple, df[TILE_KEY_COLUMNS].itertuples(index=False, name=None)))
+
+    for fold in meta["folds"]:
+        k = int(fold["fold_idx"])
+        obs = fold["test_obs_id"]
+        test_q = int(fold["test_quadrant"])
+
+        # Recompute the expected partition straight from the persisted definitions.
+        labels = pd.read_parquet(labels_dir / f"{obs}.parquet")
+        feats = pd.read_parquet(features_dir / f"{obs}.parquet")
+        joined = labels.merge(feats, on=TILE_KEY_COLUMNS, suffixes=("", "_feat"))
+        q_arr, keep = _quadrant_array_for_image(joined, fold["quadrant_definitions"], buffer_tiles=0)
+        expect_test = keyset(joined[(q_arr == test_q) & keep])
+        expect_train = keyset(joined[(q_arr != test_q) & (q_arr >= 0) & keep])
+        assert expect_test and expect_train, "fixture must exercise a non-degenerate fold"
+
+        x_test = pd.read_parquet(pdir / f"X_test_fold{k}.parquet")
+        x_train = pd.read_parquet(pdir / f"X_train_fold{k}.parquet")
+        assert keyset(x_test) == expect_test, f"fold {k} ({obs} q{test_q}): test tiles differ"
+        assert keyset(x_train) == expect_train, f"fold {k} ({obs} q{test_q}): train tiles differ"
+        assert not (keyset(x_train) & keyset(x_test)), (
+            f"fold {k}: a tile is in BOTH packaged train and test"
+        )
+        # Every row belongs to this fold's image -- a cross-image mix would still count right.
+        assert set(x_train["obs_id"]) == {obs} and set(x_test["obs_id"]) == {obs}
+        # y must carry the same tiles, in the same order, as X.
+        for side, x in (("train", x_train), ("test", x_test)):
+            y = pd.read_parquet(pdir / f"y_{side}_fold{k}.parquet")
+            pd.testing.assert_frame_equal(x[TILE_KEY_COLUMNS], y[TILE_KEY_COLUMNS])
+
+
+def test_within_image_packaged_x_never_carries_a_label_column(tmp_path):
+    """R88, within-image arm: `_package_within_image_split` shares `_split_columns`."""
+    meta, _, labels_dir, features_dir = _build_within_image_meta(tmp_path, n_images=1)
+    out_dir = tmp_path / "out"
+    package_split(
+        meta, labels_dir=labels_dir, features_dir=features_dir,
+        output_dir=out_dir, emit_all_parquet=False, config_hash="test",
+    )
+    pdir = out_dir / PACKAGED_SUBDIR / "within_image_4fold"
+    forbidden = (set(LABEL_COLUMNS) | set(LABEL_CONTEXT_COLUMNS)) - set(TILE_KEY_COLUMNS)
+    for k in range(meta["n_folds"]):
+        for side in ("train", "test"):
+            cols = set(pd.read_parquet(pdir / f"X_{side}_fold{k}.parquet").columns)
+            leaked = cols & forbidden
+            assert not leaked, f"X_{side}_fold{k} carries target column(s) {sorted(leaked)}"
 
 
 def test_within_image_packaged_test_tile_counts_match_metadata(tmp_path):

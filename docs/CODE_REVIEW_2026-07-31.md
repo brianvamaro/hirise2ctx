@@ -2262,7 +2262,7 @@ of collapsing 8 of 9 real images into one quadrant. Fix the fixtures and much of
 starts working. See **R78** (the (0,0) mosaic origin, now in three suites) and **R91**.
 
 ### R87 — A `package_split` fallback to a random per-tile split leaves the test suite fully green
-- **Status:** OPEN · **Severity:** high · **Liveness:** live-shipped (the guard is absent; the splitter itself is correct today) · **Verified:** no (demonstrated by mutation)
+- **Status:** **FIXED 2026-08-06 (guard added, three mutants killed).** `test_packaged_folds_contain_exactly_the_split_obs_ids` asserts per-fold `obs_id` set membership in all four packaged parquets *and* in `groups_*.npy`, plus train/test disjointness and hold-out-exactly-once across the scheme. `test_within_image_packaged_folds_contain_exactly_the_expected_tiles` does the same for the (image, quadrant) arm on exact tile-key sets. Killed on scratch copies: **(i)** LOIO random per-tile re-split with counts preserved, **(ii)** within-image random per-tile re-split, **(iii)** within-image train rows taken from the *wrong image*. Each left every pre-existing assertion green, which is exactly the review's point. · **Severity:** high · **Liveness:** live-shipped (the guard was absent; the splitter itself is correct today) · **Verified:** **yes — by mutation**
 - **Detail:** [tests-deep-splits.md](review_2026-07-31/tests-deep-splits.md) `-1`
 
 This is the exact **invariant-6** violation — the one whose occurrence would invalidate every number the
@@ -2275,7 +2275,7 @@ cannot drift. This finding is about the **absence of a regression guard**, not a
 - **Fix:** assert set membership of `obs_id` per fold in the packaged parquets, not just row counts.
 
 ### R88 — The X/y column split is unpinned, so a label column entering the feature matrix would be silent
-- **Status:** OPEN · **Severity:** high · **Liveness:** live-shipped (guard absent) · **Verified:** no (demonstrated by mutation)
+- **Status:** **FIXED 2026-08-06 (both halves of the fix, mutant killed).** Stage-5 side: `test_packaged_x_columns_are_exactly_the_expected_feature_set` pins the emitted X and y column sets exactly (not counted), for train and test, on every fold; `test_within_image_packaged_x_never_carries_a_label_column` covers the shared `_split_columns` on the within-image arm. Loader side: `src/modeling/loaders.py::_feature_columns` now **raises** on any `FORBIDDEN_X_COLUMNS` member, checked on both the train and test parquet — it raises rather than filtering, because a target in X means the package is corrupt and silently dropping it would hide that. Dropping `label_cols` from `_split_columns`' exclusion set on a scratch copy now fails two tests; splicing a label into a packaged X now fails `load_fold`. Verified read-only over **all 620 packaged X parquets** in `dataset/` and `dataset_v2/`: none carries a label column, so this is a regression guard, not a migration. · **Severity:** high · **Liveness:** live-shipped (guard was absent) · **Verified:** **yes — by mutation**
 - **Detail:** [tests-deep-splits.md](review_2026-07-31/tests-deep-splits.md) `-2`
 
 Dropping `label_cols` from `_split_columns`' exclusion set puts `fractional_area` into the feature

@@ -130,6 +130,44 @@ def test_load_fold_returns_separated_X_y_groups(tmp_path):
     assert 0 not in set(np.unique(fold.groups_train).tolist())
 
 
+@pytest.mark.parametrize("leaked_col,side", [
+    ("fractional_area", "train"),
+    ("boulder_count", "train"),
+    ("tile_size_m", "test"),
+])
+def test_load_fold_refuses_a_packaged_x_carrying_a_label_column(tmp_path, leaked_col, side):
+    """R88. Stage 5's `_split_columns` is the only thing keeping targets out of X, and
+    `_feature_columns` had no second filter — so a label reaching the feature matrix was a
+    silent perfect score, the most misleading result this codebase could produce.
+
+    Verified 2026-08-06 that all 620 packaged X parquets under `dataset/` and
+    `dataset_v2/` are clean, so this is a regression guard, not a migration.
+    """
+    obs_ids = [f"OBS_{i}" for i in range(3)]
+    dataset_dir = _write_synthetic_package(tmp_path, obs_ids=obs_ids, n_folds=3)
+    pdir = dataset_dir / "packaged" / "test_scheme"
+
+    # Splice the label column out of y and into X, exactly as a `_split_columns`
+    # regression would.
+    x_path = pdir / f"X_{side}_fold0.parquet"
+    x = pd.read_parquet(x_path)
+    y = pd.read_parquet(pdir / f"y_{side}_fold0.parquet")
+    x[leaked_col] = y[leaked_col].to_numpy()
+    x.to_parquet(x_path, index=False)
+
+    with pytest.raises(ValueError, match=f"R88.*{leaked_col}"):
+        L.load_fold("test_scheme", 0, scale_idx=0, dataset_dir=dataset_dir)
+
+
+def test_load_fold_accepts_a_clean_package(tmp_path):
+    """The R88 guard must not fire on a well-formed package (it is checked on both the
+    train and the test parquet, which are written separately)."""
+    obs_ids = [f"OBS_{i}" for i in range(3)]
+    dataset_dir = _write_synthetic_package(tmp_path, obs_ids=obs_ids, n_folds=3)
+    fold = L.load_fold("test_scheme", 0, scale_idx=0, dataset_dir=dataset_dir)
+    assert not (set(fold.feature_names) & L.FORBIDDEN_X_COLUMNS)
+
+
 def test_scale_filter_subsets_rows(tmp_path):
     obs_ids = [f"OBS_{i}" for i in range(2)]
     dataset_dir = _write_synthetic_package(
