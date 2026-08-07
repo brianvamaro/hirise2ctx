@@ -6167,3 +6167,42 @@ X parquet now makes `load_fold` raise.
 
 **No artifact impact.** The loader change is a read-side assertion that passes on every existing
 package, so nothing enters `docs/PENDING_REBUILD.md`.
+
+## 2026-08-06e — R27 fixed; R28 half-fixed, and both cited numbers checked against the data
+
+Both were unverified in the register. Reproduced read-only against `dataset_v2` before touching
+anything — no producer was called.
+
+**R27 — CONFIRMED EXACTLY AS FILED, code fixed, rebuild pending.** 42,015 of 198,320 S ≥ 32 rows have
+`lacunarity_shadow_b2` (and `_b4`) exactly `0.0`; **every one** has `shadow_fraction == 0`; the
+smallest non-zero value is exactly `1.0`; **nothing** falls in `(0, 1)`. Lacunarity is ≥ 1 by
+Cauchy–Schwarz, so `0.0` is unambiguously a sentinel. `_lacunarity_per_tile` now leaves the NaN
+prefill in place for `M1 == 0`.
+
+The downstream number needed correcting: the register said "12.6 % of one `features_nbr` file's
+rows". Measured over all 38 `features_nbr_s5` files, the pooled share of `nbr_mean_lacunarity_*` in the
+impossible interval `(0, 1)` is **2.16 %**, and the worst image is **`ESP_068402_2240` at 16.7 %**
+(`ESP_076499_1160` is 13.2 %, which is presumably what the register saw). Mechanism confirmed, blast
+radius per-image rather than uniform.
+
+**R28 — mechanism CONFIRMED and stronger than filed; half the fix landed, half is Brian's call.**
+skimage 0.26 maps `low_threshold=None` to the constant `0.1` and, with `use_quantiles=False`, applies
+it as an **absolute** gradient magnitude. Measured: per-image `edge_density` vs `intensity_std` is
+Spearman **ρ = 0.965** over the 38 images (register said 0.894 — different aggregation), a **12.2×**
+cohort spread, **33.8 %** of `ESP_068402_2240`'s S=64 tiles with zero edge pixels. The cleanest
+demonstration is synthetic: cut the DN spread ~3× and edge density goes 0.345 → 0.0026 (**×0.01**);
+under quantile thresholds the same change gives **×1.00**.
+
+Landed: `use_quantiles` is now a config key, `_compute_canny_window` raises if it is enabled without
+explicit percentile thresholds, and the false comment ("None -> skimage chooses from gradient
+magnitude") is gone from both configs and the data dictionary. **The default is deliberately
+unchanged** — picking the quantile pair is a science decision that changes every `edge_*` value and
+every number computed from one, so it is Brian's, not mine. Asked; tracked as PENDING_REBUILD row 3.
+
+**A trap worth not rediscovering:** writing the current default into the config as `low_threshold: 0.1`
+would *not* preserve behaviour. skimage maps `None` to 0.1 directly but divides an *explicit* threshold
+by `dtype_max`, so on a uint8 window it becomes 0.1/255 — which passes nearly every gradient (density
+0.345 → 0.384) and is contrast-invariant for entirely the wrong reason. There is a regression test
+pinning the two as different.
+
+Six new tests. Fast suite green; nothing regenerated.

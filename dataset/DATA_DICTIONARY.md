@@ -281,7 +281,17 @@ clustered/gappy.
 
 | Column | Type | Meaning |
 |---|---|---|
-| `lacunarity_shadow_b2`, `lacunarity_shadow_b4` | float | Lacunarity at gliding-box sizes 2 and 4 CTX pixels |
+| `lacunarity_shadow_b2`, `lacunarity_shadow_b4` | float | Lacunarity at gliding-box sizes 2 and 4 CTX pixels. **NaN when the tile has no shadow pixels** — there is no gliding-box statistic to compute, and lacunarity is ≥ 1 by Cauchy–Schwarz, so no in-range value can encode "not computable" |
+
+> **R28 / 2026-08-06.** Tiles with `shadow_fraction == 0` used to emit **`0.0`**, an
+> out-of-range sentinel: 42,015 of 198,320 S ≥ 32 rows in `dataset_v2/features/`, every one
+> with `shadow_fraction == 0`, smallest non-zero value exactly 1.0, and nothing in `(0, 1)`.
+> Stage 6a's neighbour aggregation is NaN-aware but not sentinel-aware, so it averaged the
+> sentinel in with real measurements: **2.16 %** of `nbr_mean_lacunarity_*` rows pooled
+> (worst image `ESP_068402_2240` at **16.7 %**) sit in the impossible interval `(0, 1)`.
+> The producer now emits NaN. **`dataset_v2/features/**` and every `features_nbr_*` derived
+> from it still carry the old sentinel** until the batched rebuild — see
+> [docs/PENDING_REBUILD.md](../docs/PENDING_REBUILD.md).
 
 **Subtile variance** — 1 column, S ≥ 16 only (NaN at S=8)
 
@@ -294,8 +304,19 @@ internal heterogeneity that single-tile std misses. Free given the nested ×2 la
 
 **Canny edges** — 2 columns, S ≥ 16 only (NaN at S=8)
 
-Canny edges computed once over the full CTX window (`sigma=1.0`, skimage-default
-thresholds). Per-tile reductions:
+Canny edges computed once over the full CTX window (`sigma=1.0`). Per-tile reductions:
+
+> **R28 / 2026-08-06 — read this before using `edge_*` for science.** "skimage-default
+> thresholds" means the **absolute constants 0.1 / 0.2** on the `img_as_float` image, *not*
+> thresholds derived from this image's gradient distribution (`config.yaml` used to claim
+> the opposite). So `edge_density` partly measures how much radiometric contrast the CTX
+> frame happens to have: across the 38-image cohort, per-image `edge_density` tracks
+> per-image `intensity_std` at Spearman **ρ = 0.965** with a **12.2×** spread, and
+> **33.8 %** of `ESP_068402_2240`'s S = 64 tiles have zero Canny edge pixels. On a synthetic
+> scene, cutting the DN spread ~3× collapses edge density 100-fold. `canny_edges.use_quantiles`
+> now exists to make the thresholds distribution-derived; it is **off** in the shipped
+> configs pending a decision on the quantile pair, so every `edge_*` value in
+> `dataset*/features/**` is the absolute-threshold version.
 
 | Column | Type | Meaning |
 |---|---|---|

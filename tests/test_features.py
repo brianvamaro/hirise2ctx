@@ -23,6 +23,7 @@ from rasterio.transform import Affine
 from src.features import (
     DEFAULT_FEATURES_CFG,
     FEATURES_SUBDIR,
+    _compute_canny_window,
     _compute_dn_thresholds,
     _glcm_per_tile,
     _gradient_stats_per_tile,
@@ -397,6 +398,113 @@ def test_lacunarity_on_clumped_shadow_mask_above_one():
     )
     assert out["lacunarity_shadow_b2"][0] > 1.0
     assert out["lacunarity_shadow_b4"][0] > 1.0
+
+
+def test_lacunarity_is_nan_not_zero_when_a_tile_has_no_shadow():
+    """R27. A shadow-free tile has no gliding-box statistic, so it must be NaN — the same
+    "not computable" convention every other Stage 4b column uses.
+
+    It used to emit `0.0`, which lacunarity can never take (L >= 1 by Cauchy–Schwarz), so
+    the value was an out-of-range sentinel: 42,015 of 198,320 S >= 32 rows in
+    `dataset_v2/features/`, every one with `shadow_fraction == 0`, smallest non-zero value
+    exactly 1.0, nothing in (0, 1). Stage 6a's aggregation is NaN-aware but not
+    sentinel-aware, so it averaged the sentinel with real measurements and put 2.16 % of
+    `nbr_mean_lacunarity_*` rows (16.7 % for ESP_068402_2240) inside the impossible
+    interval (0, 1). A split can drop a 0.0 in the base column; nothing can undo an average.
+    """
+    mask = np.zeros((32, 32), dtype=np.uint8)  # no shadow anywhere
+    out = _lacunarity_per_tile(
+        mask, r_win=np.array([0]), c_win=np.array([0]), S=32, box_sizes=[2, 4],
+    )
+    for col in ("lacunarity_shadow_b2", "lacunarity_shadow_b4"):
+        v = out[col][0]
+        assert np.isnan(v), f"{col} = {v!r}; a shadow-free tile must be NaN, not a sentinel"
+
+
+def test_lacunarity_never_emits_a_value_below_one():
+    """The range property that makes 0.0 detectable as a sentinel, pinned directly."""
+    rng = np.random.default_rng(3)
+    for density in (0.0, 0.01, 0.2, 0.5, 1.0):
+        mask = (rng.random((64, 64)) < density).astype(np.uint8)
+        out = _lacunarity_per_tile(
+            mask, r_win=np.array([0, 32]), c_win=np.array([0, 32]), S=32, box_sizes=[2, 4],
+        )
+        for col, vals in out.items():
+            finite = vals[np.isfinite(vals)]
+            assert (finite >= 1.0 - 1e-12).all(), (
+                f"{col} at density {density}: {finite.min()} < 1, which lacunarity cannot be"
+            )
+
+
+# ============================================================================
+# Canny thresholds (R28)
+# ============================================================================
+
+def _contrast_pair():
+    """The same synthetic scene at two radiometric gains."""
+    rng = np.random.default_rng(0)
+    high = rng.normal(120, 25, (256, 256)).clip(0, 255).astype(np.uint8)
+    high[:, 128:] = np.clip(high[:, 128:].astype(int) + 40, 0, 255).astype(np.uint8)
+    low = (high.astype(np.float64) * 0.35 + 60).astype(np.uint8)
+    return high, low
+
+
+def test_default_canny_thresholds_are_absolute_and_track_frame_contrast():
+    """R28, the mechanism. This pins the *current, shipped* behaviour as a defect, not as
+    an invariant: with `use_quantiles=False` and null thresholds, skimage applies absolute
+    constants, so edge density is a function of how much contrast the frame happens to have.
+
+    Cohort evidence (read-only, 2026-08-06): per-image `edge_density` tracks per-image
+    `intensity_std` at Spearman rho = 0.965 over the 38 images, 12.2x spread, and 33.8 % of
+    `ESP_068402_2240`'s S=64 tiles have zero Canny edge pixels. Same failure mode the
+    project already found and fixed for `shadow_fraction` (DECISIONS 2026-06-10).
+    """
+    high, low = _contrast_pair()
+    cfg = dict(DEFAULT_FEATURES_CFG["canny_edges"])
+    d_high = _compute_canny_window(high, cfg).mean()
+    d_low = _compute_canny_window(low, cfg).mean()
+    assert d_low < 0.1 * d_high, (
+        "the absolute-threshold defect no longer reproduces; if the default changed, move "
+        "this assertion to the quantile test and update DATA_DICTIONARY + PENDING_REBUILD"
+    )
+
+
+def test_quantile_canny_thresholds_are_contrast_invariant():
+    """R28, the fix. Percentiles of the frame's own gradient magnitude do not move when the
+    gain does."""
+    high, low = _contrast_pair()
+    cfg = dict(DEFAULT_FEATURES_CFG["canny_edges"])
+    cfg.update(use_quantiles=True, low_threshold=0.8, high_threshold=0.9)
+    d_high = _compute_canny_window(high, cfg).mean()
+    d_low = _compute_canny_window(low, cfg).mean()
+    assert d_high == pytest.approx(d_low, rel=0.05), (
+        f"quantile thresholds should be gain-invariant: {d_high:.5f} vs {d_low:.5f}"
+    )
+    assert 0.0 < d_high < 0.5
+
+
+def test_quantile_mode_requires_explicit_thresholds():
+    """Turning on `use_quantiles` while leaving the thresholds null would silently fall back
+    to the absolute constants — the exact defect the option exists to remove."""
+    cfg = dict(DEFAULT_FEATURES_CFG["canny_edges"])
+    cfg["use_quantiles"] = True
+    with pytest.raises(ValueError, match="use_quantiles"):
+        _compute_canny_window(np.zeros((32, 32), dtype=np.uint8), cfg)
+
+
+def test_explicit_point_one_is_not_the_same_as_none():
+    """The trap that makes "just write the default into the config" wrong: skimage maps
+    None to 0.1 directly, but divides an *explicit* threshold by dtype_max — 0.1/255 on a
+    uint8 window, which passes almost every gradient."""
+    high, _ = _contrast_pair()
+    as_none = dict(DEFAULT_FEATURES_CFG["canny_edges"])
+    as_explicit = dict(as_none, low_threshold=0.1, high_threshold=0.2)
+    d_none = _compute_canny_window(high, as_none).mean()
+    d_explicit = _compute_canny_window(high, as_explicit).mean()
+    assert d_none != pytest.approx(d_explicit, rel=1e-6), (
+        "explicit 0.1/0.2 now matches None; the config may safely state the values "
+        "literally, so update the R28 note in config.yaml"
+    )
 
 
 # ============================================================================

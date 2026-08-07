@@ -139,7 +139,12 @@ features:
   subtile_variance:
     min_tile_size_px: 16
   canny_edges:
+    # R28: see the long note in config.yaml. `use_quantiles: false` + null thresholds means
+    # skimage's ABSOLUTE 0.1/0.2 constants, not distribution-derived ones, which is why
+    # edge_density tracks per-frame radiometry. Left at the shipped values pending Brian's
+    # choice of quantile pair; changing them invalidates every edge_* feature.
     sigma: 1.0
+    use_quantiles: false
     low_threshold: null
     high_threshold: null
     n_orientation_bins: 8

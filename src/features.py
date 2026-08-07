@@ -77,7 +77,12 @@ DEFAULT_FEATURES_CFG: dict[str, Any] = {
     "lacunarity": {"box_sizes_px": [2, 4], "min_tile_size_px": 32},
     "subtile_variance": {"min_tile_size_px": 16},
     "canny_edges": {
-        "sigma": 1.0, "low_threshold": None, "high_threshold": None,
+        # R28: `use_quantiles` is False and the thresholds are None, so skimage applies its
+        # ABSOLUTE 0.1/0.2 constants. See `_compute_canny_window` -- this is the shipped
+        # behaviour, kept as the default only so nothing changes silently, and it is what
+        # makes `edge_density` track per-frame radiometry.
+        "sigma": 1.0, "use_quantiles": False,
+        "low_threshold": None, "high_threshold": None,
         "n_orientation_bins": 8, "min_tile_size_px": 16,
     },
     "context_patch": {"enabled": True, "sizes_px": [32, 64]},
@@ -197,13 +202,49 @@ def _compute_lbp_window(arr: np.ndarray, cfg: dict) -> np.ndarray:
 
 
 def _compute_canny_window(arr: np.ndarray, cfg: dict) -> np.ndarray:
-    """Canny edge map over the full CTX window. Returns uint8 binary array (0/1)."""
+    """Canny edge map over the full CTX window. Returns uint8 binary array (0/1).
+
+    **R28 — the thresholds are absolute unless you ask for quantiles.** With
+    `use_quantiles=False` (the default), `low_threshold=None` makes skimage use the
+    constants 0.1 / 0.2 as *absolute* gradient magnitudes on the `img_as_float` image, not
+    values derived from this image's gradient distribution — the opposite of what
+    `config.yaml` used to claim. Measured on a synthetic scene: reducing the DN spread ~3x
+    collapses edge density from 0.345 to 0.0026 (x0.01), and across the 38-image cohort
+    per-image `edge_density` tracks per-image `intensity_std` at Spearman rho = 0.965 with
+    a 12.2x spread. That is per-frame radiometry leaking into a texture feature — the same
+    failure the project already found and fixed for `shadow_fraction` (DECISIONS
+    2026-06-10). With `use_quantiles=True` the same contrast change leaves edge density
+    unmoved (x1.00).
+
+    Two traps, both measured, both worth not rediscovering:
+
+    - `low_threshold=None` is **not** the same as `low_threshold=0.1`. skimage maps None to
+      0.1 directly, but an explicit value goes through `low_threshold /= dtype_max`; on a
+      uint8 window that is 0.1/255, which passes almost every gradient (density 0.345 ->
+      0.384 and, being far below any real gradient, is contrast-invariant for the wrong
+      reason). So the current behaviour cannot be written into the config as `0.1`.
+    - with `use_quantiles=True` the thresholds are *percentiles of gradient magnitude*, so
+      they must be high (e.g. 0.8/0.9 -> density 0.130; 0.9/0.95 -> 0.062). Reusing 0.1/0.2
+      as quantiles would mark ~80-90 % of pixels as edges.
+    """
     from skimage.feature import canny
+
+    use_quantiles = bool(cfg.get("use_quantiles", False))
+    low = cfg.get("low_threshold")
+    high = cfg.get("high_threshold")
+    if use_quantiles and (low is None or high is None):
+        raise ValueError(
+            "canny_edges.use_quantiles=true requires explicit low_threshold and "
+            "high_threshold in [0, 1] (percentiles of gradient magnitude). Leaving them "
+            "null falls back to skimage's absolute 0.1/0.2 constants, which is the R28 "
+            "defect this option exists to avoid."
+        )
     edges = canny(
         arr,
         sigma=float(cfg["sigma"]),
-        low_threshold=cfg.get("low_threshold"),
-        high_threshold=cfg.get("high_threshold"),
+        low_threshold=low,
+        high_threshold=high,
+        use_quantiles=use_quantiles,
     )
     return edges.astype(np.uint8)
 
@@ -419,7 +460,17 @@ def _lacunarity_per_tile(
             ).astype(np.float64)
             M1 = box_sums.mean()
             M2 = (box_sums ** 2).mean()
-            out[col][i] = (M2 / (M1 ** 2)) if M1 > 0 else 0.0
+            # R27: a tile with no shadow pixels has no gliding-box statistic at all, so it
+            # stays NaN -- the same "not computable" convention every other Stage 4b column
+            # uses. It used to emit 0.0, which is out of range (lacunarity is >= 1 by
+            # Cauchy-Schwarz) and therefore a sentinel: measured over dataset_v2, 42,015 of
+            # 198,320 S>=32 rows were exactly 0.0, every one with shadow_fraction == 0, the
+            # smallest non-zero value was exactly 1.0, and nothing fell in (0, 1). Stage 6a's
+            # neighbour aggregation is NaN-aware (`np.isfinite`) but not sentinel-aware, so
+            # it averaged the sentinel in with real measurements and produced
+            # `nbr_mean_lacunarity_*` values inside the impossible interval (0, 1).
+            if M1 > 0:
+                out[col][i] = M2 / (M1 ** 2)
     return out
 
 
