@@ -137,6 +137,36 @@ def test_a_copied_config_with_relative_paths_is_not_isolation(tmp_path):
     )
 
 
+def test_absolute_roots_in_a_config_really_do_redirect(tmp_path):
+    """The isolation recipe a scratch rebuild must use, pinned so it cannot silently rot.
+
+    `Config.resolve` is `(self.root / raw).resolve()`, and `Path.__truediv__` with an
+    absolute right-hand side discards the left — so *absolute* `cache_dir`/`output_dir`
+    values redirect completely, while relative ones do not (previous test). This is the
+    difference between a rebuild that writes to scratch and one that overwrites the live
+    tree, so it is worth an assertion rather than a comment.
+    """
+    import yaml
+
+    from src.config import load_config
+
+    raw = yaml.safe_load((REPO_ROOT / "config.yaml").read_text(encoding="utf-8"))
+    scratch_cache = tmp_path / "scratch_cache"
+    scratch_out = tmp_path / "scratch_dataset"
+    raw["cache_dir"] = str(scratch_cache)
+    raw["output_dir"] = str(scratch_out)
+    copied = tmp_path / "config.yaml"
+    copied.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    cfg = load_config(copied)
+    assert cfg.cache_dir == scratch_cache.resolve()
+    assert cfg.output_dir == scratch_out.resolve()
+    for root in (cfg.cache_dir, cfg.output_dir):
+        assert live_artifact_guard.offending_path(root) is None, (
+            f"{root} still resolves inside a repository artifact root"
+        )
+
+
 # ===========================================================================
 # 2. Staging discipline
 # ===========================================================================

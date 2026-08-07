@@ -6345,3 +6345,38 @@ cohort-expansion scenario; and a fixed-cohort label-content change where the tes
 hash and config hash are provably unmoved, so only the content digest can see it.
 
 `pytest -m "not slow"`: 551 passed, 21 deselected; artifact manifest unchanged.
+
+## 2026-08-06j — isolation criterion 4, first tranche: the calibration banker
+
+`scripts/bank_calibration.py` was the audit's named offender and had three defects, all now fixed:
+
+1. **Every path was hard-coded** (`models/fang_probe/.../predictions.parquet`,
+   `dataset_v2/labels`, `models/deployable/calibration.npz`), so a scratch rebuild could not fit a
+   calibrator without writing the live `models/` tree. All three are flags now, and `--out` may point
+   anywhere.
+2. **`layer.save(OUT)` ran before the gates were evaluated, and `main` returned 0 regardless.** A run
+   that printed `Tier-1 ECE ... FAIL` still overwrote the banked calibrator *and* reported success —
+   a fail-open on the artifact the deployed map depends on. Gates are computed first; a failing run
+   writes nothing, leaves the existing layer untouched, and exits 1. `--force` banks anyway and
+   records `gates_passed: false, forced: true` in the layer's meta so the artifact confesses.
+3. **The predictions↔labels join was a bare `how="inner"`.** Any key that failed to join silently left
+   the calibration pool — exactly how an R74-recovered or dropped tile disappears unnoticed. It now
+   refuses duplicate keys on either side, uses `validate="one_to_one"`, and on an incomplete join
+   raises with a sample of the orphan keys and the instruction to re-run LOIO rather than calibrate on
+   the intersection.
+
+Eight tests, including: a failing gate leaves a pre-existing layer byte-identical; `--force` records
+that it was forced; and both join-integrity refusals.
+
+**Also pinned: the isolation recipe itself.** `Config.resolve` is `(root / raw).resolve()`, and
+`Path.__truediv__` discards the left operand when the right is absolute — so *absolute*
+`cache_dir`/`output_dir` values in a config genuinely redirect, while relative ones resolve against
+`REPO_ROOT` no matter where the YAML lives. Both directions now have assertions in
+`tests/test_artifact_isolation.py`; the difference is a scratch rebuild versus overwriting the live
+tree, which is too load-bearing to leave as a comment.
+
+Criterion 4 is **not** finished: the Stage 1–5 drivers are config-parameterized (and the absolute-root
+recipe above covers them), but the embedding, LOIO-prediction, head and map scripts still hard-code
+roots. Criterion 5 (an independent backup of the ignored trees) is untouched.
+
+`pytest -m "not slow"`: 560 passed, 21 deselected; artifact manifest unchanged.
