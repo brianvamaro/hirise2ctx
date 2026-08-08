@@ -306,3 +306,64 @@ def test_stage3_is_idempotent(cfg, read_only_cache):
     )
     assert p1["shift_px"] == p2["shift_px"]
     assert p1["fft_window"] == p2["fft_window"]
+
+
+# ----------------------------------------------------------------------------
+# R65 — Stage 3's only quality number is a CONDITIONAL median, bounded below by
+# the very threshold it was screened against. See DECISIONS 2026-08-06w.
+# ----------------------------------------------------------------------------
+from src.coregister import _robust_shift_from_field
+
+
+def _field(peaks, dy=3.0, dx=-2.0):
+    return [{"peak": float(p), "dy_px": dy, "dx_px": dx} for p in peaks]
+
+
+def test_median_block_peak_cannot_go_below_the_floor_it_is_screened_against():
+    """The defect in one assertion. Every block here is junk except the three that
+    scrape the floor, yet the reported number is >= the floor by construction — so a
+    `peak_correlation >= block_peak_min` cohort screen can never reject anything."""
+    peaks = [0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.50, 0.50, 0.50]
+    out = _robust_shift_from_field(_field(peaks), block_peak_min=0.5, min_confident_blocks=3)
+    assert out is not None
+    _, _, stats = out
+    assert stats["median_block_peak"] >= 0.5
+    assert stats["median_block_peak_is_conditional"] is True
+    # The unconditional distribution is NOT bounded below, so it can actually fail a
+    # screen -- and here it says plainly that most of the image did not correlate.
+    assert stats["all_block_peak"]["median"] < 0.5
+    assert stats["all_block_peak"]["min"] == pytest.approx(0.01)
+    assert stats["confident_fraction"] == pytest.approx(3 / 9)
+
+
+def test_unconditional_distribution_separates_clean_from_mostly_junk():
+    """Two images with an IDENTICAL conditional median but very different quality.
+    Nothing in the pre-R65 sidecar could tell them apart."""
+    clean = _robust_shift_from_field(
+        _field([0.8] * 10), block_peak_min=0.5, min_confident_blocks=3,
+    )[2]
+    junky = _robust_shift_from_field(
+        _field([0.8, 0.8, 0.8] + [0.05] * 7), block_peak_min=0.5, min_confident_blocks=3,
+    )[2]
+    assert clean["median_block_peak"] == junky["median_block_peak"]      # indistinguishable
+    assert clean["confident_fraction"] == 1.0
+    assert junky["confident_fraction"] == pytest.approx(0.3)
+    assert clean["all_block_peak"]["median"] > junky["all_block_peak"]["median"]
+
+
+def test_block_mad_is_labelled_conditional():
+    """It is computed over the same confident subset, so it inherits the same shape and
+    must not be read as an unconditional spread."""
+    field = _field([0.9, 0.9, 0.9], dy=3.0, dx=-2.0) + _field([0.1], dy=99.0, dx=99.0)
+    _, _, stats = _robust_shift_from_field(
+        field, block_peak_min=0.5, min_confident_blocks=3,
+    )
+    assert stats["block_mad_px"] == {"dy": 0.0, "dx": 0.0}   # the 99 px outlier is excluded
+    assert stats["block_mad_px_is_conditional"] is True
+
+
+def test_quality_version_marks_the_generation():
+    _, _, stats = _robust_shift_from_field(
+        _field([0.9] * 5), block_peak_min=0.5, min_confident_blocks=3,
+    )
+    assert stats["quality_version"] >= 2, "pre-R65 sidecars have no quality_version at all"

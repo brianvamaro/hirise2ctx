@@ -7115,3 +7115,53 @@ is forced. `DATA_DICTIONARY`'s `footprint_source` row is updated, including the 
 **Deliberately not done:** a global "window must contain the PDS footprint" assertion. Scoped to the
 nominal branch it would be right, but applied globally it would abort a v1 re-run — 3 of the 9 v1
 `polygon_bbox` windows already violate it (`ESP_057469_2215` by 9,422 m).
+
+## 2026-08-06w — R65 CLOSED: Stage 3's only quality number is a conditional median, now labelled and accompanied
+
+Audit step 5, Stage 3. `peak_correlation` is the sole per-image quality figure Stage 3 emits, and it
+carries two independent defects on the `block_median` path (38 of the 39 v2 images).
+
+**(a) It is bounded below by the threshold it is screened against.**
+`_robust_shift_from_field` reports `median(peaks[peaks >= block_peak_min])` — a **conditional**
+median over blocks that already cleared the floor — so it lives in `[block_peak_min, 1]` by
+construction. Measured over the 38 block-median sidecars: `block_peak_min` is 0.5 and a
+`peak_correlation >= 0.5` cohort screen rejects **0 of 38**. It cannot reject anything.
+
+Worth stating precisely, because the register's wording overreaches: min is **0.5779**, i.e. 0.0779
+*above* a bound it cannot cross, with **0 of 38 at the floor** and only 3 within 0.10. So the defect
+is the **vacuous screen**, not a pile-up at the bound. And the `>= 0.9 -> 0 images cleared` screen at
+`DECISIONS.md:2389` is *not* the mirror image of it: 0.9 is above the observed max (0.8751) but is an
+**empirical ceiling**, not a structural bound. Only the low end is vacuous by construction.
+
+**(b) It does not score the model that was applied.** On the block path it is a summary of per-block
+peaks, not the post-shift correlation of the median shift actually used. On the `single_window`
+fallback it *is* the applied shift's own post-shift Pearson. The two are not comparable, and nothing
+said so — `peak_correlation_kind` now does.
+
+**Fix — deliberately not a new headline statistic.** The drafted replacement (an unconditional median
+over all blocks) was refuted before implementation: it reads ~0.75 on a *perfectly registered* image
+that merely has 25 % uncorrelatable blocks, i.e. it conflates registration quality with scene
+texture. Instead Stage 3 now emits the **components** and leaves the gate explicit:
+
+- `all_block_peak` {min, p25, median, p75, max} over **every** block — unconditional, so unlike the
+  existing figure it *can* fail a screen;
+- `confident_fraction` = `n_confident_blocks / n_blocks`;
+- `median_block_peak_is_conditional` and `block_mad_px_is_conditional` — the MAD is computed over the
+  same confident subset and inherits the identical self-fulfilling shape, which was unlabelled;
+- `quality_version` (2), so pre- and post-R65 sidecars are distinguishable.
+
+Together these separate the two cases the old field could not: measured on the live cohort,
+`confident_fraction` runs 0.462–1.000 with median **0.962**, so only 1 of 38 images had under half
+its blocks correlate. That is also the evidence for the register's severity cap — **no shipped number
+is wrong today**; the defect is that the statistic could not have told us if one were.
+
+Corroborating the record: the one image ever excluded on co-registration grounds,
+`ESP_046803_2325`, took the single-window fallback with 3 of 44 confident blocks and
+`peak_correlation` 0.3229 — it was excluded on the *untruncated* companion evidence, not on
+`peak_correlation`. The project had already, informally, stopped trusting the truncated figure.
+
+**Blast radius: provenance only.** No shift, label or downstream number changes. **0 of 39** sidecars
+carry the new fields, so Stage 3 must re-run to emit them — fold it into the batched rebuild, where
+Stage 3 re-runs anyway; do not run it standalone against `cache_v2`. Four tests, including two images
+with an *identical* conditional median that the unconditional distribution tells apart.
+Fast suite: **644 passed**.

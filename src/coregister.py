@@ -47,6 +47,8 @@ from typing import Any
 
 import numpy as np
 
+_COREG_QUALITY_VERSION = 2   # 1 = pre-R65 (conditional median only); 2 = + unconditional distribution
+
 COREGISTRATION_SUBDIR = "coregistration"
 
 
@@ -267,14 +269,40 @@ def _robust_shift_from_field(
     dy = float(np.median(dys))
     dx = float(np.median(dxs))
     stats = {
+        "quality_version": _COREG_QUALITY_VERSION,
         "n_blocks": int(len(field)),
         "n_confident_blocks": n_conf,
+        "confident_fraction": float(n_conf / len(field)),
+        # R65. `median_block_peak` is a CONDITIONAL median -- taken over only the blocks
+        # that already cleared `block_peak_min` -- so it is bounded below by that threshold
+        # by construction and lives in [block_peak_min, 1]. Screening it against the same
+        # threshold is therefore a tautology, which is what the 2026-06-03 ">= 0.5" cohort
+        # screen did. (Measured over the 38 block-median images: min 0.5779, i.e. 0.0779
+        # above a bound it cannot cross, with 0 of 38 at the floor -- so the defect is the
+        # vacuous screen, not a pile-up.)
         "median_block_peak": float(np.median(peaks[conf])),
+        "median_block_peak_is_conditional": True,
+        # ...so also emit the UNCONDITIONAL distribution over every block. This one is not
+        # bounded below, so it can actually fail a screen, and together with
+        # `confident_fraction` it separates "well registered" from "mostly uncorrelatable".
+        # Deliberately NOT collapsed into a single composite: the obvious candidate (an
+        # unconditional median) reads 0.75 on a perfectly registered image that merely has
+        # 25% junk blocks, i.e. it conflates registration quality with scene texture.
+        "all_block_peak": {
+            "min": float(peaks.min()),
+            "p25": float(np.percentile(peaks, 25)),
+            "median": float(np.median(peaks)),
+            "p75": float(np.percentile(peaks, 75)),
+            "max": float(peaks.max()),
+        },
         # Median absolute deviation: a robust spread of the confident-block shifts (px).
+        # Also conditional -- computed over the same confident subset -- so it inherits the
+        # same shape and must not be read as an unconditional spread.
         "block_mad_px": {
             "dy": float(np.median(np.abs(dys - dy))),
             "dx": float(np.median(np.abs(dxs - dx))),
         },
+        "block_mad_px_is_conditional": True,
     }
     return dy, dx, stats
 
@@ -433,7 +461,19 @@ def stage3_one_image(
         },
         "shift_px": {"dy": dy_px, "dx": dx_px},
         "shift_m": {"dy": dy_m, "dx": dx_m, "magnitude": shift_m},
+        # R65. WHAT THIS NUMBER IS depends on `method`, and the two are not comparable:
+        #   block_median   -> the CONDITIONAL median of per-block peaks over blocks that
+        #                     already cleared `block_peak_min`, so it is bounded below by
+        #                     that threshold and a `>= block_peak_min` screen is vacuous.
+        #                     It is NOT the post-shift correlation of the shift applied.
+        #   single_window  -> the applied shift's own post-shift Pearson, unconditioned.
+        # 38 of 39 v2 images take the block path. Use `block_field.all_block_peak` and
+        # `block_field.confident_fraction` for any screen. See DECISIONS 2026-08-06w.
         "peak_correlation": peak,
+        "peak_correlation_kind": (
+            "conditional_median_of_confident_block_peaks"
+            if method == "block_median" else "post_shift_pearson_of_applied_shift"
+        ),
         # The single-window result is preserved so the block-median can always be compared
         # against (and reverted to) the original central-FFT solve.
         "single_window": {
