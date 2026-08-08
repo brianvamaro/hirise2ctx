@@ -6,6 +6,8 @@ the slow integration test `test_stage2_one_image.py`.
 """
 from __future__ import annotations
 
+import math
+
 import geopandas as gpd
 import pandas as pd
 import pyproj
@@ -119,8 +121,13 @@ def test_nominal_footprint_bounds_centered_on_manifest_point():
     bounds = nominal_footprint_bounds(row, TARGET_CRS, width_m, length_m, transform)
     xmin, ymin, xmax, ymax = bounds
 
-    # Width / length match (post-snap, within 1 px each side)
-    assert abs((xmax - xmin) - width_m) <= 2 * PX
+    # R67: `width_m` is GROUND metres east-west. Easting in this equirectangular clon_0
+    # frame is R*lon, so covering it takes `width_m / cos(lat)` PROJECTED metres. This
+    # assertion used to read `== width_m`, which certified the defect.
+    expected_w = width_m / math.cos(math.radians(row["CenterLat"]))
+    assert abs((xmax - xmin) - expected_w) <= 2 * PX
+    assert (xmax - xmin) > width_m + 2 * PX, "a projected-metre width would be too narrow"
+    # North-south is unaffected: northing is R*lat, so projected == ground.
     assert abs((ymax - ymin) - length_m) <= 2 * PX
 
     # Center is within 1 pixel of the projected manifest point
@@ -279,3 +286,65 @@ def test_production_never_passes_the_escape_hatch():
         if "_allow_partial_tile=" in line and not line.lstrip().startswith("#")
     ]
     assert hits == [], f"production code sets the test-only escape hatch: {hits}"
+
+
+# ----------------------------------------------------------------------------
+# R67 — the nominal fallback's east-west extent, and the PDS-footprint path.
+# ----------------------------------------------------------------------------
+
+def test_nominal_width_scales_with_latitude():
+    """The whole defect in one assertion: the same nominal ground width must consume
+    more PROJECTED metres the further from the equator you go. Spending `width_m`
+    flat makes the window narrower exactly where the swath needs it widest."""
+    transform = Affine(PX, 0.0, 0.0, 0.0, -PX, 3_000_000.0)
+    widths = {}
+    for lat in (0.0, 30.0, 60.0):
+        row = pd.Series({"CenterLat": lat, "CenterLon_180": 0.0})
+        xmin, _, xmax, _ = nominal_footprint_bounds(row, TARGET_CRS, 6000.0, 16000.0, transform)
+        widths[lat] = xmax - xmin
+    assert widths[0.0] == pytest.approx(6000.0, abs=2 * PX)
+    assert widths[30.0] == pytest.approx(6000.0 / math.cos(math.radians(30)), abs=2 * PX)
+    assert widths[60.0] == pytest.approx(12000.0, abs=2 * PX)   # 1/cos(60) = 2
+    assert widths[0.0] < widths[30.0] < widths[60.0]
+
+
+def test_nominal_bounds_prefer_the_pds_footprint_when_given():
+    """Measured, the 6 x 16 km nominal is too narrow for 39 of 39 real footprints and
+    too short for 13, so the image's own PDS extents win when available."""
+    transform = Affine(PX, 0.0, 0.0, 0.0, -PX, 3_000_000.0)
+    row = pd.Series({"CenterLat": 41.0, "CenterLon_180": 0.0})
+    fp = {"min_lat_deg": 40.8, "max_lat_deg": 41.2,
+          "west_lon_deg": -0.15, "east_lon_deg": 0.15}
+    xmin, ymin, xmax, ymax = nominal_footprint_bounds(
+        row, TARGET_CRS, 6000.0, 16000.0, transform, footprint=fp,
+    )
+    target = pyproj.CRS.from_user_input(TARGET_CRS)
+    tx = pyproj.Transformer.from_crs(target.geodetic_crs, target, always_xy=True)
+    for lon in (fp["west_lon_deg"], fp["east_lon_deg"]):
+        for lat in (fp["min_lat_deg"], fp["max_lat_deg"]):
+            x, y = tx.transform(lon, lat)
+            assert xmin <= x <= xmax and ymin <= y <= ymax, "footprint corner outside window"
+    # This footprint is 0.4 deg tall = ~23.7 km, well beyond the 16 km nominal.
+    assert (ymax - ymin) > 16000.0
+
+
+def test_nominal_bounds_apply_the_buffer_to_the_pds_footprint():
+    transform = Affine(PX, 0.0, 0.0, 0.0, -PX, 3_000_000.0)
+    row = pd.Series({"CenterLat": 41.0, "CenterLon_180": 0.0})
+    fp = {"min_lat_deg": 40.9, "max_lat_deg": 41.1,
+          "west_lon_deg": -0.1, "east_lon_deg": 0.1}
+    a = nominal_footprint_bounds(row, TARGET_CRS, 6000.0, 16000.0, transform, footprint=fp)
+    b = nominal_footprint_bounds(row, TARGET_CRS, 6000.0, 16000.0, transform,
+                                 footprint=fp, buffer_m=1000.0)
+    assert (b[2] - b[0]) - (a[2] - a[0]) == pytest.approx(2000.0, abs=2 * PX)
+    assert (b[3] - b[1]) - (a[3] - a[1]) == pytest.approx(2000.0, abs=2 * PX)
+
+
+def test_nominal_bounds_reject_an_antimeridian_footprint():
+    """Independently wrapping west/east would yield a ~21,000 km bbox in a clon_0 frame."""
+    transform = Affine(PX, 0.0, 0.0, 0.0, -PX, 3_000_000.0)
+    row = pd.Series({"CenterLat": 0.0, "CenterLon_180": 179.9})
+    fp = {"min_lat_deg": -0.1, "max_lat_deg": 0.1,
+          "west_lon_deg": 179.9, "east_lon_deg": 180.1}   # wraps to -179.9
+    with pytest.raises(ValueError, match="antimeridian"):
+        nominal_footprint_bounds(row, TARGET_CRS, 6000.0, 16000.0, transform, footprint=fp)

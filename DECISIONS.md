@@ -7066,3 +7066,52 @@ corrected accordingly.
 Behaviour is identical: `_apply_detection_filters` was verified kept-row-identical against the
 pre-change implementation over 5 real cached GPKGs (9,628 to 727,160 polygons) × 8 filter
 configurations, n=40, exact match in all 40. Fast suite: **636 passed**, 21 deselected.
+
+## 2026-08-06v — R67 CLOSED: the nominal window's width was spent in the wrong metres, and the nominal itself is undersized
+
+Audit step 5, Stage 2. `nominal_footprint_bounds` — the fallback for an image with zero detections —
+spent `nominal_hirise_width_m` in **projected** metres of the equirectangular clon_0 target CRS.
+Easting there is `R·lon`, so covering `W` metres of **ground** at latitude φ needs `W/cos(φ)`
+projected metres; the old rectangle covered only `W·cos(φ)`, i.e. the window came out too **narrow**,
+and by more the further from the equator.
+
+**Severity corrected to LOW, and the register's own numbers were off.** The branch is provably
+unreachable for the v2 rebuild: all 39 images take `polygon_bbox` (smallest post-R23 polygon count
+9,628). The parent brief's "cohort spans ~11N to 46N, cos(lat) ~0.98 to ~0.69" is wrong — the v2
+manifest spans **−63.70 to +52.33**, cos(lat) **0.443 to 0.929**.
+
+**A second, independent defect the register did not name.** `nominal_hirise_length_m` (16,000 m) is
+simply too short: **13 of 39** real PDS footprints exceed it, the largest at **43,088 m**. And
+measured against the real footprints in projected metres, the 6 km nominal width is too narrow for
+**39 of 39** by a median 1,847 m per side — *and still too narrow for 39 of 39* after the cos(lat)
+correction, by a median 815 m. So the units fix alone is not sufficient; the nominal is undersized.
+
+**Fix.** `nominal_footprint_bounds` stays a pure geometry function and gains an optional
+`footprint` (the image's own PDS extents) plus `buffer_m`. When the footprint is supplied it is
+projected corner-by-corner and used directly; otherwise the centre-on-manifest rectangle is built
+with the cos(lat) correction. `stage2_one_image` resolves the footprint via
+`pds_labels.image_footprint` and records `footprint_source` as `pds_label_footprint` or
+`nominal_from_manifest_coslat`, **warning loudly** on the latter because it is known to clip.
+
+All 47 `.LBL`s are cached and all 39 manifest rows have one — but only *incidentally*: `detections`
+fetches a label only when the SP1 bug fires, so a new manifest row may not have one. Hence the
+fallback survives rather than being replaced by an assertion.
+
+Also guarded: an antimeridian footprint. Independently wrapping west/east longitudes would produce a
+~21,000 km bbox in a clon_0 frame. Not reachable in either cohort (max observed span 0.276°), but
+silent nonsense if it ever were.
+
+**A test was certifying the bug.** `test_nominal_footprint_bounds_centered_on_manifest_point`
+asserted `abs((xmax - xmin) - width_m) <= 2*PX`, i.e. it pinned the projected width to `width_m` and
+would have failed on the correct behaviour. Rewritten to assert `width_m/cos(lat)`, plus four new
+tests. All five mutants die: flat projected width, multiply-by-cos instead of divide, applying cos
+to the north-south axis (northing is `R·lat`, so it must *not* scale), ignoring the footprint
+argument, and dropping the antimeridian guard.
+
+**Blast radius: none.** No v2 window takes this branch, so no shipped artifact changes and no rebuild
+is forced. `DATA_DICTIONARY`'s `footprint_source` row is updated, including the retired
+`nominal_from_manifest` literal that pre-2026-08-06 sidecars carry. Fast suite: **640 passed**.
+
+**Deliberately not done:** a global "window must contain the PDS footprint" assertion. Scoped to the
+nominal branch it would be right, but applied globally it would abort a v1 re-run — 3 of the 9 v1
+`polygon_bbox` windows already violate it (`ESP_057469_2215` by 9,422 m).

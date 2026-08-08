@@ -20,6 +20,7 @@ import math
 import re
 import ssl
 import urllib.error
+import warnings
 import urllib.parse
 import urllib.request
 import zipfile
@@ -412,24 +413,73 @@ def nominal_footprint_bounds(
     width_m: float,
     length_m: float,
     ctx_transform,
+    *,
+    footprint: dict | None = None,
+    buffer_m: float = 0.0,
 ) -> tuple[float, float, float, float]:
-    """Center-on-manifest fallback for empty shapefiles.
+    """Bounds for an image with no detections, snapped to the CTX pixel grid.
 
-    Projects `manifest_row.CenterLat / CenterLon_180` from the target CRS's geodetic base
-    into `target_crs` (both share the IAU-2000 Mars sphere), builds a rectangle of size
-    `width_m x length_m` around it, and snaps to the CTX pixel grid. The `width_m` axis
-    is east-west; `length_m` is north-south, matching the typical HiRISE swath geometry.
+    Two sources, in order of preference:
+
+    * **`footprint`** — the image's own PDS extents, as returned by
+      `pds_labels.image_footprint` (`min_lat_deg`, `max_lat_deg`, `west_lon_deg`,
+      `east_lon_deg`). Exact, so this is what the caller should supply whenever the `.LBL`
+      is available.
+    * **`width_m` x `length_m` centred on the manifest point** — a nominal fallback.
+
+    **R67.** The fallback used to spend `width_m` in *projected* metres of the
+    equirectangular clon_0 target CRS. Easting there is `R*lon`, so covering `W` metres of
+    **ground** at latitude phi needs `W/cos(phi)` projected metres — the old rectangle
+    covered only `W*cos(phi)` of ground and the window came out too NARROW, by more at
+    higher latitude. Measured over the 39 v2 images (cos(lat) 0.443-0.929), the 6 km
+    nominal is too narrow for **39 of 39** real footprints by a median 1,847 m per side;
+    dividing by cos(lat) leaves it too narrow on **39 of 39** still, by a median 815 m.
+    So the units fix alone is not sufficient and the nominal is simply undersized — which
+    is why the PDS footprint is preferred and why the caller warns when it falls back.
+    A second, independent defect the register did not name: `nominal_hirise_length_m`
+    (16,000) is exceeded by **13 of 39** real footprints, the largest being 43,088 m.
+
+    `buffer_m` is added on all sides, in projected metres, matching `compute_window_bounds`.
     """
     import pyproj
 
     target = pyproj.CRS.from_user_input(target_crs)
-    geographic = target.geodetic_crs
-    transformer = pyproj.Transformer.from_crs(geographic, target, always_xy=True)
+    transformer = pyproj.Transformer.from_crs(target.geodetic_crs, target, always_xy=True)
+
+    if footprint is not None:
+        def _w180(lon: float) -> float:
+            return lon - 360.0 if lon > 180.0 else lon
+
+        lon_w = _w180(float(footprint["west_lon_deg"]))
+        lon_e = _w180(float(footprint["east_lon_deg"]))
+        if abs(lon_e - lon_w) > 180.0:
+            # Independently min/maxing wrapped longitudes across the antimeridian would
+            # give a ~21,000 km bbox. Not reachable in either cohort (max observed span is
+            # 0.276 deg) but silent nonsense if it ever were.
+            raise ValueError(
+                f"footprint spans the antimeridian (west {lon_w}, east {lon_e}); "
+                "bounds in a clon_0 frame would be meaningless."
+            )
+        lat_lo = float(footprint["min_lat_deg"])
+        lat_hi = float(footprint["max_lat_deg"])
+        xs, ys = [], []
+        for lon in (lon_w, lon_e):
+            for lat in (lat_lo, lat_hi):
+                x, y = transformer.transform(lon, lat)
+                xs.append(x)
+                ys.append(y)
+        bounds = (min(xs) - buffer_m, min(ys) - buffer_m,
+                  max(xs) + buffer_m, max(ys) + buffer_m)
+        return _snap_bounds_to_pixel_grid(bounds, ctx_transform)
+
     lon = float(manifest_row["CenterLon_180"])
     lat = float(manifest_row["CenterLat"])
     cx, cy = transformer.transform(lon, lat)
-    half_w = width_m / 2.0
-    half_l = length_m / 2.0
+    cos_lat = math.cos(math.radians(lat))
+    if cos_lat <= 0:
+        raise ValueError(f"cannot size a nominal window at latitude {lat} (cos = {cos_lat})")
+    half_w = (width_m / cos_lat) / 2.0 + buffer_m   # ground metres -> projected metres
+    half_l = length_m / 2.0 + buffer_m
     bounds = (cx - half_w, cy - half_l, cx + half_w, cy + half_l)
     return _snap_bounds_to_pixel_grid(bounds, ctx_transform)
 
@@ -740,10 +790,34 @@ def stage2_one_image(
         bounds = compute_window_bounds(gdf, buffer_m, tile_transform)
         footprint_source = "polygon_bbox"
     else:
+        # R67: prefer the image's own PDS extents over the nominal rectangle. Measured,
+        # the 6 x 16 km nominal is too narrow for 39 of 39 real footprints (median
+        # 1,847 m per side) and too short for 13 of 39, so the fallback is a last resort
+        # and says so. The `.LBL` is cached for all 39 current manifest rows, but only
+        # incidentally -- `detections` fetches it only when the SP1 bug fires -- so a new
+        # manifest row may not have one.
+        from . import pds_labels
+
+        footprint = None
+        try:
+            footprint = pds_labels.image_footprint(obs_id, cache_dir)
+        except (OSError, KeyError, ValueError) as exc:
+            warnings.warn(
+                f"{obs_id}: no usable PDS footprint ({type(exc).__name__}: {exc}), falling "
+                f"back to the nominal {nominal_width_m:.0f} x {nominal_length_m:.0f} m "
+                "rectangle. Measured against the 39 v2 images that nominal is too narrow "
+                "for all of them and too short for 13, so this window may clip the swath. "
+                "See DECISIONS 2026-08-06v.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
         bounds = nominal_footprint_bounds(
-            manifest_row, target_crs, nominal_width_m, nominal_length_m, tile_transform
+            manifest_row, target_crs, nominal_width_m, nominal_length_m, tile_transform,
+            footprint=footprint, buffer_m=buffer_m,
         )
-        footprint_source = "nominal_from_manifest"
+        footprint_source = (
+            "pds_label_footprint" if footprint is not None else "nominal_from_manifest_coslat"
+        )
 
     out_dir = cache_dir / CTX_WINDOWS_SUBDIR
     out_dir.mkdir(parents=True, exist_ok=True)
