@@ -7,6 +7,7 @@ caches are missing.
 from __future__ import annotations
 
 import json
+import warnings
 import math
 from pathlib import Path
 
@@ -59,6 +60,35 @@ J_MIN_ROW = math.ceil(MOSAIC_ROW_ORIGIN / TILE_SIZES[-1]) * _LADDER_RATIO
 J_MIN_COL = math.ceil(MOSAIC_COL_ORIGIN / TILE_SIZES[-1]) * _LADDER_RATIO
 
 
+def mars_crs_wkt(standard_parallel_deg: float = 0.0) -> str:
+    """A projected, metre-unit Mars equirectangular CRS for fixtures.
+
+    R80: the size floor is an equivalent-circle **diameter in metres**, so any fixture that
+    exercises it must live in a projected metre frame. The old fixture used EPSG:4326, where
+    `geopandas.area` is degrees² and emits `UserWarning: Geometry is in a geographic CRS` —
+    the units were simply unpinned. `standard_parallel_deg` is exposed because the realised
+    physical floor scales with the projection's standard parallel, which is the mechanism
+    behind R03's mixed size floor.
+    """
+    return (
+        'PROJCRS["TestMars",BASEGEOGCRS["GCS_TestMars",DATUM["D_TestMars",'
+        'ELLIPSOID["TestMars",3396190.0,0.0,LENGTHUNIT["metre",1]]],'
+        'PRIMEM["Reference_Meridian",0,ANGLEUNIT["Degree",0.0174532925199433]]],'
+        'CONVERSION["EquidistantCylindrical",'
+        'METHOD["Equidistant Cylindrical (Spherical)",ID["EPSG",1029]],'
+        f'PARAMETER["Latitude of 1st standard parallel",{standard_parallel_deg},'
+        'ANGLEUNIT["Degree",0.0174532925199433]],'
+        'PARAMETER["Longitude of natural origin",0,ANGLEUNIT["Degree",0.0174532925199433]],'
+        'PARAMETER["False easting",0,LENGTHUNIT["metre",1]],'
+        'PARAMETER["False northing",0,LENGTHUNIT["metre",1]]],'
+        'CS[Cartesian,2],AXIS["easting",east,ORDER[1],LENGTHUNIT["metre",1]],'
+        'AXIS["northing",north,ORDER[2],LENGTHUNIT["metre",1]]]'
+    )
+
+
+TEST_MARS_CRS_WKT = mars_crs_wkt()
+
+
 def _make_window(tmp_path: Path, *, height: int, width: int, pixel_m: float = 5.0,
                  mosaic_origin_xy: tuple[float, float] = MOSAIC_ORIGIN_XY,
                  row_origin: int = MOSAIC_ROW_ORIGIN,
@@ -79,19 +109,7 @@ def _make_window(tmp_path: Path, *, height: int, width: int, pixel_m: float = 5.
     origin_y = mx_origin_y - row_origin * pixel_m
     window_transform = Affine(pixel_m, 0, origin_x, 0, -pixel_m, origin_y)
     mosaic_transform = [pixel_m, 0.0, mx_origin_x, 0.0, -pixel_m, mx_origin_y]
-    crs = pyproj.CRS.from_user_input(
-        'PROJCRS["TestMars",BASEGEOGCRS["GCS_TestMars",DATUM["D_TestMars",'
-        'ELLIPSOID["TestMars",3396190.0,0.0,LENGTHUNIT["metre",1]]],'
-        'PRIMEM["Reference_Meridian",0,ANGLEUNIT["Degree",0.0174532925199433]]],'
-        'CONVERSION["EquidistantCylindrical",'
-        'METHOD["Equidistant Cylindrical (Spherical)",ID["EPSG",1029]],'
-        'PARAMETER["Latitude of 1st standard parallel",0,ANGLEUNIT["Degree",0.0174532925199433]],'
-        'PARAMETER["Longitude of natural origin",0,ANGLEUNIT["Degree",0.0174532925199433]],'
-        'PARAMETER["False easting",0,LENGTHUNIT["metre",1]],'
-        'PARAMETER["False northing",0,LENGTHUNIT["metre",1]]],'
-        'CS[Cartesian,2],AXIS["easting",east,ORDER[1],LENGTHUNIT["metre",1]],'
-        'AXIS["northing",north,ORDER[2],LENGTHUNIT["metre",1]]]'
-    )
+    crs = pyproj.CRS.from_user_input(mars_crs_wkt())
     cache_dir = tmp_path / "cache"
     out_dir = tmp_path / "out"
     (cache_dir / "ctx_windows").mkdir(parents=True, exist_ok=True)
@@ -462,7 +480,7 @@ def test_apply_coreg_shift_no_op_on_none():
 # ----------------------------------------------------------------------------
 
 def test_detection_filter_min_confidence_drops_low_scores():
-    crs = pyproj.CRS.from_epsg(4326)
+    crs = pyproj.CRS.from_user_input(TEST_MARS_CRS_WKT)
     gdf = gpd.GeoDataFrame(
         {"score": [0.1, 0.4, 0.9]},
         geometry=[box(i, 0, i + 1, 1) for i in range(3)],
@@ -473,16 +491,123 @@ def test_detection_filter_min_confidence_drops_low_scores():
     assert set(out["score"]) == {0.4, 0.9}
 
 
-def test_detection_filter_min_size_drops_small_diameters():
-    crs = pyproj.CRS.from_epsg(4326)
-    # Areas: 1, 100, 1000 -> diameters: 1.13, 11.28, 35.68
+def test_detection_filter_min_size_is_an_equivalent_circle_DIAMETER_in_metres():
+    """R80. The old fixture (areas 1/100/1000 in EPSG:4326, threshold 5.0) could not
+    distinguish diameter from radius, or from three other plausible size metrics, and
+    measured area in degrees². This one separates five interpretations at once:
+
+    | id | shape           | area  | diameter | radius  | max bbox side | perim/pi |
+    |----|-----------------|-------|----------|---------|---------------|----------|
+    | 0  | 2 x 2 box       |     4 |   2.2568 |  1.1284 |             2 |    2.546 |
+    | 1  | 0.5 x 10 box    |     5 |   2.5231 |  1.2616 |            10 |    6.685 |
+    | 2  | 5 x 5 box       |    25 |   5.6419 |  2.8209 |             5 |    6.366 |
+    | 3  | 20 x 20 box     |   400 |  22.5676 | 11.2838 |            20 |   25.465 |
+    | 4  | 4.5 x 4.5 box   | 20.25 |   5.0771 |  2.5386 |           4.5 |    5.730 |
+    | 5  | concave L       |    16 |   4.5135 |  2.2568 |             5 |    5.729 |
+
+    At a 5.0 m floor: diameter keeps {2,3,4}; radius keeps {3}; max-bbox-side keeps
+    {1,2,3,5}; perimeter/pi keeps {1,2,3,4,5}; area-as-size keeps {1,2,3,4,5}; sqrt(area)
+    (equivalent-square side) keeps {2,3} — id 4 is what separates it from diameter.
+
+    **id 5 is not an axis-aligned rectangle, and that is load-bearing.** For a
+    `shapely.box`, polygon area == envelope area == convex-hull area, so a fixture made
+    only of boxes cannot tell `geometry.area` from `geometry.envelope.area` — and that
+    substitution survives the whole suite otherwise. It matters on real data: for
+    `ESP_046328_2180` (138,373 polygons, none axis-aligned) the median bbox/polygon area
+    ratio is 1.2673, and measuring bbox area would silently retain 3,466 of the 6,360
+    polygons the production floor drops. The L is a 5x5 square with a 3x3 corner removed,
+    so its three areas straddle the floor: polygon 16 (d=4.51, **dropped**), convex hull
+    20.5 (d=5.11, kept), bounding box 25 (d=5.64, kept).
+    """
+    crs = pyproj.CRS.from_user_input(TEST_MARS_CRS_WKT)
+    assert crs.is_projected and crs.axis_info[0].unit_name == "metre"
+    ell = Polygon([(400, 0), (405, 0), (405, 2), (402, 2), (402, 5), (400, 5)])
     gdf = gpd.GeoDataFrame(
-        {"score": [0.5] * 3},
-        geometry=[box(0, 0, 1, 1), box(0, 0, 10, 10), box(0, 0, 100, 10)],
+        {"score": [0.5] * 6, "id": [0, 1, 2, 3, 4, 5]},
+        geometry=[
+            box(0, 0, 2, 2),            # A=4
+            box(100, 0, 100.5, 10),     # A=5   -- long and thin: bbox/perimeter trap
+            box(200, 0, 205, 5),        # A=25
+            box(300, 0, 320, 20),       # A=400
+            box(350, 0, 354.5, 4.5),    # A=20.25 -- separates sqrt(area) from diameter
+            ell,                        # A=16   -- separates polygon from hull and bbox
+        ],
         crs=crs,
     )
-    out = _apply_detection_filters(gdf, {"min_confidence": None, "min_size_m": 5.0})
-    assert len(out) == 2  # diam 1.13 drops, 11.28 and 35.68 stay
+    assert list(gdf.geometry.area) == pytest.approx([4.0, 5.0, 25.0, 400.0, 20.25, 16.0])
+    assert gdf.geometry.convex_hull.area.iloc[5] == pytest.approx(20.5)
+    assert gdf.geometry.envelope.area.iloc[5] == pytest.approx(25.0)
+    # The fixture must contain at least one shape whose bbox/hull area differ from its own,
+    # or the polygon-area interpretation silently stops being pinned.
+    assert not np.allclose(gdf.geometry.envelope.area, gdf.geometry.area)
+    assert not np.allclose(gdf.geometry.convex_hull.area, gdf.geometry.envelope.area)
+    with warnings.catch_warnings():
+        # A geographic CRS would emit "Geometry is in a geographic CRS" here. Making that
+        # an error is what pins "measured in metres" -- it is the R80 units hole itself.
+        warnings.simplefilter("error", UserWarning)
+        out = _apply_detection_filters(gdf, {"min_confidence": None, "min_size_m": 5.0})
+    assert list(out["id"]) == [2, 3, 4]
+
+
+def test_detection_filter_size_floor_is_inclusive():
+    """`>=`, not `>`. Derived with the production expression so the comparison is
+    bit-exact rather than approximately-at-the-boundary."""
+    crs = pyproj.CRS.from_user_input(TEST_MARS_CRS_WKT)
+    gdf = gpd.GeoDataFrame(
+        {"score": [0.5], "id": [0]}, geometry=[box(0, 0, 5, 5)], crs=crs,
+    )
+    exact = float(2.0 * np.sqrt(gdf.geometry.area.to_numpy()[0] / np.pi))
+    out = _apply_detection_filters(gdf, {"min_confidence": None, "min_size_m": exact})
+    assert len(out) == 1, "a polygon exactly at the floor must be kept"
+
+
+def test_detection_filter_confidence_floor_is_inclusive():
+    crs = pyproj.CRS.from_user_input(TEST_MARS_CRS_WKT)
+    gdf = gpd.GeoDataFrame(
+        {"score": [0.29, 0.30, 0.31], "id": [0, 1, 2]},
+        geometry=[box(i * 10, 0, i * 10 + 5, 5) for i in range(3)],
+        crs=crs,
+    )
+    out = _apply_detection_filters(gdf, {"min_confidence": 0.30, "min_size_m": None})
+    assert list(out["id"]) == [1, 2], "a score exactly at the floor must be kept"
+
+
+def test_size_floor_realised_in_the_ctx_frame_is_looser_than_the_configured_metres():
+    """R80/R03 characterisation — the executable half of "retain and document".
+
+    The floor is applied to polygons already reprojected into the clon_0 CTX frame, where
+    easting is stretched by 1/cos(phi) relative to the source frame's own standard
+    parallel. So the realised *physical* floor is `min_size_m * sqrt(cos phi)`, looser than
+    the configured metres, and it differs image to image. Measured over the 39 v2 images
+    the realised floor spans 0.993-1.367 m against a configured 1.4105 m.
+
+    If someone later moves the filter before the reprojection, or divides by the scale
+    inside it, this test fails -- which is correct: that would redefine the target rather
+    than document it.
+    """
+    phi = 60.0
+    src_crs = pyproj.CRS.from_user_input(mars_crs_wkt(phi))
+    ctx_crs = pyproj.CRS.from_user_input(TEST_MARS_CRS_WKT)   # standard parallel 0
+
+    # A rock sized to straddle the floor: side 4 m -> d_src = 4.51 m (below a 5 m floor),
+    # d_ctx = 4.51 * 1/sqrt(cos 60) = 6.38 m (above it). The window is (3.13, 4.43) m.
+    rock_src = gpd.GeoDataFrame(
+        {"score": [0.9], "id": [0]}, geometry=[box(0, 0, 4.0, 4.0)], crs=src_crs,
+    )
+    rock_ctx = rock_src.to_crs(ctx_crs)
+
+    d_src = float(2.0 * np.sqrt(rock_src.geometry.area.iloc[0] / np.pi))
+    d_ctx = float(2.0 * np.sqrt(rock_ctx.geometry.area.iloc[0] / np.pi))
+    # Area inflates by 1/cos(phi), so the equivalent-circle diameter by 1/sqrt(cos phi).
+    assert d_ctx / d_src == pytest.approx(1.0 / np.sqrt(np.cos(np.radians(phi))), rel=2e-3)
+
+    floor = 5.0
+    assert len(_apply_detection_filters(rock_src, {"min_confidence": None,
+                                                   "min_size_m": floor})) == 0
+    assert len(_apply_detection_filters(rock_ctx, {"min_confidence": None,
+                                                   "min_size_m": floor})) == 1, (
+        "the same rock clears the floor once reprojected -- this is the R03 mechanism"
+    )
 
 
 # ----------------------------------------------------------------------------
@@ -963,3 +1088,187 @@ def test_row_axis_sign_is_not_the_column_axis_sign():
     column form onto the row axis negates the origin, which this catches."""
     align = _compute_grid_alignment(_win(0, 640), list(_MOSAIC)[:6], 512, 512, _LADDER)
     assert align["mosaic_row_origin"] == +640      # not -640
+
+
+def test_stage4_applies_the_size_and_confidence_floors_end_to_end(tmp_path):
+    """R80 gate: the filter is never wired end-to-end anywhere today.
+
+    Every existing Stage-4 test passes `detection_filters` as `{None, None}`, so a mutant
+    that deletes the `_apply_detection_filters` call from `stage4_one_image` survives the
+    entire suite. Four polygons on the 1 m sub-pixel grid so rasterised areas are exact:
+    one dropped by size, one dropped by score, two kept (25 + 400 = 425 m2).
+    """
+    from unittest.mock import patch
+
+    cache_dir, out_dir, info, obs = _make_window(tmp_path, height=192, width=192)
+    polys = [
+        _work_box(info, 21.0, -21.0, 1.0),     # 2x2  = 4 m2, d=2.26 -> dropped by size
+        _work_box(info, 52.5, -52.5, 2.5),     # 5x5  = 25 m2, d=5.64 -> kept
+        _work_box(info, 110.0, -110.0, 10.0),  # 20x20 = 400 m2 -> kept
+        _work_box(info, 205.0, -205.0, 5.0),   # 10x10, big enough, but score 0.10
+    ]
+    _write_polygons(info, polys, scores=[0.9, 0.9, 0.9, 0.10])
+    row = _make_manifest_row(info)
+    cfg = _labeling_cfg(detection_filters={"min_confidence": 0.5, "min_size_m": 5.0})
+
+    with patch("src.ctx_tiles.murray_tile_for_manifest_row", return_value=info["murray_tile"]):
+        prov = stage4_one_image(
+            obs, cache_dir=cache_dir, output_dir=out_dir, manifest_row=row,
+            target_crs=info["crs"].to_wkt(), labeling_cfg=cfg,
+            config_hash="hash_r80", apply_coreg_shift=False,
+        )
+
+    assert prov["n_polygons_stage1"] == 4
+    assert prov["n_polygons_after_filter"] == 2, "exactly one dropped by size, one by score"
+    assert prov["detection_filters"] == {"min_confidence": 0.5, "min_size_m": 5.0}
+
+    df = pd.read_parquet(out_dir / "labels" / f"{obs}.parquet")
+    fin = df[df.tile_size_px == TILE_SIZES[0]]
+    assert fin["boulder_area"].sum() == pytest.approx(425.0, rel=1e-9), (
+        "425 = 25 + 400; a radius reading of the floor would drop the 25 and give 400"
+    )
+    assert int(fin["boulder_count"].sum()) == 2
+
+
+def test_stage4_records_the_realised_size_basis(tmp_path):
+    """R80(d): the realised SIZE floor, the analogue of `realised_label_basis`.
+
+    `detection_filters` records the configured floor and is byte-identical across all 38
+    v2 sidecars, so exactly as with the confidence floor it cannot express the mixture
+    R03 found. This records what was actually measured.
+    """
+    from unittest.mock import patch
+
+    cache_dir, out_dir, info, obs = _make_window(tmp_path, height=192, width=192)
+    polys = [
+        _work_box(info, 21.0, -21.0, 1.0),     # 2x2,     d=2.26 -> dropped by size
+        _work_box(info, 52.5, -52.5, 2.5),     # 5x5,     d=5.64 -> kept
+        _work_box(info, 110.0, -110.0, 10.0),  # 20x20,   d=22.57 -> kept
+        # 4.5x4.5: d=5.08, so it CLEARS the size floor but is dropped by score. It is
+        # deliberately the smallest size-survivor, so computing the surviving-diameter
+        # statistic from the combined mask instead of the size mask alone changes the
+        # answer (5.077 -> 5.642) and is caught.
+        _work_box(info, 205.0, -205.0, 2.25),
+    ]
+    _write_polygons(info, polys, scores=[0.9, 0.9, 0.9, 0.10])
+    row = _make_manifest_row(info)
+    cfg = _labeling_cfg(detection_filters={"min_confidence": 0.5, "min_size_m": 5.0})
+
+    with patch("src.ctx_tiles.murray_tile_for_manifest_row", return_value=info["murray_tile"]):
+        prov = stage4_one_image(
+            obs, cache_dir=cache_dir, output_dir=out_dir, manifest_row=row,
+            target_crs=info["crs"].to_wkt(), labeling_cfg=cfg,
+            config_hash="hash_r80b", apply_coreg_shift=False,
+        )
+
+    sb = prov["realised_size_basis"]
+    assert sb["convention"] == "mixed_per_image_size_floor"
+    assert sb["size_metric"] == "equivalent_circle_diameter_2sqrt_area_over_pi"
+    assert sb["configured_min_size_m"] == 5.0
+    assert sb["measured_in_crs_is_projected"] is True
+    assert sb["measured_in_crs"] == "TestMars", "must be a short name, not a WKT blob"
+    # Each floor is attributed separately -- a polygon failing both must not be counted twice.
+    assert sb["n_dropped_by_size"] == 1
+    assert sb["n_dropped_by_confidence"] == 1
+    assert sb["size_floor_was_binding"] is True
+    # Survivors of the SIZE floor ALONE: the 5x5 (5.642), the 20x20 (22.57) and the
+    # 4.5x4.5 (5.077) that only the confidence floor removed -- NOT the 2x2. Using the
+    # combined mask here would report 5.642 and quietly describe a different population.
+    assert sb["min_surviving_diameter_ctx_frame_m"] == pytest.approx(5.0771, rel=1e-3)
+    assert sb["area_dropped_by_size_m2"] == pytest.approx(4.0, rel=1e-9)
+
+
+def test_realised_size_basis_records_the_per_image_physical_floor(tmp_path):
+    """The number the block exists to carry.
+
+    The floor is enforced on CTX-frame areas, so the *physical* floor it corresponds to
+    depends on each image's own source projection. Two images with the same configured
+    `min_size_m` must therefore record different physical floors -- otherwise the block is
+    as byte-identical as the `detection_filters` snapshot it was written to replace.
+    """
+    from src.labeling import _describe_realised_size_basis
+
+    ctx = pyproj.CRS.from_user_input(TEST_MARS_CRS_WKT)             # standard parallel 0
+    filters = {"min_confidence": None, "min_size_m": 1.4105}
+    diag = {"n_in": 10, "n_dropped_by_size": 0, "n_dropped_by_confidence": 0}
+
+    at_equator = _describe_realised_size_basis(diag, ctx, filters, mars_crs_wkt(0.0))
+    at_60 = _describe_realised_size_basis(diag, ctx, filters, mars_crs_wkt(60.0))
+
+    # Source frame == CTX frame: scale is exactly 1 and NOTHING is loosened. This is a real
+    # case -- v1's ESP_039820_1750 has source lat_ts=0 on the same sphere.
+    assert at_equator["source_to_target_diameter_scale"] == pytest.approx(1.0, abs=1e-12)
+    assert at_equator["realised_physical_min_size_m"] == pytest.approx(1.4105, rel=1e-9)
+    assert at_equator["realised_floor_is_looser_than_configured"] is False
+
+    # A 60-degree source standard parallel inflates area by 1/cos(60) = 2, diameter by
+    # sqrt(2), so the physical floor enforced is 1.4105/sqrt(2).
+    assert at_60["source_to_target_diameter_scale"] == pytest.approx(2 ** 0.5, rel=1e-9)
+    assert at_60["realised_physical_min_size_m"] == pytest.approx(1.4105 / 2 ** 0.5, rel=1e-9)
+    assert at_60["realised_floor_is_looser_than_configured"] is True
+
+    assert at_equator["realised_physical_min_size_m"] != at_60["realised_physical_min_size_m"]
+
+
+def test_realised_size_basis_says_unknown_when_the_source_crs_is_missing():
+    """Absence must never read as "checked and equal"."""
+    from src.labeling import _describe_realised_size_basis
+
+    ctx = pyproj.CRS.from_user_input(TEST_MARS_CRS_WKT)
+    out = _describe_realised_size_basis(
+        {"n_in": 1}, ctx, {"min_confidence": None, "min_size_m": 1.4105}, None,
+    )
+    assert out["source_crs_available"] is False
+    assert out["realised_floor_is_looser_than_configured"] is None
+    assert "source_to_target_diameter_scale" not in out
+
+
+@pytest.mark.parametrize("crs_in,expect_projected", [
+    (TEST_MARS_CRS_WKT, True),
+    ("EPSG:4326", False),
+    (None, None),
+])
+def test_realised_size_basis_reports_the_measurement_frame_honestly(crs_in, expect_projected):
+    """A hardcoded `True` here would pass a fixture that only ever uses a metric CRS."""
+    from src.labeling import _describe_realised_size_basis
+
+    crs = pyproj.CRS.from_user_input(crs_in) if crs_in else None
+    out = _describe_realised_size_basis({"n_in": 0}, crs, {"min_size_m": None}, None)
+    assert out["measured_in_crs_is_projected"] is expect_projected
+
+
+def test_diagnostics_distinguish_configured_from_applied(tmp_path):
+    """`_apply_detection_filters` silently skips the confidence floor when there is no
+    `score` column, and applies neither floor on an empty frame. Both must be legible."""
+    crs = pyproj.CRS.from_user_input(TEST_MARS_CRS_WKT)
+
+    no_score = gpd.GeoDataFrame(geometry=[box(0, 0, 5, 5)], crs=crs)
+    diag: dict = {}
+    _apply_detection_filters(no_score, {"min_confidence": 0.5, "min_size_m": None},
+                             diagnostics=diag)
+    assert diag["confidence_floor_configured"] is True
+    assert diag["confidence_floor_applied"] is False
+    assert diag["n_dropped_by_confidence"] == 0
+    assert "confidence_floor_note" in diag
+
+    empty = gpd.GeoDataFrame({"score": []}, geometry=[], crs=crs)
+    diag2: dict = {}
+    _apply_detection_filters(empty, {"min_confidence": 0.5, "min_size_m": 1.4105},
+                             diagnostics=diag2)
+    assert diag2["size_floor_configured"] is True, "configured is knowable even with no rows"
+    assert diag2["size_floor_applied"] is False
+    # Nothing was measured, so no measured-looking zero may be emitted.
+    assert "area_total_m2" not in diag2
+
+
+def test_diagnostics_do_not_emit_unmeasured_areas():
+    """A seeded `area_total_m2: 0.0` on a non-empty image is a false claim, not a gap."""
+    crs = pyproj.CRS.from_user_input(TEST_MARS_CRS_WKT)
+    gdf = gpd.GeoDataFrame(
+        {"score": [0.5] * 3}, geometry=[box(i * 20, 0, i * 20 + 10, 10) for i in range(3)],
+        crs=crs,
+    )
+    diag: dict = {}
+    _apply_detection_filters(gdf, None, diagnostics=diag)
+    assert diag["n_in"] == 3
+    assert "area_total_m2" not in diag, "300 m2 of polygons must not be recorded as 0.0"

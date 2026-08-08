@@ -110,6 +110,11 @@ labeling:
     # vClaire is ~1M detections/image at mean score 0.51 on downscaled imagery.
     # min_size_m kept at the v1 0.25-m/px design floor as a STARTING point; revisit
     # after the Stage-1 bring-up shows the reprojected size distribution (PLAN §7.1).
+    # MEASURED 2026-08-06 (R80): it is NOT a no-op -- 19,757 polygons dropped across the
+    # 12 fine (0.25 m/px) images, 0 across all 26 coarse ones. And because it is applied
+    # in the reprojected CTX frame, the realised physical floor is 0.993-1.367 m, not the
+    # configured 1.4105 m. Retained + documented per DECISIONS 2026-08-06u; the per-image
+    # value is emitted as `realised_size_basis` in each Stage-4 sidecar.
     min_confidence: null
     min_size_m: 1.4105
   context_patch_px: null

@@ -104,22 +104,91 @@ def _apply_coreg_shift(gdf, shift: dict | None):
     return out
 
 
-def _apply_detection_filters(gdf, filters: dict | None):
+def _apply_detection_filters(gdf, filters: dict | None, *, diagnostics: dict | None = None):
     """Drop polygons failing `min_confidence` (DBF `score`) or `min_size_m` (derived diameter).
 
-    `min_size_m` is interpreted as a minimum equivalent-circle diameter,
-    `2*sqrt(area/pi)`. Returns a (possibly identical) GeoDataFrame.
+    `min_size_m` is interpreted as a minimum equivalent-circle **diameter**,
+    `2*sqrt(area/pi)`, measured in the CRS the GeoDataFrame is currently in — which by the
+    time Stage 4 calls this is the projected CTX frame, **not** the image's own source
+    frame. That distinction is R03/R80's mechanism and is recorded, not corrected; see
+    `_describe_realised_size_basis`.
+
+    Returns a (possibly identical) GeoDataFrame. When `diagnostics` is given it is filled
+    in place with per-floor counts and areas — an out-parameter rather than a changed
+    return type so the sole caller (`stage4_one_image`) keeps its signature, and so the
+    pre- and post-filter frames are never both held (727k polygons on `ESP_068483_2280`).
+
+    Only keys that were actually **measured** are written. A numeric key is absent rather
+    than zero when the corresponding computation did not run — a seeded `area_total_m2: 0.0`
+    on a non-empty image would be a positive false claim, not a missing measurement.
     """
+    _f = filters or {}
+    if diagnostics is not None:
+        diagnostics.update(
+            n_in=int(len(gdf)),
+            n_dropped_by_size=0,
+            n_dropped_by_confidence=0,
+            # Configured-ness is known before anything runs, and must not be confused with
+            # applied-ness: a configured confidence floor is silently skipped when there is
+            # no `score` column, and an empty image applies neither.
+            size_floor_configured=_f.get("min_size_m") is not None,
+            confidence_floor_configured=_f.get("min_confidence") is not None,
+            size_floor_applied=False,
+            confidence_floor_applied=False,
+        )
     if filters is None or len(gdf) == 0:
+        if diagnostics is not None and len(gdf) == 0 and _f:
+            diagnostics["note"] = "no polygons to filter, so neither floor was applied"
         return gdf
     keep = np.ones(len(gdf), dtype=bool)
+
     min_conf = filters.get("min_confidence")
-    if min_conf is not None and "score" in gdf.columns:
-        keep &= gdf["score"].to_numpy() >= float(min_conf)
+    conf_applied = min_conf is not None and "score" in gdf.columns
+    if conf_applied:
+        fail_conf = ~(gdf["score"].to_numpy() >= float(min_conf))
+        keep &= ~fail_conf
+    else:
+        fail_conf = np.zeros(len(gdf), dtype=bool)
+
     min_size_m = filters.get("min_size_m")
-    if min_size_m is not None:
-        diam = 2.0 * np.sqrt(gdf.geometry.area.to_numpy() / np.pi)
-        keep &= diam >= float(min_size_m)
+    size_applied = min_size_m is not None
+    area = gdf.geometry.area.to_numpy() if (size_applied or diagnostics is not None) else None
+    if size_applied:
+        diam = 2.0 * np.sqrt(area / np.pi)
+        fail_size = ~(diam >= float(min_size_m))
+        keep &= ~fail_size
+    else:
+        fail_size = np.zeros(len(gdf), dtype=bool)
+
+    if diagnostics is not None:
+        # Attribute each floor independently, so a polygon failing BOTH is not counted
+        # twice and "configured but silently not applied" (no `score` column) is
+        # distinguishable from "applied and dropped nothing".
+        diagnostics.update(
+            n_dropped_by_size=int(fail_size.sum()),
+            n_dropped_by_confidence=int(fail_conf.sum()),
+            size_floor_applied=bool(size_applied),
+            confidence_floor_applied=bool(conf_applied),
+            size_floor_was_binding=bool(fail_size.any()),
+        )
+        if area is not None:
+            diagnostics["area_total_m2"] = float(area.sum())
+            diagnostics["area_dropped_by_size_m2"] = float(area[fail_size].sum())
+        if size_applied and (~fail_size).any():
+            # Survivors of the SIZE floor alone -- mixing in the confidence floor would
+            # make this describe a population the size basis is not about.
+            kept_diam = 2.0 * np.sqrt(area[~fail_size] / np.pi)
+            diagnostics.update(
+                min_surviving_diameter_ctx_frame_m=float(kept_diam.min()),
+                diameter_p1_ctx_frame_m=float(np.percentile(kept_diam, 1)),
+                diameter_median_ctx_frame_m=float(np.percentile(kept_diam, 50)),
+            )
+        if min_conf is not None and not conf_applied:
+            diagnostics["confidence_floor_note"] = (
+                "min_confidence is configured but no `score` column is present, so the "
+                "confidence floor was NOT applied"
+            )
+
     if keep.all():
         return gdf
     return gdf.iloc[keep].reset_index(drop=True)
@@ -278,6 +347,173 @@ def _describe_realised_label_basis(gdf, cache_dir, obs_id: str, detection_filter
             "per-image abundance LEVEL is biased low. Safe for rank-only statistics; "
             "exclude from per-image level claims (calibration pool, mean(pred)/mean(true), "
             "thermal comparisons) unless the bias is corrected."
+        )
+    return out
+
+
+def _crs_name_and_projected(crs) -> tuple[str | None, bool | None]:
+    """`(short name, is_projected)` for a rasterio CRS, a pyproj CRS, a WKT string or None.
+
+    `rasterio.crs.CRS` has **no** `.name` attribute, so a naive `getattr` chain falls
+    through to `to_string()` and records a 400+ character WKT blob in every sidecar.
+    Normalising through pyproj gives the same short name for every input type, which also
+    means the tests exercise the branch production takes.
+    """
+    if crs is None:
+        return None, None
+    try:
+        from pyproj import CRS as _CRS
+
+        parsed = _CRS.from_user_input(crs.to_wkt() if hasattr(crs, "to_wkt") else crs)
+        return str(parsed.name), bool(parsed.is_projected)
+    except Exception:  # noqa: BLE001 -- provenance must never break label generation
+        try:
+            return str(crs)[:120], bool(crs.is_projected)
+        except Exception:  # noqa: BLE001
+            return None, None
+
+
+def _equirect_params(crs) -> tuple[float, float] | None:
+    """`(semi_major_m, standard_parallel_deg)` for an equirectangular CRS, else None.
+
+    Read via `coordinate_operation.params` rather than `to_dict()`/`to_proj4()`, both of
+    which emit `UserWarning: You will likely lose important projection information` — a new
+    warning inside a producer would be noise in exactly the suite whose acceptance signal
+    is that a warning disappeared.
+    """
+    if crs is None:
+        return None
+    try:
+        from pyproj import CRS as _CRS
+
+        parsed = _CRS.from_user_input(crs.to_wkt() if hasattr(crs, "to_wkt") else crs)
+        radius = float(parsed.ellipsoid.semi_major_metre)
+        lat_ts = 0.0
+        op = parsed.coordinate_operation
+        if op is not None:
+            for p in op.params:
+                if "standard parallel" in p.name.lower():
+                    lat_ts = float(p.value)
+                    break
+        return radius, lat_ts
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _source_to_target_diameter_scale(source_crs_wkt, window_crs) -> float | None:
+    """How much an equivalent-circle diameter grows from the source frame to the CTX frame.
+
+    Equirectangular maps easting by `R*cos(lat_ts)` and northing by `R`, so area scales by
+    `(R_t/R_s)**2 * cos(lat_ts_t)/cos(lat_ts_s)` and an equivalent-circle **diameter** by
+    the square root of that. Returns None when either frame is unavailable or not
+    equirectangular — the caller must then record "unknown", never "equal".
+    """
+    src = _equirect_params(source_crs_wkt)
+    tgt = _equirect_params(window_crs)
+    if src is None or tgt is None:
+        return None
+    r_s, lat_s = src
+    r_t, lat_t = tgt
+    cos_s, cos_t = math.cos(math.radians(lat_s)), math.cos(math.radians(lat_t))
+    if not (r_s > 0 and cos_s > 0 and cos_t > 0):
+        return None
+    return math.sqrt((r_t / r_s) ** 2 * (cos_t / cos_s))
+
+
+def _describe_realised_size_basis(
+    diagnostics: dict, window_crs, detection_filters, source_crs_wkt=None,
+) -> dict:
+    """The physical size floor these labels were ACTUALLY built at, per image.
+
+    The size-floor analogue of `_describe_realised_label_basis`, and for the same reason:
+    `detection_filters` records the *configured* `min_size_m` and is byte-identical across
+    all 38 v2 sidecars, so it cannot express the mixture R03/R83/R84 found. Brian's
+    2026-08-06 decision is to **retain and document** that mixture, which makes this the
+    field that carries it downstream. See DECISIONS 2026-08-06u.
+
+    Two things are deliberately recorded rather than corrected:
+
+    * **The floor is applied in the projected CTX frame.** Polygons reach Stage 4 already
+      reprojected into the clon_0 target CRS, where easting is stretched relative to each
+      image's own source standard parallel, so the realised *physical* floor is looser than
+      the configured metres and differs image to image (measured over the 39 v2 images:
+      0.993-1.367 m realised against a configured 1.4105 m). Moving the filter earlier, or
+      dividing by the scale here, would delete a further ~0.4-3 % of each fine-cohort
+      image's polygons — i.e. redefine the target. That needs its own decision.
+    * **The realised floor is measured, not assumed.** `realised_diameter_floor_m` is the
+      smallest surviving equivalent-circle diameter, exactly as `realised_score_floor` is
+      the smallest surviving score.
+
+    Deliberately NOT recorded: a `detector_min_size_px` / "binding floor" pair. It was
+    drafted and then refuted by measurement — the detections do not obey a 5-pixel floor,
+    so publishing one as provenance would assert something false.
+    """
+    filters = detection_filters or {}
+    configured = filters.get("min_size_m")
+    out: dict = {
+        "convention": "mixed_per_image_size_floor",
+        "temporary_pending": "v3 re-detection / common-floor decision",
+        "decision": "DECISIONS 2026-08-06u (retain + document; do not silently harmonise)",
+        "size_metric": "equivalent_circle_diameter_2sqrt_area_over_pi",
+        "configured_min_size_m": (float(configured) if configured is not None else None),
+        "configured_min_area_m2": (
+            float(math.pi * (float(configured) / 2.0) ** 2) if configured is not None else None
+        ),
+    }
+    out["measured_in_crs"], out["measured_in_crs_is_projected"] = _crs_name_and_projected(
+        window_crs
+    )
+    out["measured_in_frame"] = (
+        f"areas measured in {out['measured_in_crs']}"
+        if out["measured_in_crs"] else "unknown -- window CRS unavailable"
+    )
+
+    for k in ("n_in", "n_dropped_by_size", "n_dropped_by_confidence",
+              "size_floor_configured", "confidence_floor_configured",
+              "size_floor_applied", "confidence_floor_applied", "size_floor_was_binding",
+              "area_total_m2", "area_dropped_by_size_m2",
+              "min_surviving_diameter_ctx_frame_m", "diameter_p1_ctx_frame_m",
+              "diameter_median_ctx_frame_m", "confidence_floor_note", "note"):
+        if k in diagnostics:
+            out[k] = diagnostics[k]
+
+    # --- the per-image number this block exists to carry ---------------------------------
+    # The floor is enforced on areas measured in the CTX frame, but the *physical* floor it
+    # corresponds to depends on each image's own source projection. Emit the scale and the
+    # resulting physical floor, so a product-level mixture statement can be aggregated from
+    # the sidecars. Do NOT assert a direction: for an image whose source frame already
+    # equals the CTX frame the scale is exactly 1.0 and nothing is loosened (measured on
+    # v1's ESP_039820_1750: source lat_ts=0, R=3396190, scale 1.000000000000).
+    scale = _source_to_target_diameter_scale(source_crs_wkt, window_crs)
+    out["source_crs_available"] = scale is not None
+    if scale is not None:
+        out["source_to_target_diameter_scale"] = float(scale)
+        if configured is not None:
+            physical = float(configured) / float(scale)
+            out["realised_physical_min_size_m"] = physical
+            out["realised_physical_min_area_m2"] = float(math.pi * (physical / 2.0) ** 2)
+            out["realised_floor_is_looser_than_configured"] = bool(scale > 1.0 + 1e-9)
+            out["realised_floor_note"] = (
+                "min_size_m is applied after reprojection into the CTX frame. This image's "
+                f"source->target equivalent-circle-diameter scale is {scale:.6f}, so the "
+                f"physical floor actually enforced is {physical:.4f} m against a configured "
+                f"{float(configured):.4f} m. Retained and documented, not corrected -- "
+                "see DECISIONS 2026-08-06u."
+            )
+    elif configured is not None:
+        # Never let absence read as "checked and equal".
+        out["realised_floor_is_looser_than_configured"] = None
+        out["realised_floor_note"] = (
+            "the image's source CRS is unavailable, so the physical floor this configured "
+            "min_size_m corresponds to could not be derived. Absence is unknown, not equal."
+        )
+    n_in = diagnostics.get("n_in") or 0
+    if n_in:
+        out["dropped_by_size_fraction"] = float(diagnostics.get("n_dropped_by_size", 0) / n_in)
+    total_area = diagnostics.get("area_total_m2") or 0.0
+    if total_area:
+        out["dropped_by_size_area_fraction"] = float(
+            diagnostics.get("area_dropped_by_size_m2", 0.0) / total_area
         )
     return out
 
@@ -711,10 +947,30 @@ def stage4_one_image(
     if len(gdf) and window_crs is not None:
         gdf = gdf.to_crs(window_crs)
     gdf_pre_filter_n = len(gdf)
-    gdf = _apply_detection_filters(gdf, labeling_cfg.get("detection_filters"))
+    size_diag: dict = {}
+    gdf = _apply_detection_filters(
+        gdf, labeling_cfg.get("detection_filters"), diagnostics=size_diag,
+    )
     n_after_filter = len(gdf)
     realised_basis = _describe_realised_label_basis(
         gdf, cache_dir, obs_id, labeling_cfg.get("detection_filters"),
+    )
+    # The image's own source CRS, for the per-image physical-floor scale. Same Stage-1
+    # sidecar `_describe_realised_label_basis` reads; absent on a pre-Stage-1 cache, in
+    # which case the size basis records "unknown" rather than assuming equality.
+    _s1_wkt = None
+    try:
+        from . import detections as _det_mod
+
+        _s1_wkt = json.loads(
+            (Path(cache_dir) / _det_mod.CACHE_SUBDIR / f"{obs_id}.json").read_text(
+                encoding="utf-8"
+            )
+        ).get("source_crs_wkt")
+    except (OSError, ValueError):
+        pass
+    realised_size_basis = _describe_realised_size_basis(
+        size_diag, window_crs, labeling_cfg.get("detection_filters"), _s1_wkt,
     )
 
     shift = coregister.load_shift(obs_id, cache_dir) if apply_coreg_shift else None
@@ -812,6 +1068,9 @@ def stage4_one_image(
         # express the mixed basis R23 found; this is the REALISED one. See DECISIONS
         # 2026-08-06o.
         "realised_label_basis": realised_basis,
+        # The realised SIZE floor, the analogue of the above for R03/R83/R84's mixed
+        # physical-size convention. See DECISIONS 2026-08-06u.
+        "realised_size_basis": realised_size_basis,
         "coreg_shift_applied": bool(shift is not None),
         # R29/R75: whether the coverage mask was translated with the polygons. Pre- and
         # post-fix labels are otherwise indistinguishable (the Pattern-D failure), so this

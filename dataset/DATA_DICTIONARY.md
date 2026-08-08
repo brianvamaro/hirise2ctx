@@ -202,7 +202,23 @@ any sub-tile ineligible at coarser scales) are dropped, not written as NaN.
 | `config_hash` | str | Provenance |
 | `written_at_iso` | str | When the parquet was written (UTC ISO) |
 
-> ⚠ **`source_integrity` and `null_geometry_basis` (Stage 1) and `realised_label_basis` (Stage 4)
+> **`realised_size_basis`** (obj, Stage-4 sidecar, added 2026-08-06) — the size-floor analogue of
+> `realised_label_basis`, carrying R03/R83/R84's mixed **physical size** floor. `detection_filters`
+> records the *configured* `min_size_m` and is byte-identical across all 38 v2 sidecars, so it cannot
+> express the mixture. Keys: `convention` (`mixed_per_image_size_floor`), `size_metric` (always
+> `equivalent_circle_diameter_2sqrt_area_over_pi` — R80 showed this was unpinned anywhere else),
+> `configured_min_size_m` / `configured_min_area_m2`, `measured_in_frame` / `measured_in_crs` /
+> `measured_in_crs_is_projected`, `realised_diameter_floor_m` (the smallest surviving diameter —
+> measured, exactly as `realised_score_floor` is), `diameter_p1_m`, `diameter_median_m`,
+> `n_dropped_by_size`, `n_dropped_by_confidence` (attributed **separately**, so a polygon failing
+> both is not double-counted), `size_floor_applied` / `confidence_floor_applied` (a configured floor
+> with no `score` column is silently skipped, so "configured" and "applied" must be distinguishable),
+> `area_total_m2`, `area_dropped_by_size_m2`, `dropped_by_size_fraction`,
+> `dropped_by_size_area_fraction`, and `realised_floor_is_looser_than_configured` +
+> `realised_floor_note`. See **DECISIONS 2026-08-06u**.
+
+> ⚠ **`source_integrity` and `null_geometry_basis` (Stage 1) and `realised_label_basis` /
+> `realised_size_basis` (Stage 4)
 > are emitted from 2026-08-06 onward and appear in ZERO currently banked sidecars** — the live
 > `cache_v2` and `dataset_v2` trees predate them. Until Stage 1 / Stage 4 re-run, **absence of these
 > keys does not mean the source was checked and found clean.** Treat a missing key as *unknown*.

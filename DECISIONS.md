@@ -6999,3 +6999,70 @@ length check (4 failures), drop the validator (1), reuse gate no-op (1), walker 
 and reuse gate over-strict on `not_jp2` (1 — the isolation-suite fixture). The live-cache regression
 guard is deliberately **not** marked `slow`: it reads only marker headers, 3 ms for all 46 files.
 Fast suite: **624 passed**, 21 deselected.
+
+## 2026-08-06u — R80 CLOSED: the size floor is pinned, and the per-image physical floor is now recorded
+
+Audit step 5, Stage 4 gate. Completes 2026-08-06s (which corrected the "no-op" claim).
+
+**The tests (the gate item).** The old fixture used areas 1/100/1000 in EPSG:4326 against a 5.0 m
+threshold. It could not tell diameter from radius, and it measured area in **degrees²** — which is
+also why every suite run printed `UserWarning: Geometry is in a geographic CRS`. The replacement runs
+in a projected metre frame and uses six shapes chosen so that at a 5.0 m floor **only the
+equivalent-circle diameter yields {2,3,4}**; radius yields {3}, max-bbox-side {1,2,3,5}, perimeter/π
+and area-as-size {1,2,3,4,5}, and equivalent-**square** side {2,3}. Plus inclusive-boundary tests for
+both floors (derived with the production expression, so bit-exact rather than approximately at the
+boundary), a lat_ts 60-vs-0 characterisation test, and the end-to-end Stage-4 test the gate names —
+which did not exist, so deleting the filter call from `stage4_one_image` outright had been surviving
+the entire suite. The disappearance of the geographic-CRS warning is the acceptance signal for the
+units half, and it is gone (0 occurrences).
+
+**What the skeptic caught that the first mutation pass did not.** Two mutants survived 630 tests:
+substituting `geometry.envelope.area` (bounding box) or `geometry.convex_hull.area` for polygon area.
+Every fixture shape was an axis-aligned `shapely.box`, for which all three areas are **identical** —
+so the polygon-area interpretation was not pinned at all. It is not academic: on `ESP_046328_2180`
+(138,373 polygons, none axis-aligned) the median bbox/polygon area ratio is **1.2673**, and measuring
+bbox area would silently retain **3,466 of the 6,360** polygons the production floor drops. The
+fixture now contains a concave L (a 5×5 square minus a 3×3 corner) whose three areas straddle the
+floor — polygon 16 (d 4.51, dropped), hull 20.5 (d 5.11, kept), bbox 25 (d 5.64, kept). Both mutants
+now die. A third survivor — computing the surviving-diameter statistic from the combined keep mask
+instead of the size mask alone — is killed by making the confidence-dropped polygon the *smallest*
+size-survivor.
+
+**Provenance: `realised_size_basis`,** the size-floor analogue of `realised_label_basis`. The first
+draft asserted rather than measured, and the skeptic was right to reject it:
+
+- `realised_floor_is_looser_than_configured` was a hardcoded `True`. **It is false** for an image
+  whose source frame already equals the CTX frame — reproduced on v1's `ESP_039820_1750` (source
+  lat_ts 0, R 3396190, scale exactly 1.000000000000). It is now derived, and `None` when unknown.
+- The per-image number the block exists to carry was **not emitted at all**; every mixture-bearing
+  field was a hardcoded constant, reproducing the exact defect the block was written to fix. It now
+  emits `source_to_target_diameter_scale` = `sqrt((R_t/R_s)² · cos(lat_ts_t)/cos(lat_ts_s))` and
+  `realised_physical_min_size_m` = configured / scale, read from the Stage-1 sidecar's own
+  `source_crs_wkt`. That single float is what makes a product-level mixture aggregation possible.
+- `realised_diameter_floor_m` was the smallest survivor of **both** floors measured in the inflated
+  frame, so on images where the size floor bound nothing it reported a "floor" of 2.55 m while the
+  note in the same dict said the realised floor was *below* 1.4105 m. Renamed
+  `min_surviving_diameter_ctx_frame_m`, computed from the size mask alone, with an explicit
+  `size_floor_was_binding`.
+- A seeded `area_total_m2: 0.0` was emitted next to `n_in: 3` when no filters were configured — a
+  positive false claim, not a missing measurement. Only measured keys are written now.
+- `measured_in_crs` recorded a 483-character WKT blob in production (rasterio's CRS has no `.name`,
+  so the probe fell through to `to_string()`) while tests saw a 41-character name — the tests were
+  exercising a branch production never took. Both now normalise through pyproj.
+- CRS parameters are read via `coordinate_operation.params`, not `to_dict()`/`to_proj4()`, which emit
+  their own `UserWarning` — a new warning inside a producer would be noise in exactly the suite whose
+  acceptance signal is that a warning disappeared.
+
+**Still deliberately not emitted:** a `detector_min_size_px = 5` / `binding_floor` triple. It was
+drafted, then refuted by measurement — the detections do not obey a 5-pixel floor, so publishing one
+as provenance would assert something false.
+
+**Not changed, on purpose.** Moving the filter before the reprojection, or dividing by the scale
+inside it, would make the realised floor match the documented one — and would delete a further
+~0.4–3 % of every fine-cohort image's polygons, i.e. redefine the target. Under "retain and document"
+the correct action is to record it. `config.yaml`/`config_v2.yaml` and the DATA_DICTIONARY are
+corrected accordingly.
+
+Behaviour is identical: `_apply_detection_filters` was verified kept-row-identical against the
+pre-change implementation over 5 real cached GPKGs (9,628 to 727,160 polygons) × 8 filter
+configurations, n=40, exact match in all 40. Fast suite: **636 passed**, 21 deselected.

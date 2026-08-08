@@ -92,8 +92,15 @@ labeling:
     # BoulderNet design floor (Amaro et al. 2026): 5x5 source-image pixels regardless of pixel scale.
     # 5x5 px at 0.25 m/px = 1.5625 m^2; at 0.50 m/px = 6.25 m^2. Global filter chosen 2026-05-26
     # (AskUserQuestion) set to the 0.25 m/px floor (1.5625 m^2 area). _apply_detection_filters uses
-    # equivalent-circle diameter: 2*sqrt(1.5625/pi) = 1.4105 m -> matches that area threshold
-    # exactly. 0.50 m/px images are unaffected (their area_min >= 3.75 m^2 across the manifest).
+    # equivalent-circle diameter: 2*sqrt(1.5625/pi) = 1.4105 m -- the arithmetic is right, but
+    # "matches that area threshold exactly" is NOT (corrected 2026-08-06, R80): the floor is
+    # applied AFTER Stage 1 reprojects into the clon_0 CTX frame, where area is inflated relative
+    # to each image's own standard parallel, so the realised PHYSICAL floor is 1.4105*sqrt(cos phi)
+    # = 0.993-1.367 m diameter across the 39 v2 images (median 1.2315), i.e. 3.2-42.0 % looser in
+    # diameter and 6.6-101.8 % looser in area than documented. Retained and documented rather than
+    # corrected -- see DECISIONS 2026-08-06u and the `realised_size_basis` sidecar block.
+    # Nor is the filter a no-op: 19,757 polygons are dropped across the 12 fine (0.25 m/px)
+    # images. The 0.50 m/px images ARE unaffected (0 dropped on all 26, verified).
     min_size_m: 1.4105
   # DEPRECATED 2026-05-23: features and context_patch_px moved to top-level `features` block
   # below. Kept here for backwards compat; src/config.py emits a DeprecationWarning if used.
