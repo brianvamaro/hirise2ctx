@@ -12,6 +12,7 @@ re-inference.
 """
 from __future__ import annotations
 
+import warnings
 import zipfile
 from pathlib import Path
 
@@ -97,7 +98,24 @@ def mosaic_tiles(tiles: list[str], kind: str = "abundance", with_ctx: bool = Tru
     ``with_ctx=False`` for tiles that have no cached CTX zip (e.g. just visualising abundance)."""
     from rasterio.merge import merge
 
+    from src.mapping import assert_shared_lattice
+
     srcs = [rasterio.open(MAP_DIR / f"{t}_{kind}.tif") for t in tiles]
+    # R01: this is a second merge path over the same per-tile products, and guarding only
+    # `mapping.mosaic_geotiffs` would leave the striping/A1 analysis silently misregistered
+    # -- exactly the failure the guard exists to make loud. Warn rather than raise here:
+    # this function is the notebook-24/25 *analysis* path over already-shipped tiles, whose
+    # whole subject is the artifact as it exists. See DECISIONS 2026-08-06x.
+    try:
+        assert_shared_lattice([s.transform for s in srcs])
+    except ValueError as exc:
+        warnings.warn(
+            f"mosaic_tiles: {exc} -- merge() floors each tile's fractional offset, so these "
+            "tiles are placed with a whole-cell displacement (measured on the shipped "
+            "product: 25 of 26 tiles, median 140 m). Fine for inspecting the existing "
+            "artifact; do not read positions off it.",
+            RuntimeWarning, stacklevel=2,
+        )
     arr, transform = merge(srcs)
     crs = srcs[0].crs
     nd = srcs[0].nodata

@@ -167,3 +167,147 @@ def test_own_tile_zero_fraction():
     tj = np.array([1, 2])
     zf = own_tile_zero_fraction(window, ti, tj, tile_px=tile_px, row0=row0, col0=col0)
     assert zf[0] == 0.0 and zf[1] == 1.0
+
+
+# ============================================================================
+# R01 — the globally anchored coarse grid. See DECISIONS 2026-08-06x.
+# ============================================================================
+import math
+
+from src.mapping import (
+    COARSE_GRID_ID, MURRAY_NATIVE_M, MURRAY_PPD, MURRAY_RADIUS_M,
+    assert_murray_sphere, assert_shared_lattice, global_cell_transform,
+    global_native_origin, tile_grid_phase,
+)
+
+_CELL = 32 * MURRAY_NATIVE_M
+_MURRAY_WKT = ('PROJCS["Mars_2015",GEOGCS["GCS",DATUM["D",'
+               'SPHEROID["Mars_2015",3396190,169.894447223612]]]]')
+
+
+def _tile_transform(lon_deg: int, lat_deg: int):
+    """The affine of a real Murray V01 tile: origin on the lon0/lat0 native lattice."""
+    a = MURRAY_NATIVE_M
+    return (a, 0.0, lon_deg * MURRAY_PPD * a, 0.0, -a, (lat_deg + 4) * MURRAY_PPD * a)
+
+
+def test_the_native_constant_matches_the_murray_definition():
+    assert MURRAY_PPD * 4 == 47420
+    assert MURRAY_NATIVE_M == pytest.approx(math.pi * MURRAY_RADIUS_M / 180.0 / MURRAY_PPD)
+
+
+def test_global_native_origin_is_integral_on_real_tile_geometry():
+    for lon, lat in [(0, 0), (-12, 44), (8, 40), (152, -8)]:
+        gr, gc = global_native_origin(_tile_transform(lon, lat))
+        assert gc == lon * MURRAY_PPD
+        assert gr == -(lat + 4) * MURRAY_PPD
+
+
+def test_global_native_origin_rejects_an_off_lattice_raster():
+    a = MURRAY_NATIVE_M
+    with pytest.raises(ValueError, match="off the Murray global native lattice"):
+        global_native_origin((a, 0.0, 12345.6, 0.0, -a, 98765.4))
+
+
+def test_the_phase_walks_four_native_px_per_tile_and_is_never_constant():
+    """The defect itself: gcd(47420, 32) = 4, so 47420 % 32 = 28 = -4 mod 32."""
+    assert 47420 % 32 == 28
+    assert math.gcd(47420, 32) == 4
+    phases = [tile_grid_phase(_tile_transform(lon, 40))[1] for lon in range(-12, 20, 4)]
+    assert len(set(phases)) > 1, "if every tile shared a phase there would be no R01"
+    # adjacent tiles differ by exactly 4 native px = 20 m
+    for p, q in zip(phases, phases[1:]):
+        assert (q - p) % 32 == 4
+
+
+def test_tile_grid_phase_uses_the_pinned_convention_not_its_complement():
+    """M6: `(-gr) % 32` vs `gr % 32`. At N44 both are 16, so a test written only on an
+    N44 tile is blind to the mutant — these latitudes are chosen to separate them."""
+    got = {lat: tile_grid_phase(_tile_transform(0, lat))[0] for lat in (44, 40, 36, 32)}
+    assert got == {44: 16, 40: 20, 36: 24, 32: 28}
+    complement = {lat: (-v) % 32 for lat, v in got.items()}
+    assert complement == {44: 16, 40: 12, 36: 8, 32: 4}
+    assert got != complement, "the two conventions must be distinguishable in this fixture"
+
+
+def test_the_phase_lands_the_first_cell_on_a_global_boundary():
+    """The runtime invariant the drivers assert: origin + phase is cell-aligned."""
+    for lon, lat in [(-12, 44), (-8, 40), (0, 36), (8, 32), (16, 44)]:
+        t = _tile_transform(lon, lat)
+        gr, gc = global_native_origin(t)
+        pr, pc = tile_grid_phase(t)
+        assert (gr + pr) % 32 == 0
+        assert (gc + pc) % 32 == 0
+
+
+def test_global_cell_transform_is_bit_identical_across_tiles():
+    """Why the canonical constant: the cached sidecars carry FOUR distinct pixel sizes and
+    none equals the exact value, so per-tile `a` would re-import that spread."""
+    a = global_cell_transform(-100, 250)
+    b = global_cell_transform(-100, 999)
+    assert a.a == b.a and a.e == b.e
+    assert a.c == 250 * _CELL and a.f == 100 * _CELL
+    # offsets between any two cells are exactly integral in cells
+    assert (b.c - a.c) / _CELL == pytest.approx(749, abs=1e-9)
+
+
+def test_assert_shared_lattice_accepts_the_global_grid():
+    assert_shared_lattice([global_cell_transform(i, j)
+                           for i, j in [(-17781, -4444), (-17781, 1000), (-12000, 7407)]])
+
+
+def test_assert_shared_lattice_rejects_a_half_cell_phase():
+    good = global_cell_transform(-100, 250)
+    from rasterio.transform import Affine
+    bad = Affine(good.a, 0.0, good.c + _CELL / 2, 0.0, good.e, good.f)
+    with pytest.raises(ValueError, match="not on murray_v01"):
+        assert_shared_lattice([good, bad])
+
+
+def test_assert_shared_lattice_rejects_the_real_20_m_tile_phase():
+    """20 m is the measured adjacent-tile offset — an eighth of a cell. A tolerance loose
+    enough to accept it would accept the whole defect."""
+    good = global_cell_transform(-100, 250)
+    from rasterio.transform import Affine
+    bad = Affine(good.a, 0.0, good.c + 20.0, 0.0, good.e, good.f)
+    with pytest.raises(ValueError, match="phase"):
+        assert_shared_lattice([good, bad])
+
+
+def test_assert_murray_sphere_measures_rather_than_assumes():
+    assert assert_murray_sphere(_MURRAY_WKT) == MURRAY_RADIUS_M
+    assert "R3396190" in COARSE_GRID_ID, "the id asserts the radius, so it must be checked"
+    with pytest.raises(ValueError, match="does not describe this product"):
+        assert_murray_sphere(_MURRAY_WKT.replace("3396190", "3389500"))   # IAU mean radius
+    with pytest.raises(ValueError, match="no SPHEROID"):
+        assert_murray_sphere('PROJCS["nope"]')
+
+
+def test_predict_window_global_grid_produces_global_cells_and_a_global_affine():
+    win = _window()
+    legacy = predict_window(win, _FakeEmbedder(), _FakeHead(), tile_px=8)
+    glob = predict_window(win, _FakeEmbedder(), _FakeHead(), tile_px=8,
+                          global_grid=(-17781, -4444, 0, 0))
+    # Same predictions, relabelled onto the global lattice.
+    assert np.allclose(np.nan_to_num(legacy.prob), np.nan_to_num(glob.prob))
+    assert glob.ti.min() == legacy.ti.min() - 17781
+    assert glob.tj.min() == legacy.tj.min() - 4444
+    expected = global_cell_transform(glob.ti_min, glob.tj_min, 8)
+    assert glob.transform.c == pytest.approx(expected.c)
+    assert glob.transform.f == pytest.approx(expected.f)
+
+
+def test_predict_window_global_grid_does_not_break_window_indexing():
+    """The ordering trap: promoting ti/tj to global BEFORE embed_window /
+    own_tile_zero_fraction drives the slice origin to ~-521,600, so `valid` goes all-False
+    and every prob is NaN. A large negative cell origin must still predict."""
+    glob = predict_window(_window(), _FakeEmbedder(), _FakeHead(), tile_px=8,
+                          global_grid=(-16300, -4444, 0, 0))
+    assert np.isfinite(glob.prob).all(), "global cell indices leaked into the window slicer"
+    assert glob.n_valid == glob.ti.size
+
+
+def test_predict_window_legacy_path_is_untouched():
+    a = predict_window(_window(), _FakeEmbedder(), _FakeHead(), tile_px=8)
+    b = predict_window(_window(), _FakeEmbedder(), _FakeHead(), tile_px=8, global_grid=None)
+    assert a.transform == b.transform and np.array_equal(a.ti, b.ti)

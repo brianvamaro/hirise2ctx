@@ -20,10 +20,141 @@ keys on the Murray-tile id (the scale-out step, not this pilot).
 """
 from __future__ import annotations
 
+import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+
+
+# ============================================================================
+# R01 — the globally anchored coarse grid
+# ============================================================================
+#
+# A Murray Lab tile is 47,420 native px wide and adjacent tile origins are exactly
+# 47,420 px apart. But `gcd(47420, 32) = 4`, so `47420 % 32 = 28 == -4 (mod 32)`: each
+# tile's coarse 32-px lattice starts at a *different* sub-cell phase, walking 4 native px
+# (20 m) per 4-degree step. Measured over the 26-tile footprint: 8 distinct x-phases,
+# 4 distinct y-phases, and every adjacent tile pair offset by exactly 20 m.
+#
+# Anchoring each tile's predictions to its own parent-tile origin therefore puts every
+# tile on its own lattice. `rasterio.merge` then *floors* each fractional destination
+# offset, converting the sub-cell phase into a whole-cell placement error: measured on the
+# shipped mosaic, 25 of 26 tiles are displaced, median 140 m, max 198 m, with 21 of 26
+# beyond half a cell. Correcting only the integer part already lifts the THEMIS validation
+# correlation from |rho| 0.0741 to 0.0821 (n=26 tiles).
+#
+# The fix is one grid for the whole planet, anchored at projected (0, 0) = lon 0 / lat 0.
+# Every Murray tile origin is exactly integral on that native lattice (verified: 24/24
+# cached sidecars, worst residual 2.3e-9 m), so a tile maps onto it with an integer offset
+# and an integer phase.
+
+MURRAY_RADIUS_M = 3396190.0        # Mars_2015 sphere, present in every tile's inner_crs_wkt
+MURRAY_PPD = 11855                 # 47420 px / 4 deg, Murray Lab CTX mosaic V01
+MURRAY_NATIVE_M = math.pi * MURRAY_RADIUS_M / 180.0 / MURRAY_PPD   # 4.999974485306303
+COARSE_GRID_ID = "murray_v01_clon0_R3396190_ppd11855_S32_anchor_lonlat0"
+
+# Why a canonical constant rather than each tile's own `a`: the cached sidecars carry FOUR
+# distinct pixel sizes (4.999974485306304 x14, ...035 x8, ...295 x1, ...302 x1) and **none**
+# equals the exact value. Building per-tile transforms from `a` re-imports that ULP spread
+# and makes the merge offsets non-integral; the canonical constant makes `a`, `c` and `f`
+# bit-identical across tiles, which is what lets `rasterio.merge` place them exactly.
+
+_SPHEROID_RE = re.compile(r'SPHEROID\s*\[\s*"[^"]*"\s*,\s*([0-9.eE+-]+)')
+
+
+def assert_murray_sphere(crs_wkt: str | None, *, tol_m: float = 1.0) -> float:
+    """Read the sphere radius out of a tile's CRS WKT and check it, rather than assume it.
+
+    `COARSE_GRID_ID` asserts `R3396190`; without this the radius half of that identity
+    would be an assertion nothing measures — the failure mode caught twice already this
+    week. Returns the parsed radius.
+    """
+    if not crs_wkt:
+        raise ValueError("cannot verify the Murray sphere: no CRS WKT supplied")
+    m = _SPHEROID_RE.search(crs_wkt)
+    if not m:
+        raise ValueError("cannot verify the Murray sphere: no SPHEROID in the CRS WKT")
+    radius = float(m.group(1))
+    if abs(radius - MURRAY_RADIUS_M) > tol_m:
+        raise ValueError(
+            f"tile sphere radius {radius} != the grid's {MURRAY_RADIUS_M}; "
+            f"{COARSE_GRID_ID} does not describe this product."
+        )
+    return radius
+
+
+def global_native_origin(inner_transform, *, native_m: float = MURRAY_NATIVE_M,
+                         tol_m: float = 1e-3) -> tuple[int, int]:
+    """`(row, col)` of a Murray tile's origin in GLOBAL native px, anchored at lon0/lat0.
+
+    VERIFY AT RUNTIME: raises when the origin is not integral on that lattice, which is the
+    standing tripwire for "this raster is not a Murray V01 tile".
+    """
+    a, b, c, d, e, f = (float(v) for v in list(inner_transform)[:6])
+    if b or d:
+        raise ValueError("rotated tile transform; the global lattice assumes north-up")
+    gc, gr = c / native_m, -f / native_m
+    rc, rr = round(gc), round(gr)
+    if abs(gc - rc) * native_m > tol_m or abs(gr - rr) * native_m > tol_m:
+        raise ValueError(
+            f"tile origin ({c}, {f}) is off the Murray global native lattice by "
+            f"({abs(gc - rc) * native_m:.3e}, {abs(gr - rr) * native_m:.3e}) m"
+        )
+    return int(rr), int(rc)
+
+
+def tile_grid_phase(inner_transform, tile_px: int = 32, **kw) -> tuple[int, int]:
+    """Local `(row, col)` pixel at which this tile's first GLOBAL coarse cell begins.
+
+    **Convention, pinned deliberately** — this returns `(-global_origin) % tile_px`, i.e.
+    how far into the tile you must step to reach a global cell boundary. Over the footprint
+    that is `{16, 20, 24, 28}` in row for `{N44, N40, N36, N32}`. The complementary
+    quantity `global_origin % tile_px` gives `{16, 12, 8, 4}` and is **not** what the
+    callers want; cross-wiring the two is a real and tested-for mutant, and it is invisible
+    on an N44 tile where both are 16.
+    """
+    gr, gc = global_native_origin(inner_transform, **kw)
+    return (-gr) % tile_px, (-gc) % tile_px
+
+
+def global_cell_transform(cell_row: int, cell_col: int, tile_px: int = 32, *,
+                          native_m: float = MURRAY_NATIVE_M):
+    """Affine of a coarse raster whose top-left cell is the global cell `(row, col)`."""
+    from rasterio.transform import Affine
+
+    cell = tile_px * native_m
+    return Affine(cell, 0.0, cell_col * cell, 0.0, -cell, -cell_row * cell)
+
+
+def assert_shared_lattice(transforms, *, tile_px: int = 32,
+                          native_m: float = MURRAY_NATIVE_M, tol_cell: float = 1e-6) -> None:
+    """Every transform must sit on the one global coarse lattice. Raises otherwise.
+
+    This is the acceptance gate for a merged product, and it is pure geometry — it needs no
+    inference, so it can be run before spending GPU-hours. Against the currently shipped
+    26 tiles it fails 26/26, which is the defect stated executably.
+    """
+    cell = tile_px * native_m
+    bad = []
+    for i, t in enumerate(transforms):
+        a, b, c, d, e, f = (float(v) for v in list(t)[:6])
+        if b or d:
+            bad.append((i, "rotated", None, None))
+            continue
+        if abs(abs(a) - cell) > tol_cell * cell or abs(abs(e) - cell) > tol_cell * cell:
+            bad.append((i, "cell size", a, e))
+            continue
+        rj, ri = c / cell, -f / cell
+        if abs(rj - round(rj)) > tol_cell or abs(ri - round(ri)) > tol_cell:
+            bad.append((i, "phase", rj - round(rj), ri - round(ri)))
+    if bad:
+        detail = "; ".join(f"[{i}] {why} {x} {y}" for i, why, x, y in bad[:8])
+        raise ValueError(
+            f"{len(bad)} of {len(transforms)} rasters are not on {COARSE_GRID_ID}: {detail}"
+            + ("" if len(bad) <= 8 else f" ... and {len(bad) - 8} more")
+        )
 
 
 # ============================================================================
@@ -185,13 +316,21 @@ def coarsened_transform(tile_transform: tuple[float, ...], ti_min: int, tj_min: 
     return Affine(a * tile_px, b, x0, d, e * tile_px, y0)
 
 
-def mosaic_geotiffs(paths, out_path: str | Path | None = None):
+def mosaic_geotiffs(paths, out_path: str | Path | None = None, *,
+                    tile_px: int = 32, require_shared_lattice: bool = True):
     """Merge same-CRS single-band GeoTIFFs into one raster (Stage: regional mosaic).
 
     The per-tile `map_region` outputs all share the Murray global equirectangular CRS
-    (`clon_0`), differing only in extent, so a straight merge stitches them — no
-    reprojection. Returns `(array2d, transform, crs_wkt)`; NaN fills any uncovered gap
-    (the block is an L-shape, so two corners are nodata). Writes `out_path` if given.
+    (`clon_0`), so a straight merge stitches them — no reprojection. Returns
+    `(array2d, transform, crs_wkt)`; NaN fills any uncovered gap (the block is an L-shape,
+    so two corners are nodata). Writes `out_path` if given.
+
+    **R01.** The old docstring said the inputs differ "only in extent". They do not: each
+    tile carried its own sub-cell phase, and `rasterio.merge` floors each fractional
+    destination offset, so the phase became a whole-cell displacement — 25 of 26 shipped
+    tiles, median 140 m. `require_shared_lattice` therefore refuses to merge rasters that
+    are not on the one global lattice. It **fails loudly on the currently shipped tiles by
+    design**; pass `require_shared_lattice=False` to reproduce a pre-R01 product knowingly.
     """
     import rasterio
     from rasterio.merge import merge
@@ -199,6 +338,15 @@ def mosaic_geotiffs(paths, out_path: str | Path | None = None):
     paths = [str(p) for p in paths]
     srcs = [rasterio.open(p) for p in paths]
     try:
+        if require_shared_lattice:
+            try:
+                assert_shared_lattice([s.transform for s in srcs], tile_px=tile_px)
+            except ValueError as exc:
+                raise ValueError(
+                    f"{exc}\nMerging these would bake each tile's own sub-cell phase into a "
+                    "whole-cell displacement. Re-render on the global grid, or pass "
+                    "require_shared_lattice=False to reproduce the pre-R01 product."
+                ) from None
         arr, transform = merge(srcs, nodata=np.nan)
         crs_wkt = srcs[0].crs.to_wkt() if srcs[0].crs else ""
     finally:
@@ -261,7 +409,8 @@ class WindowPrediction:
 def predict_window(window: CtxWindow, embedder, head, *, tile_px: int = 32,
                    pool: str = "gem", batch: int = 96,
                    max_zero_fraction: float = 0.5, calibrator=None,
-                   apply_isotonic: bool = True) -> WindowPrediction:
+                   apply_isotonic: bool = True,
+                   global_grid: tuple[int, int, int, int] | None = None) -> WindowPrediction:
     """Embed -> predict -> (optionally calibrate) -> rasterize one CTX window.
 
     `embedder` is a `src.fm_embeddings.FangEmbedder`; `head` exposes
@@ -276,17 +425,46 @@ def predict_window(window: CtxWindow, embedder, head, *, tile_px: int = 32,
     rank-safe gate-clear, not a per-image-significant win, so it is toggleable). The
     raw probability is always kept in `prob_raw`. `calibrator=None` (default) renders
     raw, unchanged — the raw/calibrated toggle.
+
+    **R01 — `global_grid`.** `(cell_row0, cell_col0, phase_r, phase_c)` puts this window's
+    tiles on the one globally anchored coarse lattice instead of the parent tile's own.
+    `phase_*` shifts the grid origin so cell boundaries land on the global lattice;
+    `cell_*0` converts the resulting tile-local `(ti, tj)` into global cell indices, and
+    the output transform is built from the global cell rather than the parent-tile origin.
+
+    Those two halves are **inseparable and passed as one argument on purpose**: making
+    `(ti, tj)` global while still deriving the transform from the parent-tile origin
+    multiplies a ~-16,000 index against that origin and lands the raster ~2,600 km away.
+    A sentinel like `cell_offset != (0, 0)` would make that a data-dependent coupling; one
+    optional tuple makes it structural. `None` (default) keeps the legacy tile-anchored
+    behaviour, so `map_pilot.py` and the existing tests are untouched.
     """
     from src.fm_embeddings import tile_grid_for_window
 
     arr = window.data
     row0, col0 = window.row_off, window.col_off
+    cell_row0 = cell_col0 = 0
+    if global_grid is not None:
+        cell_row0, cell_col0, phase_r, phase_c = global_grid
+        # Shift the grid origin back to the previous global cell boundary. Everything
+        # downstream that indexes the window (`embed_window`, `own_tile_zero_fraction`)
+        # takes this shifted, still-LOCAL row0/col0 -- see the note before the += below.
+        row0, col0 = row0 - phase_r, col0 - phase_c
     ti, tj = tile_grid_for_window(arr.shape, row0, col0, tile_px)
     emb, valid = embedder.embed_window(arr, ti, tj, tile_px=tile_px, row0=row0,
                                        col0=col0, pool=pool, batch=batch)
 
     zero_frac = own_tile_zero_fraction(arr, ti, tj, tile_px=tile_px, row0=row0, col0=col0)
     usable = valid & (zero_frac <= max_zero_fraction)
+
+    # R01: only NOW convert to global cell indices. Everything above indexes the window as
+    # `ti*tile_px - row0` with a LOCAL row0, so promoting ti early (to ~-16,300 against a
+    # local row0 of 0..47420) drives the slice origin to ~-521,600: `valid` goes all-False,
+    # every prob is NaN, the partial is empty, and assembly dies on `ti.min()` of an empty
+    # array. This ordering is load-bearing and is covered by a test.
+    if global_grid is not None:
+        ti = ti + cell_row0
+        tj = tj + cell_col0
 
     prob = np.full(ti.size, np.nan, dtype=np.float64)
     if usable.any():
@@ -308,10 +486,16 @@ def predict_window(window: CtxWindow, embedder, head, *, tile_px: int = 32,
     raster, ti_min, tj_min = tiles_to_raster(ti, tj, prob, fill=np.nan)
     if calibrator is not None:
         abundance_raster, _, _ = tiles_to_raster(ti, tj, abundance, fill=np.nan)
-    # (ti, tj) are tile-anchored (global); rebuild the tile origin so the window
-    # offset isn't double-counted (it already lives in window.transform).
-    tile_transform = tile_origin_transform(window.transform, row0, col0)
-    transform = coarsened_transform(tile_transform, ti_min, tj_min, tile_px)
+    if global_grid is not None:
+        # ti_min/tj_min are already GLOBAL cell indices, so the affine comes straight from
+        # the global lattice. Deriving it from the parent tile here instead is the ~2,600 km
+        # error described in the docstring.
+        transform = global_cell_transform(ti_min, tj_min, tile_px)
+    else:
+        # Legacy: (ti, tj) are anchored to the parent Murray tile; rebuild the tile origin
+        # so the window offset isn't double-counted (it already lives in window.transform).
+        tile_transform = tile_origin_transform(window.transform, row0, col0)
+        transform = coarsened_transform(tile_transform, ti_min, tj_min, tile_px)
     return WindowPrediction(
         ti=ti, tj=tj, prob=prob, raster=raster, ti_min=ti_min, tj_min=tj_min,
         transform=transform, crs_wkt=window.crs_wkt,

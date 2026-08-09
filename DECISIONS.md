@@ -7165,3 +7165,67 @@ carry the new fields, so Stage 3 must re-run to emit them — fold it into the b
 Stage 3 re-runs anyway; do not run it standalone against `cache_v2`. Four tests, including two images
 with an *identical* conditional median that the unconditional distribution tells apart.
 Fast suite: **644 passed**.
+
+## 2026-08-06x — R01 part 1: the globally anchored coarse grid exists, and the merge is guarded
+
+Audit step 5, mapping. **This is the primitives + guard half; the driver wiring is part 2.**
+
+**The defect, measured.** A Murray tile is 47,420 native px wide and adjacent tile origins are exactly
+47,420 px apart — but `gcd(47420, 32) = 4`, so `47420 % 32 = 28 ≡ −4 (mod 32)` and each tile's coarse
+32-px lattice starts at its own sub-cell phase, walking 4 native px (20 m) per 4° step. Over the
+26-tile footprint: 8 distinct x-phases, 4 y-phases, every adjacent pair offset by exactly 20 m.
+
+`rasterio.merge` then **floors** each fractional destination offset, converting that sub-cell phase
+into a whole-cell placement error. On the shipped mosaic: **25 of 26 tiles displaced**, median
+**140 m**, max **198 m**, 21 of 26 beyond half a cell. Downstream and measured rather than asserted —
+correcting only the *integer* part lifts the THEMIS validation correlation from |ρ| **0.0741** to
+**0.0821** (n=26 tiles, 150k cells sampled each), and that is a lower bound because the ≤0.5-cell
+residual remains.
+
+**Two register corrections.** (i) It is **26/26**, not 25/26, that are off the *global* lattice —
+25/26 is displacement relative to the mosaic's own arbitrary anchor, and every latitude in the
+footprint has a non-zero row phase. Independently reproduced here: the new guard fires 26/26 with 26
+distinct sub-cell phases. (ii) The nodata seam is 2 **or** 3 cells depending on phase, not a uniform 2.
+
+**What landed.** `MURRAY_RADIUS_M` / `MURRAY_PPD` / `MURRAY_NATIVE_M` / `COARSE_GRID_ID`, plus
+`global_native_origin`, `tile_grid_phase`, `global_cell_transform`, `assert_shared_lattice` and
+`assert_murray_sphere`. `predict_window` gains an optional `global_grid`; `mosaic_geotiffs` refuses to
+merge off-lattice rasters, and `striping.mosaic_tiles` warns.
+
+Four things worth not re-deriving:
+
+- **A canonical constant, not each tile's `a`.** The cached sidecars carry **four** distinct pixel
+  sizes (`…306304` ×14, `…3063035` ×8, `…306295` ×1, `…306302` ×1) and **none equals** the exact
+  `π·R/180/11855`. Per-tile `a` would re-import that ULP spread and make the merge offsets
+  non-integral; the canonical constant makes `a`, `c`, `f` bit-identical across tiles.
+- **The phase convention is pinned deliberately.** `tile_grid_phase` returns `(−origin) % 32` =
+  `{16, 20, 24, 28}` for `{N44, N40, N36, N32}`. The complement `origin % 32` gives `{16, 12, 8, 4}`.
+  Cross-wiring them is a real mutant, and it is **invisible on an N44 tile** where both are 16 — so
+  the test spans four latitudes on purpose.
+- **The local→global conversion happens AFTER the window-indexed work.** Everything above it indexes
+  the window as `ti*tile_px − row0` with a *local* `row0`; promoting `ti` to ~−16,300 first drives the
+  slice origin to ~−521,600, `valid` goes all-False, every prob is NaN and assembly dies on `ti.min()`
+  of an empty array. A test covers the ordering.
+- **`global_grid` is one tuple, not two arguments.** Making `(ti, tj)` global while still deriving the
+  transform from the parent-tile origin lands the raster **~2,600 km** away. The halves are
+  inseparable, so the coupling is structural rather than a sentinel on a data argument.
+
+`assert_murray_sphere` parses the radius out of the tile CRS and checks it, because `COARSE_GRID_ID`
+asserts `R3396190` and nothing otherwise measured it — the assert-rather-than-measure gap caught twice
+already this week. Verified: it reads 3396190.0 from the real shipped CRS.
+
+**The guard fails loudly on the currently shipped products by design** (`require_shared_lattice=False`
+reproduces a pre-R01 merge knowingly). `striping.mosaic_tiles` only warns: that is the notebook-24/25
+analysis path over already-shipped tiles, whose subject *is* the artifact as it exists.
+
+**Blast radius: none yet.** No driver passes `global_grid`, so every output is byte-identical and the
+legacy path is covered by a test. 14 new tests; fast suite **658 passed**.
+
+**Part 2, still to do:** thread `global_grid` through `scripts/map_region.py` and
+`scripts/striping_a1_map.py` **in one commit** (or A1 lands on a different lattice than the baseline,
+which the 2026-08-06 product decision forbids); fix `window_offsets`, which silently drops 11 cells
+per axis once the grid has a phase (`last = extent - win` and `overlap = 3*tile_px`; free — 144
+windows either way, and it has never bitten because phase 0 loses 0); correct its docstring contract
+"offsets are multiples of tile_px", which the design deliberately abandons and which
+`scripts/f_region_stageb.py` also relies on; and record `grid_id` in partials, sidecar and manifest,
+treating a **missing** key as a mismatch rather than a KeyError. Part 2 forces the full re-render.
