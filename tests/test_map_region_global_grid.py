@@ -380,6 +380,26 @@ def test_a_current_partial_is_kept_on_resume(tmp_path):
     assert len(list(pdir.glob("*.npz"))) == 1
 
 
+def _executable_source(fn) -> str:
+    """A function's source with docstrings (and, via the AST, comments) removed.
+
+    Source-inspection tests that grep raw text match the prose explaining what the code no
+    longer does, which is exactly backwards.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if (isinstance(body, list) and body and isinstance(body[0], ast.Expr)
+                and isinstance(getattr(body[0], "value", None), ast.Constant)
+                and isinstance(body[0].value.value, str)):
+            body.pop(0)
+    return ast.unparse(tree)
+
+
 class _OneFrame:
     """Minimal stand-in for `load_frames`: one dissolved source frame covering everything."""
     def __init__(self):
@@ -419,7 +439,10 @@ def test_a1_renders_on_the_same_lattice_as_the_baseline(tmp_path, monkeypatch):
     monkeypatch.setattr(a1, "CTX_ZIP_DIR", tmp_path / "ctx")
     monkeypatch.setattr(a1, "load_tile_sidecar", lambda t, *a_, **k_: side)
     monkeypatch.setattr(a1, "_inner_tif_name", lambda z: "inner.tif")
-    monkeypatch.setattr(a1, "frame_stats_160", lambda t: ({0: (100.0, 20.0)}, 1))
+    monkeypatch.setattr(a1, "frame_stats_native", lambda t, fr: (
+        {0: (100.0, 20.0)}, (100.0, 20.0),
+        {"n_frames": 1, "n_frames_with_stats": 1, "n_frames_too_small": 0,
+         "fallback_pixel_fraction": 0.0, "a1_arm": a1.A1_ARM}))
     monkeypatch.setattr(a1, "load_frames", lambda t: _OneFrame())
     monkeypatch.setattr(a1, "read_tile_window", fake_read)
     monkeypatch.setattr(mr, "read_tile_window", fake_read)
@@ -447,28 +470,31 @@ def test_a1_renders_on_the_same_lattice_as_the_baseline(tmp_path, monkeypatch):
         assert a_side[k] == b_side[k], k
 
 
-def test_a1_refuses_a_baseline_reference_on_the_old_lattice(tmp_path, monkeypatch):
-    """The ordering constraint as a gate, not a sentence: A1 reads its per-frame
-    normalisation off the baseline product's grid, so an old-lattice baseline must abort."""
-    rasterio = pytest.importorskip("rasterio")
+def test_a1_no_longer_depends_on_the_baseline_products_grid():
+    """R07 dissolved R01's A1 ordering constraint, and this pins that it stays dissolved.
+
+    The constraint existed only because the A1 statistic was read off
+    `reports/map_region/{tile}_abundance.tif`, which forced the corrected baseline to be
+    rendered first. `frame_stats_native` derives it from the native Murray tile, so if anyone
+    reintroduces a read of the map product into the A1 statistic, the ordering silently comes
+    back — and with it the sensitivity to the re-anchoring.
+    """
     import scripts.striping_a1_map as a1
-    from src.mapping import write_geotiff
+    from src import striping
 
-    # a per-tile raster with the shipped kind of sub-cell phase (0.875 cell)
-    cell = TILE_PX * MURRAY_NATIVE_M
-    from rasterio.transform import Affine
-    bad = Affine(cell, 0.0, 17.5 * cell + 0.875 * cell, 0.0, -cell, -9.0 * cell)
-    write_geotiff(tmp_path / "E4_N40_abundance.tif",
-                  np.zeros((4, 4), dtype=np.float64), bad, _WKT)
-    monkeypatch.setattr(a1, "MAP_DIR", tmp_path)
+    # docstrings and comments discuss the old behaviour on purpose; scan what EXECUTES
+    src = _executable_source(a1.frame_stats_native) + _executable_source(
+        striping.a1_stats_native_tile)
+    assert "MAP_DIR" not in src, "the A1 statistic reads the baseline product again"
+    assert "read_ctx_on_grid" not in src, "the A1 statistic is back on the 160 m grid"
+    assert "abundance" not in src
 
-    def _must_not_run(*a_, **k_):
-        raise AssertionError("the lattice gate did not fire: A1 went on to read the CTX")
-
-    monkeypatch.setattr(a1, "read_ctx_on_grid", _must_not_run)
-    with pytest.raises(SystemExit, match="must be re-rendered"):
-        a1.frame_stats_160("E4_N40")
-    assert rasterio  # (import guard only)
+    # the frame footprints must not need a rendered product either: the 39 training windows
+    # span 20 Murray tiles while only the 26 map-footprint tiles have an abundance raster, so
+    # requiring one made the R07 training fix impossible to run at all
+    crs_src = _executable_source(striping._tile_crs)
+    assert crs_src.index("CTX_ZIP_DIR") < crs_src.index("MAP_DIR"), \
+        "the tile CRS must come from the tile first, and the map product only as a fallback"
 
 
 def test_both_map_drivers_share_one_grid_and_one_sweep():

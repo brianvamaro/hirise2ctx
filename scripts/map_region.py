@@ -454,7 +454,7 @@ def main() -> int:
           f"recipe={card['recipe'].get('cell')}  out={args.out_dir} ===", flush=True)
 
     from src.fm_embeddings import FangEmbedder
-    from src.modeling.mlp_head import DeployableHead
+    from src.modeling.mlp_head import NO_NORM_ARM, DeployableHead, require_norm_arm
 
     calibrator = None
     if not args.raw:
@@ -466,6 +466,10 @@ def main() -> int:
 
     embedder = FangEmbedder.load()
     head = DeployableHead.load(model_dir)
+    # R07: this driver feeds RAW Murray DN. Refuse a head that declares an A1 arm; only warn
+    # on an unversioned one, since unversioned + raw is exactly the pre-R07 status quo and
+    # blocking the baseline re-render on a provenance field would buy no safety.
+    require_norm_arm(head, NO_NORM_ARM, where=str(model_dir), strict=False)
     dev = getattr(getattr(embedder, "device", None), "type", "?")
     print(f"  embedder device={dev}  head seeds={card.get('n_seeds', '?')}", flush=True)
 

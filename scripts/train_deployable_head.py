@@ -38,7 +38,8 @@ import numpy as np
 from src.modeling.binary_target import get_target
 from src.modeling.loaders import (fang_columns_for_keys, iter_loio_folds,
                                    load_fang_store)
-from src.modeling.mlp_head import FROZEN_RECIPE, DeployableHead
+from src.modeling.mlp_head import (A1_NORM_ARM as A1_ARM, FROZEN_RECIPE, NO_NORM_ARM,
+                                   DeployableHead, infer_norm_arm)
 
 DATASET_DIR = REPO_ROOT / "dataset_v2"
 SCHEME = "loio_nfold"
@@ -109,7 +110,17 @@ def main() -> int:
                          "overlap embedding pairs for the consistency penalty")
     ap.add_argument("--lambda-consistency", type=float, default=0.0,
                     help="H3: weight on the co-located overlap MSE penalty (0 = off)")
+    # R07: the arm was always knowable at train time (it IS --store-name) and was recorded
+    # nowhere, so eleven heads shared one recipe_hash with no way to tell them apart.
+    ap.add_argument("--norm-arm", default=None,
+                    help="CTX preprocessing arm these embeddings came from, stamped into "
+                         f"recipe.json and the recipe hash (e.g. {NO_NORM_ARM!r} for raw "
+                         f"Murray DN, {A1_ARM!r} for R07 A1). Default: inferred from "
+                         "--store-name.")
     args = ap.parse_args()
+
+    norm_arm = args.norm_arm or infer_norm_arm(args.store_name)
+    print(f"  norm_arm={norm_arm}  (store={args.store_name})", flush=True)
 
     print(f"=== train deployable head ({args.target}, batch={args.batch}) ===", flush=True)
     t0 = time.monotonic()
@@ -134,7 +145,7 @@ def main() -> int:
 
     recipe = dict(FROZEN_RECIPE, target_id=args.target)
     head = DeployableHead(seeds=tuple(args.seeds), batch=args.batch, recipe=recipe,
-                          nuisance_basis=basis,
+                          nuisance_basis=basis, norm_arm=norm_arm,
                           lambda_consistency=args.lambda_consistency)
     head.fit(X, y, groups=groups, obs_to_int=obs_to_int,
              consistency_pairs=pairs, verbose=True)

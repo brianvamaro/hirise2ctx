@@ -184,6 +184,63 @@ def embed_batches(model: ViTB16, patches: np.ndarray, device: torch.device) -> d
             for k, v in outs.items()}
 
 
+_A1_PROV: dict[str, dict] = {}
+_A1_TILE_CACHE: dict[str, tuple] = {}
+
+
+def a1_train_frame_context(obs_id: str, shape):
+    """R07: the per-frame native A1 statistic + frame labels for one Stage-2 training window.
+
+    The statistic is the SAME one deployment uses (`src.striping.a1_stats_native_tile`): per
+    SeamMap source frame, native 5 m DN, over the frame's extent in the **parent Murray tile**
+    rather than only the part inside this window. Streaming a tile is the expensive step, so it
+    is cached — the 39 windows share 20 tiles.
+    """
+    import rasterio
+
+    from src.striping import a1_stats_native_tile, frame_labels_on, load_frames
+
+    # the window's own sidecar sits beside the tif the label sidecar points at
+    label_side = json.loads(
+        (DATASET_DIR / "labels" / f"{obs_id}.json").read_text(encoding="utf-8"))
+    win_tif = Path(label_side["ctx_window_tif"])
+    side = json.loads(win_tif.with_suffix(".json").read_text(encoding="utf-8"))
+    tile = side["source_murray_tile"]
+    if tile not in _A1_TILE_CACHE:
+        frames = load_frames(tile)
+        print(f"    A1: streaming {tile} for per-frame native statistics ...", flush=True)
+        stats, fallback, prov = a1_stats_native_tile(tile, frames)
+        print(f"    A1: {tile} {prov['n_frames_with_stats']}/{prov['n_frames']} frames, "
+              f"fallback {prov['fallback_pixel_fraction']:.4%} of valid px", flush=True)
+        _A1_TILE_CACHE[tile] = (stats, fallback, prov, frames)
+    stats, fallback, prov, frames = _A1_TILE_CACHE[tile]
+    with rasterio.open(win_tif) as ds:                 # the window's true affine, not a copy
+        transform = ds.transform
+    labels = frame_labels_on(transform, shape, frames)
+    return stats, fallback, labels, dict(prov, murray_tile=tile)
+
+
+def _a1_own_patches(own, arr_norm, r_win, c_win, fallback):
+    """Re-slice each own-tile patch from the NORMALIZED window.
+
+    Normalizing the cached patch separately would give a value that only approximately matches
+    the centre of the 192-px box, silently weakening the geometry self-check from exact equality
+    to nearly-equal. Tiles whose own box falls outside the cached window have no window pixels
+    to re-slice, so they take the tile-wide fallback statistic — never raw DN (R08).
+    """
+    from src.striping import a1_apply
+
+    H, W = arr_norm.shape
+    out = own.copy()
+    inside = (r_win >= 0) & (c_win >= 0) & (r_win + TILE_PX <= H) & (c_win + TILE_PX <= W)
+    for i in np.where(inside)[0]:
+        out[i] = arr_norm[r_win[i]: r_win[i] + TILE_PX, c_win[i]: c_win[i] + TILE_PX]
+    outside = np.where(~inside)[0]
+    for i in outside:
+        out[i] = a1_apply(own[i], fallback[0], fallback[1])
+    return out, int(outside.size)
+
+
 def extract_one(model: ViTB16, obs_id: str, keys: pd.DataFrame, device: torch.device) -> None:
     """Write {obs_id}_P64.npz + {obs_id}_P192.npz, row-parallel to `keys` (S=64 tiles)."""
     from src.modeling.loaders import load_context_patch_stack
@@ -201,17 +258,30 @@ def extract_one(model: ViTB16, obs_id: str, keys: pd.DataFrame, device: torch.de
     # ---- P=192: slice 3x3-tile boxes from the cached CTX window ----
     arr, row0, col0 = _load_ctx_window(obs_id)
 
-    # A1 striping mitigation: per-window robust offset+gain CTX normalization (each training
-    # window is ~one CTX source frame). Same (median, IQR) applied to the window and its own
-    # patches so within-frame texture is preserved and the geometry self-check still holds.
-    if NORM == "a1":
-        from src.striping import a1_apply, a1_stats
-        _med, _iqr = a1_stats(arr)
-        arr = a1_apply(arr, _med, _iqr)
-        own64 = a1_apply(own64, _med, _iqr)
     H, W = arr.shape
     r_win = ti * TILE_PX - row0
     c_win = tj * TILE_PX - col0
+
+    # A1 striping mitigation. **R07:** this used to take ONE `a1_stats(arr)` for the whole
+    # window, on the stated grounds that "each training window is ~one CTX source frame".
+    # Measured against the cached SeamMaps, that is false: only 10 of 38 windows lie in a
+    # single frame; 22 span two, 3 span three, max four, and the dominant frame's share is a
+    # median 81% (min 48%). So training removed between-WINDOW scale while deployment removed
+    # between-FRAME scale -- two different normalizations, which is why the A1 payoff number
+    # and the A1 skill number were never comparable.
+    #
+    # Both sides now call one definition (src.striping.A1_ARM): the per-frame NATIVE statistic
+    # over the frame's extent in the parent Murray tile. Own patches are re-sliced from the
+    # normalized window rather than normalized separately, which is what keeps the geometry
+    # self-check below an exact-equality check instead of an approximate one.
+    if NORM == "a1":
+        from src.striping import a1_normalize_native
+        stats, fallback, labels, prov = a1_train_frame_context(obs_id, arr.shape)
+        arr = a1_normalize_native(arr, labels, stats, fallback)
+        own64, n_outside = _a1_own_patches(own64, arr, r_win, c_win, fallback)
+        prov = dict(prov, own_patches_outside_window=n_outside)
+        _A1_PROV[obs_id] = prov
+
     r0 = r_win - TILE_PX
     c0 = c_win - TILE_PX
     valid192 = (r0 >= 0) & (c0 >= 0) & (r0 + CONTEXT_PX <= H) & (c0 + CONTEXT_PX <= W)

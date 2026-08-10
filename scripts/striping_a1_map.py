@@ -12,9 +12,10 @@ raw DN, so those are the only tiles it can cover without ~30 GB of extra downloa
 
 This is `scripts/map_region.py`'s window sweep with two changes, both taken verbatim from the
 reference A1 path (`scripts/striping_a1_infer_crop.py`):
-  1. per-frame robust (median, IQR) computed at **160 m** from `read_ctx_on_grid`, keyed by the
-     SeamMap partition labels — NOT from the native array (`src.striping.a1_normalize_per_frame`
-     derives them differently, and the head was trained against the 160 m statistics);
+  1. per-frame robust (median, IQR) of the **native 5 m** CTX DN, over each frame's extent in the
+     whole Murray tile, keyed by the SeamMap partition labels — the SAME statistic training uses
+     (R07; see `frame_stats_native`). This corrects the previous 160 m statistic, and the two
+     docstrings that asserted the exact inverse;
   2. the native window DN is remapped per frame to (A1_REF_MEDIAN, A1_REF_IQR) = (125.0, 27.7),
      nodata (DN == 0) preserved, then inferred with the **A1 head** `models/deployable_a1`.
 
@@ -22,16 +23,16 @@ Everything else — grid, window offsets, tile_px, GeoTIFF profile, sidecar keys
 the output is byte-grid-identical to `reports/map_region/` and drops straight into
 `scripts/f_map_compare.py`.
 
-**R01 — run the baseline first.** Both drivers render onto the one globally anchored coarse lattice
-(`src.mapping.COARSE_GRID_ID`), and they were wired to it in the same commit precisely so A1 can
-never land on a different lattice than the baseline it is compared against. There is also a real
-ordering constraint: `frame_stats_160` reads the per-frame normalisation off
-`reports/map_region/{tile}_abundance.tif`, so the corrected **baseline must exist first**. That is
-now enforced, not just documented — the reference raster is checked against the lattice and the run
-aborts otherwise. Re-anchoring does not change the *definition* of the A1 statistic, so it does not
-invalidate `models/deployable_a1` the way deriving it from native 5 m DN would — but it does perturb
-the per-frame numbers, by >1 DN on 11 of 74 frames measured and up to 9 DN on the smallest ones. See
-`frame_stats_160` for the full measurement and its link to **R08**.
+**R01 — one lattice.** Both drivers render onto the globally anchored coarse lattice
+(`src.mapping.COARSE_GRID_ID`), wired in the same commit precisely so A1 can never land on a
+different lattice than the baseline it is compared against.
+
+**R01's ordering constraint is GONE, because R07 removed it.** It existed only because the A1
+statistic used to be read off `reports/map_region/{tile}_abundance.tif`'s grid, which forced the
+corrected baseline to be rendered first and made A1's normalisation sensitive to the re-anchoring
+(measured: >1 DN on 11 of 74 frames, up to 9 DN on the smallest). `frame_stats_native` derives the
+statistic from the native tile instead, so A1 depends on the baseline product for nothing but the
+CRS that `load_frames` reads, and the two rows can be built in either order.
 
 Cost: a full map_region-equivalent GPU pass over the chosen tiles (~0.6 GPU-h/tile on an L40S at
 batch 256; ~5-7 GPU-h for the 9). Resumable per (tile, window).
@@ -64,9 +65,10 @@ from src.fm_embeddings import FangEmbedder
 from src.mapping import (COARSE_GRID_ID, artifact_digest, assert_shared_lattice,
                          predict_window, read_tile_window, tile_global_grid, uncovered_cells,
                          write_geotiff)
-from src.modeling.mlp_head import DeployableHead
-from src.striping import (A1_REF_IQR, A1_REF_MEDIAN, CTX_ZIP_DIR, MAP_DIR, _inner_tif_name,
-                          a1_stats, frame_label_map, load_frames, read_ctx_on_grid)
+from src.modeling.mlp_head import DeployableHead, require_norm_arm
+from src.striping import (A1_ARM, A1_REF_IQR, A1_REF_MEDIAN, CTX_ZIP_DIR, _inner_tif_name,
+                          a1_normalize_native, a1_stats_native_tile, frame_labels_on,
+                          load_frames)
 
 TILE_PX = 32
 A1_HEAD = REPO / "models" / "deployable_a1" / "86c51a5dca220f63"
@@ -75,80 +77,38 @@ EQUIPPED_FALLBACK = ["E-12_N36", "E-8_N32", "E0_N40", "E4_N40", "E4_N44",
                      "E8_N40", "E8_N44", "E12_N44", "E16_N44"]
 
 
-def frame_stats_160(tile: str) -> tuple[dict, int]:
-    """Per-frame robust (median, IQR) of the 160 m CTX brightness, indexed by load_frames order.
+def frame_stats_native(tile: str, frames) -> tuple[dict, tuple, dict]:
+    """**R07.** Per-frame robust (median, IQR) of the **native 5 m** CTX DN, over each frame's
+    extent in the whole Murray tile — the one statistic training now uses too.
 
-    This is the statistic the A1 head was trained against (striping_a1_infer_crop.py:56-64); deriving
-    it from the native 5 m array instead gives different numbers and invalidates models/deployable_a1.
+    Replaces `frame_stats_160`, which derived the statistic from CTX area-averaged to 160 m and
+    then applied that gain to native DN. Measured over all 39 Stage-2 windows, that inflated the
+    gain by a median **1.35x** (p95 1.83x, max 2.15x): training pins the input IQR to exactly
+    27.7, and the 160 m path delivered a median of 37.3 and a max of 59.6 while clipping ~10x
+    more pixels. See DECISIONS 2026-08-09a.
 
-    **R01 — the ordering constraint, made executable.** These statistics are read off the
-    *baseline* product's grid, so A1 must be built AFTER the corrected baseline; against an
-    old-lattice baseline the A1 raster's normalisation and its own output lattice would
-    disagree. `assert_shared_lattice` on the reference turns that from a sentence in a plan
-    into a gate that fires.
-
-    **How much does re-anchoring move these statistics?** Measured 2026-08-09 (read-only, the
-    same statistic recomputed on both lattices for E4_N40 and E8_N44, 74 frames). The full
-    induced change in A1-normalised DN is
-    `IQR0 * ((x-m_new)/s_new - (x-m_old)/s_old)` — an offset term plus a **gain** term that
-    grows with distance from the frame median:
-
-        |offset| at the frame median        med 0.045   p95 0.479   max 0.891 DN
-        gain slope, per 1 IQR from median   med 0.083   p95 0.839   max 2.848 DN
-        FULL |diff| over the frame's pixels med 0.411   p95 3.287   max 8.993 DN
-        frames whose full |diff| exceeds  1 / 2 / 5 DN:  11 / 6 / 2  of 74
-
-    So for the great majority of frames the shift is well under 1 DN, but it is **not**
-    negligible everywhere: the tail is concentrated in *small* frames (the four worst have
-    108–2,068 valid 160 m cells) where the robust IQR is poorly determined, and there the
-    difference reaches 3–9 DN at the extremes of the frame's own DN range.
-
-    What this does and does not mean. The **definition** of the statistic is unchanged (robust
-    median/IQR at 160 m, keyed by SeamMap partition, off the baseline grid), and that is what
-    `models/deployable_a1` was trained against — the head is not invalidated the way deriving
-    it from the native 5 m array would invalidate it. But the per-frame numbers do move, so
-    the A1 product is *not* bit-reproducible across the re-anchoring, and the small-frame tail
-    is the same population **R08** is open on ("define and test how A1 handles small frames").
-    Treat R08 as a precondition for shipping A1, not an unrelated finding.
+    Two consequences worth knowing. (1) This costs one streamed pass over the native tile
+    (~2.2 Gpx, I/O-bound) instead of one 160 m resample — cheap next to the ~0.6 GPU-h/tile of
+    inference it precedes, and exact, because uint8 percentiles come from a 256-bin histogram.
+    (2) **The R01 ordering constraint is gone**: the statistic no longer comes off
+    `reports/map_region/{tile}_abundance.tif`, so A1 no longer has to follow the corrected
+    baseline. `load_frames` still opens that raster, but only to read its CRS.
     """
-    ref = MAP_DIR / f"{tile}_abundance.tif"
-    import rasterio
-    with rasterio.open(ref) as ds:
-        try:
-            assert_shared_lattice([ds.transform], tile_px=TILE_PX)
-        except ValueError as exc:
-            raise SystemExit(
-                f"[{tile}] the baseline reference {ref} is not on {COARSE_GRID_ID} ({exc}).\n"
-                f"  A1 derives its per-frame normalisation from that raster's grid, so the "
-                f"corrected baseline must be re-rendered by scripts/map_region.py FIRST."
-            ) from None
-    ctx160 = read_ctx_on_grid(tile, ref)
-    frames = load_frames(tile)
-    labels160 = frame_label_map(tile, frames)
-    stats = {}
-    for i in range(len(frames)):
-        sel = (labels160 == i) & np.isfinite(ctx160)
-        if sel.sum() >= 50:
-            med, iqr = a1_stats(np.where(sel, ctx160, 0))
-            if np.isfinite(med) and np.isfinite(iqr) and iqr > 0:
-                stats[i] = (med, iqr)
-    return stats, len(frames)
+    return a1_stats_native_tile(tile, frames)
 
 
-def a1_window(window, frames, stats: dict):
-    """Per-frame A1 remap of one native window; DN == 0 (mosaic nodata) preserved as 0."""
-    labels_nat = rasterize(((g, i) for i, g in enumerate(frames.geometry)),
-                           out_shape=window.data.shape, transform=window.transform,
-                           fill=-1, dtype="int16", all_touched=False)
-    arr = window.data.astype(np.float32)
-    n_norm = 0
-    for i, (med, iqr) in stats.items():
-        sel = (labels_nat == i) & (window.data > 0)
-        if sel.any():
-            arr[sel] = np.clip((arr[sel] - med) / iqr * A1_REF_IQR + A1_REF_MEDIAN, 0, 255)
-            n_norm += int(sel.sum())
-    arr[window.data == 0] = 0
-    return replace(window, data=arr.astype(np.uint8)), n_norm
+def a1_window(window, frames, stats: dict, fallback: tuple[float, float]):
+    """Per-frame A1 remap of one native window; DN == 0 (mosaic nodata) preserved as 0.
+
+    **R07/R08.** This used to leave any pixel outside a qualifying frame at **raw DN**, mixing
+    two radiometric scales in one array and handing the mixture to a frozen embedder that
+    cannot tell them apart. `a1_normalize_native` normalizes those by the tile-wide native
+    statistic instead, and refuses rather than falling back to raw.
+    """
+    labels_nat = frame_labels_on(window.transform, window.data.shape, frames, dtype="int32")
+    out = a1_normalize_native(window.data, labels_nat, stats, fallback)
+    n_norm = int((out > 0).sum())
+    return replace(window, data=out), n_norm
 
 
 def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
@@ -170,9 +130,13 @@ def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
     # baseline, which is the entire point of the row.
     grid_geom = tile_global_grid(inner_transform, crs_wkt, TILE_PX)
 
-    stats, n_frames = frame_stats_160(tile)
     frames = load_frames(tile)
-    print(f"[{tile}] {H}x{W}px, {len(stats)}/{n_frames} frames with A1 stats, "
+    print(f"[{tile}] streaming the native tile for per-frame A1 statistics (R07) ...",
+          flush=True)
+    stats, fallback, a1_prov = frame_stats_native(tile, frames)
+    print(f"[{tile}] {H}x{W}px, {a1_prov['n_frames_with_stats']}/{a1_prov['n_frames']} frames "
+          f"with A1 stats ({a1_prov['n_frames_too_small']} too small), fallback covers "
+          f"{a1_prov['fallback_pixel_fraction']:.3%} of valid px, "
           f"phase=({grid_geom.phase_r},{grid_geom.phase_c})", flush=True)
     if not stats:
         return {"tile": tile, "status": "no_frame_stats"}
@@ -197,7 +161,7 @@ def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
             continue
         t0 = time.monotonic()
         window = read_tile_window(zip_path, inner_tif, row_off, col_off, win)
-        w_a1, n_norm = a1_window(window, frames, stats)
+        w_a1, n_norm = a1_window(window, frames, stats, fallback)
         pred = predict_window(w_a1, embedder, head, tile_px=TILE_PX, batch=args.batch,
                               max_zero_fraction=args.max_zero_fraction, calibrator=calibrator,
                               apply_isotonic=not args.no_isotonic,
@@ -222,7 +186,7 @@ def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
         print(f"[{tile}] {len(present)}/{len(grid)} windows -> re-run to finish", flush=True)
         return {"tile": tile, "status": "partial", "windows_done": len(present),
                 "windows_total": len(grid)}
-    write_tile(tile, present, grid_geom, crs_wkt, calibrator, args)
+    write_tile(tile, present, grid_geom, crs_wkt, calibrator, args, a1_prov)
     if args.clean_partials:
         for p in present:
             p.unlink()
@@ -230,7 +194,7 @@ def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
     return {"tile": tile, "status": "done", "windows": len(grid)}
 
 
-def write_tile(tile, partials, grid_geom, crs_wkt, calibrator, args) -> None:
+def write_tile(tile, partials, grid_geom, crs_wkt, calibrator, args, a1_prov=None) -> None:
     """Assemble the per-window partials into map_region-shaped GeoTIFFs (same grid, same profile).
 
     `(ti, tj)` are GLOBAL coarse-cell indices on `COARSE_GRID_ID`, so the affine comes from
@@ -283,8 +247,8 @@ def write_tile(tile, partials, grid_geom, crs_wkt, calibrator, args) -> None:
         "calibration": str(args.calibration) if args.calibration else None,
         "calibration_digest": artifact_digest(args.calibration) if args.calibration else None,
         "a1_ref": {"median": A1_REF_MEDIAN, "iqr": A1_REF_IQR},
-        "a1_stats_source": "read_ctx_on_grid at 160 m, SeamMap partition labels "
-                           "(striping_a1_infer_crop.py convention)",
+        # R07: record the arm and the measured statistic, not a prose description of it.
+        **{f"a1_{k}": v for k, v in (a1_prov or {}).items()},
     }, indent=2), encoding="utf-8")
 
 
@@ -316,6 +280,10 @@ def main() -> int:
     calibrator = CalibrationLayer.load(args.calibration) if args.calibration else None
     embedder = FangEmbedder.load(device="cpu" if args.cpu else None)
     head = DeployableHead.load(Path(args.head))
+    # R07: strict here. This path feeds A1-normalised DN, so an unverifiable head must not
+    # pass as correct -- and the A1 head has to be retrained for R07 regardless, which is
+    # exactly when it will start declaring the arm.
+    require_norm_arm(head, A1_ARM, where=str(args.head), strict=True)
     print(f"A1 map: {len(tiles)} tiles {tiles}\n  head={Path(args.head).parent.name}, "
           f"A1 ref (median, IQR) = ({A1_REF_MEDIAN}, {A1_REF_IQR}), "
           f"calibration={'on' if calibrator else 'raw only'}", flush=True)

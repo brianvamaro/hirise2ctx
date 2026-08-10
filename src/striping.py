@@ -160,25 +160,46 @@ def _padded_tile(tile: str) -> str:
     return f"{lon}_{lat}"
 
 
+def _tile_crs(tile: str):
+    """CRS of a Murray tile, from the tile itself.
+
+    **R07.** This used to be read off ``reports/map_region/{tile}_abundance.tif``, which made
+    `load_frames` — and therefore the whole A1 statistic — fail outright for any tile with no
+    rendered abundance product. That is not an edge case: the 39 Stage-2 training windows span
+    **20** Murray tiles while only the 26 map-footprint tiles have an abundance raster, so the
+    R07 training fix could not even run. Source frames are a property of the CTX tile, not of
+    our product; take the CRS from the tile.
+    """
+    zp = CTX_ZIP_DIR / f"{tile}.zip"
+    if zp.exists():
+        with rasterio.open(f"/vsizip/{zp.as_posix()}/{_inner_tif_name(zp)}") as ds:
+            return ds.crs
+    ab = MAP_DIR / f"{tile}_abundance.tif"
+    if ab.exists():
+        with rasterio.open(ab) as ds:
+            return ds.crs
+    return None
+
+
 def load_frames(tile: str, dissolve: bool = True):
-    """Per-source-frame CTX footprints for ``tile``, in the abundance CRS.
+    """Per-source-frame CTX footprints for ``tile``, in the Murray tile's CRS.
 
     The Murray Lab SeamMap is a *partition* (one source frame per pixel); its polygons are
     fragments, so by default we **dissolve by PRODUCT_ID** to recover the ~dozens of actual
     source CTX images. Reads the local cached SeamMap if present, else pulls just the shapefile
     out of the remote tile zip via range requests (``/vsizip/vsicurl/``) and caches the result
-    as a GeoPackage. CRS is taken from the tile's abundance raster (the SeamMap .prj is the same
-    Mars clon_0 CRS but is sometimes not fetched by vsicurl).
+    as a GeoPackage. CRS comes from `_tile_crs` (the SeamMap .prj is the same Mars clon_0 CRS
+    but is sometimes not fetched by vsicurl) — from the **tile**, not from our map product, so
+    this works for tiles outside the 26-tile map footprint.
     """
     import os
     import geopandas as gpd
 
     cache_gpkg = SEAM_DIR / f"_frames_{tile}.gpkg"
-    with rasterio.open(MAP_DIR / f"{tile}_abundance.tif") as ds:
-        ab_crs = ds.crs
     if cache_gpkg.exists():
         g = gpd.read_file(cache_gpkg)
     else:
+        ab_crs = _tile_crs(tile)
         local = find_seam_shp(tile)
         if local is not None:
             g = gpd.read_file(local)
@@ -278,7 +299,13 @@ def a1_normalize_window(arr: np.ndarray, **ref) -> np.ndarray:
 
 
 def a1_normalize_per_frame(arr: np.ndarray, labels: np.ndarray, **ref) -> np.ndarray:
-    """A1 at deploy: normalize each source frame (by its `labels` id) with its own robust stats."""
+    """A1 at deploy: normalize each source frame (by its `labels` id) with its own robust stats.
+
+    **R08 hazard, kept deliberately:** pixels in no frame, or in a frame with <50 valid pixels,
+    are returned at **raw DN** — a mixture of normalized and unnormalized values in one array.
+    Use `a1_normalize_native` instead for anything that feeds the embedder; this function is
+    retained for the diagnostics that already reference it.
+    """
     out = arr.copy()
     for f in np.unique(labels[labels >= 0]):
         sel = (labels == f) & (arr > 0)
@@ -286,6 +313,178 @@ def a1_normalize_per_frame(arr: np.ndarray, labels: np.ndarray, **ref) -> np.nda
             continue
         med, iqr = a1_stats(np.where(sel, arr, 0))
         out[sel] = a1_apply(arr, med, iqr, **ref)[sel]
+    return out
+
+
+# ============================================================================
+# R07 — the ONE A1 statistic, shared by training and deployment
+# ============================================================================
+#
+# R07 measured: training normalised each Stage-2 window by ONE native-resolution statistic,
+# while both deploy paths derive a per-SeamMap-frame statistic from CTX area-averaged to
+# 160 m. Two independent mismatches, both quantified over all 39 Stage-2 windows:
+#
+#   resolution  IQR_native / IQR_160m = 1.35x median, 1.83x p95, 2.15x max. Training pins the
+#               input IQR to exactly 27.7; deploy delivered a median of 37.3 (max 59.6) and
+#               clipped ~10x more pixels.
+#   unit        The training comment claimed "each training window is ~one CTX source frame".
+#               Measured against the cached SeamMaps: only 10 of 38 windows lie in one frame;
+#               22 span two, 3 span three, max four; dominant-frame share median 81%, min 48%.
+#
+# So training removed between-WINDOW scale and deployment removes between-FRAME scale. The
+# functions below are the single definition both sides now call:
+#   unit       = one dissolved SeamMap source frame
+#   resolution = native 5 m/px DN
+#   support    = the frame's extent within the parent Murray tile (see A1_ARM)
+#   fallback   = pixels in no qualifying frame take the enclosing array's own native statistic,
+#                never raw DN (that mixture is R08)
+
+A1_MIN_FRAME_PX = 50            # matches the pre-existing threshold in the 160 m paths
+# The canonical name of this arm. `src.modeling.mlp_head.A1_NORM_ARM` repeats the literal
+# rather than importing it (that module would drag torch's OpenMP bootstrap into every
+# notebook that touches striping); a test pins the two equal.
+A1_ARM = "a1_native_perframe_tilesupport_v2"
+
+
+def a1_stats_from_hist(hist) -> tuple[float, float]:
+    """Exact robust (median, IQR) of uint8 DN from a 256-bin count histogram.
+
+    Streaming a 2.2-Gpx Murray tile cannot hold its values, but uint8 has only 256 of them, so
+    a histogram gives the *exact* percentiles rather than an approximation. DN 0 (mosaic
+    nodata) is excluded, matching `a1_stats`.
+    """
+    h = np.asarray(hist, dtype=np.int64).copy()
+    h[0] = 0                                       # nodata sentinel
+    n = int(h.sum())
+    if n < A1_MIN_FRAME_PX:
+        return np.nan, np.nan
+    c = np.cumsum(h)
+
+    def pct(p):
+        # numpy's linear interpolation on the sorted values, evaluated from the CDF
+        x = p / 100.0 * (n - 1)
+        lo, hi = int(np.floor(x)), int(np.ceil(x))
+        v_lo = int(np.searchsorted(c, lo + 1))
+        v_hi = int(np.searchsorted(c, hi + 1))
+        return v_lo + (v_hi - v_lo) * (x - lo)
+
+    med = float(pct(50))
+    iqr = float(pct(75) - pct(25)) or 1.0
+    return med, iqr
+
+
+def frame_labels_on(transform, shape, frames, *, dtype: str = "int32") -> np.ndarray:
+    """Rasterize dissolved source frames onto an arbitrary grid; -1 where no frame covers."""
+    return rasterize([(g, i) for i, g in enumerate(frames.geometry)], out_shape=tuple(shape),
+                     transform=transform, fill=-1, dtype=dtype, all_touched=False)
+
+
+def frame_hist_native(src_path: str | Path, frames, *, block: int = 4096,
+                      n_frames: int | None = None, progress=None) -> np.ndarray:
+    """Stream a native-resolution raster once, accumulating a per-frame DN histogram.
+
+    Returns `(n_frames + 1, 256)` counts; row `n_frames` is the no-frame residue. Blocked so a
+    GB-scale Murray tile never materialises, and the frame labels are rasterized per block for
+    the same reason (a native-resolution label map for a whole tile would be ~4.5 GB).
+    """
+    n = len(frames) if n_frames is None else n_frames
+    hist = np.zeros((n + 1, 256), dtype=np.int64)
+    # A Murray tile carries ~30-90 dissolved frames but any one block touches a handful, and
+    # rasterizing all of them per block dominated the runtime (measured: ~45 min/tile, which
+    # would have made the per-frame native statistic impractical for both training and deploy).
+    # Pre-filtering by bounding box is what makes R07's fix affordable.
+    bounds = np.array([g.bounds for g in frames.geometry], dtype=np.float64)
+    geoms = list(frames.geometry)
+    with rasterio.open(str(src_path)) as ds:
+        H, W = ds.height, ds.width
+        for r0 in range(0, H, block):
+            h = min(block, H - r0)
+            for c0 in range(0, W, block):
+                w = min(block, W - c0)
+                win = rasterio.windows.Window(c0, r0, w, h)
+                arr = ds.read(1, window=win)
+                if not arr.any():
+                    continue
+                tr = ds.window_transform(win)
+                bx0, by1 = tr * (0, 0)
+                bx1, by0 = tr * (w, h)
+                hit = np.where((bounds[:, 0] < bx1) & (bounds[:, 2] > bx0)
+                               & (bounds[:, 1] < by1) & (bounds[:, 3] > by0))[0]
+                if hit.size:
+                    lab = rasterize([(geoms[i], int(i) + 1) for i in hit],
+                                    out_shape=arr.shape, transform=tr, fill=0,
+                                    dtype="int32", all_touched=False) - 1
+                else:
+                    lab = np.full(arr.shape, -1, dtype=np.int32)
+                lab[lab < 0] = n                    # residue row
+                # bincount over the flattened (frame, DN) index; `np.add.at` on 16 M elements
+                # is an order of magnitude slower and this runs once per block per tile
+                idx = (lab.ravel().astype(np.int32) << 8) | arr.ravel()
+                hist += np.bincount(idx, minlength=(n + 1) * 256).reshape(n + 1, 256)
+            if progress:
+                progress(min(r0 + block, H), H)
+    return hist
+
+
+def a1_stats_native_tile(tile: str, frames, *, zip_dir: Path | None = None,
+                         block: int = 4096, progress=None) -> tuple[dict, tuple, dict]:
+    """Per-frame native (median, IQR) over each frame's extent in the whole Murray tile.
+
+    Returns `(stats, fallback_stats, provenance)`. `stats` maps frame index ->
+    `(median, IQR)` for frames with at least `A1_MIN_FRAME_PX` valid pixels;
+    `fallback_stats` is the tile-wide native statistic used for everything else.
+    """
+    zd = Path(zip_dir) if zip_dir is not None else CTX_ZIP_DIR
+    zip_path = zd / f"{tile}.zip"
+    vsizip = f"/vsizip/{zip_path.as_posix()}/{_inner_tif_name(zip_path)}"
+    hist = frame_hist_native(vsizip, frames, block=block, progress=progress)
+    n = len(frames)
+    stats, small = {}, []
+    for i in range(n):
+        med, iqr = a1_stats_from_hist(hist[i])
+        if np.isfinite(med) and np.isfinite(iqr) and iqr > 0:
+            stats[i] = (med, iqr)
+        elif hist[i].sum():
+            small.append(i)
+    fallback = a1_stats_from_hist(hist.sum(axis=0))
+    counts = hist.sum(axis=1)
+    total = int(counts.sum() - hist[:, 0].sum())
+    covered = int(sum(counts[i] - hist[i, 0] for i in stats))
+    prov = {
+        "a1_arm": A1_ARM, "statistic": "median_iqr", "resolution": "native_5m",
+        "unit": "seammap_source_frame", "support": "frame_extent_in_murray_tile",
+        "min_frame_px": A1_MIN_FRAME_PX, "n_frames": n, "n_frames_with_stats": len(stats),
+        "n_frames_too_small": len(small), "frames_too_small": small,
+        "fallback_median": fallback[0], "fallback_iqr": fallback[1],
+        "fallback_pixel_fraction": (1.0 - covered / total) if total else None,
+    }
+    return stats, fallback, prov
+
+
+def a1_normalize_native(arr: np.ndarray, labels: np.ndarray, stats: dict,
+                        fallback: tuple[float, float] | None = None, **ref) -> np.ndarray:
+    """Apply the R07 A1 statistic to a native-DN array. **No pixel is left at raw DN.**
+
+    `stats` is `{frame_index: (median, IQR)}`; every valid pixel whose frame is absent from it
+    — unlabelled, or a frame below `A1_MIN_FRAME_PX` — is normalized by `fallback` instead.
+    Leaving those at raw DN is R08: it puts two different radiometric scales into one array and
+    hands the mixture to a frozen embedder that cannot tell them apart.
+    """
+    out = np.zeros(arr.shape, dtype=np.uint8)
+    valid = arr > 0
+    done = np.zeros(arr.shape, dtype=bool)
+    for f, (med, iqr) in stats.items():
+        sel = (labels == f) & valid
+        if sel.any():
+            out[sel] = a1_apply(arr, med, iqr, **ref)[sel]
+            done |= sel
+    rest = valid & ~done
+    if rest.any():
+        if fallback is None or not np.isfinite(fallback[0]):
+            raise ValueError(
+                f"{int(rest.sum())} valid pixels are in no qualifying frame and no fallback "
+                f"statistic was supplied; returning them as raw DN is the R08 defect.")
+        out[rest] = a1_apply(arr, fallback[0], fallback[1], **ref)[rest]
     return out
 
 

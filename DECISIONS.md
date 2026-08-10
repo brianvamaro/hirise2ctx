@@ -7305,6 +7305,17 @@ native 5 m DN). But the A1 product is **not** bit-reproducible across the re-anc
 small-frame tail is the same population **R08** is open on. R08 is a precondition for shipping A1,
 not an unrelated finding — that link is new and came out of this measurement.
 
+> ### ⚠ CORRECTED 2026-08-09 by R07 — the premise of the paragraph above is false
+> "the 160 m SeamMap-keyed statistic … is what `models/deployable_a1` was trained against" is
+> **wrong, and it is the exact inverse of the truth.** Training
+> (`scripts/probes/_w2_fang_embed.py:209`) used `a1_stats(arr)` on the **native 5 m** Stage-2
+> window — one statistic per *window*, not per frame. I inherited that claim from the
+> `striping_a1_map` docstrings and repeated it without checking; the docstrings cite
+> `striping_a1_infer_crop.py`, which is another *inference* script, so the whole justification was
+> inference matched to inference and called train parity. R07 (**2026-08-09a**) measures it and
+> fixes both sides. What still stands from the paragraph above: the lattice-sensitivity numbers
+> themselves, and the R08 link.
+
 **The third merge path is closed.** `scripts/striping_frame_blocks.py:85` called `merge()` directly
 over all 26 abundance tifs with no lattice check at all — so the one figure whose subject is where
 features sit relative to frame boundaries was built with every tile's phase floored into a whole-cell
@@ -7391,3 +7402,93 @@ and the missing bytes were never on this machine.
 supply; v2 proceeds as-is in the meantime, and other findings keep being fixed against it.** R23's
 retain-and-document remedy (DECISIONS 2026-08-06o) is therefore not a temporary holding position
 pending recovery — it is the final disposition for v2. Stop re-opening the hunt.
+
+## 2026-08-09a — R07: A1's train/deploy statistic, measured, unified, and versioned
+
+R07 had never been diagnosed (four sessions hit the limit on it). Diagnosed now, and the register
+**understated** it: there are **three** defects, not one, and the register's fix would have closed
+only the first.
+
+### 1. Resolution — confirmed, and quantified over all 39 Stage-2 windows
+
+Training (`scripts/probes/_w2_fang_embed.py:209`) took `a1_stats(arr)` on the **native 5 m** CTX
+window. Both deploy paths took it from CTX **area-averaged to 160 m** and then applied that gain to
+native DN. Measured on the exact arrays training used:
+
+| | median | p95 | max |
+|---|---|---|---|
+| gain error `IQR_native / IQR_160m` | **1.35×** | 1.83× | 2.15× |
+| realised input IQR at deploy | **37.3** | 50.7 | 59.6 |
+| % pixels clipped at 0 or 255, deploy | 0.023 % | 2.2 % | 4.35 % |
+
+Training pins the input IQR to **exactly 27.7** on all 39 windows by construction; deploy handed the
+frozen ViT 35–115 % wider contrast than it ever saw, and clipped ~10× more pixels. That corroborates
+**R38**'s aggravation claim; its "1.50× narrower" sits inside the range but the median is 1.35×.
+
+### 2. Statistical unit — NEW, and the training code's own comment is false
+
+`_w2_fang_embed.py:204` asserted "each training window is ~one CTX source frame". Measured against
+the cached dissolved SeamMaps for 38 of 39 windows: only **10 of 38** lie in a single frame; 22 span
+two, 3 span three, max four. Dominant-frame share median **80.9 %**, min 48.1 %; only 15/38 reach
+≥90 %. So for 28 of 38 windows the training statistic was pooled across 2–4 source frames — training
+removed between-**window** level/scale while deployment removed between-**frame** level/scale. These
+are different normalizations, so the register's fix ("make both paths native-resolution") would have
+left the arms still mismatched.
+
+### 3. The arm was unversioned — NEW
+
+**Eleven** heads — `deployable`, `deployable_a1` and nine F variants — share
+`recipe_hash = 86c51a5dca220f63`, and no `recipe.json` mentions the preprocessing arm at all. The
+only thing distinguishing them was the parent directory name. Feeding the A1 head raw DN, or the
+baseline head A1-normalised DN, yields a plausible raster and no error.
+
+### The docstrings asserted the exact inverse, and I had repeated it
+
+`striping_a1_map` said "the head was trained against the 160 m statistics" and that using native
+5 m "invalidates models/deployable_a1" — backwards on both counts. Its evidence was a citation to
+`striping_a1_infer_crop.py`, i.e. another *inference* script: inference matched to inference and
+called train parity. I inherited that claim on 2026-08-08 and built the 2026-08-06y A1 paragraph on
+it; that paragraph now carries a correction notice.
+
+### Fix (Brian, 2026-08-09): full parity, folded into the rebuild — plus arm versioning
+
+One definition, `src.striping.A1_ARM = "a1_native_perframe_tilesupport_v2"`, called by both sides:
+unit = one dissolved SeamMap source frame, resolution = native 5 m, support = the frame's extent in
+the parent Murray tile, and **no pixel is left at raw DN** — anything in no qualifying frame takes
+the tile-wide native statistic (`a1_normalize_native` raises rather than falling back to raw, which
+is the R08 defect). Exactness comes free: uint8 percentiles are read from a 256-bin histogram, so
+the streamed statistic is the true median/IQR, not a binned estimate.
+
+`norm_arm` is now stamped into `recipe.json` at train time (inferred from `--store-name`, which is
+where the arm always lived) and folded into `recipe_hash` **only when declared**, so pre-R07 hashes
+and directories are untouched. `require_norm_arm` is deliberately asymmetric: the A1 path **refuses**
+an unknown arm (that is the dangerous direction, and the A1 head must be retrained for R07 anyway),
+while the baseline path only warns (unversioned + raw DN is the pre-R07 status quo, and blocking the
+baseline re-render on a provenance field buys no safety).
+
+### Three things found while implementing, each of which would have blocked or bitten
+
+- **`load_frames` required a rendered abundance raster** — it opened
+  `reports/map_region/{tile}_abundance.tif` merely to read a CRS. The 39 training windows span
+  **20** Murray tiles while only the 26 map-footprint tiles have that product, so the R07 training
+  fix could not have run at all. Frames are a property of the CTX tile; `_tile_crs` now reads the
+  tile, falling back to the product.
+- **Cost**: the naive implementation rasterized all ~81 frames onto every block and took **~45 min
+  per tile**, which would have made per-frame native statistics impractical. A bounding-box
+  pre-filter plus `bincount` instead of `np.add.at` brings it to **3.4 min/tile** (~13×): ~69 min for
+  all 20 training tiles, ~31 min for the 9 A1 tiles, against ~5–7 GPU-h of A1 inference. All 39
+  windows' parent tiles are already cached, so **no downloads are required**.
+- **R01's A1 ordering constraint is GONE.** It existed only because the A1 statistic was read off the
+  baseline product's grid. It no longer is, so the two rows can be built in either order and A1 is no
+  longer sensitive to the re-anchoring. The gate added on 2026-08-08 is removed and replaced by a
+  test that pins the independence.
+
+### Status
+
+Code fixed; **artifacts not regenerated**. The A1 embeddings and the A1 head must be re-made under
+the new arm, which the batched rebuild already schedules — marginal GPU cost ≈ 0. Until then the
+banked A1 numbers stand as measured under the old, mismatched definition: the η² payoff
+(0.196 → 0.141) and the −0.024 AUC skill cost came from **different** A1 definitions and are still
+not comparable with each other. `docs/PENDING_REBUILD.md` carries the row. R08 remains open and is
+narrowed by this work: the fallback population is measurably tiny (0.0081 % of valid pixels on
+E-12_N36) but its *contract* is now explicit rather than accidental.

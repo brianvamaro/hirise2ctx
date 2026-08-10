@@ -37,6 +37,7 @@ from __future__ import annotations
 import datetime as _dt
 import hashlib
 import json
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -323,7 +324,14 @@ class DeployableHead:
                  dropout: float = DEFAULT_DROPOUT, epochs: int = 60, batch: int = 4096,
                  lr: float = 1e-3, weight_decay: float = 1e-4, patience: int = 8,
                  recipe: dict | None = None, nuisance_basis: np.ndarray | None = None,
-                 lambda_consistency: float = 0.0) -> None:
+                 lambda_consistency: float = 0.0, norm_arm: str | None = None) -> None:
+        # R07: which CTX preprocessing arm this head's embeddings came from. Eleven heads
+        # (baseline, A1 and nine F variants) previously shared recipe_hash 86c51a5dca220f63
+        # and recorded the arm nowhere, so the ONLY thing distinguishing them was the parent
+        # directory name -- and feeding a head the wrong arm produces a plausible raster with
+        # no error. It is part of the recipe hash on purpose: two heads that expect different
+        # input distributions are not the same recipe.
+        self.norm_arm = norm_arm
         self.seeds = tuple(seeds)
         self.hidden = tuple(hidden)
         self.dropout = dropout
@@ -418,12 +426,17 @@ class DeployableHead:
 
     def recipe_hash(self) -> str:
         """Stable hash of the recipe config (independent of trained weights)."""
-        blob = json.dumps({
+        payload = {
             "name": self.name, "seeds": list(self.seeds), "hidden": list(self.hidden),
             "dropout": self.dropout, "epochs": self.epochs, "lr": self.lr,
             "weight_decay": self.weight_decay, "patience": self.patience,
             "recipe": self.recipe,
-        }, sort_keys=True).encode()
+        }
+        # R07: only heads that DECLARE an arm fold it into the hash, so every pre-R07 head's
+        # hash is unchanged and existing directories keep resolving.
+        if self.norm_arm is not None:
+            payload["norm_arm"] = self.norm_arm
+        blob = json.dumps(payload, sort_keys=True).encode()
         return hashlib.sha256(blob).hexdigest()[:16]
 
     def model_hash(self) -> str:
@@ -450,6 +463,7 @@ class DeployableHead:
             "nuisance_k": (None if self.nuisance_basis is None
                            else int(self.nuisance_basis.shape[1])),
             "lambda_consistency": self.lambda_consistency,
+            "norm_arm": self.norm_arm,          # R07; None = predates arm versioning
         }
         (path / "recipe.json").write_text(json.dumps(card, indent=2), encoding="utf-8")
 
@@ -464,7 +478,9 @@ class DeployableHead:
                    lr=card["lr"], weight_decay=card["weight_decay"],
                    patience=card["patience"], recipe=card.get("recipe"),
                    nuisance_basis=basis,
-                   lambda_consistency=card.get("lambda_consistency", 0.0))
+                   lambda_consistency=card.get("lambda_consistency", 0.0),
+                   # absent => UNKNOWN, never "baseline" (R07); `require_norm_arm` decides
+                   norm_arm=card.get("norm_arm"))
         head._members = []
         for s in head.seeds:
             m = head._member(s)
@@ -473,3 +489,55 @@ class DeployableHead:
         head._train_obs_ids = card.get("train_obs_ids", [])
         head._trained_at = card.get("trained_at_iso")
         return head
+
+
+NO_NORM_ARM = "none"        # raw Murray DN, the baseline arm
+# Duplicated from `src.striping.A1_ARM` on purpose: that module owns the *definition* of the
+# statistic but pulls rasterio/geopandas/scipy, and importing it here would drag those into
+# every model import — while importing `src.modeling` from `src.striping` would impose the
+# torch/OpenMP ordering rule (CLAUDE.md) on every notebook that touches striping. A test pins
+# the two literals equal, which is cheaper than either import.
+A1_NORM_ARM = "a1_native_perframe_tilesupport_v2"
+
+
+def infer_norm_arm(store_name: str | None) -> str:
+    """Which preprocessing arm an embedding store holds, from its name.
+
+    The arm was always knowable at train time — it *is* `--store-name` — and was recorded
+    nowhere, which is how eleven heads came to share one recipe hash.
+    """
+    s = (store_name or "").lower()
+    return A1_NORM_ARM if s.endswith("_a1") or "_a1_" in s else NO_NORM_ARM
+
+
+def require_norm_arm(head, expected: str | None, *, where: str = "",
+                     strict: bool = True) -> str | None:
+    """Check that a head was trained on the CTX preprocessing arm it is about to be fed.
+
+    **R07.** Nothing in a head's artifacts used to say which arm it expects: eleven heads
+    shared one `recipe_hash` and none recorded the preprocessing. Feeding the A1 head raw DN,
+    or the baseline head A1-normalised DN, yields a plausible raster and no error.
+
+    `strict=True` (the A1 path) refuses an unknown arm outright — an unverifiable head must not
+    silently pass as correct, and the A1 head has to be retrained for R07 anyway.
+    `strict=False` (the baseline path) only refuses a *contradicting* declaration and warns on
+    an unknown one, because pairing an unversioned head with raw DN is the pre-R07 status quo
+    and blocking the baseline re-render on a provenance field buys no safety.
+    """
+    got = getattr(head, "norm_arm", None)
+    tag = f" ({where})" if where else ""
+    if got == expected:
+        return got
+    if got is None:
+        msg = (f"the head{tag} predates R07 arm versioning, so it cannot be verified as "
+               f"'{expected}'. Re-train it to stamp `norm_arm`.")
+        if strict:
+            raise ValueError(msg + " Refusing to run: an unverifiable head must not pass as "
+                                   "correct on the A1 path.")
+        warnings.warn(msg + " Proceeding: unversioned + raw DN is the pre-R07 status quo.",
+                      RuntimeWarning, stacklevel=2)
+        return None
+    raise ValueError(
+        f"the head{tag} declares norm_arm='{got}' but this path supplies '{expected}'. "
+        f"These are different input distributions; the output would look plausible and be wrong."
+    )
