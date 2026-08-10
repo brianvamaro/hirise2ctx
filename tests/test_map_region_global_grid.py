@@ -244,6 +244,35 @@ def test_map_one_tile_renders_on_the_global_lattice(tmp_path, monkeypatch):
     assert side["n_predicted_tiles"] >= n * n
 
 
+def test_the_coverage_guard_checks_each_axis_against_its_own_phase(tmp_path, monkeypatch):
+    """Row extent with the row phase, column extent with the column phase.
+
+    These were transposed when R01 part 2 landed and nothing caught it: the shipped sweep
+    loses no cells at ANY phase, so both orderings return empty and every behavioural test
+    passes. It would only have surfaced once someone changed `win_px` or the overlap — at
+    which point the guard would have been checking the wrong axis. Spy on the pairing.
+    """
+    import scripts.map_region as mr
+    from src.mapping import CtxWindow
+
+    tile, transform, extent = _synthetic_tile(tmp_path)
+    a, b, c, d, e, f = transform
+    seen = []
+
+    def spy(offsets, ext, win, tile_px, *, phase=0):
+        seen.append((ext, phase))
+        return []
+
+    monkeypatch.setattr(mr, "uncovered_cells", spy)
+    monkeypatch.setattr(mr, "read_tile_window", lambda *a_, **k_: CtxWindow(
+        data=np.full((256, 256), 200, dtype=np.uint8), row_off=0, col_off=0,
+        transform=(a, b, c, d, e, f), crs_wkt=_WKT))
+    mr.map_one_tile(tile, _StubEmbedder(), _StubHead(), None,
+                    args=_fake_args(tmp_path, win_px=256))
+    # the fixture's phases differ (20 row, 4 col), so a transposition is visible
+    assert seen == [(extent, 20), (extent, 4)], seen
+
+
 def test_the_driver_refuses_a_sweep_that_would_leave_holes(tmp_path, monkeypatch):
     """The coverage guard must actually fire — with the right constants it never does, so
     without this the guard could be deleted and every test would still pass.
@@ -324,18 +353,46 @@ def test_an_existing_old_lattice_product_is_not_skipped_as_done(tmp_path, monkey
     write_geotiff(tmp_path / f"{tile}_prob.tif", np.zeros((4, 4)), old, _WKT)
     assert mr.existing_product_off_lattice(tmp_path / f"{tile}_prob.tif")
 
-    with pytest.raises(SystemExit, match="is NOT on"):
+    with pytest.raises(SystemExit, match="cannot be reused") as exc:
         mr.map_one_tile(tile, _StubEmbedder(), _StubHead(), None,
                         args=_fake_args(tmp_path, win_px=256))
+    # both reasons are reported: no commit marker (R14) AND the wrong lattice (R01)
+    assert "no sidecar" in str(exc.value) and "not on" in str(exc.value)
 
-    # a product genuinely on the grid, with a sidecar that says so, still skips
-    good = global_cell_transform(-9999, -19999, TILE_PX)
-    write_geotiff(tmp_path / f"{tile}_prob.tif", np.zeros((4, 4)), good, _WKT)
-    (tmp_path / f"{tile}.json").write_text(json.dumps({"grid_id": COARSE_GRID_ID}),
-                                           encoding="utf-8")
-    assert mr.existing_product_off_lattice(tmp_path / f"{tile}_prob.tif") is None
+
+def test_a_committed_tile_is_reused_and_a_half_committed_one_is_not(tmp_path, monkeypatch):
+    """The R14 round trip: render, then re-run. The first pass must commit, the second must
+    recognise its own work — and deleting any one of the committed rasters must un-commit it.
+
+    The old sentinel was `{tile}_prob.tif.exists()`, the FIRST of four artifacts, so a kill
+    between artifacts 1 and 4 left a tile permanently "done" with no abundance raster.
+    """
+    pytest.importorskip("rasterio")
+    import scripts.map_region as mr
+    from src.mapping import CtxWindow
+
+    tile, transform, extent = _synthetic_tile(tmp_path)
+    a, b, c, d, e, f = transform
+
+    def fake_read(zip_path, inner_tif, row_off, col_off, size):
+        h, w = min(size, extent - row_off), min(size, extent - col_off)
+        return CtxWindow(data=np.full((h, w), 200, dtype=np.uint8),
+                         row_off=row_off, col_off=col_off,
+                         transform=(a, b, c + col_off * a, d, e, f + row_off * e),
+                         crs_wkt=_WKT)
+
+    monkeypatch.setattr(mr, "read_tile_window", fake_read)
+    args = _fake_args(tmp_path, win_px=256)
     assert mr.map_one_tile(tile, _StubEmbedder(), _StubHead(), None,
-                           args=_fake_args(tmp_path, win_px=256))["status"] == "skipped_done"
+                           args=args)["status"] == "done"
+    assert mr.tile_is_reusable(tmp_path, tile, None) is None
+    assert mr.map_one_tile(tile, _StubEmbedder(), _StubHead(), None,
+                           args=args)["status"] == "skipped_done"
+
+    # the sidecar lists what it committed, so removing a raster un-commits the tile
+    (tmp_path / f"{tile}_prob.tif").unlink()
+    why = mr.tile_is_reusable(tmp_path, tile, None)
+    assert why and "missing" in why
 
 
 def test_an_on_lattice_raster_without_a_sidecar_is_still_refused(tmp_path):
@@ -350,22 +407,41 @@ def test_an_on_lattice_raster_without_a_sidecar_is_still_refused(tmp_path):
     assert "no sidecar" in mr.existing_product_off_lattice(p)
 
 
-def test_a_corrupt_partial_cannot_escape_the_gate_or_block_force(tmp_path):
-    """`np.savez_compressed` writes the zip in place, so a killed job leaves a truncated
-    `.npz`. Letting BadZipFile escape would make even --force unable to clear it."""
+def test_damage_and_wrong_lattice_get_different_answers(tmp_path):
+    """A truncated partial is work to redo; a foreign one is an operator error. Collapsing
+    them made a single corrupt file demand `--force`, which also discards every good partial
+    beside it — so a wall-clock kill cost the whole tile instead of one window."""
     import scripts.map_region as mr
 
     pdir = tmp_path / "partials" / "E4_N40"
     pdir.mkdir(parents=True)
     (pdir / "000000_000000.npz").write_bytes(b"PK\x03\x04 truncated")
     (pdir / "000000_004000.npz").write_bytes(b"")
-    assert mr.partial_grid_id(pdir / "000000_000000.npz") is None
-    assert mr.partial_grid_id(pdir / "000000_004000.npz") is None
+    good = pdir / "000000_008000.npz"
+    with open(good, "wb") as fh:
+        np.savez_compressed(fh, ti=np.arange(3, dtype=np.int32),
+                            tj=np.arange(3, dtype=np.int32),
+                            prob=np.zeros(3, dtype=np.float32),
+                            grid_id=np.array(COARSE_GRID_ID))
+    assert mr.partial_status(pdir / "000000_000000.npz") == "damaged"
+    assert mr.partial_status(pdir / "000000_004000.npz") == "damaged"
+    assert mr.partial_status(good) == "ok"
 
+    # damaged -> deleted and recomputed, no --force needed, and the good one survives
+    mr.reject_foreign_partials(pdir, _fake_args(tmp_path))
+    assert {p.name for p in pdir.glob("*.npz")} == {good.name}
+
+    # a readable partial from another lattice is a different matter: refuse
+    foreign = pdir / "000000_012000.npz"
+    with open(foreign, "wb") as fh:
+        np.savez_compressed(fh, ti=np.arange(3, dtype=np.int32),
+                            tj=np.arange(3, dtype=np.int32),
+                            prob=np.zeros(3, dtype=np.float32))   # pre-R01: no grid_id
+    assert mr.partial_status(foreign) == "foreign"
     with pytest.raises(SystemExit, match="different coarse lattice"):
         mr.reject_foreign_partials(pdir, _fake_args(tmp_path))
     mr.reject_foreign_partials(pdir, _fake_args(tmp_path, force=True))
-    assert list(pdir.glob("*.npz")) == []
+    assert {p.name for p in pdir.glob("*.npz")} == {good.name}
 
 
 def test_a_current_partial_is_kept_on_resume(tmp_path):

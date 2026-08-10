@@ -7403,6 +7403,80 @@ supply; v2 proceeds as-is in the meantime, and other findings keep being fixed a
 retain-and-document remedy (DECISIONS 2026-08-06o) is therefore not a temporary holding position
 pending recovery — it is the final disposition for v2. Stop re-opening the hunt.
 
+## 2026-08-10a — R14 closed: a killed write can no longer look finished
+
+R14 must land **before** the R01 re-render, not after: the re-render is 26 tiles × ~1 GPU-h under
+a Sherlock wall clock and `map_one_tile` writes its artifacts at the very **end** of each tile —
+precisely the window a wall-clock limit hits.
+
+**What was wrong.** `write_geotiff` opened the *destination* in `"w"` mode (measured: the file
+existed at 7,799,350 of 7,854,955 bytes before `close()`), and resume was `path.exists()` — no
+size, no read, no provenance — keyed on `{tile}_prob.tif`, the **first** of four artifacts. So a
+kill between artifacts 1 and 4 left a tile permanently "done" with **no abundance raster**, and
+abundance is the deliverable.
+
+**The three kill signatures, and why the obvious check is not enough.** Measured on real rasters:
+
+| signature | `rasterio.open` | full decode | last block | finite count |
+|---|---|---|---|---|
+| truncated (10–99.99 %) | ✅ passes | ❌ raises | ❌ raises | — |
+| valid, 100 % NaN | ✅ | ✅ | ✅ | ❌ catches |
+| half the blocks written | ✅ | ✅ | ✅ | ❌ catches |
+
+`rasterio.open` succeeds at every truncation fraction because the first IFD sits at byte 8. The
+register's proposed check ("open, check height/width, and that the last block reads") **does**
+catch truncation — the earlier note that it "cannot fire" is wrong — but it is blind to the two
+nodata-shaped signatures, which are exactly what a wall-clock kill produces. `expect_finite` is
+the only test that sees them, so it is load-bearing, not decoration.
+
+**What landed.** `write_geotiff` stages a `.tmp` **sibling** (same volume — `Path.replace` is only
+atomic within one), verifies it, then renames; a failure leaves the destination byte-identical,
+which matters because `"w"` mode truncates an existing file immediately, so a re-run that died
+mid-write used to destroy the good tile it was replacing. `verify_geotiff` decodes **blockwise**
+(the mosaic already holds 281 MB in memory) and `expect_finite` is computed on the **float32
+cast**, since the cast can turn a finite float64 into `inf` and make the check reject its own
+correct output. Tiles commit as a **set** with the sidecar last and a per-raster
+`{bytes, sha256, shape, n_finite}` record; resume checks content *and* provenance and prints the
+first failing reason; the manifest **merges** instead of clobbering (the shipped one lists 4 tiles
+while 26 are on disk, so 22 have no record and `win_px` is unknown for them).
+
+**Corrections to the evidence, carried through.** The stale-mixing figures "1225 partials / 61.5 %
+/ 0.4366" came from a state no sequence of rectangular sweeps can produce; the reachable numbers
+are **719 / 63.1 % / 0.4933**, and mixing needs a stated precondition (`--force`, or a sweep
+interrupted before assembly). The register's `n_predicted_tiles == n_windows·(win/S − 2)²`
+invariant is **invalidated by R01**: with a phase the per-window yield is `(win/S − 3)²` for
+windows whose shifted origin is not a multiple of `S`, so that assertion now fails on correct
+output. Replaced with a derived per-axis cell count.
+
+**Two things found only by building it.**
+- **The sweep is a partition, not an overlap.** With `overlap = 3·tile_px` the windows overlap in
+  *pixels* (so every cell has full context) but each cell is computed by exactly **one** window —
+  measured, 900 cells over 36 windows, 0 duplicated. So the new overlap-disagreement check cannot
+  false-positive within a run, and it is precisely a **cross-run** detector: two runs compute the
+  same cell set on the same lattice, so a surviving stale partial collides cell-for-cell. That is
+  the only check that sees the mixed-run failure, where every file is structurally perfect and the
+  raster comes out the right shape.
+- **Damage and wrong-lattice needed different answers.** Folding a corrupt `.npz` into R01's
+  foreign-partial gate made one truncated file demand `--force`, which also discards every good
+  partial beside it — so a wall-clock kill cost the whole tile instead of one window. `partial_status`
+  now separates `damaged` (delete and recompute, silently correct) from `foreign` (refuse).
+
+**A bug in my own R01 part 2, found here.** The coverage guard's axes were transposed —
+`miss_r` was checked against `phase_c` and vice versa. Inert in the shipped configuration (the
+sweep loses no cells at *any* phase, so both orderings return empty), which is exactly why no test
+caught it; it would have checked the wrong axis the moment `win_px` or the overlap moved. Fixed,
+with a spy test on the pairing. This is the class of thing the skeptic run's geometry lens would
+have caught, and that lens is the one that died on the session limit.
+
+**Mutation pass: 13/13 killed.** Seven of them survived the first pass — every driver-level guard,
+because `tests/` had zero references to `scripts/map_region`. Fast suite 710 → **731 passed**.
+
+**Rebuild impact: none on its own.** All 188 shipped rasters were swept (opened *and* fully block
+decoded): 0 failures, so nothing needs re-rendering to repair damage. But the 26 shipped tiles
+carry pre-R14 sidecars with no `rasters` block, so under the new rule they are "unverifiable, not
+reusable" — the correct answer, and free, because R01 forces a full re-render anyway.
+`--trust-existing` accepts them knowingly.
+
 ## 2026-08-09a — R07: A1's train/deploy statistic, measured, unified, and versioned
 
 R07 had never been diagnosed (four sessions hit the limit on it). Diagnosed now, and the register

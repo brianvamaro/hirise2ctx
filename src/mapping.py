@@ -533,19 +533,111 @@ def mosaic_geotiffs(paths, out_path: str | Path | None = None, *,
     return arr, transform, crs_wkt
 
 
+def file_sha256(path: str | Path, *, chunk: int = 1 << 20) -> str:
+    """SHA-256 of a file, streamed."""
+    import hashlib
+
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(chunk), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def verify_geotiff(path: str | Path, *, expect_shape=None, expect_count: int = 1,
+                   expect_dtype: str = "float32", expect_finite: int | None = None,
+                   expect_bytes: int | None = None,
+                   expect_sha256: str | None = None) -> str | None:
+    """Is this GeoTIFF actually complete? Returns None if acceptable, else the reason.
+
+    **R14.** A killed write leaves three distinct signatures, and the obvious checks catch
+    only some of them — all measured on real `reports/map_region` rasters:
+
+    1. **Truncated file.** `rasterio.open` SUCCEEDS at 10/50/90/99/99.99 % truncation and
+       reports the correct shape and dtype, because the first IFD sits at byte 8. A full
+       decode raises; so does reading the last block.
+    2. **Valid but all-nodata.** A closed 100 %-NaN raster opens, decodes cleanly, and reads
+       its last block fine. Nothing structural distinguishes it from a legitimately-masked
+       tile — NaN *is* this product's nodata. Only a finite-count check sees it.
+    3. **Half the blocks written.** Opens, decodes, last block OK, finite fraction 0.5193 with
+       the first all-nodata row at 768. Again only the finite count catches it.
+
+    So `expect_finite` is not decoration: it is the only test that sees signatures 2 and 3,
+    and those are exactly what a Slurm wall-clock kill produces. Checks run cheapest-first.
+    The decode is **blockwise** — `mosaic_geotiffs` already holds a 281 MB array in memory and
+    a naive `read(1)` here would double it.
+    """
+    import rasterio
+
+    path = Path(path)
+    if not path.exists():
+        return "missing"
+    size = path.stat().st_size
+    if expect_bytes is not None and size != expect_bytes:
+        return f"size {size} != expected {expect_bytes}"
+    if expect_sha256 is not None:
+        got = file_sha256(path)
+        if got != expect_sha256:
+            return f"sha256 {got[:12]}… != expected {expect_sha256[:12]}…"
+    try:
+        with rasterio.open(path) as src:
+            if expect_count is not None and src.count != expect_count:
+                return f"band count {src.count} != {expect_count}"
+            if expect_dtype is not None and src.dtypes[0] != expect_dtype:
+                return f"dtype {src.dtypes[0]} != {expect_dtype}"
+            if expect_shape is not None and (src.height, src.width) != tuple(expect_shape):
+                return f"shape {(src.height, src.width)} != {tuple(expect_shape)}"
+            n_finite = 0
+            for _, win in src.block_windows(1):
+                n_finite += int(np.isfinite(src.read(1, window=win)).sum())
+    except Exception as exc:                             # noqa: BLE001
+        return f"unreadable ({type(exc).__name__}: {exc})"
+    if expect_finite is not None and n_finite != expect_finite:
+        return f"{n_finite} finite pixels != expected {expect_finite}"
+    return None
+
+
 def write_geotiff(path: str | Path, raster: np.ndarray, transform, crs_wkt: str,
-                  *, nodata: float = np.nan) -> Path:
-    """Write a single-band float32 GeoTIFF (the abundance/probability raster)."""
+                  *, nodata: float = np.nan, atomic: bool = True,
+                  verify: bool = True) -> Path:
+    """Write a single-band float32 GeoTIFF (the abundance/probability raster).
+
+    **R14 — atomic.** `rasterio.open(path, "w")` occupies the *destination* for the whole
+    write: measured, the file existed at 7,799,350 of 7,854,955 bytes before `close()`, and a
+    hard-killed 12000² write left 154 MB sitting at the final path. Worse, it **truncates an
+    existing destination immediately**, so a re-run that dies mid-write destroys the good tile
+    it was going to replace. The raster is therefore staged as a `.tmp` *sibling* (same volume
+    — `Path.replace` is only atomic within a volume), verified, and renamed. On any failure the
+    `.tmp` is removed and the destination is left exactly as it was.
+
+    `expect_finite` is computed on the **float32 cast**, not the caller's array: the cast can
+    turn a finite float64 into `inf` (`1e300` → `inf`), which would make this reject its own
+    correct output. `atomic=False` restores the old behaviour for callers that need it.
+    """
     import rasterio
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with rasterio.open(
-        path, "w", driver="GTiff", height=raster.shape[0], width=raster.shape[1],
-        count=1, dtype="float32", crs=crs_wkt or None, transform=transform,
-        nodata=nodata, compress="deflate", tiled=True, blockxsize=256, blockysize=256,
-    ) as dst:
-        dst.write(raster.astype(np.float32), 1)
+    data = raster.astype(np.float32)
+    n_finite = int(np.isfinite(data).sum())
+    dest = path if not atomic else path.with_name(path.name + ".tmp")
+    try:
+        with rasterio.open(
+            dest, "w", driver="GTiff", height=data.shape[0], width=data.shape[1],
+            count=1, dtype="float32", crs=crs_wkt or None, transform=transform,
+            nodata=nodata, compress="deflate", tiled=True, blockxsize=256, blockysize=256,
+        ) as dst:
+            dst.write(data, 1)
+        if verify:
+            why = verify_geotiff(dest, expect_shape=data.shape, expect_finite=n_finite)
+            if why is not None:
+                raise OSError(f"{path.name} failed post-write verification: {why}")
+        if atomic:
+            Path(dest).replace(path)
+    except BaseException:
+        if atomic:
+            Path(dest).unlink(missing_ok=True)
+        raise
     return path
 
 

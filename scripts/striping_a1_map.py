@@ -58,11 +58,13 @@ import src.modeling  # noqa: F401  OpenMP bootstrap; must precede numpy
 import numpy as np
 from rasterio.features import rasterize
 
-from scripts.map_region import (as_int32_cells, load_tile_sidecar, partial_grid_id,
-                                reject_foreign_partials, window_offsets)
+from scripts.map_region import (as_int32_cells, load_tile_sidecar, overlap_disagreement,
+                                partial_grid_id, partial_name, read_partial,
+                                reject_foreign_partials, tile_is_reusable, window_offsets,
+                                write_json_atomic)
 from src.calibration import CalibrationLayer
 from src.fm_embeddings import FangEmbedder
-from src.mapping import (COARSE_GRID_ID, artifact_digest, assert_shared_lattice,
+from src.mapping import (COARSE_GRID_ID, artifact_digest, assert_shared_lattice, file_sha256,
                          predict_window, read_tile_window, tile_global_grid, uncovered_cells,
                          write_geotiff)
 from src.modeling.mlp_head import DeployableHead, require_norm_arm
@@ -113,9 +115,20 @@ def a1_window(window, frames, stats: dict, fallback: tuple[float, float]):
 
 def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
     out_dir = Path(args.out_dir)
-    if (out_dir / f"{tile}_prob_raw.tif").exists() and not args.force:
-        print(f"[{tile}] exists -> skip (--force to redo)", flush=True)
-        return {"tile": tile, "status": "skipped_done"}
+    # R14: resume on the SIDECAR, not on the first artifact written. This driver's sentinel was
+    # `{tile}_prob_raw.tif`, which `write_tile` emits FIRST -- the identical defect map_region
+    # had, on the one product that has never been generated, so fixing it here costs nothing.
+    if not args.force:
+        why = tile_is_reusable(out_dir, tile, None,
+                               verify=getattr(args, "verify_existing", False),
+                               trust_existing=getattr(args, "trust_existing", False))
+        if why is None and (out_dir / f"{tile}_prob_raw.tif").exists():
+            print(f"[{tile}] committed and verified -> skip (--force to redo)", flush=True)
+            return {"tile": tile, "status": "skipped_done"}
+        if (out_dir / f"{tile}_prob_raw.tif").exists():
+            raise SystemExit(f"[{tile}] {out_dir / f'{tile}_prob_raw.tif'} exists but cannot "
+                             f"be reused: {why}\n  Re-run with --force, or use a fresh "
+                             f"--out-dir.")
     zip_path = CTX_ZIP_DIR / f"{tile}.zip"
     if not zip_path.exists():
         print(f"[{tile}] ⚠ no cached CTX zip ({zip_path}) — A1 needs raw DN, so this tile cannot be "
@@ -156,9 +169,15 @@ def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
     grid = [(r, c) for r in row_offs for c in col_offs]
     t_tile = time.monotonic()
     for k, (row_off, col_off) in enumerate(grid):
-        part = partial_dir / f"{row_off:06d}_{col_off:06d}.npz"
+        part = partial_dir / partial_name(row_off, col_off)
         if part.exists() and not args.force:
-            continue
+            try:                                         # R14: "exists" is not "usable"
+                read_partial(part)
+                continue
+            except Exception as exc:                     # noqa: BLE001
+                print(f"[{tile}] partial {part.name} unreadable ({type(exc).__name__}) "
+                      f"-> recomputing", flush=True)
+                part.unlink(missing_ok=True)
         t0 = time.monotonic()
         window = read_tile_window(zip_path, inner_tif, row_off, col_off, win)
         w_a1, n_norm = a1_window(window, frames, stats, fallback)
@@ -176,20 +195,37 @@ def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
             cols["abundance"] = pred.abundance[keep].astype(np.float32)
         else:
             cols["prob_raw"] = pred.prob[keep].astype(np.float32)
-        np.savez_compressed(part, **cols)
+        tmp = part.with_name(part.name + ".tmp")         # R14: stage, CRC-check, rename
+        try:
+            with open(tmp, "wb") as fh:
+                np.savez_compressed(fh, **cols)
+            read_partial(tmp)
+            tmp.replace(part)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
         if k % 10 == 0 or k == len(grid) - 1:
             print(f"[{tile}] win {k + 1}/{len(grid)} kept={int(keep.sum())} "
                   f"a1px={n_norm:,} {time.monotonic() - t0:.1f}s", flush=True)
 
-    present = sorted(partial_dir.glob("*.npz"))
-    if len(present) < len(grid):
-        print(f"[{tile}] {len(present)}/{len(grid)} windows -> re-run to finish", flush=True)
-        return {"tile": tile, "status": "partial", "windows_done": len(present),
-                "windows_total": len(grid)}
+    # R14: set equality, not a count -- a superset satisfies a count gate.
+    want_names = {partial_name(r, c) for r, c in grid}
+    have_names = {p.name for p in partial_dir.glob("*.npz")}
+    missing, extra = want_names - have_names, sorted(have_names - want_names)
+    if missing:
+        print(f"[{tile}] {len(want_names) - len(missing)}/{len(want_names)} windows -> "
+              f"re-run to finish", flush=True)
+        return {"tile": tile, "status": "partial",
+                "windows_done": len(want_names) - len(missing), "windows_total": len(want_names)}
+    if extra:
+        raise SystemExit(f"[{tile}] {len(extra)} partial(s) are not part of this sweep "
+                         f"(e.g. {extra[:3]}); assembling the union would mix two runs.")
+    present = sorted(partial_dir / n for n in sorted(want_names))
     write_tile(tile, present, grid_geom, crs_wkt, calibrator, args, a1_prov)
     if args.clean_partials:
         for p in present:
             p.unlink()
+        (partial_dir / "_sweep.json").unlink(missing_ok=True)
     print(f"[{tile}] DONE in {time.monotonic() - t_tile:.0f}s", flush=True)
     return {"tile": tile, "status": "done", "windows": len(grid)}
 
@@ -201,8 +237,10 @@ def write_tile(tile, partials, grid_geom, crs_wkt, calibrator, args, a1_prov=Non
     the global lattice — byte-identical construction to `map_region.write_tile_geotiffs`,
     which is what keeps the A1 row co-registered with the baseline row cell for cell.
     """
+    loaded = [read_partial(p) for p in partials]
+
     def cat(key):
-        return np.concatenate([np.load(p)[key] for p in partials])
+        return np.concatenate([z[key] for z in loaded])
 
     foreign = [str(p) for p in partials if partial_grid_id(p) != COARSE_GRID_ID]
     if foreign:
@@ -221,12 +259,25 @@ def write_tile(tile, partials, grid_geom, crs_wkt, calibrator, args, a1_prov=Non
         r[ti - ti_min, tj - tj_min] = v
         return r
 
-    write_geotiff(out_dir / f"{tile}_prob_raw.tif", scatter(prob_raw), transform, crs_wkt)
-    write_geotiff(out_dir / f"{tile}_prob.tif", scatter(prob), transform, crs_wkt)
+    # R14: overlapping windows of one run agree by construction; disagreement means two runs.
+    n_dis, max_dis = overlap_disagreement(ti, tj, prob)
+    if n_dis and max_dis > 1e-6:
+        raise SystemExit(f"[{tile}] {n_dis} cells written twice with different values "
+                         f"(max |Δ| = {max_dis:.4g}) — partials from more than one run.")
+
+    # R14: commit as a SET, sidecar LAST. The old sentinel was `_prob_raw.tif`, written first.
+    emitted = [("prob_raw", scatter(prob_raw)), ("prob", scatter(prob))]
     if ab is not None:
-        write_geotiff(out_dir / f"{tile}_abundance.tif", scatter(ab), transform, crs_wkt)
-    (out_dir / f"{tile}.json").write_text(json.dumps({
+        emitted.append(("abundance", scatter(ab)))
+    rasters = []
+    for kind, arr in emitted:
+        p = write_geotiff(out_dir / f"{tile}_{kind}.tif", arr, transform, crs_wkt)
+        rasters.append({"name": p.name, "kind": kind, "bytes": p.stat().st_size,
+                        "sha256": file_sha256(p), "shape": list(shape),
+                        "n_finite": int(np.isfinite(arr.astype(np.float32)).sum())})
+    write_json_atomic(out_dir / f"{tile}.json", {
         "murray_tile": tile, "tile_px": TILE_PX, "raster_shape": list(shape),
+        "rasters": rasters, "overlap_disagreements": n_dis,
         # R01: same keys, same values as the baseline sidecar, so "is the A1 row on the
         # baseline's lattice?" is answerable from the two JSONs without opening a raster.
         **grid_geom.provenance(),
@@ -249,7 +300,7 @@ def write_tile(tile, partials, grid_geom, crs_wkt, calibrator, args, a1_prov=Non
         "a1_ref": {"median": A1_REF_MEDIAN, "iqr": A1_REF_IQR},
         # R07: record the arm and the measured statistic, not a prose description of it.
         **{f"a1_{k}": v for k, v in (a1_prov or {}).items()},
-    }, indent=2), encoding="utf-8")
+    })
 
 
 def main() -> int:
