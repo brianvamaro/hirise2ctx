@@ -558,7 +558,13 @@ else:
     with rasterio.open(AB) as da:
         ab = da.read(1); T = da.transform; H, W = ab.shape
     with rasterio.open(THERMAL) as dt:
-        ti = dt.read(1)
+        ti = dt.read(1); T_ti = dt.transform
+    # R01: leg 1 correlates these two arrays BY INDEX. The corrected mosaic keeps the shipped
+    # shape but moves +100 m E / -80 m S, and this THEMIS crop was fetched --match-mosaic
+    # against the OLD transform -- same shape, different ground position, no error. Fail loud.
+    from src.mapping import assert_coregistered
+    assert_coregistered(T, T_ti, shape_a=ab.shape, shape_b=ti.shape,
+                        name_a="abundance mosaic", name_b="THEMIS night-IR")
     R = 3396190.0; dpm = 180.0 / (math.pi * R)
     e3 = [T.c * dpm, (T.c + W * T.a) * dpm, (T.f + H * T.e) * dpm, T.f * dpm]
     good = np.isfinite(ab) & np.isfinite(ti) & (ti > 0)

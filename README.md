@@ -306,6 +306,22 @@ additionally keys placement on the Murray-tile id.
 
 ### Regional map (PLAN_RegionalMap) + striping artifact (PLAN_StripingArtifact)
 
+> **R01 (2026-08-09) — every product under `reports/map_region/` and `reports/map_a1/` is stale.**
+> Both drivers now render onto one globally anchored coarse lattice
+> (`src.mapping.COARSE_GRID_ID`) instead of each Murray tile's own pixel origin, so the shipped
+> rasters are on the old grid and must be re-rendered; `mosaic_geotiffs` refuses to merge them.
+> **Order is binding: the 26-tile baseline first, then A1** (A1 reads its per-frame normalisation off
+> the baseline's grid, and aborts if that raster is off-lattice). Then re-fetch or reproject
+> `cache_v2/validation/themis_night_ir_region.tif`, which was matched to the old mosaic transform —
+> after the rebuild it is the *same shape* as the corrected mosaic but 0.625 of a cell out, so
+> notebook 24 leg 1 now checks co-registration and refuses rather than correlating by index.
+>
+> **Use `--force`, or a fresh `--out-dir`.** Every pre-R01 tile is present on disk, so a plain
+> `--all` would otherwise have skipped all 26 and written a manifest stamped with the new
+> `grid_id` — a rebuild that rendered nothing and then certified itself. The driver now refuses to
+> skip an off-lattice product, but `--force` (or an empty output directory) is what actually
+> re-renders it. Cost and full blast radius: [docs/PENDING_REBUILD.md](docs/PENDING_REBUILD.md) row 6.
+
 ```powershell
 # Regional map: sweep whole Murray tiles -> per-tile {prob,abundance,prob_raw}.tif (160 m).
 # Resumable at (tile, read-window) granularity; built for the Sherlock job array (SHERLOCK_RUN.md).

@@ -7229,3 +7229,165 @@ windows either way, and it has never bitten because phase 0 loses 0); correct it
 "offsets are multiples of tile_px", which the design deliberately abandons and which
 `scripts/f_region_stageb.py` also relies on; and record `grid_id` in partials, sidecar and manifest,
 treating a **missing** key as a mismatch rather than a KeyError. Part 2 forces the full re-render.
+
+## 2026-08-06y — R01 part 2: both map drivers moved onto the global grid, in one commit
+
+Audit step 5, mapping. Part 1 built the vocabulary; **nothing used it**. This wires it through
+`scripts/map_region.py` **and** `scripts/striping_a1_map.py` together, because wiring them separately
+would put A1 on a different lattice than the baseline it is compared against — the failure the
+2026-08-06 product decision forbids. **R01 is now closed.**
+
+**The sweep loses cells, and each half of the fix alone still loses some.** Re-measured this session
+over the real tile size (`extent=47420, win=4096, tile_px=32`), counting cells whose 3×3 context box
+fits in the tile but in no single window:
+
+| final offset | overlap | lost cells / axis (phases 4–28) |
+|---|---|---|
+| tile-aligned | `2*tile_px` | **11** ← shipped |
+| tile-aligned | `3*tile_px` | 1 |
+| `extent - win` | `2*tile_px` | 10 |
+| `extent - win` | `3*tile_px` | **0** |
+
+Phase 0 loses nothing in all four, which is exactly why this never bit. All four use **12 offsets per
+axis** → 144 windows, 2,415,919,104 px: the fix is free. The register's plan had the two edits but not
+the fact that either alone is insufficient — the `3*tile_px`-only row is new here.
+
+`window_offsets` moved into `src/mapping.py` (logic belongs in importable `src/`; `scripts/map_region`
+re-exports it so `striping_a1_map` and `f_region_stageb` import unchanged) and gained
+`tile_aligned=True` **as the default**. `f_region_stageb` sweeps ISIS frame cubes on their own phase-0
+grid, so leaving the default alone keeps its window set and its per-window partial filenames
+byte-identical — the alternative would have silently invalidated `$SCRATCH` partials of an aborted
+build for no gain. The docstring now states both contracts instead of the abandoned one.
+
+**The coverage contract is executable, not arithmetic-by-inspection.** New `uncovered_cells()` returns
+the cells no window can compute; both drivers call it after building their sweep and refuse to run if
+it is non-empty. Choosing a bad `overlap` now fails in microseconds instead of punching a one-cell
+stripe of nodata through a product that took 16 GPU-h.
+
+**Provenance you cannot fake.** `TileGlobalGrid` is only obtainable from `tile_global_grid()`, which
+parses the sphere radius out of *that tile's* CRS and checks the origin against the native lattice
+before returning. `provenance()` is therefore unreachable without those checks having passed — the
+structural answer to "provenance that ASSERTS instead of MEASURES", now caught five times. Sidecars
+and manifests carry `grid_id`, `grid_cell_m`, `cell_row0/col0`, `grid_phase_px` and **global**
+`ti_min/tj_min`, so "are these two products co-registered?" is answerable from two JSONs.
+
+**Resume safety.** Per-window partials carry `grid_id`; a missing key counts as a mismatch (every
+pre-R01 partial lacks one). The check runs at **scan time, before any GPU work**, and aborts with the
+remedy rather than at assembly after a wasted tile. `--force` discards and recomputes.
+
+**A1's ordering constraint is now a gate.** `frame_stats_160` reads the per-frame normalisation off
+`reports/map_region/{tile}_abundance.tif`, so the corrected baseline must be rendered **first**; the
+reference raster is checked against the lattice and the run aborts otherwise.
+
+**MEASURED — how far re-anchoring moves the A1 per-frame statistics.** This was the one claim the
+part-1 review flagged as reasoned rather than measured, and it gates 5–7 GPU-h. Recomputed on both
+lattices for E4_N40 and E8_N44, 74 frames, read-only.
+
+**My first measurement of this was wrong, and the skeptic pass caught it.** I evaluated the induced
+shift only *at the frame median*, where the gain term `IQR0·(s_old/s_new − 1)` vanishes identically —
+so I reported "≤0.89 DN, 0 of 74 frames move by more than 1 DN" while silently dropping half of the
+expression I had quoted in the same sentence. The full difference is
+`IQR0·((x−m_new)/s_new − (x−m_old)/s_old)`, and re-measured over each frame's real pixel distribution:
+
+| quantity | median | p95 | max |
+|---|---|---|---|
+| offset term, at the frame median (the old, partial metric) | 0.045 | 0.479 | 0.891 DN |
+| gain slope, per 1 IQR from the median | 0.083 | 0.839 | 2.848 DN |
+| **full \|diff\| over the frame's own pixels** | **0.411** | **3.287** | **8.993 DN** |
+
+**11 of 74 frames exceed 1 DN, 6 exceed 2 DN, 2 exceed 5 DN.** The tail is concentrated in *small*
+frames — the four worst have 108–2,068 valid 160 m cells — where the robust IQR is poorly determined.
+
+The conclusion survives in weakened form: the **definition** of the statistic is unchanged (robust
+median/IQR at 160 m, SeamMap-keyed, off the baseline grid), which is what `models/deployable_a1` was
+trained against, so this is not the invalidation `striping_a1_map` warns about (deriving it from
+native 5 m DN). But the A1 product is **not** bit-reproducible across the re-anchoring, and the
+small-frame tail is the same population **R08** is open on. R08 is a precondition for shipping A1,
+not an unrelated finding — that link is new and came out of this measurement.
+
+**The third merge path is closed.** `scripts/striping_frame_blocks.py:85` called `merge()` directly
+over all 26 abundance tifs with no lattice check at all — so the one figure whose subject is where
+features sit relative to frame boundaries was built with every tile's phase floored into a whole-cell
+displacement. It now routes through `striping.mosaic_tiles`, which warns.
+
+**Mutation pass: 17 of 18 mutants killed.** The survivor is stated rather than papered over: the
+`(gr + phase_r) % tile_px` check inside `tile_global_grid` is a tautology given the line above it, so
+no test can kill it independently. Kept as defence-in-depth against a future change to the phase
+convention. Three mutants survived the *first* pass and are worth knowing — a driver test on a
+round-numbered synthetic extent cannot see the final-offset bug (`1024 - 256` is tile-aligned; the
+fixture is now `1052 ≡ 28 (mod 32)` like the real 47,420), a coverage guard that never fires under
+correct constants needs a deliberately holey sweep to test, and asserting `grid_radius_m ==
+3396190.0` passes whether the value was parsed or assumed (the fixture now uses `3396190.5`).
+
+**Blast radius: every regional output.** Per-tile shape is unchanged at 1479×1479 at every phase, but
+the mosaic origin moves +100.0 m E / −80.0 m S (shape stays 5925×11852) and no resample recovers the
+sub-cell part. `docs/PENDING_REBUILD.md` carries the cost. Stage-4 **label** cells stay tile-anchored
+deliberately — re-anchoring them would force a relabel + retrain of the frozen recipe for zero
+modelling gain — so map cells no longer coincide with label cells and any future map↔label comparison
+must **resample rather than index-match**. `reports/map_fbuild/` (aborted F build) and
+`reports/map_pilot/` stay on the old lattice; neither is a live comparison row.
+
+**The skeptic pass, and the five things it changed.** Run adversarially over the finished diff
+(five lenses, each finding then attacked by three refuters). It was interrupted by a session limit
+with 22 of 32 agents dead, so **the geometry and test-quality lenses never reported** — that half of
+the diff has only my own verification behind it (the end-to-end geometry reproduction below, and an
+18-mutant pass). Of what did return, one finding survived refutation and four more had mechanisms the
+refuters reproduced but downgraded. All five are now fixed:
+
+1. **The tile-level resume skip was lattice-blind** — the most dangerous one. `map_one_tile` skipped
+   on `{tile}_prob.tif` existing, *before* any grid check. Every pre-R01 tile is on disk, so
+   `--all` would have skipped all 26, written a manifest stamped with the **new** `grid_id`, and
+   printed "26/26 tiles complete": a rebuild that rendered nothing and then certified itself. Now
+   `existing_product_off_lattice` refuses, naming the remedy. A raster with no sidecar is refused too
+   — absence must not read as clean.
+2. **The acceptance gate never inspected the A1 row** although its docstring claimed to. It globbed
+   `*_abundance.tif`, but A1's shipped configuration is uncalibrated (`--calibration` defaults to
+   `None`, the row is scored on raw `P(rich)`), so it writes `_prob.tif` + `_prob_raw.tif` and no
+   abundance raster. Now driven off the sidecars that claim the grid, checking every raster present.
+3. **A corrupt partial could escape the gate.** `np.savez_compressed` writes the zip in place with no
+   tmp+rename, so a killed job leaves a truncated `.npz`; `partial_grid_id` let `BadZipFile` escape,
+   and it was evaluated *before* the `--force` branch — so `--force` could not clear it either,
+   strictly worse than pre-R01. Unreadable now counts as foreign.
+4. **THEMIS leg 1 would have misregistered silently.** Notebook 24 correlates the mosaic and the
+   THEMIS crop **by array index**; after the rebuild they are still both (5925, 11852) but 0.625 of a
+   cell apart. Equal shapes were the trap, not the reassurance. New `assert_coregistered` in
+   `src/mapping.py`, wired into `notebooks/_build_24.py` (the notebook regenerates in the rebuild).
+5. **The A1 sensitivity claim was understated** — see the corrected table above.
+
+Two documentation claims were also wrong and are corrected: `reject_foreign_partials` said partial
+filenames are "unchanged by R01" (the sweep's `step` went 4032 → 4000, so only 1 of 144 collides),
+and the `int32` comment said global row indices reach ±2.1e6 (at S=32 the planet spans ±33,342 rows
+and ±66,684 columns).
+
+Fast suite **692 passed**, 1 skipped (the acceptance gate skips until a product claims the grid).
+
+## 2026-08-06z — R23 recovery is CLOSED: no complete copy exists, and v3 re-detection is the fix
+
+The one remaining open question on R23 was whether a byte-complete copy of the four truncated
+BoulderNet exports still existed somewhere — worth asking because it was the input that got harder to
+recover with time, and because finding one would have dissolved R23 rather than leaving it managed.
+
+**Measured 2026-08-09, read-only.** `inspect_shapefile_integrity` over all 40 vClaire exports names
+the four and prices the shortfall exactly:
+
+| ObsId | on disk | declared | missing |
+|---|---|---|---|
+| `ESP_017355_2260` | 214.9 MB | 569.3 MB | 354.4 MB |
+| `ESP_028537_2270` | 58.5 MB | 571.9 MB | 513.4 MB |
+| `ESP_046803_2325` | 192.1 MB | 324.0 MB | 131.9 MB |
+| `ESP_068483_2280` | 443.0 MB | 616.0 MB | 173.0 MB |
+
+Total **1.17 GB** (the three retained images account for 659.3 MB; `ESP_028537_2270` was already
+excluded). A filesystem sweep of `C:\Users\brian` plus D:/E:/F: found **6 copies, 0 complete**.
+
+**The decisive detail:** `ESP_017355_2260` exists in three places — the hirise2ctx cohort, the
+BoulderNet working tree, and the original `Downloads\Predictions\...` folder — and all three are
+**bit-identical** (sha256 `ba030bde8e936e6647d3c438…`, 214,884,317 bytes, same mtime), with intact and
+equally identical `.shx` (8,843,676 B) and `.dbf` (175,766,299 B). So the truncation happened
+**upstream of every local copy**, at or before the original download. No local re-copy can recover it,
+and the missing bytes were never on this machine.
+
+**Brian's ruling (2026-08-09): do not pursue recovery. The fix is a v3 re-detection dataset he will
+supply; v2 proceeds as-is in the meantime, and other findings keep being fixed against it.** R23's
+retain-and-document remedy (DECISIONS 2026-08-06o) is therefore not a temporary holding position
+pending recovery — it is the final disposition for v2. Stop re-opening the hunt.

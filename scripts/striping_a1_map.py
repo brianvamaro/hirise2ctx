@@ -22,6 +22,17 @@ Everything else — grid, window offsets, tile_px, GeoTIFF profile, sidecar keys
 the output is byte-grid-identical to `reports/map_region/` and drops straight into
 `scripts/f_map_compare.py`.
 
+**R01 — run the baseline first.** Both drivers render onto the one globally anchored coarse lattice
+(`src.mapping.COARSE_GRID_ID`), and they were wired to it in the same commit precisely so A1 can
+never land on a different lattice than the baseline it is compared against. There is also a real
+ordering constraint: `frame_stats_160` reads the per-frame normalisation off
+`reports/map_region/{tile}_abundance.tif`, so the corrected **baseline must exist first**. That is
+now enforced, not just documented — the reference raster is checked against the lattice and the run
+aborts otherwise. Re-anchoring does not change the *definition* of the A1 statistic, so it does not
+invalidate `models/deployable_a1` the way deriving it from native 5 m DN would — but it does perturb
+the per-frame numbers, by >1 DN on 11 of 74 frames measured and up to 9 DN on the smallest ones. See
+`frame_stats_160` for the full measurement and its link to **R08**.
+
 Cost: a full map_region-equivalent GPU pass over the chosen tiles (~0.6 GPU-h/tile on an L40S at
 batch 256; ~5-7 GPU-h for the 9). Resumable per (tile, window).
 
@@ -46,11 +57,13 @@ import src.modeling  # noqa: F401  OpenMP bootstrap; must precede numpy
 import numpy as np
 from rasterio.features import rasterize
 
-from scripts.map_region import load_tile_sidecar, window_offsets
+from scripts.map_region import (as_int32_cells, load_tile_sidecar, partial_grid_id,
+                                reject_foreign_partials, window_offsets)
 from src.calibration import CalibrationLayer
 from src.fm_embeddings import FangEmbedder
-from src.mapping import (artifact_digest, coarsened_transform, predict_window,
-                         read_tile_window, write_geotiff)
+from src.mapping import (COARSE_GRID_ID, artifact_digest, assert_shared_lattice,
+                         predict_window, read_tile_window, tile_global_grid, uncovered_cells,
+                         write_geotiff)
 from src.modeling.mlp_head import DeployableHead
 from src.striping import (A1_REF_IQR, A1_REF_MEDIAN, CTX_ZIP_DIR, MAP_DIR, _inner_tif_name,
                           a1_stats, frame_label_map, load_frames, read_ctx_on_grid)
@@ -67,8 +80,49 @@ def frame_stats_160(tile: str) -> tuple[dict, int]:
 
     This is the statistic the A1 head was trained against (striping_a1_infer_crop.py:56-64); deriving
     it from the native 5 m array instead gives different numbers and invalidates models/deployable_a1.
+
+    **R01 — the ordering constraint, made executable.** These statistics are read off the
+    *baseline* product's grid, so A1 must be built AFTER the corrected baseline; against an
+    old-lattice baseline the A1 raster's normalisation and its own output lattice would
+    disagree. `assert_shared_lattice` on the reference turns that from a sentence in a plan
+    into a gate that fires.
+
+    **How much does re-anchoring move these statistics?** Measured 2026-08-09 (read-only, the
+    same statistic recomputed on both lattices for E4_N40 and E8_N44, 74 frames). The full
+    induced change in A1-normalised DN is
+    `IQR0 * ((x-m_new)/s_new - (x-m_old)/s_old)` — an offset term plus a **gain** term that
+    grows with distance from the frame median:
+
+        |offset| at the frame median        med 0.045   p95 0.479   max 0.891 DN
+        gain slope, per 1 IQR from median   med 0.083   p95 0.839   max 2.848 DN
+        FULL |diff| over the frame's pixels med 0.411   p95 3.287   max 8.993 DN
+        frames whose full |diff| exceeds  1 / 2 / 5 DN:  11 / 6 / 2  of 74
+
+    So for the great majority of frames the shift is well under 1 DN, but it is **not**
+    negligible everywhere: the tail is concentrated in *small* frames (the four worst have
+    108–2,068 valid 160 m cells) where the robust IQR is poorly determined, and there the
+    difference reaches 3–9 DN at the extremes of the frame's own DN range.
+
+    What this does and does not mean. The **definition** of the statistic is unchanged (robust
+    median/IQR at 160 m, keyed by SeamMap partition, off the baseline grid), and that is what
+    `models/deployable_a1` was trained against — the head is not invalidated the way deriving
+    it from the native 5 m array would invalidate it. But the per-frame numbers do move, so
+    the A1 product is *not* bit-reproducible across the re-anchoring, and the small-frame tail
+    is the same population **R08** is open on ("define and test how A1 handles small frames").
+    Treat R08 as a precondition for shipping A1, not an unrelated finding.
     """
-    ctx160 = read_ctx_on_grid(tile, MAP_DIR / f"{tile}_abundance.tif")
+    ref = MAP_DIR / f"{tile}_abundance.tif"
+    import rasterio
+    with rasterio.open(ref) as ds:
+        try:
+            assert_shared_lattice([ds.transform], tile_px=TILE_PX)
+        except ValueError as exc:
+            raise SystemExit(
+                f"[{tile}] the baseline reference {ref} is not on {COARSE_GRID_ID} ({exc}).\n"
+                f"  A1 derives its per-frame normalisation from that raster's grid, so the "
+                f"corrected baseline must be re-rendered by scripts/map_region.py FIRST."
+            ) from None
+    ctx160 = read_ctx_on_grid(tile, ref)
     frames = load_frames(tile)
     labels160 = frame_label_map(tile, frames)
     stats = {}
@@ -111,17 +165,31 @@ def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
     inner_transform, (H, W) = side["inner_transform"], side["inner_shape"]
     crs_wkt, inner_tif = side["inner_crs_wkt"], _inner_tif_name(zip_path)
 
+    # R01: identical grid vocabulary to map_region -- same lattice, same phase, same
+    # window sweep. If these two drivers ever diverge, A1 stops being comparable to the
+    # baseline, which is the entire point of the row.
+    grid_geom = tile_global_grid(inner_transform, crs_wkt, TILE_PX)
+
     stats, n_frames = frame_stats_160(tile)
     frames = load_frames(tile)
-    print(f"[{tile}] {H}x{W}px, {len(stats)}/{n_frames} frames with A1 stats", flush=True)
+    print(f"[{tile}] {H}x{W}px, {len(stats)}/{n_frames} frames with A1 stats, "
+          f"phase=({grid_geom.phase_r},{grid_geom.phase_c})", flush=True)
     if not stats:
         return {"tile": tile, "status": "no_frame_stats"}
 
     partial_dir = out_dir / "partials" / tile
     partial_dir.mkdir(parents=True, exist_ok=True)
-    win, overlap = args.win_px, 2 * TILE_PX
-    grid = [(r, c) for r in window_offsets(H, win, overlap, TILE_PX)
-            for c in window_offsets(W, win, overlap, TILE_PX)]
+    reject_foreign_partials(partial_dir, args)
+    win, overlap = args.win_px, 3 * TILE_PX
+    row_offs = window_offsets(H, win, overlap, TILE_PX, tile_aligned=False)
+    col_offs = window_offsets(W, win, overlap, TILE_PX, tile_aligned=False)
+    miss_r = uncovered_cells(row_offs, H, win, TILE_PX, phase=grid_geom.phase_r)
+    miss_c = uncovered_cells(col_offs, W, win, TILE_PX, phase=grid_geom.phase_c)
+    if miss_r or miss_c:
+        raise SystemExit(f"[{tile}] sweep would leave {len(miss_r)} row / {len(miss_c)} col "
+                         f"cells uncomputable at phase "
+                         f"({grid_geom.phase_r}, {grid_geom.phase_c})")
+    grid = [(r, c) for r in row_offs for c in col_offs]
     t_tile = time.monotonic()
     for k, (row_off, col_off) in enumerate(grid):
         part = partial_dir / f"{row_off:06d}_{col_off:06d}.npz"
@@ -132,10 +200,13 @@ def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
         w_a1, n_norm = a1_window(window, frames, stats)
         pred = predict_window(w_a1, embedder, head, tile_px=TILE_PX, batch=args.batch,
                               max_zero_fraction=args.max_zero_fraction, calibrator=calibrator,
-                              apply_isotonic=not args.no_isotonic)
+                              apply_isotonic=not args.no_isotonic,
+                              global_grid=grid_geom.as_tuple)
         keep = np.isfinite(pred.prob)
-        cols = {"ti": pred.ti[keep].astype(np.int32), "tj": pred.tj[keep].astype(np.int32),
-                "prob": pred.prob[keep].astype(np.float32)}
+        cols = {"ti": as_int32_cells(pred.ti[keep], "ti", tile),
+                "tj": as_int32_cells(pred.tj[keep], "tj", tile),
+                "prob": pred.prob[keep].astype(np.float32),
+                "grid_id": np.array(COARSE_GRID_ID)}
         if calibrator is not None:
             cols["prob_raw"] = pred.prob_raw[keep].astype(np.float32)
             cols["abundance"] = pred.abundance[keep].astype(np.float32)
@@ -151,7 +222,7 @@ def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
         print(f"[{tile}] {len(present)}/{len(grid)} windows -> re-run to finish", flush=True)
         return {"tile": tile, "status": "partial", "windows_done": len(present),
                 "windows_total": len(grid)}
-    write_tile(tile, present, inner_transform, crs_wkt, calibrator, args)
+    write_tile(tile, present, grid_geom, crs_wkt, calibrator, args)
     if args.clean_partials:
         for p in present:
             p.unlink()
@@ -159,17 +230,26 @@ def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
     return {"tile": tile, "status": "done", "windows": len(grid)}
 
 
-def write_tile(tile, partials, inner_transform, crs_wkt, calibrator, args) -> None:
-    """Assemble the per-window partials into map_region-shaped GeoTIFFs (same grid, same profile)."""
+def write_tile(tile, partials, grid_geom, crs_wkt, calibrator, args) -> None:
+    """Assemble the per-window partials into map_region-shaped GeoTIFFs (same grid, same profile).
+
+    `(ti, tj)` are GLOBAL coarse-cell indices on `COARSE_GRID_ID`, so the affine comes from
+    the global lattice — byte-identical construction to `map_region.write_tile_geotiffs`,
+    which is what keeps the A1 row co-registered with the baseline row cell for cell.
+    """
     def cat(key):
         return np.concatenate([np.load(p)[key] for p in partials])
 
+    foreign = [str(p) for p in partials if partial_grid_id(p) != COARSE_GRID_ID]
+    if foreign:
+        raise SystemExit(f"[{tile}] refusing to assemble {len(foreign)} partial(s) from "
+                         f"another lattice: {foreign[:3]}")
     ti, tj = cat("ti").astype(np.int64), cat("tj").astype(np.int64)
     prob, prob_raw = cat("prob").astype(np.float64), cat("prob_raw").astype(np.float64)
     ab = cat("abundance").astype(np.float64) if calibrator is not None else None
     ti_min, tj_min = int(ti.min()), int(tj.min())
     shape = (int(ti.max()) - ti_min + 1, int(tj.max()) - tj_min + 1)
-    transform = coarsened_transform(inner_transform, ti_min, tj_min, TILE_PX)
+    transform = grid_geom.transform(ti_min, tj_min)
     out_dir = Path(args.out_dir)
 
     def scatter(v):
@@ -183,6 +263,9 @@ def write_tile(tile, partials, inner_transform, crs_wkt, calibrator, args) -> No
         write_geotiff(out_dir / f"{tile}_abundance.tif", scatter(ab), transform, crs_wkt)
     (out_dir / f"{tile}.json").write_text(json.dumps({
         "murray_tile": tile, "tile_px": TILE_PX, "raster_shape": list(shape),
+        # R01: same keys, same values as the baseline sidecar, so "is the A1 row on the
+        # baseline's lattice?" is answerable from the two JSONs without opening a raster.
+        **grid_geom.provenance(),
         "ti_min": ti_min, "tj_min": tj_min, "n_predicted_tiles": int(ti.size),
         "calibrated": calibrator is not None,
         "isotonic": calibrator is not None and not args.no_isotonic,
@@ -246,7 +329,7 @@ def main() -> int:
                     "calibration": str(args.calibration) if args.calibration else None,
                     "calibration_digest": (
                         artifact_digest(args.calibration) if args.calibration else None),
-                    "win_px": args.win_px,
+                    "win_px": args.win_px, "grid_id": COARSE_GRID_ID,
                     "batch": args.batch, "a1_ref_median": A1_REF_MEDIAN,
                     "a1_ref_iqr": A1_REF_IQR}, indent=2), encoding="utf-8")
     done = sum(1 for r in results if r["status"] == "done")

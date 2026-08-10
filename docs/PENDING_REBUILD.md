@@ -105,6 +105,8 @@ leaves a conditional write-through path, documented in the 2026-08-06 audit.
 
 | 5 | **R65** — Stage 3's `peak_correlation` is a conditional median, bounded below by the floor it is screened against, and on the block path it does not score the applied shift | `_robust_shift_from_field` now also emits `all_block_peak` (unconditional min/p25/median/p75/max), `confident_fraction`, `median_block_peak_is_conditional` / `block_mad_px_is_conditional`, and `quality_version: 2`; the sidecar gains `peak_correlation_kind`. Deliberately not a new composite — an unconditional median conflates registration quality with scene texture. | Stage 3 for all 39 v2 images (fold into the batched rebuild; the per-block field is not persisted so it cannot be back-computed) | **Nothing numeric.** No shift, label or downstream value changes; `peak_correlation` itself is unchanged. **0 of 39** sidecars carry the new fields today, so the quality figure stays uninterpretable until Stage 3 re-runs. |
 
+| 6 | **R01** — the coarse 32-px grid was anchored to each Murray tile's own pixel origin, so every tile sat on its own sub-cell phase and `rasterio.merge` floored that phase into a whole-cell placement error | Part 1 (`519227c`) added the global grid vocabulary + a merge guard; **part 2** threads `global_grid` through `scripts/map_region.py` **and** `scripts/striping_a1_map.py` in one commit, fixes the window sweep (`tile_aligned=False` + `overlap = 3*tile_px`; either alone still loses cells), adds an executable coverage guard, and records `grid_id` in partials, sidecars and manifests. | **Baseline map for all 26 tiles, then A1 for the 9 CTX-equipped tiles — strictly in that order.** ~16 GPU-h + ~5–7 GPU-h on an L40S; resumable per (tile, window). Then `regional_abundance_mosaic.tif` / `regional_prob_mosaic.tif`, notebook 24 §2/2b/3 and `reports/figures/24_*.png`. | **Every regional output.** Per-tile shape is unchanged (1479×1479 at every phase) and so is the mosaic shape (5925×11852), but the origin moves **+100.0 m E / −80.0 m S** and no resample recovers the sub-cell part (≤0.875 cell = 140 m). 25 of 26 shipped tiles are displaced today, median 140 m, max 198 m. THEMIS leg 1 improves from \|ρ\| 0.0741 → ≥0.0821 (n=26, lower bound). **Ordering is binding:** A1 derives its per-frame normalisation from the baseline's grid — now enforced, the A1 run aborts against an old-lattice baseline. **`cache_v2/validation/themis_night_ir_region.tif` must be re-fetched or reprojected** (it was built `--match-mosaic` against the old transform; the 15 GB source is *not* cached, so this is the one genuine network item). After the rebuild it is the *same shape* as the corrected mosaic but 0.625 of a cell out — notebook 24 leg 1 compares the two **by array index**, so `assert_coregistered` now guards it instead of silently correlating displaced cells. **MOLA does not** need re-fetching — it is bounds-derived at 463 m, not mosaic-derived. **Run `map_region.py` with `--force` or a fresh `--out-dir`**: every pre-R01 tile exists, and the driver now refuses to skip an off-lattice product rather than reporting it done. Outstanding before A1 renders: **R38** (clip floor vs nodata sentinel) and **R08** — re-anchoring perturbs A1's per-frame statistics by >1 DN on 11 of 74 measured frames, concentrated in small frames (108–2,068 cells) where the robust IQR is unstable, which is R08's exact population. |
+
 - All Stage-1 sidecars (`cache_v2/reprojected_detections/*.json`) and all Stage-4 label sidecars
   (`dataset_v2/labels/*.json`) | **R23** | **Provenance-stale, not numerically stale.** The
   2026-08-06 fix adds `source_integrity` + `null_geometry_basis` (Stage 1) and `realised_label_basis`
@@ -118,10 +120,15 @@ leaves a conditional write-through path, documented in the 2026-08-06 audit.
 
 - ~~**R23** (blocker) — two cohort images' labels are a score-rank truncation. Its natural fix is
   blocked by **R56**~~ **R56 CLOSED and R23's remedy DECIDED 2026-08-06** (Brian: retain the mixed
-  confidence floor + document it, temporary pending the v3 re-detection). Root cause is **three
-  byte-truncated `.shp` files**, not a BoulderNet export artefact, so recovering the 659 MB remains
-  a live option. The provenance/documentation half is built; see the row above for its rebuild cost
-  and **DECISIONS 2026-08-06o** for the full pricing of all four remedies.
+  confidence floor + document it). Root cause is **three byte-truncated `.shp` files** (four across
+  the 40 exports), not a BoulderNet export artefact. **Recovery is CLOSED as of 2026-08-09**: a
+  filesystem sweep found 6 copies and 0 complete ones, and the three copies of `ESP_017355_2260` are
+  bit-identical, so the truncation predates every local copy and the missing 1.17 GB was never on
+  this machine. **Brian's ruling: the fix is a v3 re-detection dataset he will supply; v2 proceeds
+  as-is and other findings keep being fixed against it.** Retain-and-document is therefore v2's
+  *final* disposition, not a holding position. The provenance/documentation half is built; see the
+  row above for its rebuild cost, **DECISIONS 2026-08-06o** for the pricing of all four remedies and
+  **2026-08-06z** for the recovery measurement.
 - **R38** — A1's clip floor collides with the nodata sentinel. A1 is now an active planned parallel
   regional product, so land the explicit-nodata-mask fix before generating it. `[1,255]` may be used
   diagnostically but does not satisfy the product gate because it moves information loss to DN 1.

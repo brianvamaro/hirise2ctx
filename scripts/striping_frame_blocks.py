@@ -34,7 +34,7 @@ from scipy.stats import spearmanr
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.striping import (MAP_DIR, all_map_tiles, boundary_steps, detrend, equipped_tiles,
                           eta2, eta2_rotation_null, frame_label_map, load_frames, load_raster,
-                          per_frame_stats, read_ctx_on_grid)
+                          mosaic_tiles, per_frame_stats, read_ctx_on_grid)
 
 FIG = Path(__file__).resolve().parents[1] / "reports" / "figures"
 FIG.mkdir(parents=True, exist_ok=True)
@@ -82,13 +82,13 @@ def main():
           f"(n={len(bnd_all)})")
 
     # --- figure 1: region abundance + frame outlines ---
-    from rasterio.merge import merge
-    srcs = [rasterio.open(MAP_DIR / f"{t}_abundance.tif") for t in all_map_tiles()]
-    arr, tr = merge(srcs); crs = srcs[0].crs; nd = srcs[0].nodata
-    b = rasterio.transform.array_bounds(arr.shape[1], arr.shape[2], tr)
-    for s_ in srcs:
-        s_.close()
-    A = arr[0].astype(float); A[A == nd] = np.nan
+    # R01: route through `mosaic_tiles` rather than calling `merge` directly. This was the
+    # third merge path over the same per-tile products, and the only one with no lattice
+    # check at all -- so the one figure whose whole subject is where features sit relative
+    # to frame boundaries was assembled with each tile's sub-cell phase floored into a
+    # whole-cell displacement, silently. `mosaic_tiles` warns instead.
+    A, _, tr, _ = mosaic_tiles(all_map_tiles(), "abundance", with_ctx=False)
+    b = rasterio.transform.array_bounds(A.shape[0], A.shape[1], tr)
     ext = [b[0], b[2], b[1], b[3]]
     fig, ax = plt.subplots(1, 2, figsize=(18, 9))
     for a in ax:

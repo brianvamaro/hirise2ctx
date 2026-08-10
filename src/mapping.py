@@ -12,11 +12,20 @@ validity, (ti,tj)->raster placement, the 32x-coarsened affine). The embedding
 and the head are passed in by the caller (`scripts/map_pilot.py`), so this stays
 a thin, testable seam.
 
-Grid convention (CLAUDE.md Stage 4 / `src.labeling._compute_grid_alignment`):
-tiles are anchored to the **parent Murray tile's pixel origin**, so a window read
-at pixel offset (row_off, col_off) has grid origin `row0=row_off, col0=col_off`.
-`(ti, tj)` are therefore unique within a tile; cross-tile combine additionally
-keys on the Murray-tile id (the scale-out step, not this pilot).
+Grid convention — **R01, and it changed.** The coarse cell lattice is now anchored
+**globally**, at projected (0, 0) = lon 0 / lat 0, not to each parent Murray tile's
+pixel origin. A tile is 47,420 native px wide and `gcd(47420, 32) = 4`, so tile
+anchoring put every tile on its own sub-cell phase and `rasterio.merge` floored that
+phase into a whole-cell displacement. `(ti, tj)` from `predict_window(global_grid=...)`
+are therefore **global cell indices**, unique across the planet, and a cross-tile
+combine no longer needs the Murray-tile id to disambiguate them.
+
+Two things that did **not** change, deliberately: the legacy `global_grid=None` path
+still anchors to `row0=row_off, col0=col_off` (so `scripts/map_pilot.py` is untouched),
+and the Stage-4 **label** grid stays tile-anchored (`src.labeling._compute_grid_alignment`,
+CLAUDE.md Stage 4) — re-anchoring it would force a relabel + retrain of the frozen recipe
+for no modelling gain. Consequence: map cells no longer coincide with label cells, so a
+map↔label comparison must resample rather than index-match.
 """
 from __future__ import annotations
 
@@ -155,6 +164,172 @@ def assert_shared_lattice(transforms, *, tile_px: int = 32,
             f"{len(bad)} of {len(transforms)} rasters are not on {COARSE_GRID_ID}: {detail}"
             + ("" if len(bad) <= 8 else f" ... and {len(bad) - 8} more")
         )
+
+
+def assert_coregistered(transform_a, transform_b, *, shape_a=None, shape_b=None,
+                        name_a: str = "a", name_b: str = "b", tol_m: float = 1e-3) -> None:
+    """Two rasters must be cell-for-cell aligned before they are compared **by index**.
+
+    R01 made this necessary rather than pedantic. The corrected regional mosaic keeps the
+    shipped shape (5925 x 11852) but its origin moves +100 m E / -80 m S, while
+    `cache_v2/validation/themis_night_ir_region.tif` was fetched `--match-mosaic` against the
+    *old* transform. Same dtype, same shape, different ground position: `ab[good]` vs
+    `ti[good]` would keep running and quietly correlate cells 0.625 of a cell apart. Equal
+    shapes are the trap, not the reassurance.
+    """
+    a = [float(v) for v in list(transform_a)[:6]]
+    b = [float(v) for v in list(transform_b)[:6]]
+    bad = []
+    if (a[0], a[4]) != (b[0], b[4]):
+        bad.append(f"pixel size {(a[0], a[4])} vs {(b[0], b[4])}")
+    if abs(a[2] - b[2]) > tol_m or abs(a[5] - b[5]) > tol_m:
+        bad.append(f"origin ({a[2]:.4f}, {a[5]:.4f}) vs ({b[2]:.4f}, {b[5]:.4f}) "
+                   f"-- offset ({b[2] - a[2]:+.1f}, {b[5] - a[5]:+.1f}) m")
+    if shape_a is not None and shape_b is not None and tuple(shape_a) != tuple(shape_b):
+        bad.append(f"shape {tuple(shape_a)} vs {tuple(shape_b)}")
+    if bad:
+        raise ValueError(
+            f"{name_a} and {name_b} are not co-registered, so comparing them by array index "
+            f"is meaningless: " + "; ".join(bad) + ".\n"
+            f"  Re-fetch or reproject one onto the other's grid before correlating."
+        )
+
+
+@dataclass(frozen=True)
+class TileGlobalGrid:
+    """One Murray tile's placement on the global coarse lattice — all fields **measured**.
+
+    The only way to obtain one is `tile_global_grid()`, which reads the sphere radius out of
+    the tile's own CRS and checks the origin against the native lattice before returning.
+    That is deliberate: `COARSE_GRID_ID` asserts both `R3396190` and `ppd11855`, and a
+    provenance field that asserts rather than measures has been caught four times on this
+    project. `provenance()` is unreachable without those checks having passed.
+    """
+
+    cell_row0: int      # global cell index of this tile's first whole cell (row)
+    cell_col0: int      # ... and column
+    phase_r: int        # tile-local pixel at which that first global cell begins
+    phase_c: int
+    tile_px: int
+    radius_m: float     # parsed out of the tile CRS, not assumed
+
+    @property
+    def as_tuple(self) -> tuple[int, int, int, int]:
+        """The `global_grid=` argument of `predict_window` — one tuple, deliberately."""
+        return (self.cell_row0, self.cell_col0, self.phase_r, self.phase_c)
+
+    def transform(self, cell_row: int, cell_col: int):
+        """Affine of a raster whose top-left cell is the GLOBAL cell `(row, col)`."""
+        return global_cell_transform(cell_row, cell_col, self.tile_px)
+
+    def provenance(self) -> dict:
+        """Grid identity for a product sidecar. Two products are on one lattice iff their
+        `grid_id` and `grid_cell_m` match and their `cell_row0`/`cell_col0` differ by
+        integers — which is checkable after the fact, unlike a bare boolean."""
+        return {
+            "grid_id": COARSE_GRID_ID,
+            "grid_anchor": "lonlat0",
+            "grid_ppd": MURRAY_PPD,
+            "grid_radius_m": self.radius_m,
+            "grid_native_m": MURRAY_NATIVE_M,
+            "grid_cell_m": self.tile_px * MURRAY_NATIVE_M,
+            "grid_tile_px": self.tile_px,
+            "cell_row0": self.cell_row0,
+            "cell_col0": self.cell_col0,
+            "grid_phase_px": [self.phase_r, self.phase_c],
+        }
+
+
+def tile_global_grid(inner_transform, crs_wkt: str | None, tile_px: int = 32,
+                     **kw) -> TileGlobalGrid:
+    """Place a Murray tile on the global coarse lattice, verifying every step.
+
+    `phase` is where the tile's first *global* cell boundary falls in tile-local pixels;
+    `cell_*0` is that cell's global index, so a tile-local cell index `t` (as enumerated by
+    `tile_grid_for_window` from the phase-shifted origin) is global cell `cell_*0 + t`.
+    """
+    radius = assert_murray_sphere(crs_wkt)
+    gr, gc = global_native_origin(inner_transform, **kw)
+    phase_r, phase_c = (-gr) % tile_px, (-gc) % tile_px
+    # Exact division or nothing: `(origin + phase)` is a whole number of cells by
+    # construction, and asserting it here is what makes the flipped-sign phase (mutant M6)
+    # fail loudly at N32/N36/N40 instead of silently mis-centring every context box.
+    if (gr + phase_r) % tile_px or (gc + phase_c) % tile_px:
+        raise ValueError(
+            f"phase ({phase_r}, {phase_c}) does not land origin ({gr}, {gc}) on a cell "
+            f"boundary; the phase convention is (-origin) % tile_px, not its complement."
+        )
+    return TileGlobalGrid(cell_row0=(gr + phase_r) // tile_px,
+                          cell_col0=(gc + phase_c) // tile_px,
+                          phase_r=phase_r, phase_c=phase_c, tile_px=tile_px,
+                          radius_m=radius)
+
+
+# ============================================================================
+# Read-window sweep
+# ============================================================================
+
+
+def window_offsets(extent: int, win: int, overlap: int, tile_px: int, *,
+                   tile_aligned: bool = True) -> list[int]:
+    """Read-window start offsets covering `[0, extent)` with `overlap`.
+
+    `step = win - overlap`; the final offset closes the run at the far edge.
+
+    **`tile_aligned` (R01).** The legacy contract was that every offset is a multiple of
+    `tile_px`, which mattered when the coarse grid was anchored to the window sweep. On the
+    globally anchored grid the cell lattice has its own phase, and a tile-aligned final
+    offset then leaves holes: measured over `extent=47420, win=4096, tile_px=32`, the
+    shipped configuration loses **11 computable cells per axis at all seven non-zero
+    phases**, and each half of the fix alone still loses some —
+
+        tile_aligned=True,  overlap=2*tile_px   ->  11 lost/axis   (shipped)
+        tile_aligned=True,  overlap=3*tile_px   ->   1 lost/axis
+        tile_aligned=False, overlap=2*tile_px   ->  10 lost/axis
+        tile_aligned=False, overlap=3*tile_px   ->   0 lost/axis
+
+    — all four at 12 offsets per axis, so the fix is free (144 windows either way). Phase 0
+    loses nothing in every configuration, which is why this never bit before.
+
+    `tile_aligned=True` stays the default so `scripts/f_region_stageb.py`, which sweeps ISIS
+    frame cubes on their own phase-0 grid, keeps its existing window set and per-window
+    partial filenames. Pass `tile_aligned=False` on the global-grid map path, and check the
+    result with `uncovered_cells` rather than trusting the arithmetic.
+    """
+    win = min(win, extent)
+    step = max(tile_px, win - overlap)
+    last = ((extent - win) // tile_px) * tile_px if tile_aligned else extent - win
+    offs: list[int] = []
+    o = 0
+    while o < last:
+        offs.append(o)
+        o += step
+    if not offs or offs[-1] != last:
+        offs.append(last)
+    return offs
+
+
+def uncovered_cells(offsets, extent: int, win: int, tile_px: int, *,
+                    phase: int = 0) -> list[int]:
+    """Coarse cells that no window in `offsets` can compute. Measured, not assumed.
+
+    Returns the tile-local start pixels of every cell that *could* be computed from the full
+    tile (its 3x3 context box fits: `u >= tile_px` and `u + 2*tile_px <= extent`) but whose
+    context box fits inside no single window. Cell starts sit at `u = phase (mod tile_px)`.
+
+    This is the executable form of the coverage contract: the drivers call it after building
+    their sweep and refuse to run if it is non-empty, so choosing the wrong `overlap` or
+    `tile_aligned` fails before any GPU time is spent rather than punching a hole in the
+    product. Pure arithmetic — microseconds.
+    """
+    phase = int(phase) % tile_px
+    want = np.arange(tile_px + phase, extent - 2 * tile_px + 1, tile_px, dtype=np.int64)
+    covered = np.zeros(want.size, dtype=bool)
+    for o in offsets:
+        o = int(o)
+        h = min(win, extent - o)
+        covered |= (want >= o + tile_px) & (want + 2 * tile_px <= o + h)
+    return want[~covered].tolist()
 
 
 # ============================================================================
