@@ -411,17 +411,42 @@ def read_tile_window(zip_path: str | Path, inner_tif: str, row_off: int, col_off
 # ============================================================================
 
 
+def as_nodata_mask(window: np.ndarray, nodata: np.ndarray | None = None) -> np.ndarray:
+    """Boolean "this pixel is missing data" for a CTX array — supplied, or inferred as `== 0`.
+
+    **R38.** Inferring nodata from the pixel VALUE is only safe while nothing downstream can
+    synthesize that value. A1 could: it clipped to `[0, 255]`, so a legitimately dark pixel was
+    written as the sentinel and thereafter counted as a data gap. A1 now floors valid pixels at
+    `src.striping.A1_VALID_FLOOR`, but the deeper fix is that a caller which *knows* the true
+    mask can hand it over instead of having it guessed from a transformed array.
+
+    `nodata=None` keeps the inference, which is correct and exact for the raw Murray mosaic
+    (`scripts/map_region.py`): its GeoTIFF declares `nodata=0` and the minimum valid DN is 1 in
+    every tile strip sampled, because Murray bottom-clips valid data to 1.
+    """
+    if nodata is None:
+        return window == 0
+    nodata = np.asarray(nodata, dtype=bool)
+    if nodata.shape != window.shape:
+        raise ValueError(f"nodata mask {nodata.shape} does not match the window {window.shape}")
+    return nodata
+
+
 def own_tile_zero_fraction(window: np.ndarray, ti: np.ndarray, tj: np.ndarray, *,
-                           tile_px: int, row0: int, col0: int) -> np.ndarray:
-    """Per-tile fraction of own-tile CTX pixels that are 0 (Murray mosaic nodata).
+                           tile_px: int, row0: int, col0: int,
+                           nodata: np.ndarray | None = None) -> np.ndarray:
+    """Per-tile fraction of own-tile CTX pixels that are nodata (Murray mosaic gap).
 
     A tile sitting in a mosaic data gap embeds black pixels and yields a
     meaningless prediction; the caller masks tiles whose zero-fraction is high.
     `ti, tj` are global tile indices; the own tile occupies window rows
     [ti*tile_px - row0, +tile_px) (CLAUDE.md grid anchor).
+
+    `nodata` (R38) is the explicit mask; omitted, it is inferred as `window == 0`.
     """
     ti = np.asarray(ti, dtype=np.int64)
     tj = np.asarray(tj, dtype=np.int64)
+    nd = as_nodata_mask(window, nodata)
     H, W = window.shape
     out = np.ones(ti.size, dtype=np.float32)
     r = ti * tile_px - row0
@@ -429,8 +454,8 @@ def own_tile_zero_fraction(window: np.ndarray, ti: np.ndarray, tj: np.ndarray, *
     for i in range(ti.size):
         if r[i] < 0 or c[i] < 0 or r[i] + tile_px > H or c[i] + tile_px > W:
             continue  # own tile outside window (shouldn't happen for enumerated grid)
-        box = window[r[i]: r[i] + tile_px, c[i]: c[i] + tile_px]
-        out[i] = float((box == 0).mean())
+        box = nd[r[i]: r[i] + tile_px, c[i]: c[i] + tile_px]
+        out[i] = float(box.mean())
     return out
 
 
@@ -441,7 +466,8 @@ CONTEXT_ZERO_HIST_EDGES = (0.0, 0.05, 0.1, 0.2, 0.3, 0.5)
 
 
 def context_zero_fraction(window: np.ndarray, ti: np.ndarray, tj: np.ndarray, *,
-                          tile_px: int, row0: int, col0: int) -> np.ndarray:
+                          tile_px: int, row0: int, col0: int,
+                          nodata: np.ndarray | None = None) -> np.ndarray:
     """Fraction of each tile's `3*tile_px` CONTEXT box that is CTX nodata (DN 0).
 
     **R13.** `own_tile_zero_fraction` tests the centre `tile_px²` only — 1024 of 9216 px at
@@ -475,8 +501,8 @@ def context_zero_fraction(window: np.ndarray, ti: np.ndarray, tj: np.ndarray, *,
     n_br, n_bc = (H - pr) // tile_px, (W - pc) // tile_px
     if n_br < 3 or n_bc < 3:
         return out                       # no cell in this window can carry a full context box
-    z = np.ascontiguousarray(
-        window[pr: pr + n_br * tile_px, pc: pc + n_bc * tile_px] == 0)
+    nd = as_nodata_mask(window, nodata)
+    z = np.ascontiguousarray(nd[pr: pr + n_br * tile_px, pc: pc + n_bc * tile_px])
     counts = z.reshape(n_br, tile_px, n_bc, tile_px).sum(axis=(1, 3), dtype=np.int64)
     ii = np.zeros((n_br + 1, n_bc + 1), dtype=np.int64)
     ii[1:, 1:] = counts.cumsum(axis=0).cumsum(axis=1)
@@ -757,7 +783,8 @@ def predict_window(window: CtxWindow, embedder, head, *, tile_px: int = 32,
                    max_zero_fraction: float = 0.3,
                    max_context_zero_fraction: float = 0.0, calibrator=None,
                    apply_isotonic: bool = True,
-                   global_grid: tuple[int, int, int, int] | None = None) -> WindowPrediction:
+                   global_grid: tuple[int, int, int, int] | None = None,
+                   nodata_mask: np.ndarray | None = None) -> WindowPrediction:
     """Embed -> predict -> (optionally calibrate) -> rasterize one CTX window.
 
     `embedder` is a `src.fm_embeddings.FangEmbedder`; `head` exposes
@@ -785,6 +812,16 @@ def predict_window(window: CtxWindow, embedder, head, *, tile_px: int = 32,
     `max_zero_fraction`'s signature default was **0.5** while every production driver passed
     0.3; `scripts/parity_check.py` took the signature default, so the one cross-machine gate
     exercised a threshold nothing shipped with. It is now 0.3.
+
+    **R38 — `nodata_mask`.** Both gates ask "is this pixel missing data?", and until now that
+    was answered by testing the pixel's VALUE against 0 on whatever array arrived. That is exact
+    for the raw Murray mosaic, whose GeoTIFF declares `nodata=0` and whose minimum valid DN is 1
+    (Murray bottom-clips valid data). It was **not** exact for the A1 path, which clipped to
+    `[0, 255]` and so manufactured the sentinel out of legitimately dark terrain. A caller that
+    transforms the DN should pass the mask it computed from the *untransformed* array; `None`
+    keeps the inference. Note the mask answers coverage only — a pixel blackened by A1's clip is
+    a *radiometric* problem and is deliberately not representable here (see
+    `src.striping.a1_clip_counts`, which counts it separately).
 
     `calibrator` is an optional Stage-1 `src.calibration.CalibrationLayer`. When given,
     an **abundance** raster `calibrate_abundance(raw P(rich))` (the one-model
@@ -822,8 +859,13 @@ def predict_window(window: CtxWindow, embedder, head, *, tile_px: int = 32,
     emb, valid = embedder.embed_window(arr, ti, tj, tile_px=tile_px, row0=row0,
                                        col0=col0, pool=pool, batch=batch)
 
-    zero_frac = own_tile_zero_fraction(arr, ti, tj, tile_px=tile_px, row0=row0, col0=col0)
-    ctx_frac = context_zero_fraction(arr, ti, tj, tile_px=tile_px, row0=row0, col0=col0)
+    # R38: one mask, computed once, used by both gates — supplied by a caller that transformed
+    # the DN (the A1 path), inferred as `arr == 0` for the raw mosaic.
+    nd = as_nodata_mask(arr, nodata_mask)
+    zero_frac = own_tile_zero_fraction(arr, ti, tj, tile_px=tile_px, row0=row0, col0=col0,
+                                       nodata=nd)
+    ctx_frac = context_zero_fraction(arr, ti, tj, tile_px=tile_px, row0=row0, col0=col0,
+                                     nodata=nd)
     own_ok = zero_frac <= max_zero_fraction
     ctx_ok = ctx_frac <= max_context_zero_fraction
     usable = valid & own_ok & ctx_ok

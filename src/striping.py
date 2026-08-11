@@ -266,30 +266,82 @@ A1_REF_MEDIAN = 125.0
 A1_REF_IQR = 27.7
 
 
+# **R38.** The floor for a VALID pixel, so that DN 0 in an A1 array means exactly and only
+# "mosaic nodata". It used to be 0, which made a legitimately dark pixel indistinguishable from a
+# data gap: `src.mapping` infers nodata from `arr == 0`, so such a pixel was counted as missing
+# coverage, could push a whole tile past `max_zero_fraction`, and was excluded from `a1_stats`.
+# Measured on the real native patch stacks: 0.041 % of valid pixels on the training path and
+# 0.04-0.41 % at deploy; 0.64 % / 6.7 % of tiles carried at least one false-black pixel while
+# still passing the mask. Three sibling implementations of this same stretch already floor at 1
+# (`f_leg_b_embed.py`, `f_pilot_crop.py` x2) and say why.
+#
+# **This fixes the SENTINEL problem, not the INFORMATION problem, and the two must not be
+# conflated** (R13, 2026-08-10): DN 0 and DN 1 damage the frozen embedding *identically to three
+# decimals*, because the harm is blackness, not the sentinel value. So flooring at 1 does not
+# rescue the dark tail — it only stops the tail being miscounted as absent data, and in doing so
+# makes it invisible to the nodata gate. That is why `a1_clip_counts` exists and why the drivers
+# record the clipped fraction separately: it is a RADIOMETRIC quality signal, not a coverage one.
+# Brian's call 2026-08-10: record it, do not change the transfer function (R07 already cut the
+# damage ~10x, leaving ~0.04 % of native pixels — too small to justify re-tuning A1_REF).
+A1_VALID_FLOOR = 1
+
+
 def a1_stats(arr: np.ndarray) -> tuple[float, float]:
-    """Robust (median, IQR) of the valid (DN>0; mosaic nodata=0) pixels of a CTX array."""
+    """Robust (median, IQR) of the valid (DN>0; mosaic nodata=0) pixels of a CTX array.
+
+    A degenerate (zero) IQR returns NaN, **not** 1.0. The old `or 1.0` looked like a harmless
+    guard but actively defeated the caller's: `a1_stats_native_tile` admits a frame only when
+    `iqr > 0`, and substituting 1.0 sailed through that check and handed the frame a gain of
+    `s0/1 = 27.7x`. NaN routes it to the fallback statistic instead, which is what the guard
+    was for.
+    """
     v = arr[arr > 0].astype(np.float64)
-    if v.size < 50:
+    if v.size < A1_MIN_FRAME_PX:
         return np.nan, np.nan
     med = float(np.median(v))
-    iqr = float(np.subtract(*np.percentile(v, [75, 25]))) or 1.0
-    return med, iqr
+    iqr = float(np.subtract(*np.percentile(v, [75, 25])))
+    return (med, iqr) if iqr > 0 else (np.nan, np.nan)
 
 
 def a1_apply(arr: np.ndarray, med: float, iqr: float,
-             m0: float = A1_REF_MEDIAN, s0: float = A1_REF_IQR) -> np.ndarray:
+             m0: float = A1_REF_MEDIAN, s0: float = A1_REF_IQR,
+             floor: int = A1_VALID_FLOOR) -> np.ndarray:
     """A1 normalization: remap CTX DN by robust offset+gain to the (m0, s0) reference,
-    `(x - med)/iqr * s0 + m0`, clipped to [0,255] uint8. nodata (DN==0) stays 0.
+    `(x - med)/iqr * s0 + m0`, clipped to `[floor, 255]` uint8. nodata (DN==0) stays 0.
+
+    **R38: `floor` is 1, not 0.** See `A1_VALID_FLOOR`. Pass `floor=0` only to reproduce a
+    pre-R38 artifact knowingly.
 
     Pass the SAME (med, iqr) for every patch of one source frame (single-frame training window
     or a deploy frame) so within-frame texture is preserved and only the between-frame level/scale
     is removed."""
-    if not np.isfinite(med):
+    if not (np.isfinite(med) and np.isfinite(iqr) and iqr > 0):
         return arr.astype(np.uint8)
     a = arr.astype(np.float64)
-    out = np.clip((a - med) / iqr * s0 + m0, 0, 255)
+    out = np.clip((a - med) / iqr * s0 + m0, floor, 255)
     out[arr == 0] = 0
     return out.astype(np.uint8)
+
+
+def a1_clip_counts(arr: np.ndarray, med: float, iqr: float,
+                   m0: float = A1_REF_MEDIAN, s0: float = A1_REF_IQR,
+                   floor: int = A1_VALID_FLOOR) -> dict:
+    """How many VALID pixels `a1_apply` would clip, split by end. **R38's measurable guard.**
+
+    Flooring at 1 stops a clipped pixel being miscounted as nodata, but it does not un-destroy
+    its texture — and after the fix nothing else can see it, because it no longer reads as 0.
+    Counting it here is what keeps the information loss observable, and it is what surfaces the
+    low-IQR frames where the clip actually bites (the worst frame in the committed 380-frame
+    table has a threshold of +138.7 DN against a 160 m IQR of 6.4).
+    """
+    valid = arr > 0
+    n_valid = int(valid.sum())
+    if not n_valid or not (np.isfinite(med) and np.isfinite(iqr) and iqr > 0):
+        return {"n_valid": n_valid, "n_floored": 0, "n_ceiled": 0}
+    v = (arr[valid].astype(np.float64) - med) / iqr * s0 + m0
+    return {"n_valid": n_valid,
+            "n_floored": int((v < floor).sum()),
+            "n_ceiled": int((v > 255).sum())}
 
 
 def a1_normalize_window(arr: np.ndarray, **ref) -> np.ndarray:
@@ -369,8 +421,36 @@ def a1_stats_from_hist(hist) -> tuple[float, float]:
         return v_lo + (v_hi - v_lo) * (x - lo)
 
     med = float(pct(50))
-    iqr = float(pct(75) - pct(25)) or 1.0
-    return med, iqr
+    iqr = float(pct(75) - pct(25))
+    # R38: NaN, not 1.0 — see `a1_stats`. `a1_stats_native_tile` admits a frame only when
+    # `iqr > 0`, and the old `or 1.0` walked straight through that guard with a fabricated
+    # IQR, giving the frame a gain of s0/1 = 27.7x instead of routing it to the fallback.
+    return (med, iqr) if iqr > 0 else (np.nan, np.nan)
+
+
+def a1_clip_counts_from_hist(hist, med: float, iqr: float,
+                             m0: float = A1_REF_MEDIAN, s0: float = A1_REF_IQR,
+                             floor: int = A1_VALID_FLOOR) -> dict:
+    """**R38, exactly.** Valid pixels a frame's A1 remap would clip, from its DN histogram.
+
+    uint8 has 256 possible values, so "how many pixels clip" is a dot product against the
+    histogram rather than an estimate — and it costs nothing, because `frame_hist_native`
+    already builds the histogram to derive (median, IQR) in the first place.
+
+    Computing it here rather than per read window matters: windows overlap by 96 px, so summing
+    per-window pixel counts double-counts the seams, and a resumed run would only see the
+    windows it recomputed. Once per tile, from the histogram, is both exact and resume-proof.
+    """
+    h = np.asarray(hist, dtype=np.int64).copy()
+    h[0] = 0                                       # nodata sentinel is not a valid pixel
+    n_valid = int(h.sum())
+    if not n_valid or not (np.isfinite(med) and np.isfinite(iqr) and iqr > 0):
+        return {"n_valid": n_valid, "n_floored": 0, "n_ceiled": 0}
+    dn = np.arange(256, dtype=np.float64)
+    v = (dn - med) / iqr * s0 + m0
+    return {"n_valid": n_valid,
+            "n_floored": int(h[v < floor].sum()),
+            "n_ceiled": int(h[v > 255].sum())}
 
 
 def frame_labels_on(transform, shape, frames, *, dtype: str = "int32") -> np.ndarray:
@@ -450,6 +530,27 @@ def a1_stats_native_tile(tile: str, frames, *, zip_dir: Path | None = None,
     counts = hist.sum(axis=1)
     total = int(counts.sum() - hist[:, 0].sum())
     covered = int(sum(counts[i] - hist[i, 0] for i in stats))
+
+    # R38: what the clip destroys, measured exactly and once. Every valid pixel is normalized by
+    # either its own frame's statistic or the fallback, so summing those two populations covers
+    # the tile with no overlap. `worst_frames` is what surfaces the low-IQR frames where the clip
+    # actually bites -- the whole point of recording this rather than leaving it invisible.
+    clip = {"n_valid": 0, "n_floored": 0, "n_ceiled": 0}
+    per_frame = {}
+    for i in range(n):
+        c = (a1_clip_counts_from_hist(hist[i], *stats[i]) if i in stats
+             else a1_clip_counts_from_hist(hist[i], *fallback))
+        for k in clip:
+            clip[k] += c[k]
+        if c["n_valid"] and (c["n_floored"] or c["n_ceiled"]):
+            per_frame[i] = {**c, "clipped_fraction":
+                            (c["n_floored"] + c["n_ceiled"]) / c["n_valid"]}
+    residue = a1_clip_counts_from_hist(hist[n], *fallback)     # pixels in no frame at all
+    for k in clip:
+        clip[k] += residue[k]
+    clipped = clip["n_floored"] + clip["n_ceiled"]
+    worst = sorted(per_frame.items(), key=lambda kv: -kv[1]["clipped_fraction"])[:5]
+
     prov = {
         "a1_arm": A1_ARM, "statistic": "median_iqr", "resolution": "native_5m",
         "unit": "seammap_source_frame", "support": "frame_extent_in_murray_tile",
@@ -457,6 +558,16 @@ def a1_stats_native_tile(tile: str, frames, *, zip_dir: Path | None = None,
         "n_frames_too_small": len(small), "frames_too_small": small,
         "fallback_median": fallback[0], "fallback_iqr": fallback[1],
         "fallback_pixel_fraction": (1.0 - covered / total) if total else None,
+        # R38 -- a RADIOMETRIC loss statistic, deliberately kept apart from the nodata counts.
+        # A clipped pixel is not a data gap and (since the floor moved to 1) no longer looks
+        # like one; this is the only place its texture loss is visible.
+        "clip_floor": A1_VALID_FLOOR,
+        "clip_n_valid_px": clip["n_valid"],
+        "clip_n_floored_px": clip["n_floored"],
+        "clip_n_ceiled_px": clip["n_ceiled"],
+        "clip_fraction": (clipped / clip["n_valid"]) if clip["n_valid"] else None,
+        "clip_n_frames_affected": len(per_frame),
+        "clip_worst_frames": [{"frame": int(i), **v} for i, v in worst],
     }
     return stats, fallback, prov
 
@@ -469,6 +580,10 @@ def a1_normalize_native(arr: np.ndarray, labels: np.ndarray, stats: dict,
     — unlabelled, or a frame below `A1_MIN_FRAME_PX` — is normalized by `fallback` instead.
     Leaving those at raw DN is R08: it puts two different radiometric scales into one array and
     hands the mixture to a frozen embedder that cannot tell them apart.
+
+    **R38.** Output DN 0 now means *only* nodata — valid pixels floor at `A1_VALID_FLOOR`. How
+    much the clip destroys is not counted here: `a1_stats_native_tile` derives it exactly, once
+    per tile, from the DN histogram it already builds (`a1_clip_counts_from_hist`).
     """
     out = np.zeros(arr.shape, dtype=np.uint8)
     valid = arr > 0

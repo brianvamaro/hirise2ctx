@@ -19,6 +19,20 @@ reference A1 path (`scripts/striping_a1_infer_crop.py`):
   2. the native window DN is remapped per frame to (A1_REF_MEDIAN, A1_REF_IQR) = (125.0, 27.7),
      nodata (DN == 0) preserved, then inferred with the **A1 head** `models/deployable_a1`.
 
+**R38 — DN 0 in an A1 array now means nodata and nothing else.** The remap used to clip to
+`[0, 255]`, so terrain darker than about `med - 4.51*iqr` was written as the mosaic nodata
+sentinel and thereafter counted as a data gap: 0.64 % of training tiles and 6.7 % of deploy-sim
+tiles carried at least one such false-black pixel while still passing the mask, and whole tiles
+went black in low-IQR frames. Three things changed together, and the third is the one that lasts:
+valid pixels floor at `src.striping.A1_VALID_FLOOR`; this driver hands `predict_window` an
+**explicit nodata mask taken from the raw DN** rather than letting it infer one from the
+normalised array; and the texture the clip destroys is recorded separately as `a1_clip_*` in each
+tile sidecar (`--warn-clip-fraction`). Moving the floor alone would have been worse than useless —
+DN 0 and DN 1 damage the frozen embedding identically to three decimals, so the pixels would have
+become invisible rather than safe. Brian's call 2026-08-10: record the loss, do **not** retune the
+transfer function. That is also what lets `--max-context-zero-fraction` default to 0.0 here, as it
+does on the baseline arm.
+
 Everything else — grid, window offsets, tile_px, GeoTIFF profile, sidecar keys — is map_region's, so
 the output is byte-grid-identical to `reports/map_region/` and drops straight into
 `scripts/f_map_compare.py`.
@@ -100,17 +114,31 @@ def frame_stats_native(tile: str, frames) -> tuple[dict, tuple, dict]:
 
 
 def a1_window(window, frames, stats: dict, fallback: tuple[float, float]):
-    """Per-frame A1 remap of one native window; DN == 0 (mosaic nodata) preserved as 0.
+    """Per-frame A1 remap of one native window. Returns `(window', nodata_mask, clip_report)`.
 
     **R07/R08.** This used to leave any pixel outside a qualifying frame at **raw DN**, mixing
     two radiometric scales in one array and handing the mixture to a frozen embedder that
     cannot tell them apart. `a1_normalize_native` normalizes those by the tile-wide native
     statistic instead, and refuses rather than falling back to raw.
+
+    **R38.** The nodata mask is taken from the **raw** window, before normalization, and handed
+    to `predict_window` explicitly. Deriving it from the A1 output was the defect: the clip
+    floored legitimately dark terrain onto the sentinel, so those pixels were counted as a data
+    gap. Valid pixels now floor at `A1_VALID_FLOOR = 1`, which makes DN 0 unambiguous — but the
+    mask is still passed rather than re-inferred, because "the output happens to be safe to
+    infer from" is a property that quietly stops holding the next time the transfer function
+    changes.
+
+    What the clip *destroys* is counted elsewhere and once: `a1_stats_native_tile` derives it
+    exactly from the per-frame DN histogram it already builds. Accumulating it here instead
+    would have been both approximate and resume-dependent — read windows overlap by 96 px, so
+    per-window pixel counts double-count the seams, and a resumed run only sees the windows it
+    recomputed.
     """
     labels_nat = frame_labels_on(window.transform, window.data.shape, frames, dtype="int32")
+    nodata_mask = window.data == 0                # from the RAW DN, before any normalization
     out = a1_normalize_native(window.data, labels_nat, stats, fallback)
-    n_norm = int((out > 0).sum())
-    return replace(window, data=out), n_norm
+    return replace(window, data=out), nodata_mask
 
 
 def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
@@ -151,6 +179,18 @@ def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
           f"with A1 stats ({a1_prov['n_frames_too_small']} too small), fallback covers "
           f"{a1_prov['fallback_pixel_fraction']:.3%} of valid px, "
           f"phase=({grid_geom.phase_r},{grid_geom.phase_c})", flush=True)
+    # R38: say out loud how much texture the clip destroys. It is not a data gap and no nodata
+    # count will ever show it, so if it is not printed and recorded here it is invisible.
+    cf = a1_prov.get("clip_fraction")
+    if cf:
+        worst = a1_prov.get("clip_worst_frames") or []
+        line = (f"[{tile}] A1 clip: {cf:.4%} of valid px hit the [{a1_prov['clip_floor']},255] "
+                f"bounds ({a1_prov['clip_n_floored_px']:,} floored / "
+                f"{a1_prov['clip_n_ceiled_px']:,} ceiled) across "
+                f"{a1_prov['clip_n_frames_affected']} frame(s)")
+        if worst:
+            line += f"; worst frame {worst[0]['frame']} at {worst[0]['clipped_fraction']:.3%}"
+        print(("  ⚠ " + line if cf >= args.warn_clip_fraction else "  " + line), flush=True)
     if not stats:
         return {"tile": tile, "status": "no_frame_stats"}
 
@@ -180,13 +220,15 @@ def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
                 part.unlink(missing_ok=True)
         t0 = time.monotonic()
         window = read_tile_window(zip_path, inner_tif, row_off, col_off, win)
-        w_a1, n_norm = a1_window(window, frames, stats, fallback)
+        w_a1, nodata_mask = a1_window(window, frames, stats, fallback)
+        n_norm = int((w_a1.data > 0).sum())
         pred = predict_window(w_a1, embedder, head, tile_px=TILE_PX, batch=args.batch,
                               max_zero_fraction=args.max_zero_fraction,
                               max_context_zero_fraction=args.max_context_zero_fraction,
                               calibrator=calibrator,
                               apply_isotonic=not args.no_isotonic,
-                              global_grid=grid_geom.as_tuple)
+                              global_grid=grid_geom.as_tuple,
+                              nodata_mask=nodata_mask)
         keep = np.isfinite(pred.prob)
         cols = {"ti": as_int32_cells(pred.ti[keep], "ti", tile),
                 "tj": as_int32_cells(pred.tj[keep], "tj", tile),
@@ -323,23 +365,29 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--win-px", type=int, default=4096)
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--max-zero-fraction", type=float, default=0.3)
-    # R13 x R38 — this default is 1.0 (DISABLED) on purpose, and it must stay that way until
-    # R38 lands. `src/striping.py` clips A1 output to [0, 255], so a legal dark pixel is
-    # written as the nodata sentinel 0. Measured on the 38 training windows as a proxy for
-    # the deploy product: the share of own-tile-passing cells carrying >=1 "nodata" pixel in
-    # their context goes 0.00 % on the raw mosaic -> 2.67 % under the native A1 statistic ->
-    # ~13 % under the 160 m one. Turning a zero-tolerance context gate on here first would
-    # delete a large slice of the A1 map for a RADIOMETRIC reason dressed as a data gap.
+    # R13 x R38 — ENABLED (0.0) as of 2026-08-10, and here is why it was not before. A1 used to
+    # clip to [0, 255], so a legal dark pixel was written as the nodata sentinel: measured on the
+    # 38 training windows as a deploy proxy, the share of own-tile-passing cells carrying >=1
+    # "nodata" context pixel went 0.00 % on the raw mosaic -> 2.67 % under the native A1
+    # statistic -> ~13 % under the 160 m one. A zero-tolerance gate would have deleted a large
+    # slice of the map for a RADIOMETRIC reason dressed as a data gap.
     #
-    # And when R38 is fixed, the remedy matters: "clip the floor to 1" would make those
-    # blackened pixels invisible to this gate while leaving the embedding damage intact (DN 0
-    # and DN 1 move the prediction identically to three decimals -- the damage is blackness,
-    # not the sentinel). Only an explicit nodata mask, or not clipping, lets this default be
-    # flipped to 0.0 honestly.
-    ap.add_argument("--max-context-zero-fraction", type=float, default=1.0,
-                    help="R13 context-nodata gate; DISABLED (1.0) on the A1 arm until R38 "
-                         "stops A1's [0,255] clip from writing legal dark pixels as the "
-                         "nodata sentinel. The baseline driver defaults to 0.0.")
+    # R38 fixed that at the root and not by moving the floor. Flooring valid pixels at 1 alone
+    # would have made those pixels invisible to this gate while leaving the embedding damage
+    # intact (DN 0 and DN 1 move the prediction identically to three decimals -- the damage is
+    # blackness, not the sentinel). So the driver now passes `predict_window` an EXPLICIT nodata
+    # mask taken from the raw DN, the clip floor moved to A1_VALID_FLOOR so DN 0 is unambiguous,
+    # and the destroyed-texture count is recorded separately as `a1_clip_*`. Only then does 0.0
+    # mean here what it means on the baseline arm.
+    ap.add_argument("--max-context-zero-fraction", type=float, default=0.0,
+                    help="R13 context-nodata gate. 0.0 = not one nodata pixel in the 96-px "
+                         "context box, matching scripts/map_region.py. Safe on this arm only "
+                         "since R38: the mask is explicit, not inferred from A1's output.")
+    ap.add_argument("--warn-clip-fraction", type=float, default=0.01,
+                    help="R38: warn loudly when this share of a tile's valid pixels hits the A1 "
+                         "clip bounds. Warn, not refuse -- a clipped pixel is a radiometric "
+                         "loss, not a data gap, and punching holes in the map over it needs its "
+                         "own justification. The number is recorded in the sidecar either way.")
     ap.add_argument("--no-isotonic", action="store_true")
     ap.add_argument("--clean-partials", action="store_true")
     ap.add_argument("--force", action="store_true")

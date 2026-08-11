@@ -7699,3 +7699,102 @@ unblocks A1 rather than bolted on here.
 **R13 was the last Mapping-gate finding.** With R01, R14 and R84 already closed, nothing now blocks
 the corrected baseline map except the rebuild's own isolation gate (criterion 5, the ≈110 GB backup).
 A1 still needs R08, R38 and R06 — plus the A1 resume guard noted above.
+
+## 2026-08-10c — R38: A1's clip floor was the nodata sentinel, and moving it was not the fix
+
+**The collision.** `a1_apply` clipped to `[0, 255]`, so a valid pixel darker than about
+`med - 4.51*iqr` was written as **0** — and 0 is unambiguously "no data" everywhere downstream
+(`a1_stats` keeps only `DN > 0`; `src.mapping` inferred its whole nodata mask from `arr == 0`).
+Legitimately dark terrain was therefore counted as a mosaic gap. Measured previously on the real
+native patch stacks: 0.041 % of valid pixels on the training path, 0.04–0.41 % at deploy, **6.7 %**
+of deploy-sim tiles carrying at least one false-black pixel while still passing the mask, and whole
+tiles reaching `own_tile_zero_fraction = 1.00` in low-IQR frames. Nothing documented the choice, and
+three sibling implementations of the same stretch already floored at 1 and said why.
+
+**The register's own fix — `np.clip(..., 1, 255)` — is necessary and *not sufficient*, and R13 is
+how we know.** Measured yesterday with the real frozen ViT: DN 0 and the perfectly legal DN 1 move
+the prediction **identically to three decimals** in every regime tested. The damage is *blackness*,
+not the sentinel value. So flooring at 1, on its own, would have left the embedding damage entirely
+intact while removing the only signal that anything was wrong — the pixels stop reading as 0, so
+R13's context gate can no longer see them. That is an A1 map that passes every gate and is still
+wrong. Three changes therefore landed together:
+
+1. **Valid pixels floor at `A1_VALID_FLOOR = 1`**, so DN 0 in an A1 array means nodata and nothing
+   else. `a1_apply(..., floor=0)` reproduces a pre-R38 artifact deliberately.
+2. **`predict_window` takes an explicit `nodata_mask`**, and both A1 drivers pass one derived from
+   the **raw** DN before normalization. This is the durable half. Inferring coverage from a pixel
+   *value* is only safe while nothing downstream can synthesize that value — A1 could, and the next
+   change to the transfer function would quietly make it unsafe again. `nodata_mask=None` keeps the
+   inference, which is exact for the raw Murray mosaic (its GeoTIFF declares `nodata=0` and the
+   minimum valid DN is 1, because Murray bottom-clips valid data).
+3. **The destroyed texture is counted separately** (`a1_clip_counts_from_hist`) and recorded per
+   tile as `a1_clip_*`, with `--warn-clip-fraction` (default 1 %). A clipped pixel is a *radiometric*
+   loss, not a coverage loss; conflating the two is what produced this finding, so the fix keeps
+   them in separate columns.
+
+**Where the count is computed matters.** It comes off the per-frame DN histogram that
+`frame_hist_native` already builds — uint8 has 256 values, so "how many pixels clip" is a dot
+product, exact and free. The obvious alternative, accumulating per read window, is both approximate
+and resume-dependent: windows overlap by 96 px so pixel counts double-count the seams, and a resumed
+run only sees the windows it recomputed. Once per tile, from the histogram, has neither problem.
+
+**Measured on real CTX under R07's corrected native statistic — and it is far smaller than the
+bracket the finding was filed with.** The 0.04–0.41 % estimate came from the *160 m* statistic, i.e.
+R07's mismatch. Streaming whole cached Murray tiles:
+
+| tile | valid px | floored | ceiled | clip fraction | frames affected | worst frame | native IQR min/med/max |
+|---|---|---|---|---|---|---|---|
+| `E-8_N32` | 2,247,360,528 | 203,806 | 62,440 | **0.011847 %** | 16 / 54 | 0.341 % | 8 / 36 / 123 |
+| `E4_N44` | 2,248,656,400 | 3,619 | 29,812 | **0.001487 %** | 12 / 48 | 0.393 % | 11 / 34 / 61 |
+| `E8_N44` | 2,248,656,400 | 44,357 | 1,293 | **0.002030 %** | 11 / 31 | 0.072 % | 8 / 30 / 57 |
+
+So **1.5e-05 to 1.2e-04 of valid pixels**, against the 4e-04 – 4.1e-03 the finding was filed with —
+between 3× and 27× smaller. R07 is why: the native per-frame IQR runs a median of 30–36 against
+`A1_REF_IQR = 27.7`, so the typical gain is a *shrink* (≈0.8×) and almost nothing reaches the bounds.
+The frames that do clip are exactly the low-IQR ones (min 8 → gain 3.5×), as the finding predicted;
+they are a small minority (11–16 of 31–54 frames touch the bounds at all, and the worst single frame
+loses 0.07–0.39 %). Note the split is not one-sided — `E-8_N32` and `E8_N44` mostly *floor* while
+`E4_N44` mostly *ceils*, which is why the record keeps the two ends apart.
+
+At ~1e-04 of pixels the case for retuning the transfer function is weak, which is what Brian ruled
+on: **record the loss, leave `A1_REF = (125.0, 27.7)` alone.** A test pins those constants so a
+silent retune cannot happen. Also confirmed incidentally, and it narrows **R08**: all 133 frames
+across the three tiles cleared `A1_MIN_FRAME_PX`, so **0 frames were too small** and the tile-wide
+fallback covers only 0.0059–0.0108 % of valid pixels — consistent with the 0.0081 % measured on
+E-12_N36 for R07.
+
+**Sibling defect found and fixed — and it was not cosmetic.** `a1_stats` and `a1_stats_from_hist`
+substituted `iqr = 1.0` for a degenerate (zero) IQR. The verify doc called that unreachable and
+harmless; it is neither harmless nor merely cosmetic, because `a1_stats_native_tile` admits a frame
+only when `iqr > 0` — and the fabricated 1.0 **sailed straight through the guard written to catch
+exactly this**, handing that frame a gain of `s0/1 = 27.7×` instead of routing it to the fallback
+statistic. Both now return NaN, so the guard works as intended.
+
+**Also folded in:** `scripts/striping_a1_infer_crop.py` re-inlined the stretch with its own
+`[0, 255]` clip; it now calls `a1_apply` and passes the raw-DN mask, so there is one definition of
+the floor rather than three.
+
+**Train and deploy change together, by design.** `scripts/probes/_w2_fang_embed.py` reaches the same
+`a1_apply`, so the training input moves in the same commit as the deploy input — a floor changed on
+one side only would have re-opened R07's train/deploy mismatch on a second axis. Consequence:
+`dataset_v2/fang_embeddings_a1` and `models/deployable_a1` were baked under floor 0 and must be
+re-made. That is not new work — it is already row 7 (R07's re-embed + retrain), and R38 rides along
+at no extra cost. `docs/PENDING_REBUILD.md` row 9 records it.
+
+**This is what let R13's A1 context gate turn on.** `scripts/striping_a1_map.py
+--max-context-zero-fraction` went from its disabled default of 1.0 to **0.0**, matching the baseline
+arm. The R13 test that pinned it *disabled until R38* has been rewritten to pin the new invariant
+and to assert `A1_VALID_FLOOR > 0`, so the gate cannot be left on if the floor is ever put back.
+
+**Blast radius: nothing on the record moves.** No shipped raster goes through `a1_apply`
+(`reports/map_a1/` does not exist — that is R06 — and `reports/map_region/` never imports
+`src.striping`). The banked −0.024 LOIO cost and the banked 28 % η² reduction are unaffected, and
+the alleged differential-footprint confound in the η² comparison did not occur (218,089 = 467² = the
+complete interior grid in both arms). What changes is future A1 output, and the training input it
+will be compared against.
+
+**Verification.** 15 new tests in `tests/test_a1_clip_floor.py`; fast suite 751 → **766 passed**, 1
+skipped. Mutation-verified 4/4: restore the `[0, 255]` floor; make `predict_window` ignore the
+supplied mask and re-infer `arr == 0`; restore `or 1.0` on the degenerate IQR; make the clip counter
+report zero. The histogram counter is cross-checked against an independent array-level
+implementation on the same data.

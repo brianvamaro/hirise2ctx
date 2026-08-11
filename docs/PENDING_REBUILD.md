@@ -111,6 +111,8 @@ leaves a conditional write-through path, documented in the 2026-08-06 audit.
 
 | 8 | **R13** — the nodata gate tested only the central 32² px of the 96² box the embedder actually consumes (1,024 of 9,216 = 88.9 % unchecked), and neither the threshold nor the masked count was recorded anywhere | `src.mapping.context_zero_fraction` (lattice-block form, 0.016 s/window) + `predict_window(max_context_zero_fraction=0.0)` with **two** counters; both thresholds land in the sweep manifest (closing the R14 resume coupling), the tile sidecar's `nodata_gate` block and the run record, with de-duplicated masked-cell counts and a re-tunable histogram. A1's arm keeps the gate **disabled (1.0) until R38**. DECISIONS 2026-08-10b. | **Fold into row 6/7's pass — it is free there.** Baseline map for all 26 tiles; A1 for the 9 when its own blockers clear. A standalone regeneration would cost ~0.6 GPU-h/tile × 26 for a 1e-5 change and is not worth it. | **Output bytes only; no published statistic moves.** ~770 of 56,870,060 shipped cells turn NaN — measured exactly as **290 of 19,685,689** on the nine tiles with exact block arithmetic, hard ceiling 1,167 map-wide. `prob_mean`, `rich_share_at_0p5`, the sd(log₁₀ pred/label) level table and the 26-tile mosaic are all unaffected at three decimals. **No rebuild is forced by R13 alone.** What *does* change on re-render is the sidecar contract: pre-R13 tiles carry no `nodata_gate` block, so absence marks a pre-2026-08-10 generation. |
 
+| 9 | **R38** — A1 clipped to `[0,255]`, so terrain darker than about `med − 4.51·iqr` was written as the mosaic **nodata sentinel** and thereafter counted as a data gap (6.7 % of deploy-sim tiles carried a false-black pixel; whole tiles went black in low-IQR frames) | Three parts, because moving the floor alone would have made the damage *invisible* rather than absent (R13: DN 0 and DN 1 move the frozen prediction identically to 3 dp). (1) valid pixels floor at `src.striping.A1_VALID_FLOOR = 1`; (2) `predict_window` takes an explicit `nodata_mask` and both A1 drivers derive it from the **raw** DN, so coverage is never re-inferred from a transformed array; (3) the destroyed texture is counted exactly off the existing per-frame DN histogram and recorded per tile as `a1_clip_*` (`--warn-clip-fraction`). Sibling fix: `a1_stats`/`a1_stats_from_hist` returned a fabricated `iqr = 1.0` that **defeated** `a1_stats_native_tile`'s `iqr > 0` guard and gave that frame a 27.7× gain — now NaN. `striping_a1_infer_crop.py` no longer re-inlines the clip. DECISIONS 2026-08-10c. | **Fold into row 7 — it is free there.** R38 changes `a1_apply`, which BOTH the training path (`_w2_fang_embed.py --norm a1`) and the deploy path call, so it rides along on R07's A1 re-embed + retrain. No separate pass. | **Every A1 artifact, and only A1 artifacts.** `dataset_v2/fang_embeddings_a1` and `models/deployable_a1` were baked under floor 0 and must be re-made — which row 7 already requires. Nothing on the record moves: no shipped raster calls `a1_apply` (`reports/map_a1/` does not exist = R06; `reports/map_region/` never imports `src.striping`), and the banked −0.024 LOIO cost and 28 % η² reduction are unaffected. Measured cost of the floor itself under R07's native statistic, streaming whole cached tiles: **0.0015 %–0.0118 %** of valid pixels (`E4_N44` / `E8_N44` / `E-8_N32`), i.e. 3–27× *below* the 0.04–0.41 % the finding was filed with, because the native per-frame IQR (median 30–36) exceeds `A1_REF_IQR = 27.7` so the typical gain is a shrink. New sidecar keys `a1_clip_*`; their absence marks a pre-2026-08-10 generation. |
+
 - All Stage-1 sidecars (`cache_v2/reprojected_detections/*.json`) and all Stage-4 label sidecars
   (`dataset_v2/labels/*.json`) | **R23** | **Provenance-stale, not numerically stale.** The
   2026-08-06 fix adds `source_integrity` + `null_geometry_basis` (Stage 1) and `realised_label_basis`
@@ -133,16 +135,11 @@ leaves a conditional write-through path, documented in the 2026-08-06 audit.
   *final* disposition, not a holding position. The provenance/documentation half is built; see the
   row above for its rebuild cost, **DECISIONS 2026-08-06o** for the pricing of all four remedies and
   **2026-08-06z** for the recovery measurement.
-- **R38** — A1's clip floor collides with the nodata sentinel. A1 is now an active planned parallel
-  regional product, so land the explicit-nodata-mask fix before generating it. `[1,255]` may be used
-  diagnostically but does not satisfy the product gate because it moves information loss to DN 1.
-  **R13 (2026-08-10) added a hard constraint on the remedy, not just the ordering.** Measured with
-  the real frozen ViT: DN 0 and DN 1 damage the embedding **identically to three decimals** — the
-  harm is *blackness*, not the sentinel. So "clip the floor to 1" would make clip-blackened pixels
-  invisible to R13's new context gate while leaving the damage intact, producing an A1 map that
-  passes the gate and is still wrong. **The explicit nodata mask (or not clipping) is the only
-  acceptable fix**, and until it lands `scripts/striping_a1_map.py --max-context-zero-fraction`
-  stays at its disabled default of 1.0 (a test pins it). Flip it to 0.0 in the R38 change.
+- ~~**R38** — A1's clip floor collides with the nodata sentinel.~~ **FIXED 2026-08-10; see row 9.**
+  The explicit nodata mask was indeed the only acceptable remedy: measured with the real frozen ViT,
+  DN 0 and DN 1 damage the embedding **identically to three decimals**, so moving the floor alone
+  would have made clip-blackened pixels *invisible* to R13's context gate while leaving the damage
+  intact. All three parts landed together, and `--max-context-zero-fraction` is now 0.0 on both arms.
 - **R03 / R83 / R84** — the pixel-scale size floor. R83/R84 estimate a roughly 78/22 mixture in the
   calibration tile pool (not the image pool; not independently verified), so per-image
   `map_scale_mpp` alone is **not sufficient** for PLAN_RegionalMap leg 4. Decision 2026-08-06: retain

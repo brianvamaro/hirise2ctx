@@ -372,28 +372,32 @@ def test_the_context_threshold_is_a_resume_match_field(tmp_path, monkeypatch):
                         args=g._fake_args(tmp_path, out_dir=str(tmp_path), win_px=256))
 
 
-def test_the_a1_driver_keeps_the_context_gate_disabled_until_r38():
-    """R13 x R38 ordering, pinned so it cannot be flipped inattentively.
+def test_both_arms_now_gate_the_context_identically_because_r38_landed():
+    """R13 x R38 ordering — this test used to pin the A1 gate DISABLED, and the flip is the
+    record that the ordering constraint was honoured rather than forgotten.
 
-    A1 clips to [0, 255], so a legal dark pixel is written as the nodata sentinel. Measured on
-    the 38 training windows as a deploy proxy, the share of own-tile-passing cells carrying
-    >=1 "nodata" context pixel goes 0.00 % (raw mosaic) -> 2.67 % (native A1 statistic) ->
-    ~13 % (160 m statistic). Enabling a zero-tolerance gate here before R38 would delete a
-    large slice of the A1 map for a radiometric reason dressed as a data gap.
+    Until 2026-08-10 A1 clipped to [0, 255], so a legal dark pixel was written as the nodata
+    sentinel. Measured on the 38 training windows as a deploy proxy, the share of
+    own-tile-passing cells carrying >=1 "nodata" context pixel went 0.00 % (raw mosaic) ->
+    2.67 % (native A1 statistic) -> ~13 % (160 m statistic), so a zero-tolerance gate would have
+    deleted a large slice of the map for a radiometric reason dressed as a data gap.
+
+    R38 removed the collision at the root, so the two arms now agree. What keeps that honest is
+    asserted next door in `tests/test_a1_clip_floor.py`: the floor moved off the sentinel AND
+    the driver passes an explicit mask instead of inferring one from A1's output. Flooring alone
+    would have made the damaged pixels invisible rather than safe.
     """
     import scripts.map_region as mr
     import scripts.striping_a1_map as a1
+    from src.striping import A1_VALID_FLOOR
 
-    a1_p = a1.build_parser()
-    assert a1_p.get_default("max_context_zero_fraction") == 1.0, (
-        "the A1 arm's context gate must stay DISABLED until R38 stops the [0,255] clip from "
-        "writing legal dark pixels as the nodata sentinel")
-    assert a1_p.get_default("max_zero_fraction") == 0.3
+    for p in (a1.build_parser(), mr.build_parser()):
+        assert p.get_default("max_context_zero_fraction") == 0.0
+        assert p.get_default("max_zero_fraction") == 0.3
 
-    # ... and the baseline arm, which has no such collision, ships the strict value
-    base_p = mr.build_parser()
-    assert base_p.get_default("max_context_zero_fraction") == 0.0
-    assert base_p.get_default("max_zero_fraction") == 0.3
+    assert A1_VALID_FLOOR > 0, (
+        "the A1 arm may only run a zero-tolerance context gate while DN 0 in its output means "
+        "nodata and nothing else; a floor of 0 puts back the collision this gate cannot see")
 
 
 def test_parity_check_run_window_accepts_what_its_own_call_sites_pass():

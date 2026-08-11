@@ -274,6 +274,14 @@ def extract_one(model: ViTB16, obs_id: str, keys: pd.DataFrame, device: torch.de
     # over the frame's extent in the parent Murray tile. Own patches are re-sliced from the
     # normalized window rather than normalized separately, which is what keeps the geometry
     # self-check below an exact-equality check instead of an approximate one.
+    #
+    # **R38 rides along, deliberately.** `a1_apply` now floors valid pixels at
+    # `A1_VALID_FLOOR = 1` so DN 0 means only nodata, and because BOTH sides call it, the
+    # training input changes in the same commit as the deploy input -- which is the whole point
+    # (a floor changed on one side only would re-open R07's train/deploy mismatch on a second
+    # axis). It also means `dataset_v2/fang_embeddings_a1` and `models/deployable_a1` were baked
+    # under the old floor and must be re-made; that is already row 7 of docs/PENDING_REBUILD.md.
+    # Measured cost of the floor itself: 0.041 % of training pixels.
     if NORM == "a1":
         from src.striping import a1_normalize_native
         stats, fallback, labels, prov = a1_train_frame_context(obs_id, arr.shape)

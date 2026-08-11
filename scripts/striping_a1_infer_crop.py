@@ -33,7 +33,8 @@ from src.fm_embeddings import FangEmbedder
 from src.mapping import predict_window, read_tile_window
 from src.modeling.mlp_head import DeployableHead
 from src.striping import (A1_REF_IQR, A1_REF_MEDIAN, CTX_ZIP_DIR, MAP_DIR, _inner_tif_name,
-                          a1_stats, eta2, frame_label_map, load_frames, read_ctx_on_grid)
+                          a1_apply, a1_stats, eta2, frame_label_map, load_frames,
+                          read_ctx_on_grid)
 
 FIG = REPO / "reports" / "figures"
 TILE = "E8_N44"
@@ -81,14 +82,19 @@ def main():
     Lnat = rasterize(((g, i) for i, g in enumerate(frames.geometry)),
                      out_shape=window.data.shape, transform=window.transform,
                      fill=-1, dtype="int16", all_touched=False)
-    arr = window.data.astype(np.float32)
+    # R38: call `a1_apply` rather than re-inlining the stretch. This copy had drifted to a
+    # `[0, 255]` clip, which wrote legitimately dark terrain as the mosaic nodata sentinel; the
+    # shared definition floors valid pixels at `A1_VALID_FLOOR` so DN 0 means only "no data".
+    arr = window.data.copy()
+    nodata_mask = window.data == 0                 # from the RAW DN, before normalization
     for i, (med, iqr) in fstats.items():
         sel = (Lnat == i) & (window.data > 0)
-        if sel.any() and np.isfinite(med):
-            arr[sel] = np.clip((arr[sel] - med) / iqr * A1_REF_IQR + A1_REF_MEDIAN, 0, 255)
-    arr[window.data == 0] = 0
+        if sel.any():
+            arr[sel] = a1_apply(window.data, med, iqr)[sel]
+    arr[nodata_mask] = 0
     window_a1 = replace(window, data=arr.astype(np.uint8))
-    pred_a = predict_window(window_a1, embedder, a1_head, tile_px=32, batch=256, calibrator=None)
+    pred_a = predict_window(window_a1, embedder, a1_head, tile_px=32, batch=256, calibrator=None,
+                            nodata_mask=nodata_mask)
     print(f"A1 predicted: {np.isfinite(pred_a.raster).sum()} tiles", flush=True)
 
     # ---- eta^2 on the SAME coarse grid (rasters share grid/shape) ----
