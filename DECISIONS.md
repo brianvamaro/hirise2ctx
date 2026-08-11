@@ -7798,3 +7798,63 @@ skipped. Mutation-verified 4/4: restore the `[0, 255]` floor; make `predict_wind
 supplied mask and re-infer `arr == 0`; restore `or 1.0` on the degenerate IQR; make the clip counter
 report zero. The histogram counter is cross-checked against an independent array-level
 implementation on the same data.
+
+## 2026-08-10d — R08 ratified: normalize the fallback population, never drop it
+
+R08's *mechanism* was fixed by R07 (`a1_normalize_native` normalizes every valid pixel and raises
+rather than returning raw DN). What stayed open was the **contract**: is the tile-wide fallback the
+right answer for a pixel in no qualifying frame, or should those pixels be dropped? And what should
+`A1_MIN_FRAME_PX` be? Both are now settled by measurement rather than preference, and **neither
+needed a code change** — the ratification is a pair of tests that fail if the contract is later
+"tightened".
+
+**R13 is what made the question decidable, and it inverted the intuition.** Dropping a pixel makes
+it nodata, and R13's zero-tolerance context gate then sterilises every coarse cell whose 96-px box
+touches it. So the cost of dropping is not the pixel count — it is how many *cells* those pixels
+sterilise, which depends entirely on their shape. Measured over three whole cached Murray tiles:
+
+| tile | unlabelled valid px | run length med / p90 / max | blocks touched | (a) keep fallback | (b) drop |
+|---|---|---|---|---|---|
+| `E-8_N32` | 241,928 (0.0108 %) | 1 / 2 / 15 | 29,919 | 1,570 cells (0.0718 %) | 95,855 (**4.38 %**) |
+| `E4_N44` | 149,041 (0.0066 %) | 1 / 2 / 6 | 22,116 | 0 (0.0000 %) | 73,811 (**3.37 %**) |
+| `E8_N44` | 131,371 (0.0058 %) | 1 / 2 / 6 | 21,013 | 0 (0.0000 %) | 68,077 (**3.11 %**) |
+
+The population is **isolated single pixels** — a median horizontal run of 1 — scattered over 21k–30k
+of each tile's 2.19 M blocks. They are rasterization-precision gaps inside the *dissolved* SeamMap
+polygons, not real coverage holes; nothing about them looks like missing ground. Dropping them would
+trade **3.1–4.4 % of every tile** to avoid a **1e-4** radiometric approximation — wrong by roughly
+three orders of magnitude, at a 400–530× amplification in cell-equivalents. This is the same
+scattered-vs-blob asymmetry R13 measured on the embedding side (shape matters ~6× at equal pixel
+count), biting in the same direction on the masking side.
+
+**Brian's ruling (2026-08-10): ratify the tile-wide fallback as-is.** A nearest-frame refinement was
+offered and declined — at this population size and scatter it buys a more faithful scale for a
+handful of isolated pixels in exchange for code, and the fallback is already a robust statistic over
+the enclosing tile.
+
+**The 50-px floor is a tripwire, not a tuning knob.** Across four real tiles and 214 dissolved
+frames, exactly **one** fell below `A1_MIN_FRAME_PX` — E-12_N36 1 of 81 (measured for R07), then
+E-8_N32 0 of 54, E4_N44 0 of 48, E8_N44 0 of 31. Its value therefore trades nothing off on real
+data; what it must keep doing is *route* a degenerate frame to the fallback rather than admit one,
+which is exactly what the R38 fix to `a1_stats`'s `or 1.0` restored (the fabricated IQR had been
+walking straight through this guard).
+
+**What R08 does not include any more.** The register's third clause — "the small-frame tail is where
+re-anchoring moves the A1 statistic most (>1 DN on 11 of 74 frames)" — was **dissolved by R07**,
+which moved the statistic off the baseline product's grid onto the native tile. There is no
+re-anchoring sensitivity left to worry about.
+
+**No rebuild consequence.** The code is unchanged, so no artifact drifts and `docs/PENDING_REBUILD.md`
+gains no row. The measurement scripts are `r08_price_the_contract.py` and `r38_clip_measure.py` in
+the session scratchpad; both are read-only and take ~2–3 min per tile (one tile ran long at 7,903 s
+under I/O contention — the work is I/O-bound, not compute-bound).
+
+**Verification.** Two new tests in `tests/test_a1_statistic.py` carrying the measured rationale in
+their docstrings: one asserts an unlabelled valid pixel stays valid *and* carries the fallback
+statistic specifically, the other pins the floor's role. Fast suite **768 passed**, 1 skipped.
+
+**With this, the audit register has no finding left that is not waiting on hardware.** R08 was the
+last one that could be closed by analysis. What remains: **R06** (A1 has never been generated —
+needs the rebuild), the **A1 resume guard** (small, R14-shaped, noted 2026-08-10b), and
+**R03/R83/R84** (leg 4's pixel-scale size floor). The rebuild itself is still gated on isolation
+criterion 5, the ≈110 GB backup.

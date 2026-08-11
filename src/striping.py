@@ -581,6 +581,16 @@ def a1_normalize_native(arr: np.ndarray, labels: np.ndarray, stats: dict,
     Leaving those at raw DN is R08: it puts two different radiometric scales into one array and
     hands the mixture to a frozen embedder that cannot tell them apart.
 
+    **R08's contract is RATIFIED (Brian, 2026-08-10): normalize them, never drop them.** The
+    open alternative was to mask the fallback population as nodata, which is exact but removes
+    real ground. Measured on three whole Murray tiles, it is the wrong trade by three orders of
+    magnitude: the population is *isolated single pixels* (horizontal run length median 1, p90 2)
+    at 0.0058–0.0108 % of valid pixels, but dropping them makes each one nodata and R13's
+    zero-tolerance context gate then sterilises every cell whose 96-px box touches one —
+    **3.11 % / 3.37 % / 4.38 % of the tile** against 0.00 / 0.00 / 0.072 % today. `A1_MIN_FRAME_PX`
+    is likewise a tripwire rather than a tuning knob: exactly **1 frame of 214** across four real
+    tiles fell below it. Both halves are pinned in `tests/test_a1_statistic.py`.
+
     **R38.** Output DN 0 now means *only* nodata — valid pixels floor at `A1_VALID_FLOOR`. How
     much the clip destroys is not counted here: `a1_stats_native_tile` derives it exactly, once
     per tile, from the DN histogram it already builds (`a1_clip_counts_from_hist`).

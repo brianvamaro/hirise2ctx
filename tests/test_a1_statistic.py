@@ -101,6 +101,55 @@ def test_missing_fallback_raises_rather_than_silently_returning_raw():
         a1_normalize_native(arr, labels, {0: (100.0, 10.0)}, fallback=None)
 
 
+def test_unlabelled_pixels_are_normalized_not_dropped_the_ratified_r08_contract():
+    """**R08's contract, RATIFIED 2026-08-10 (Brian) — and this test is the ratification.**
+
+    The open question was whether an unlabelled pixel should take the tile-wide fallback
+    statistic (an approximation) or be dropped as nodata (exact, but it removes real ground).
+    Measured on three whole cached Murray tiles, dropping is catastrophically the wrong trade:
+
+      * the population is **isolated single pixels** — horizontal run length median 1, p90 2,
+        max 15 — scattered over 21k-30k of a tile's 2.19 M blocks. They are rasterization
+        precision gaps inside the dissolved SeamMap polygons, not real coverage holes;
+      * they are 0.0058-0.0108 % of valid pixels;
+      * but dropping them makes each one nodata, and R13's zero-tolerance context gate then
+        masks every coarse cell whose 96-px box touches one. Cost: **3.11 %, 3.37 % and 4.38 %
+        of the tile** (E8_N44, E4_N44, E-8_N32) against 0.00 %, 0.00 % and 0.072 % today —
+        a 400-530x amplification in cell-equivalents.
+
+    So: **normalize them, never drop them.** Trading 3-4 % of the map to avoid a 1e-4
+    radiometric approximation is the wrong direction by three orders of magnitude. This test
+    fails if anyone later "tightens" the contract by masking the fallback population.
+    """
+    arr, labels = _two_frame_scene()
+    stats = {0: (100.0, 10.0), 1: (180.0, 10.0)}
+    out = a1_normalize_native(arr, labels, stats, fallback=(150.0, 20.0))
+
+    unlabelled = (labels < 0) & (arr > 0)
+    assert unlabelled.any(), "fixture must exercise the unlabelled case"
+    # the contract, in one line: an unlabelled VALID pixel stays valid
+    assert (out[unlabelled] > 0).all(), (
+        "unlabelled valid pixels were dropped to the nodata sentinel; R08 was ratified the "
+        "other way — see the measured 3-4 %-of-tile cost in this test's docstring")
+    # ... and it is genuinely the FALLBACK statistic they carry, not a frame's
+    from src.striping import a1_apply
+    assert np.array_equal(out[unlabelled], a1_apply(arr, 150.0, 20.0)[unlabelled])
+
+
+def test_the_small_frame_floor_is_a_tripwire_not_a_tuning_knob():
+    """R08's second half, answered by measurement rather than by choosing a number.
+
+    Across four real tiles / 214 dissolved SeamMap frames, **exactly one** frame fell below
+    `A1_MIN_FRAME_PX` (E-12_N36, 1 of 81; the other three tiles were 0 of 54, 0 of 48, 0 of 31).
+    The floor is therefore not a knob whose value trades anything off on real data — it is a
+    guard against a degenerate frame, and 50 px is comfortably below any real one. What it must
+    keep doing is *route* such a frame to the fallback rather than admit it.
+    """
+    assert A1_MIN_FRAME_PX == 50
+    tiny = np.full(A1_MIN_FRAME_PX - 1, 120, dtype=np.uint8)
+    assert all(np.isnan(v) for v in a1_stats(tiny)), "a sub-floor frame must not get a statistic"
+
+
 # ------------------------------------------------------------------ arm versioning
 
 def test_the_two_arm_literals_agree():
