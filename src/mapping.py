@@ -434,6 +434,70 @@ def own_tile_zero_fraction(window: np.ndarray, ti: np.ndarray, tj: np.ndarray, *
     return out
 
 
+# Thresholds the per-tile context-nodata fraction is histogrammed against, so a future
+# session can re-tune `max_context_zero_fraction` from the committed sidecars instead of
+# re-running a ~0.6 GPU-h/tile pass. Counts are "cells with ctx_frac > edge".
+CONTEXT_ZERO_HIST_EDGES = (0.0, 0.05, 0.1, 0.2, 0.3, 0.5)
+
+
+def context_zero_fraction(window: np.ndarray, ti: np.ndarray, tj: np.ndarray, *,
+                          tile_px: int, row0: int, col0: int) -> np.ndarray:
+    """Fraction of each tile's `3*tile_px` CONTEXT box that is CTX nodata (DN 0).
+
+    **R13.** `own_tile_zero_fraction` tests the centre `tile_px²` only — 1024 of 9216 px at
+    the frozen S=32, so **88.9 % of what the embedder actually sees is never checked**. The
+    box here is exactly the one `src.fm_embeddings.slice_context_boxes` slices, and the
+    validity rule is bit-identical to its `valid` (a box that spills the window returns 1.0,
+    which the caller's `valid` mask has already dropped anyway).
+
+    Measured impact of admitting a dirty context, real frozen ViT + real shipped head against
+    the shipped E4_N44 IQR of 0.152: one whole blackened 32-block in the ring moves p90 |ΔP|
+    by 0.45 (≈3× IQR), and 92 *scattered* black pixels by 0.70 (≈4.6×). Shape matters more
+    than count. Cost on the shipped map is 290 of 19,685,689 measured cells (1.5e-05).
+
+    **Lattice-block form, deliberately.** Every enumerated cell start is congruent to
+    `-row0 (mod tile_px)`, so the window crops to a whole number of cells and a
+    reshape-sum gives a small per-cell zero-count grid; the 3×3 context sum is then an
+    integral image over *that*. Benchmarked on the production 4096² / 15,876-cell geometry:
+    **0.016 s and +18 MB**, against 0.44 s / +419 MB for a full-resolution int64 integral
+    image (an earlier draft of this fix, which would have been 1.4× *slower* than the
+    own-tile loop it was claimed to subsume).
+    """
+    ti = np.asarray(ti, dtype=np.int64)
+    tj = np.asarray(tj, dtype=np.int64)
+    out = np.ones(ti.size, dtype=np.float32)
+    if ti.size == 0:
+        return out
+    H, W = window.shape
+    row0, col0, side = int(row0), int(col0), 3 * tile_px
+    # First cell boundary inside the window, and how many whole cells fit after it.
+    pr, pc = (-row0) % tile_px, (-col0) % tile_px
+    n_br, n_bc = (H - pr) // tile_px, (W - pc) // tile_px
+    if n_br < 3 or n_bc < 3:
+        return out                       # no cell in this window can carry a full context box
+    z = np.ascontiguousarray(
+        window[pr: pr + n_br * tile_px, pc: pc + n_bc * tile_px] == 0)
+    counts = z.reshape(n_br, tile_px, n_bc, tile_px).sum(axis=(1, 3), dtype=np.int64)
+    ii = np.zeros((n_br + 1, n_bc + 1), dtype=np.int64)
+    ii[1:, 1:] = counts.cumsum(axis=0).cumsum(axis=1)
+    br = (ti * tile_px - row0 - pr) // tile_px
+    bc = (tj * tile_px - col0 - pc) // tile_px
+    ok = (br >= 1) & (bc >= 1) & (br + 2 <= n_br) & (bc + 2 <= n_bc)
+    r, c = br[ok] - 1, bc[ok] - 1
+    out[ok] = ((ii[r + 3, c + 3] - ii[r, c + 3] - ii[r + 3, c] + ii[r, c])
+               / float(side * side))
+    return out
+
+
+def context_zero_histogram(ctx_frac: np.ndarray, valid: np.ndarray,
+                           edges=CONTEXT_ZERO_HIST_EDGES) -> np.ndarray:
+    """Counts of `ctx_frac > edge` among `valid` cells, one per `CONTEXT_ZERO_HIST_EDGES`."""
+    ctx_frac = np.asarray(ctx_frac)
+    valid = np.asarray(valid, dtype=bool)
+    return np.array([int((valid & (ctx_frac > float(e))).sum()) for e in edges],
+                    dtype=np.int64)
+
+
 # ============================================================================
 # (ti, tj) -> raster placement + the 32x-coarsened affine
 # ============================================================================
@@ -671,11 +735,27 @@ class WindowPrediction:
     prob_raw: np.ndarray | None = None          # uncalibrated P(rich), kept for QA
     abundance: np.ndarray | None = None         # per-tile fractional_area (one-model)
     abundance_raster: np.ndarray | None = None  # (n_ti, n_tj) abundance, NaN nodata
+    # --- R13: the context gate. Separate from the own-tile counter ON PURPOSE ---
+    # Folding both drops into `n_masked_nodata` would leave the sidecar under-reporting
+    # exactly as it does today, which is the half of the finding the register calls "Record".
+    n_masked_context_nodata: int = 0
+    # The thresholds that produced the two counters, so a product can be read without
+    # guessing which gate made it. `None` = a caller that predates the field.
+    max_zero_fraction: float | None = None
+    max_context_zero_fraction: float | None = None
+    # (n, 2) GLOBAL cell indices of what each gate dropped. Stored rather than counted
+    # because read windows can share a cell at phase 0 (one per axis seam), so summing
+    # per-window counters over a tile is not exact; a de-duplicated cell SET is.
+    masked_own_cells: np.ndarray | None = None
+    masked_context_cells: np.ndarray | None = None
+    # counts of ctx_frac > CONTEXT_ZERO_HIST_EDGES among `valid` cells
+    context_zero_hist: np.ndarray | None = None
 
 
 def predict_window(window: CtxWindow, embedder, head, *, tile_px: int = 32,
                    pool: str = "gem", batch: int = 96,
-                   max_zero_fraction: float = 0.5, calibrator=None,
+                   max_zero_fraction: float = 0.3,
+                   max_context_zero_fraction: float = 0.0, calibrator=None,
                    apply_isotonic: bool = True,
                    global_grid: tuple[int, int, int, int] | None = None) -> WindowPrediction:
     """Embed -> predict -> (optionally calibrate) -> rasterize one CTX window.
@@ -684,6 +764,27 @@ def predict_window(window: CtxWindow, embedder, head, *, tile_px: int = 32,
     `predict(emb)->prob` (`DeployableHead`). Tiles whose context box spills the
     window edge (embed returns NaN) or whose own-tile CTX is >`max_zero_fraction`
     nodata are masked (prob NaN). Returns the dense raster + its affine.
+
+    **R13 — `max_context_zero_fraction`, and the own-tile default moved to 0.3.** The
+    own-tile gate tests 1024 of the 9216 pixels the embedder consumes; a tile whose own
+    32² is spotless can sit against a mosaic gap and still be embedded almost entirely
+    black. `max_context_zero_fraction` gates the full `3*tile_px` box.
+
+    The default is **0.0** — compared with `<=`, so "not one nodata pixel in the context".
+    Two measured legs, and only two: (i) the frozen head's training set contains **0**
+    nodata pixels in 161,005 context boxes, so 0.0 is the only value that reproduces the
+    distribution it was fitted on; (ii) on the shipped 26-tile map it costs 290 of
+    19,685,689 measured cells (1.5e-05; hard ceiling 1,167 map-wide), so false rejection is
+    free. It is *conservative rather than forced*: at exactly one nodata pixel there is no
+    measurable sentinel-specific signal — DN 0 and the perfectly legal DN 1 move the
+    prediction identically to three decimals, because the damage is caused by blackness,
+    not by the sentinel. That also means **this gate cannot see a radiometrically blackened
+    pixel whose value is not 0** (see R38 on A1's `[0,255]` clip), and a driver that
+    normalises DN before inference must not assume it can.
+
+    `max_zero_fraction`'s signature default was **0.5** while every production driver passed
+    0.3; `scripts/parity_check.py` took the signature default, so the one cross-machine gate
+    exercised a threshold nothing shipped with. It is now 0.3.
 
     `calibrator` is an optional Stage-1 `src.calibration.CalibrationLayer`. When given,
     an **abundance** raster `calibrate_abundance(raw P(rich))` (the one-model
@@ -722,7 +823,14 @@ def predict_window(window: CtxWindow, embedder, head, *, tile_px: int = 32,
                                        col0=col0, pool=pool, batch=batch)
 
     zero_frac = own_tile_zero_fraction(arr, ti, tj, tile_px=tile_px, row0=row0, col0=col0)
-    usable = valid & (zero_frac <= max_zero_fraction)
+    ctx_frac = context_zero_fraction(arr, ti, tj, tile_px=tile_px, row0=row0, col0=col0)
+    own_ok = zero_frac <= max_zero_fraction
+    ctx_ok = ctx_frac <= max_context_zero_fraction
+    usable = valid & own_ok & ctx_ok
+    # R13: attribute each drop to the gate that made it, and keep the histogram of what the
+    # context gate saw. Computed here because `predict_window` is the only place that has
+    # both fractions; thrown away here is how the shipped sidecars ended up with neither.
+    ctx_hist = context_zero_histogram(ctx_frac, valid)
 
     # R01: only NOW convert to global cell indices. Everything above indexes the window as
     # `ti*tile_px - row0` with a LOCAL row0, so promoting ti early (to ~-16,300 against a
@@ -763,10 +871,21 @@ def predict_window(window: CtxWindow, embedder, head, *, tile_px: int = 32,
         # so the window offset isn't double-counted (it already lives in window.transform).
         tile_transform = tile_origin_transform(window.transform, row0, col0)
         transform = coarsened_transform(tile_transform, ti_min, tj_min, tile_px)
+    dropped_own = valid & ~own_ok
+    dropped_ctx = valid & own_ok & ~ctx_ok
     return WindowPrediction(
         ti=ti, tj=tj, prob=prob, raster=raster, ti_min=ti_min, tj_min=tj_min,
         transform=transform, crs_wkt=window.crs_wkt,
-        n_valid=int(valid.sum()), n_masked_nodata=int((valid & ~usable).sum()),
+        n_valid=int(valid.sum()),
+        # R13: `(valid & ~usable)` would now absorb the context drops into the own-tile
+        # counter, so the sidecar would keep under-reporting exactly as it does today.
+        n_masked_nodata=int(dropped_own.sum()),
+        n_masked_context_nodata=int(dropped_ctx.sum()),
+        max_zero_fraction=float(max_zero_fraction),
+        max_context_zero_fraction=float(max_context_zero_fraction),
+        masked_own_cells=np.stack([ti[dropped_own], tj[dropped_own]], axis=1),
+        masked_context_cells=np.stack([ti[dropped_ctx], tj[dropped_ctx]], axis=1),
+        context_zero_hist=ctx_hist,
         calibrated=calibrator is not None, prob_raw=prob_raw,
         abundance=abundance, abundance_raster=abundance_raster,
     )

@@ -15,6 +15,21 @@ Workflow:
 The window is fixed by (--tile, --row, --col, --win); the reference npz records them so
 the compare run cannot accidentally use a different window. Default is a small interior
 window of E4_N44 (data-bearing, ~196 tiles, seconds to embed).
+
+**Scope limit, measured and stated rather than implied (R13).** E4_N44 contains **0 nodata
+pixels over the entire 47,420² tile**, so the default reference exercises neither the
+own-tile nor the context nodata gate: a regression in either is invisible to this check.
+The masking thresholds are now passed explicitly at the production values (0.3 / 0.0) and
+recorded in the reference, so at least a *threshold* change is caught. To also cover the
+gates, emit a second reference on a tile with a real mosaic gap — E-8_N32 is the one tile in
+the shipped 26 with a substantial one (1,280 masked cells) — into its own file, and keep the
+clean E4_N44 one as the pure-numerics reference:
+
+    python scripts/parity_check.py --emit-reference --tile E-8_N32 --row R --col C \\
+        --reference models/deployable/parity_ref_gap.npz
+
+Do not move the gap into the *only* reference window: a future threshold change would then
+break parity ambiguously (numerics drift vs gate change) with nothing to separate the two.
 """
 from __future__ import annotations
 
@@ -51,10 +66,23 @@ def resolve_model_dir(arg: str | None, model_parent: str | Path | None = None) -
 
 
 def run_window(tile: str, row: int, col: int, win: int, model_dir: Path,
-               calibration: str, batch: int):
-    """Embed+predict+calibrate the fixed window; return (ti, tj, prob, prob_raw, abundance)."""
-    side = json.loads((CTX_TILES / f"{tile}.json").read_text(encoding="utf-8"))
-    zip_path = CTX_TILES / f"{tile}.zip"
+               calibration: str, batch: int, ctx_tiles: str | Path | None = None,
+               max_zero_fraction: float = 0.3,
+               max_context_zero_fraction: float = 0.0):
+    """Embed+predict+calibrate the fixed window; return (ti, tj, prob, prob_raw, abundance).
+
+    `ctx_tiles` is a parameter because `--ctx-tiles` was already being *passed* here as an
+    eighth positional argument to a seven-parameter function — this driver raised `TypeError`
+    on every invocation, emit and check alike, and the flag was silently ignored besides.
+
+    The two masking thresholds are explicit (R13). They used to be taken from the
+    `predict_window` signature defaults, which were 0.5 / absent while every production
+    driver passed 0.3, so the one gate meant to prove the GPU box reproduces the laptop was
+    reproducing a configuration nothing ever shipped.
+    """
+    ctx_tiles = Path(ctx_tiles) if ctx_tiles is not None else CTX_TILES
+    side = json.loads((ctx_tiles / f"{tile}.json").read_text(encoding="utf-8"))
+    zip_path = ctx_tiles / f"{tile}.zip"
     if not zip_path.exists():
         raise SystemExit(f"tile zip missing: {zip_path} (re-fetch via ctx_retrieve)")
 
@@ -68,6 +96,8 @@ def run_window(tile: str, row: int, col: int, win: int, model_dir: Path,
     calibrator = CalibrationLayer.load(calibration)
     dev = getattr(getattr(embedder, "device", None), "type", "?")
     pred = predict_window(window, embedder, head, tile_px=TILE_PX, batch=batch,
+                          max_zero_fraction=max_zero_fraction,
+                          max_context_zero_fraction=max_context_zero_fraction,
                           calibrator=calibrator, apply_isotonic=True)
     keep = np.isfinite(pred.prob)
     return {
@@ -76,6 +106,12 @@ def run_window(tile: str, row: int, col: int, win: int, model_dir: Path,
         "prob": pred.prob[keep].astype(np.float64),
         "prob_raw": pred.prob_raw[keep].astype(np.float64),
         "abundance": pred.abundance[keep].astype(np.float64),
+        # R13: the gate configuration and what it dropped, so a reference emitted under one
+        # masking policy cannot be compared against a run under another without noticing.
+        "max_zero_fraction": np.float64(max_zero_fraction),
+        "max_context_zero_fraction": np.float64(max_context_zero_fraction),
+        "n_masked_nodata": np.int64(pred.n_masked_nodata),
+        "n_masked_context_nodata": np.int64(pred.n_masked_context_nodata),
     }
 
 
@@ -95,6 +131,10 @@ def main() -> int:
     ap.add_argument("--model-parent", default=str(DEFAULT_MODEL_PARENT))
     ap.add_argument("--calibration", default=str(DEFAULT_CALIBRATION))
     ap.add_argument("--batch", type=int, default=96)
+    ap.add_argument("--max-zero-fraction", type=float, default=0.3,
+                    help="own-tile nodata gate; matches every production driver")
+    ap.add_argument("--max-context-zero-fraction", type=float, default=0.0,
+                    help="R13 context nodata gate; matches scripts/map_region.py")
     ap.add_argument("--rtol", type=float, default=1e-3)
     ap.add_argument("--atol", type=float, default=2e-3,
                     help="tolerance; fp16 GPU vs fp32 CPU differs at ~1e-3 on probabilities")
@@ -104,12 +144,16 @@ def main() -> int:
 
     if args.emit_reference:
         res = run_window(args.tile, args.row, args.col, args.win, model_dir,
-                         args.calibration, args.batch, args.ctx_tiles)
+                         args.calibration, args.batch, args.ctx_tiles,
+                         args.max_zero_fraction, args.max_context_zero_fraction)
         Path(args.reference).parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(args.reference, **{k: v for k, v in res.items()
                                                if k not in ("device",)})
         print(f"[emit] reference window {res['tile']} ({res['row']},{res['col']}) "
               f"win={res['win']} device={res['device']} tiles={res['ti'].size}")
+        if not (res["n_masked_nodata"] or res["n_masked_context_nodata"]):
+            print("[emit] ⚠ this window masks 0 tiles, so it does NOT exercise either nodata "
+                  "gate — see the module docstring for emitting a gap-bearing second reference")
         print(f"[emit] wrote {args.reference}")
         return 0
 
@@ -118,10 +162,23 @@ def main() -> int:
         raise SystemExit(f"reference missing: {ref_path}  (run --emit-reference on the laptop "
                          "and upload it with the head)")
     ref = np.load(ref_path)
+    # R13: reproduce the reference's OWN gate configuration when it records one. Re-running a
+    # reference under different thresholds is a policy change, not machine drift, and it must
+    # not be reported as either a pass or a numerical failure.
+    mzf = float(ref["max_zero_fraction"]) if "max_zero_fraction" in ref else args.max_zero_fraction
+    mczf = (float(ref["max_context_zero_fraction"])
+            if "max_context_zero_fraction" in ref else args.max_context_zero_fraction)
     res = run_window(str(ref["tile"]), int(ref["row"]), int(ref["col"]), int(ref["win"]),
-                     model_dir, args.calibration, args.batch, args.ctx_tiles)
+                     model_dir, args.calibration, args.batch, args.ctx_tiles, mzf, mczf)
     print(f"[check] window {res['tile']} ({res['row']},{res['col']}) win={res['win']} "
           f"device={res['device']}  ref tiles={ref['ti'].size}  this tiles={res['ti'].size}")
+    if "max_context_zero_fraction" not in ref:
+        print("[check] ⚠ reference predates the R13 gate record; falling back to this run's "
+              f"--max-zero-fraction {mzf} / --max-context-zero-fraction {mczf}. Re-emit it to "
+              "pin the masking policy.")
+    if (mzf, mczf) != (args.max_zero_fraction, args.max_context_zero_fraction):
+        print(f"[check] using the reference's thresholds ({mzf}, {mczf}), not this run's "
+              f"({args.max_zero_fraction}, {args.max_context_zero_fraction})")
 
     if not (np.array_equal(ref["ti"], res["ti"]) and np.array_equal(ref["tj"], res["tj"])):
         print("[FAIL] tile grid (ti,tj) differs -> geometry/masking drift")

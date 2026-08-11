@@ -86,7 +86,8 @@ def main():
         t0 = time.monotonic()
         embedder = FangEmbedder.load()
         head = DeployableHead.load(model_dir)
-        pred = predict_window(window, embedder, head, tile_px=TILE_PX, max_zero_fraction=0.3)
+        pred = predict_window(window, embedder, head, tile_px=TILE_PX, max_zero_fraction=0.3,
+                              max_context_zero_fraction=0.0)   # R13: production thresholds
         finite = np.isfinite(pred.prob)
         pp = pred.prob[finite]
         print(f"embed+predict {time.monotonic()-t0:.0f}s  tiles={pred.ti.size}  "

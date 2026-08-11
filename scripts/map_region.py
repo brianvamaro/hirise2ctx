@@ -21,6 +21,15 @@ context box spills the window edge; the overlap lets a neighbouring window suppl
 with full context. The outermost one-tile ring of each Murray tile has no context and is
 legitimately left nodata (a ~160 m seam).
 
+**R13 — both the own tile and its context are gated, and both thresholds are recorded.**
+`--max-zero-fraction` only ever tested the central 32² px, 1024 of the 9216 the embedder
+consumes, so a spotless tile sitting against a mosaic gap was embedded almost entirely black
+and predicted anyway. `--max-context-zero-fraction` (default 0.0 = not one nodata pixel in
+the 96² box) closes that, and both thresholds now land in the sweep manifest, the per-tile
+sidecar's `nodata_gate` block and the run record — with de-duplicated per-gate masked-cell
+counts and a context-zero-fraction histogram, so the choice can be audited and re-tuned
+without a GPU pass.
+
 **R01 — the coarse grid is global, not per-tile.** A Murray tile is 47,420 native px wide and
 `gcd(47420, 32) = 4`, so anchoring the 32-px coarse lattice to each tile's own pixel origin
 put every tile on its own sub-cell phase (8 distinct x-phases over the 26-tile footprint,
@@ -61,9 +70,10 @@ import src.modeling  # noqa: F401  -- OpenMP/DLL bootstrap; must precede numpy
 
 import numpy as np
 
-from src.mapping import (COARSE_GRID_ID, artifact_digest, assert_shared_lattice, file_sha256,
-                         predict_window, read_tile_window, tile_global_grid, uncovered_cells,
-                         verify_geotiff, window_offsets, write_geotiff)
+from src.mapping import (CONTEXT_ZERO_HIST_EDGES, COARSE_GRID_ID, artifact_digest,
+                         assert_shared_lattice, file_sha256, predict_window, read_tile_window,
+                         tile_global_grid, uncovered_cells, verify_geotiff, window_offsets,
+                         write_geotiff)
 
 CTX_TILES = REPO_ROOT / "cache_v2" / "ctx_tiles"
 DEFAULT_MODEL_PARENT = REPO_ROOT / "models" / "deployable"
@@ -333,6 +343,11 @@ def sweep_manifest(grid_geom, row_offs, col_offs, args, *, extent, head_digest,
         "n_windows": len(row_offs) * len(col_offs),
         "row_offsets": [int(o) for o in row_offs], "col_offsets": [int(o) for o in col_offs],
         "max_zero_fraction": float(args.max_zero_fraction),
+        # R13/R14 coupling, and it is load-bearing: `max_zero_fraction` is already a
+        # resume-match field, so if the context threshold did NOT join it a post-R13 resume
+        # would silently reuse pre-R13 partials computed under no context gate at all and
+        # assemble the mixture without a word.
+        "max_context_zero_fraction": float(args.max_context_zero_fraction),
         "isotonic": (not args.no_isotonic),
         "calibrated": calibration_digest is not None,
         "head_digest": head_digest, "calibration_digest": calibration_digest,
@@ -395,6 +410,72 @@ def as_int32_cells(v: np.ndarray, name: str, tile: str) -> np.ndarray:
         raise SystemExit(f"[{tile}] global {name} out of int32 range "
                          f"[{int(v.min())}, {int(v.max())}]")
     return v.astype(np.int32)
+
+
+def gate_cols(pred, tile: str) -> dict:
+    """**R13.** The per-window nodata-gate record that goes into a partial.
+
+    Masked cells are stored as `(n, 2)` int32 CELL PAIRS, not as scalar counters. A partial
+    holds only the cells it *kept*, so the counters would otherwise be computed and thrown
+    away — which is how the shipped sidecars ended up carrying neither a count nor a
+    threshold. Pairs rather than counts because read windows overlap in pixels and, at grid
+    phase 0, consecutive windows share exactly one cell per axis seam; summing per-window
+    counters over a tile would double-count those, while a de-duplicated set is exact. That
+    exactness is what makes "the context gate dropped N cells on this tile" checkable from
+    the committed sidecar rather than only from a re-run.
+    """
+    def pairs(a, name):
+        if a is None or a.size == 0:
+            return np.zeros((0, 2), dtype=np.int32)
+        return as_int32_cells(np.asarray(a).reshape(-1), name, tile).reshape(-1, 2)
+
+    hist = pred.context_zero_hist
+    return {
+        "_masked_own": pairs(pred.masked_own_cells, "masked_own"),
+        "_masked_ctx": pairs(pred.masked_context_cells, "masked_ctx"),
+        "_ctx_hist": (np.asarray(hist, dtype=np.int64) if hist is not None
+                      else np.zeros(len(CONTEXT_ZERO_HIST_EDGES), dtype=np.int64)),
+    }
+
+
+def gate_summary(loaded, *, max_zero_fraction, max_context_zero_fraction) -> dict:
+    """**R13.** Tile-level nodata-gate record for the sidecar, from the per-window partials.
+
+    The two counts are de-duplicated cell sets, so they are exact. The histogram is a plain
+    per-window SUM and is labelled as one — a cell shared by two windows is counted twice in
+    it. That is fine for its purpose (re-tuning the threshold from sidecars without a GPU
+    pass) and it is stated rather than left to be discovered.
+
+    Partials written before this field existed yield `None` counts plus a note, instead of a
+    zero that would read as "nothing was masked". Resuming onto them is already refused by
+    the sweep manifest (`max_context_zero_fraction` is a resume-match field); this is the
+    belt to that pair of braces, for a partial directory with no `_sweep.json`.
+    """
+    rec = {"max_zero_fraction": float(max_zero_fraction),
+           "max_context_zero_fraction": float(max_context_zero_fraction)}
+    stale = [z for z in loaded if "_masked_ctx" not in z or "_ctx_hist" not in z]
+    if stale:
+        return {**rec, "n_masked_nodata": None, "n_masked_context_nodata": None,
+                "context_zero_hist": None,
+                "gate_counts_note": f"{len(stale)} of {len(loaded)} partials predate the R13 "
+                                    f"gate record, so the masked-cell counts are unknown; "
+                                    f"re-run with --force to recompute them"}
+
+    def n_unique(key):
+        a = np.concatenate([z[key] for z in loaded]) if loaded else np.zeros((0, 2), np.int64)
+        if a.size == 0:
+            return 0
+        a = a.astype(np.int64)
+        return int(np.unique(a[:, 0] * (2 ** 21) + a[:, 1]).size)
+
+    hist = np.sum([np.asarray(z["_ctx_hist"], dtype=np.int64) for z in loaded],
+                  axis=0) if loaded else np.zeros(len(CONTEXT_ZERO_HIST_EDGES), np.int64)
+    return {**rec,
+            "n_masked_nodata": n_unique("_masked_own"),
+            "n_masked_context_nodata": n_unique("_masked_ctx"),
+            "context_zero_hist_edges": [float(e) for e in CONTEXT_ZERO_HIST_EDGES],
+            "context_zero_hist": [int(v) for v in np.atleast_1d(hist)],
+            "context_zero_hist_is_window_sum": True}
 
 
 def map_one_tile(murray_tile: str, embedder, head, calibrator, *, args) -> dict:
@@ -517,6 +598,7 @@ def map_one_tile(murray_tile: str, embedder, head, calibrator, *, args) -> dict:
         window = read_tile_window(zip_path, inner_tif, row_off, col_off, win)
         pred = predict_window(window, embedder, head, tile_px=TILE_PX,
                               batch=args.batch, max_zero_fraction=args.max_zero_fraction,
+                              max_context_zero_fraction=args.max_context_zero_fraction,
                               calibrator=calibrator, apply_isotonic=not args.no_isotonic,
                               global_grid=grid_geom.as_tuple)
         keep = np.isfinite(pred.prob)
@@ -529,6 +611,7 @@ def map_one_tile(murray_tile: str, embedder, head, calibrator, *, args) -> dict:
             "tj": as_int32_cells(pred.tj[keep], "tj", murray_tile),
             "prob": pred.prob[keep].astype(np.float32),
             "grid_id": np.array(COARSE_GRID_ID),
+            **gate_cols(pred, murray_tile),
         }
         if calibrator is not None:
             cols["prob_raw"] = pred.prob_raw[keep].astype(np.float32)
@@ -668,6 +751,12 @@ def write_tile_geotiffs(murray_tile, partials, grid_geom, crs_wkt, calibrator, a
         "run": sweep_prov,
         "n_unique_cells": n_unique,
         "overlap_disagreements": n_dis,
+        # R13: the "Record" half. Until now a tile sidecar carried neither the masking
+        # thresholds nor how many cells they dropped, so a shipped raster could not be told
+        # apart from one rendered with the gate off.
+        "nodata_gate": gate_summary(
+            loaded, max_zero_fraction=args.max_zero_fraction,
+            max_context_zero_fraction=args.max_context_zero_fraction),
         # R01: ti_min/tj_min are GLOBAL cell indices, not tile-local. Two products are
         # provably co-registered iff grid_id and grid_cell_m match and their (ti_min, tj_min)
         # differ by integers -- which is checkable, unlike the old bare tile-local pair.
@@ -689,7 +778,13 @@ def write_tile_geotiffs(murray_tile, partials, grid_geom, crs_wkt, calibrator, a
     })
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """The CLI, separated from `main` so the shipped DEFAULTS are assertable in a test.
+
+    R13's masking thresholds are product semantics, not ergonomics: loosening one silently
+    changes what the map claims to have measured. A test can now pin them without executing
+    the driver.
+    """
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     g = ap.add_mutually_exclusive_group(required=True)
@@ -707,6 +802,13 @@ def main() -> int:
                          "--batch (fp16 GEMM kernels can vary slightly by batch).")
     ap.add_argument("--max-zero-fraction", type=float, default=0.3,
                     help="mask a tile whose own CTX is more than this share mosaic nodata")
+    ap.add_argument("--max-context-zero-fraction", type=float, default=0.0,
+                    help="R13: mask a tile whose 3x32-px CONTEXT box is more than this share "
+                         "mosaic nodata. Default 0.0 = not one nodata pixel, which is what the "
+                         "frozen head was trained on (0 nodata px in 161,005 training context "
+                         "boxes) and costs 1.5e-05 of cells on the shipped map. Loosening it is "
+                         "a deliberate, recorded choice: the value lands in the sweep manifest "
+                         "and the tile sidecar.")
     ap.add_argument("--model", default=None, help="deployable head dir (default: latest)")
     # Isolation criterion 4: every artifact root the driver reads or searches is a flag, so
     # a scratch rebuild never has to touch the live tree.
@@ -733,7 +835,11 @@ def main() -> int:
                     help="fully re-decode every existing raster on resume, not just size+sha256")
     ap.add_argument("--clean-partials", action="store_true",
                     help="delete per-window .npz after a tile's GeoTIFFs are written")
-    args = ap.parse_args()
+    return ap
+
+
+def main() -> int:
+    args = build_parser().parse_args()
 
     tiles = BLOCK_TILES if args.all else (EXPANSION_TILES if args.expansion else args.tiles)
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)
@@ -797,6 +903,11 @@ def main() -> int:
             artifact_digest(args.calibration) if calibrator is not None else None),
         "ctx_tiles": str(args.ctx_tiles), "recipe_hash": card.get("recipe_hash"),
         "win_px": args.win_px, "calibrated": calibrator is not None, "raw": args.raw,
+        # R13: the thresholds are per-run, so they belong on the run record as well as on
+        # each tile — a manifest that says which tiles a run touched but not how it masked
+        # them cannot answer "were these two tiles gated the same way?".
+        "max_zero_fraction": float(args.max_zero_fraction),
+        "max_context_zero_fraction": float(args.max_context_zero_fraction),
         "tiles": tiles, "elapsed_s": round(time.monotonic() - t0, 1),
     })
     write_json_atomic(manifest, {

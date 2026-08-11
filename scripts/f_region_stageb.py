@@ -146,6 +146,14 @@ def process_frame(cube, transform, H, W, subsolar_lat, dlam_deg, med, embedder, 
         # Skip mostly-nodata tiles BEFORE embedding (frames are thin swaths in a big canvas ~57%
         # nodata; embedding all of them then masking after was the bottleneck). The zero-fraction
         # count is cheap numpy. DECISIONS 2026-07-27.
+        #
+        # **R13, KNOWN AND DELIBERATELY NOT FIXED HERE.** This is the own-tile-only gate — it
+        # tests 1024 of the 9216 px the embedder consumes — on the canvas where a mostly-nodata
+        # *context* is not rare but common (see the ~57 % above). `src.mapping.context_zero_
+        # fraction` is the drop-in, and `predict_window(max_context_zero_fraction=...)` is the
+        # wired version. It is not applied because the F programme is CLOSED (hard abort
+        # 2026-07-30, PLAN_FBuild) and re-gating it would mean re-running a 907-frame build
+        # whose product was already rejected. Anyone reopening F must apply it first.
         zf = own_tile_zero_fraction(u8, ti, tj, tile_px=TILE_PX, row0=row_off, col0=col_off)
         keep = zf <= args.max_zero_fraction
         if not keep.any():

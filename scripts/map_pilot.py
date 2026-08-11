@@ -102,6 +102,10 @@ def main() -> int:
     ap.add_argument("--out-fig", default=str(OUT_FIG))
     ap.add_argument("--max-zero-fraction", type=float, default=0.3,
                     help="reject a candidate window if more than this share of pixels are mosaic nodata")
+    ap.add_argument("--max-context-zero-fraction", type=float, default=0.0,
+                    help="R13: mask a tile whose 3x32-px context box is more than this share "
+                         "mosaic nodata (default 0.0 = not one nodata pixel, matching the "
+                         "frozen head's training distribution)")
     ap.add_argument("--raw", action="store_true",
                     help="render RAW (skip the Stage-1 CalibrationLayer); default is calibrated")
     ap.add_argument("--no-isotonic", action="store_true",
@@ -172,10 +176,12 @@ def main() -> int:
     head = DeployableHead.load(model_dir)
     pred = predict_window(window, embedder, head, tile_px=TILE_PX,
                           max_zero_fraction=args.max_zero_fraction,
+                          max_context_zero_fraction=args.max_context_zero_fraction,
                           calibrator=calibrator, apply_isotonic=not args.no_isotonic)
     finite = np.isfinite(pred.prob)
     print(f"  embed+predict {time.monotonic() - t0:.0f}s  tiles={pred.ti.size}  "
           f"valid={pred.n_valid}  nodata_masked={pred.n_masked_nodata}  "
+          f"context_nodata_masked={pred.n_masked_context_nodata}  "
           f"predicted={int(finite.sum())}", flush=True)
     if finite.any():
         p = pred.prob[finite]

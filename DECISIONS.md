@@ -7566,3 +7566,136 @@ banked A1 numbers stand as measured under the old, mismatched definition: the η
 not comparable with each other. `docs/PENDING_REBUILD.md` carries the row. R08 remains open and is
 narrowed by this work: the fallback population is measurably tiny (0.0081 % of valid pixels on
 E-12_N36) but its *contract* is now explicit rather than accidental.
+
+## 2026-08-10b — R13: the context-window nodata gate, and the half of it that was "Record"
+
+**The defect, restated as geometry.** `src/fm_embeddings.py` pins `context_px = 3 * tile_px`, so at
+the frozen S=32 the embedder consumes a 96² box while `own_tile_zero_fraction` tested only its
+central 32² — **1,024 of 9,216 pixels, so 88.9 % of what the ViT sees was never checked**. After the
+96→224 bicubic resize the own tile spans a 74.67-px centre square, so of the 196 patch tokens GeM
+pools, only **16 (8.2 %) are purely own-tile** and at most 36 (18.4 %) touch it. A tile whose own 32²
+is spotless could therefore be embedded almost entirely black and predicted anyway. Reproduced
+through the real `predict_window`: own zero-fraction **0.00**, context zero-fraction **0.8889**, a
+**finite** probability 0.0845 emitted, and `n_masked_nodata` reporting nothing wrong.
+
+**Rarity is not the defence; per-cell magnitude is the finding.** Real frozen ViT + the real shipped
+head, 384 clean 96-px boxes, against E4_N44's shipped P(rich) IQR of 0.1524: one blackened 32-block
+in the ring gives p90 |ΔP| **0.453 ≈ 3.0× IQR**; 92 *scattered* black pixels (ctx 0.00998) give
+**0.704 ≈ 4.6× IQR**. Shape matters ~6× at equal pixel count. An island (own clean, ctx 0.889) moves
+median P 0.211 → 0.069.
+
+**Threshold = 0.0, on two legs and not three (Brian's call, 2026-08-10).** Compared with `<=`, so it
+means "not one nodata pixel in the context box". (i) The frozen head's training set contains **0
+nodata pixels in 161,005 context boxes** — 0.0 is the only value reproducing the distribution it was
+fitted on, and Stage 4 never tested CTX nodata at all (`coverage_equals_one` is a *HiRISE* coverage
+rule), so deploy-time context nodata is strictly OOD with no analogue on either side. (ii) It costs
+**290 of 19,685,689** measured cells (1.5e-05; hard ceiling 1,167 map-wide over 56,870,060 cells).
+The fix plan's third leg — "scattered zeros are the binding regime, so no fraction threshold is
+robust" — is **withdrawn**: the verifier established with the real ViT that DN 0 and the perfectly
+legal DN 1 (the Murray bottom-clip floor; min valid DN is 1 in all nine cached tiles) move the
+prediction **identically to three decimals** in every regime tested. The damage is caused by
+*blackness*, not by the sentinel, so a nodata gate cannot see A1's clip speckle at all and must not
+be credited for it. **Honest caveat retained:** at exactly one nodata pixel there is no measurable
+sentinel-specific signal, so 0.0 is conservative rather than forced by the data.
+
+**What landed.** `src.mapping.context_zero_fraction` — the same box `slice_context_boxes` slices,
+validity rule bit-identical, verified against it exactly on non-tile-aligned origins. It uses a
+**lattice-block** form (crop to the cell lattice, reshape-sum to a per-cell count grid, integral
+image over *that*), because the obvious full-resolution int64 integral image was benchmarked at
+**0.44 s / +419 MB** per production window against **0.016 s / +18 MB** — the fix plan's claim that
+folding it in would be *cheaper* than the own-tile loop it subsumes was backwards, so that loop is
+left alone. `predict_window` gained `max_context_zero_fraction` (default **0.0**) and **two**
+counters: conflating them into `(valid & ~usable)` was the trap that would have left the sidecar
+under-reporting exactly as before while looking fixed.
+
+**`max_zero_fraction`'s signature default was 0.5 while every production driver passed 0.3.** It is
+now 0.3. The one caller taking the signature default was `scripts/parity_check.py` — the
+cross-machine gate, reproducing a configuration nothing ever shipped. That script also **could not
+run at all**: `run_window` declared seven parameters and both call sites passed eight positional
+arguments, so it raised `TypeError` on every invocation, and `--ctx-tiles` was silently ignored
+besides. Fixed, with both thresholds explicit and recorded in the reference npz. Its E4_N44 window
+has **0 nodata over the entire 47,420² tile**, so it exercises neither gate; that is now stated in
+the docstring together with the command to emit a *second*, gap-bearing reference. Deliberately
+**added, not moved**: putting the gap into the only reference makes every future threshold change
+break parity ambiguously (numerics drift vs gate change).
+
+**Recording — the half the register asked for and nothing met.** The shipped
+`reports/map_region/E4_N44.json` carries no threshold and no mask counts, so a raster rendered with
+the gate off is indistinguishable from one rendered with it on. Tile sidecars now carry a
+`nodata_gate` block: both thresholds, both counts, and a context-zero-fraction histogram at
+`CONTEXT_ZERO_HIST_EDGES` so the threshold can be re-tuned from committed sidecars without a GPU
+pass. The two counts are **de-duplicated cell sets**, not summed counters: masked cells never enter a
+partial, and at grid phase 0 consecutive read windows share one cell per axis seam, so a sum would
+double-count and the re-validation criterion ("the gate drops exactly N cells") would not be
+checkable from the product at all. The histogram *is* a per-window sum, and says so in the key
+`context_zero_hist_is_window_sum: true` rather than leaving it to be discovered.
+
+**R13 × R14, and it is load-bearing.** `max_zero_fraction` was already a resume-match field. If the
+context threshold had not joined it in the sweep manifest, a post-R13 resume would have silently
+reused pre-R13 partials computed under no context gate and assembled the mixture without a word.
+Partials predating the gate record now yield `null` counts plus a note, never a `0` that would read
+as "nothing was masked".
+
+**R13 × R38 — ordering, and the remedy is constrained.** `scripts/striping_a1_map.py` gets the flag
+but defaults it to **1.0 (disabled)**, pinned by a test. `src/striping.py` clips A1 output to
+`[0, 255]`, so a legal dark pixel is written as the nodata sentinel; measured on the 38 training
+windows as a deploy **proxy** (labelled a proxy — the deploy statistic is per SeamMap frame off the
+160 m grid, not a whole-window statistic), the share of own-tile-passing cells carrying ≥1 "nodata"
+context pixel goes **0.00 % (raw mosaic) → 2.67 % (native A1 statistic) → ~13 % (160 m statistic)**.
+Enabling a zero-tolerance gate there first would delete a large slice of the A1 map for a radiometric
+reason dressed as a data gap. And when R38 lands, **"clip the floor to 1" is not an acceptable remedy
+in this ordering**: it would make blackened pixels invisible to this gate while leaving the embedding
+damage intact. Only an explicit nodata mask (or no clip) lets the A1 default be flipped to 0.0
+honestly.
+
+**`scripts/f_region_stageb.py` keeps the own-tile-only gate, deliberately.** Its canvas is ~57 %
+nodata — the one place a mostly-nodata *context* is common rather than rare — but the F programme was
+hard-aborted 2026-07-30, so re-gating it would mean re-running a 907-frame build whose product was
+already rejected. Recorded in a comment at the call site, with the drop-in named, for anyone
+reopening F.
+
+**Re-validated against real CTX, read-only, 38 s.** Streamed the full 47,420² `E-8_N32` — the one
+cached shipped tile with a real mosaic gap — on the shipped (pre-R01, phase-0) lattice and
+reproduced every load-bearing number to the digit: 1,282,224 DN-0 px; **2,187,441** interior cells;
+**1,280** at own_zf > 0.3, whose mask equals the shipped `E-8_N32_prob.tif` NaN pattern at
+**100.000000 %**; and among the 2,186,161 own-passing cells, **exactly 290** with any context nodata
+(191 / 131 / 76 / 20 / 0 above 0.1 / 0.2 / 0.3 / 0.4 / 0.5; max **0.4253472**). Forty of those 290
+were then re-computed through the real `src.mapping.context_zero_fraction` on independent windowed
+reads: **0 mismatches**. Any other count than 290 would have meant the helper's box origin was wrong.
+
+**Blast radius: no rebuild is forced by R13 alone.** ~770 of 56,870,060 shipped cells turn NaN
+(exactly 290 of 19,685,689 on the nine tiles measurable by exact block arithmetic). No published
+statistic moves at three decimals — `prob_mean`, `rich_share_at_0p5`, the sd(log10 pred/label) level
+table and the 26-tile mosaic are all unaffected by 1e-5 of cells. It does change output bytes, so it
+folds into the R01/R07 pass at no extra cost; `docs/PENDING_REBUILD.md` row 8. Two corrections to the
+finding's own text, both minor: **six** of 26 tiles contain nodata, not five (E-4_N36 814, E-4_N44
+45, E-8_N32 1,280, E0_N32 51, E4_N32 1,210, E4_N36 6 = 3,406); and the map-wide "provable" bound
+treats out-of-raster neighbours as clean, so the ~153.6 k Murray-tile-edge cells sit outside its
+premise (≈2 extra cells at the measured rate — scope the word, not the severity).
+
+**Severity stays low for the shipped mosaic** (≤2.05e-05 of cells, blob-shaped gaps, zero cells
+provably above ctx 0.7) and is deliberately **not** inflated to medium on the A1 arm: that risk is
+R38's severity manifesting through R13, and double-counting it across two findings is the inflation
+this audit warns about. What R13 must not be is closed as "won't fix on rarity grounds" — the
+per-cell error is 3–4.6× the map's own IQR and the R38 ordering constraint is real.
+
+**Verification.** 20 new tests in `tests/test_mapping_context_nodata.py`; fast suite 731 → **750
+passed**, 1 skipped. Mutation-verified **7/7**, every mutant green against the pre-R13 suite: drop
+the context term from `usable`; conflate the two counters; sum instead of de-duplicating the cell
+sets; omit the `nodata_gate` block from the sidecar; drop the threshold from the sweep manifest;
+un-centre the context box; loosen either default.
+
+**Found while wiring A1, NOT fixed, recorded so it is not re-discovered: the A1 driver has no
+resume-match guard.** `scripts/striping_a1_map.py` deletes a `partials/<tile>/_sweep.json` in its
+`--clean-partials` path but **never writes one**, and never calls `sweep_manifest`. So R14's
+sweep-identity protection covers `map_region.py` only: a resumed A1 run can mix partials from a
+different `--win-px`, head, calibrator or masking threshold, with only the `grid_id` lattice check
+standing between it and a silent two-run raster. R13's thresholds do land in the A1 *sidecar*, so the
+product is at least self-describing, and the context gate is disabled on that arm anyway — but this
+is a genuine R14-shaped hole on the A1 path. Left open deliberately: it is R14's scope, not R13's,
+and A1 is already blocked behind R08, R38 and R06, so it should be closed in the same change that
+unblocks A1 rather than bolted on here.
+
+**R13 was the last Mapping-gate finding.** With R01, R14 and R84 already closed, nothing now blocks
+the corrected baseline map except the rebuild's own isolation gate (criterion 5, the ≈110 GB backup).
+A1 still needs R08, R38 and R06 — plus the A1 resume guard noted above.

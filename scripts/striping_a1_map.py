@@ -58,10 +58,10 @@ import src.modeling  # noqa: F401  OpenMP bootstrap; must precede numpy
 import numpy as np
 from rasterio.features import rasterize
 
-from scripts.map_region import (as_int32_cells, load_tile_sidecar, overlap_disagreement,
-                                partial_grid_id, partial_name, read_partial,
-                                reject_foreign_partials, tile_is_reusable, window_offsets,
-                                write_json_atomic)
+from scripts.map_region import (as_int32_cells, gate_cols, gate_summary, load_tile_sidecar,
+                                overlap_disagreement, partial_grid_id, partial_name,
+                                read_partial, reject_foreign_partials, tile_is_reusable,
+                                window_offsets, write_json_atomic)
 from src.calibration import CalibrationLayer
 from src.fm_embeddings import FangEmbedder
 from src.mapping import (COARSE_GRID_ID, artifact_digest, assert_shared_lattice, file_sha256,
@@ -182,14 +182,17 @@ def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
         window = read_tile_window(zip_path, inner_tif, row_off, col_off, win)
         w_a1, n_norm = a1_window(window, frames, stats, fallback)
         pred = predict_window(w_a1, embedder, head, tile_px=TILE_PX, batch=args.batch,
-                              max_zero_fraction=args.max_zero_fraction, calibrator=calibrator,
+                              max_zero_fraction=args.max_zero_fraction,
+                              max_context_zero_fraction=args.max_context_zero_fraction,
+                              calibrator=calibrator,
                               apply_isotonic=not args.no_isotonic,
                               global_grid=grid_geom.as_tuple)
         keep = np.isfinite(pred.prob)
         cols = {"ti": as_int32_cells(pred.ti[keep], "ti", tile),
                 "tj": as_int32_cells(pred.tj[keep], "tj", tile),
                 "prob": pred.prob[keep].astype(np.float32),
-                "grid_id": np.array(COARSE_GRID_ID)}
+                "grid_id": np.array(COARSE_GRID_ID),
+                **gate_cols(pred, tile)}
         if calibrator is not None:
             cols["prob_raw"] = pred.prob_raw[keep].astype(np.float32)
             cols["abundance"] = pred.abundance[keep].astype(np.float32)
@@ -278,6 +281,10 @@ def write_tile(tile, partials, grid_geom, crs_wkt, calibrator, args, a1_prov=Non
     write_json_atomic(out_dir / f"{tile}.json", {
         "murray_tile": tile, "tile_px": TILE_PX, "raster_shape": list(shape),
         "rasters": rasters, "overlap_disagreements": n_dis,
+        # R13, and note the threshold this row ships with (see `--max-context-zero-fraction`).
+        "nodata_gate": gate_summary(
+            loaded, max_zero_fraction=args.max_zero_fraction,
+            max_context_zero_fraction=args.max_context_zero_fraction),
         # R01: same keys, same values as the baseline sidecar, so "is the A1 row on the
         # baseline's lattice?" is answerable from the two JSONs without opening a raster.
         **grid_geom.provenance(),
@@ -303,7 +310,9 @@ def write_tile(tile, partials, grid_geom, crs_wkt, calibrator, args, a1_prov=Non
     })
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """The CLI, separated from `main` so the shipped DEFAULTS are assertable in a test —
+    specifically that this arm's R13 context gate stays disabled until R38 lands."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--tiles", nargs="*", default=None,
                     help="default = the 9 CTX-equipped block tiles (§5.1's common footprint)")
@@ -314,11 +323,32 @@ def main() -> int:
     ap.add_argument("--win-px", type=int, default=4096)
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--max-zero-fraction", type=float, default=0.3)
+    # R13 x R38 — this default is 1.0 (DISABLED) on purpose, and it must stay that way until
+    # R38 lands. `src/striping.py` clips A1 output to [0, 255], so a legal dark pixel is
+    # written as the nodata sentinel 0. Measured on the 38 training windows as a proxy for
+    # the deploy product: the share of own-tile-passing cells carrying >=1 "nodata" pixel in
+    # their context goes 0.00 % on the raw mosaic -> 2.67 % under the native A1 statistic ->
+    # ~13 % under the 160 m one. Turning a zero-tolerance context gate on here first would
+    # delete a large slice of the A1 map for a RADIOMETRIC reason dressed as a data gap.
+    #
+    # And when R38 is fixed, the remedy matters: "clip the floor to 1" would make those
+    # blackened pixels invisible to this gate while leaving the embedding damage intact (DN 0
+    # and DN 1 move the prediction identically to three decimals -- the damage is blackness,
+    # not the sentinel). Only an explicit nodata mask, or not clipping, lets this default be
+    # flipped to 0.0 honestly.
+    ap.add_argument("--max-context-zero-fraction", type=float, default=1.0,
+                    help="R13 context-nodata gate; DISABLED (1.0) on the A1 arm until R38 "
+                         "stops A1's [0,255] clip from writing legal dark pixels as the "
+                         "nodata sentinel. The baseline driver defaults to 0.0.")
     ap.add_argument("--no-isotonic", action="store_true")
     ap.add_argument("--clean-partials", action="store_true")
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--cpu", action="store_true")
-    args = ap.parse_args()
+    return ap
+
+
+def main() -> int:
+    args = build_parser().parse_args()
 
     tiles = args.tiles
     if not tiles:
