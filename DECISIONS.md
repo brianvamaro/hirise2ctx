@@ -7858,3 +7858,60 @@ last one that could be closed by analysis. What remains: **R06** (A1 has never b
 needs the rebuild), the **A1 resume guard** (small, R14-shaped, noted 2026-08-10b), and
 **R03/R83/R84** (leg 4's pixel-scale size floor). The rebuild itself is still gated on isolation
 criterion 5, the ≈110 GB backup.
+
+## 2026-08-11 — the A1 resume guard: R14's protection reached only one of the two drivers
+
+Found 2026-08-10 while landing R13, fixed now. `scripts/striping_a1_map.py` deleted a
+`partials/<tile>/_sweep.json` in its `--clean-partials` path but **never wrote one** and never
+called `sweep_manifest`. R14's sweep-identity protection therefore covered `scripts/map_region.py`
+only, and on the A1 arm the sole thing between a resumed run and a two-run raster was the `grid_id`
+check.
+
+**`grid_id` cannot do that job, and R01 is why.** It is a *lattice* identity, and both drivers were
+deliberately put on the same lattice in one commit precisely so A1 could never diverge from the
+baseline. So it matches by construction between any two A1 runs — including two that used different
+heads, window sizes, masking thresholds or A1 statistics. Their partial filenames collide too
+(`{row:06d}_{col:06d}.npz`). Every downstream structural check then passes: each `.npz` is perfect,
+set-equality is satisfied, and the raster comes out the right shape. R14 measured exactly that state
+on the baseline arm — 63.1 % of finite pixels from the stale run, nothing visibly wrong.
+
+**A1 needs *more* identity than the baseline, not the same.** Its input is **derived**: two runs can
+agree on window geometry and head and still have normalised the DN differently. `a1_sweep_manifest`
+is `map_region.sweep_manifest` plus five fields, each pinning a decision made in this audit:
+
+| field | pins |
+|---|---|
+| `norm_arm` | R07's statistic definition (native, per frame, tile support) |
+| `a1_ref` | the transfer function's target (125.0, 27.7) |
+| `a1_clip_floor` | R38 — moving the floor changes pixels |
+| `a1_min_frame_px` | R08's ratified fallback boundary |
+| `a1_seammap_digest` | the frame partition itself |
+
+**The digest hashes every shapefile sibling, not just the `.shp`** — the `.prj` is load-bearing.
+The frames are reprojected into the tile CRS before rasterization, so a changed projection silently
+moves which pixels belong to which frame, and therefore every per-frame statistic, without touching
+one coordinate in the `.shp`. That is CLAUDE.md's #1 gotcha appearing in a provenance field.
+
+**It digests A1's inputs, not its derived statistics — deliberately.** Hashing the per-frame
+`(median, IQR)` dict would be a stronger identity but would force the ~3 min streaming pass *before*
+the driver could decide whether a tile is already committed. Input digests are cheap, change exactly
+when the statistics would, and let `process_tile` be reordered so the whole identity is built up
+front. Consequence, and it is a real improvement: a resumed run over already-done tiles now costs no
+streaming reads at all, where before it paid ~3 min per tile to discover it had nothing to do.
+
+Also landed: `tile_is_reusable` is passed the sweep manifest instead of `None` (content alone cannot
+see a raster that is structurally perfect and was normalised by a different arm), and the manifest is
+recorded as the sidecar's `run` block, matching `map_region`.
+
+**No rebuild consequence** — `reports/map_a1/` has never existed (R06), so there is nothing on disk
+to invalidate. `docs/PENDING_REBUILD.md` gains no row.
+
+**Verification.** 16 new tests in `tests/test_a1_resume_guard.py`; fast suite 768 → **784 passed**,
+1 skipped. Mutation-verified **5/5**: never write `_sweep.json` (the defect exactly as found); drop
+the A1-specific identity from the manifest; drop `a1_seammap_digest`; hash only the `.shp` and ignore
+the `.prj`; pass `None` to `tile_is_reusable`. The two wiring tests scan the **AST** of
+`process_tile`, not its text, so a docstring describing the guard cannot satisfy them.
+
+**With this, every code task the audit register produced is done.** What remains is R06 (A1 has
+never been generated), R03/R83/R84 (leg 4's pixel-scale size floor, a different track), and the
+rebuild — gated on isolation criterion 5, the ≈110 GB backup.

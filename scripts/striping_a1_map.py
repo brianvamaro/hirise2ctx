@@ -74,17 +74,18 @@ from rasterio.features import rasterize
 
 from scripts.map_region import (as_int32_cells, gate_cols, gate_summary, load_tile_sidecar,
                                 overlap_disagreement, partial_grid_id, partial_name,
-                                read_partial, reject_foreign_partials, tile_is_reusable,
-                                window_offsets, write_json_atomic)
+                                read_partial, reject_foreign_partials, sweep_manifest,
+                                sweep_mismatch, tile_is_reusable, window_offsets,
+                                write_json_atomic)
 from src.calibration import CalibrationLayer
 from src.fm_embeddings import FangEmbedder
 from src.mapping import (COARSE_GRID_ID, artifact_digest, assert_shared_lattice, file_sha256,
                          predict_window, read_tile_window, tile_global_grid, uncovered_cells,
                          write_geotiff)
 from src.modeling.mlp_head import DeployableHead, require_norm_arm
-from src.striping import (A1_ARM, A1_REF_IQR, A1_REF_MEDIAN, CTX_ZIP_DIR, _inner_tif_name,
-                          a1_normalize_native, a1_stats_native_tile, frame_labels_on,
-                          load_frames)
+from src.striping import (A1_ARM, A1_MIN_FRAME_PX, A1_REF_IQR, A1_REF_MEDIAN, A1_VALID_FLOOR,
+                          CTX_ZIP_DIR, _inner_tif_name, a1_normalize_native,
+                          a1_stats_native_tile, find_seam_shp, frame_labels_on, load_frames)
 
 TILE_PX = 32
 A1_HEAD = REPO / "models" / "deployable_a1" / "86c51a5dca220f63"
@@ -141,22 +142,61 @@ def a1_window(window, frames, stats: dict, fallback: tuple[float, float]):
     return replace(window, data=out), nodata_mask
 
 
+def seammap_digest(tile: str) -> str | None:
+    """Content digest of the SeamMap that defines this tile's A1 frames, or None if absent.
+
+    Every sibling of the `.shp` is hashed, not just the `.shp` itself — the **`.prj` is
+    load-bearing** here. The frames are reprojected into the tile CRS before rasterization, so a
+    changed projection silently changes which pixels belong to which frame, and therefore every
+    per-frame statistic, without touching a single coordinate in the `.shp`.
+    """
+    shp = find_seam_shp(tile)
+    if shp is None or not Path(shp).exists():
+        return None
+    import hashlib
+
+    h = hashlib.sha256()
+    shp = Path(shp)
+    for p in sorted(shp.parent.glob(shp.stem + ".*")):
+        h.update(p.name.encode("utf-8"))
+        h.update(file_sha256(p).encode("ascii"))
+    return h.hexdigest()
+
+
+def a1_sweep_manifest(grid_geom, row_offs, col_offs, args, *, extent, tile,
+                      head_digest, calibration_digest) -> dict:
+    """The identity of an A1 sweep — `map_region`'s, plus what makes A1 *A1*.
+
+    **R14 on the A1 arm, which never had it.** This driver deleted a `partials/<tile>/_sweep.json`
+    in its `--clean-partials` path but never wrote one and never called `sweep_manifest`, so
+    R14's protection covered `map_region.py` only: a resumed A1 run could mix partials from a
+    different `--win-px`, head, calibrator or masking threshold behind nothing but the `grid_id`
+    lattice check. Every field below is a resume-match field, and a mismatch names itself.
+
+    The A1-specific fields matter as much as the shared ones, because A1's input is *derived*:
+    two runs can agree on window geometry and head and still have normalised the DN differently.
+    `norm_arm` pins R07's statistic definition, `a1_ref` / `a1_clip_floor` pin the transfer
+    function (R38 moved the floor, which changes pixels), `a1_min_frame_px` pins R08's ratified
+    fallback boundary, and `a1_seammap_digest` pins the frame partition itself.
+
+    Deliberately digests the *inputs* rather than the resulting per-frame statistics: those cost
+    a ~3 min streaming pass per tile, and hashing them would force that pass before the driver
+    could decide whether a tile is already done.
+    """
+    return {
+        **sweep_manifest(grid_geom, row_offs, col_offs, args, extent=extent,
+                         head_digest=head_digest, calibration_digest=calibration_digest),
+        "variant": "A1",
+        "norm_arm": A1_ARM,
+        "a1_ref": [A1_REF_MEDIAN, A1_REF_IQR],
+        "a1_clip_floor": A1_VALID_FLOOR,
+        "a1_min_frame_px": A1_MIN_FRAME_PX,
+        "a1_seammap_digest": seammap_digest(tile),
+    }
+
+
 def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
     out_dir = Path(args.out_dir)
-    # R14: resume on the SIDECAR, not on the first artifact written. This driver's sentinel was
-    # `{tile}_prob_raw.tif`, which `write_tile` emits FIRST -- the identical defect map_region
-    # had, on the one product that has never been generated, so fixing it here costs nothing.
-    if not args.force:
-        why = tile_is_reusable(out_dir, tile, None,
-                               verify=getattr(args, "verify_existing", False),
-                               trust_existing=getattr(args, "trust_existing", False))
-        if why is None and (out_dir / f"{tile}_prob_raw.tif").exists():
-            print(f"[{tile}] committed and verified -> skip (--force to redo)", flush=True)
-            return {"tile": tile, "status": "skipped_done"}
-        if (out_dir / f"{tile}_prob_raw.tif").exists():
-            raise SystemExit(f"[{tile}] {out_dir / f'{tile}_prob_raw.tif'} exists but cannot "
-                             f"be reused: {why}\n  Re-run with --force, or use a fresh "
-                             f"--out-dir.")
     zip_path = CTX_ZIP_DIR / f"{tile}.zip"
     if not zip_path.exists():
         print(f"[{tile}] ⚠ no cached CTX zip ({zip_path}) — A1 needs raw DN, so this tile cannot be "
@@ -170,6 +210,41 @@ def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
     # window sweep. If these two drivers ever diverge, A1 stops being comparable to the
     # baseline, which is the entire point of the row.
     grid_geom = tile_global_grid(inner_transform, crs_wkt, TILE_PX)
+    win, overlap = args.win_px, 3 * TILE_PX
+    row_offs = window_offsets(H, win, overlap, TILE_PX, tile_aligned=False)
+    col_offs = window_offsets(W, win, overlap, TILE_PX, tile_aligned=False)
+    miss_r = uncovered_cells(row_offs, H, win, TILE_PX, phase=grid_geom.phase_r)
+    miss_c = uncovered_cells(col_offs, W, win, TILE_PX, phase=grid_geom.phase_c)
+    if miss_r or miss_c:
+        raise SystemExit(f"[{tile}] sweep would leave {len(miss_r)} row / {len(miss_c)} col "
+                         f"cells uncomputable at phase "
+                         f"({grid_geom.phase_r}, {grid_geom.phase_c})")
+
+    # R14: pin the sweep BEFORE any partial is written, and before the ~3 min statistics pass --
+    # everything here is cheap metadata, so an already-committed tile is skipped without paying
+    # for a streaming read it does not need. (`a1_sweep_manifest` digests A1's *inputs* rather
+    # than the derived per-frame statistics precisely so this ordering is possible.)
+    want_sweep = a1_sweep_manifest(
+        grid_geom, row_offs, col_offs, args, extent=(H, W), tile=tile,
+        head_digest=artifact_digest(args.head),
+        calibration_digest=artifact_digest(args.calibration) if args.calibration else None)
+
+    # R14: resume on the SIDECAR, not on the first artifact written. This driver's sentinel was
+    # `{tile}_prob_raw.tif`, which `write_tile` emits FIRST -- the identical defect map_region
+    # had, on the one product that has never been generated, so fixing it here costs nothing.
+    # `want_sweep` (not None) is new: content alone cannot see a raster that is structurally
+    # perfect and was normalised by a different A1 arm.
+    if not args.force:
+        why = tile_is_reusable(out_dir, tile, want_sweep,
+                               verify=getattr(args, "verify_existing", False),
+                               trust_existing=getattr(args, "trust_existing", False))
+        if why is None and (out_dir / f"{tile}_prob_raw.tif").exists():
+            print(f"[{tile}] committed and verified -> skip (--force to redo)", flush=True)
+            return {"tile": tile, "status": "skipped_done"}
+        if (out_dir / f"{tile}_prob_raw.tif").exists():
+            raise SystemExit(f"[{tile}] {out_dir / f'{tile}_prob_raw.tif'} exists but cannot "
+                             f"be reused: {why}\n  Re-run with --force, or use a fresh "
+                             f"--out-dir.")
 
     frames = load_frames(tile)
     print(f"[{tile}] streaming the native tile for per-frame A1 statistics (R07) ...",
@@ -197,15 +272,29 @@ def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
     partial_dir = out_dir / "partials" / tile
     partial_dir.mkdir(parents=True, exist_ok=True)
     reject_foreign_partials(partial_dir, args)
-    win, overlap = args.win_px, 3 * TILE_PX
-    row_offs = window_offsets(H, win, overlap, TILE_PX, tile_aligned=False)
-    col_offs = window_offsets(W, win, overlap, TILE_PX, tile_aligned=False)
-    miss_r = uncovered_cells(row_offs, H, win, TILE_PX, phase=grid_geom.phase_r)
-    miss_c = uncovered_cells(col_offs, W, win, TILE_PX, phase=grid_geom.phase_c)
-    if miss_r or miss_c:
-        raise SystemExit(f"[{tile}] sweep would leave {len(miss_r)} row / {len(miss_c)} col "
-                         f"cells uncomputable at phase "
-                         f"({grid_geom.phase_r}, {grid_geom.phase_c})")
+
+    # R14 on the A1 arm. This block did not exist: the driver deleted a `_sweep.json` it never
+    # wrote, so `grid_id` was the only thing standing between a resume and a two-run raster.
+    # `grid_id` is a *lattice* check -- two runs with different heads, window sizes, masking
+    # thresholds or A1 statistics all share it, and their partials have colliding filenames.
+    grid_path = partial_dir / "_sweep.json"
+    if grid_path.exists():
+        try:
+            have = json.loads(grid_path.read_text(encoding="utf-8"))
+        except ValueError:
+            have = {}
+        why = sweep_mismatch(have, want_sweep)
+        if why and not args.force:
+            raise SystemExit(
+                f"[{tile}] {partial_dir} holds partials from a different sweep — {why}.\n"
+                f"  Assembling them would mix two runs into one raster. Re-run with --force to "
+                f"discard and recompute, or delete the directory.")
+        if why:
+            print(f"  ⚠ --force: discarding partials from a different sweep ({why})", flush=True)
+            for p in partial_dir.glob("*.npz"):
+                p.unlink()
+    write_json_atomic(grid_path, want_sweep)
+
     grid = [(r, c) for r in row_offs for c in col_offs]
     t_tile = time.monotonic()
     for k, (row_off, col_off) in enumerate(grid):
@@ -266,16 +355,18 @@ def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
         raise SystemExit(f"[{tile}] {len(extra)} partial(s) are not part of this sweep "
                          f"(e.g. {extra[:3]}); assembling the union would mix two runs.")
     present = sorted(partial_dir / n for n in sorted(want_names))
-    write_tile(tile, present, grid_geom, crs_wkt, calibrator, args, a1_prov)
+    write_tile(tile, present, grid_geom, crs_wkt, calibrator, args, a1_prov,
+               sweep_prov=want_sweep)
     if args.clean_partials:
         for p in present:
             p.unlink()
-        (partial_dir / "_sweep.json").unlink(missing_ok=True)
+        grid_path.unlink(missing_ok=True)
     print(f"[{tile}] DONE in {time.monotonic() - t_tile:.0f}s", flush=True)
     return {"tile": tile, "status": "done", "windows": len(grid)}
 
 
-def write_tile(tile, partials, grid_geom, crs_wkt, calibrator, args, a1_prov=None) -> None:
+def write_tile(tile, partials, grid_geom, crs_wkt, calibrator, args, a1_prov=None,
+               sweep_prov=None) -> None:
     """Assemble the per-window partials into map_region-shaped GeoTIFFs (same grid, same profile).
 
     `(ti, tj)` are GLOBAL coarse-cell indices on `COARSE_GRID_ID`, so the affine comes from
@@ -323,6 +414,10 @@ def write_tile(tile, partials, grid_geom, crs_wkt, calibrator, args, a1_prov=Non
     write_json_atomic(out_dir / f"{tile}.json", {
         "murray_tile": tile, "tile_px": TILE_PX, "raster_shape": list(shape),
         "rasters": rasters, "overlap_disagreements": n_dis,
+        # R14: the commit record. `rasters` lets a resume verify content without re-deriving it;
+        # `run` lets it verify the content was made the way this run would -- including the A1
+        # arm, reference and SeamMap digest, which no content check can see.
+        "run": sweep_prov,
         # R13, and note the threshold this row ships with (see `--max-context-zero-fraction`).
         "nodata_gate": gate_summary(
             loaded, max_zero_fraction=args.max_zero_fraction,
