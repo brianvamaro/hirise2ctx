@@ -293,8 +293,18 @@ The primary mixed-floor maps must name their target honestly. Persist the minimu
 polygon size/filtering convention for each HiRISE training image and an aggregate product-level
 description of the calibration pool's mixture. Keep this distinct from detector completeness: a
 regional output pixel does not itself inherit a HiRISE-specific detection floor. R83/R84's
-78.4%/21.6% estimate refers to tile share in the calibration pool, not image share, and has not been
-independently verified; label it accordingly if quoted.
+78.4%/21.6% estimate refers to tile share in the calibration pool, not image share.
+**✅ INDEPENDENTLY VERIFIED 2026-08-11 (DECISIONS 2026-08-11b), and now recorded on the product.**
+Re-derived read-only over all 38 Stage-1 detection sets, the cached PDS `.LBL`s and the S=32 pool:
+**78.3914 % / 21.6086 %** of **161,005** tiles, with `calibration.npz` `t2_y` max == pool max `fa`
+== 0.293242 proving it is that pool. Image share is **68.4 / 31.6** — a genuinely different number,
+so the warning was well placed; both are now carried separately and labelled. The effective floor is
+`max(global Stage-4 filter, the image's natural floor)`, which makes the **fine** cohort uniform at
+1.5626 m² and the **coarse** cohort the heterogeneous one (2.9652–5.5719 m², 26 distinct values) —
+R83's correction to R03, confirmed. `write_geotiff` wrote no metadata at all; it now stamps
+`SIZE_FLOOR_*` from `src.size_floor`, on `_prob.tif` as well as `_abundance.tif` because the
+`fa > 1e-2` class inherits the same floor dependence. **Still open:** R03 item (d), the per-image
+sidecar half (a producer change, rebuild-pending), and re-measuring the basis after Stage 4 re-runs.
 
 Do not call the result size-independent "physical rock abundance." Reader-facing prose and raster/model
 metadata must state which boulders are included by the training-label convention. If the common-floor

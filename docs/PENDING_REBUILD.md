@@ -140,9 +140,20 @@ leaves a conditional write-through path, documented in the 2026-08-06 audit.
   DN 0 and DN 1 damage the embedding **identically to three decimals**, so moving the floor alone
   would have made clip-blackened pixels *invisible* to R13's context gate while leaving the damage
   intact. All three parts landed together, and `--max-context-zero-fraction` is now 0.0 on both arms.
-- **R03 / R83 / R84** — the pixel-scale size floor. R83/R84 estimate a roughly 78/22 mixture in the
-  calibration tile pool (not the image pool; not independently verified), so per-image
-  `map_scale_mpp` alone is **not sufficient** for PLAN_RegionalMap leg 4. Decision 2026-08-06: retain
-  and explicitly document the mixed-floor primary product. A separately identified common-floor
-  target remains optional and must not reuse primary-product labels, model, calibration, or claims
-  implicitly.
+- **R03 / R83 / R84** — the pixel-scale size floor. **R84 CLOSED 2026-08-11b** (product-level half):
+  the mixture is measured, verified and recorded. `src/size_floor.py` +
+  `scripts/measure_size_floor.py` derive it; `write_geotiff(tags=...)` — which wrote **no metadata at
+  all** — now stamps `SIZE_FLOOR_*` on every raster from both map drivers. The 78/22 estimate is
+  **independently verified**: 78.3914 % / 21.6086 % of 161,005 S=32 pool tiles, with
+  `calibration.npz` `t2_y` max == pool max `fa` == 0.293242 confirming which pool. Image share is a
+  *different* number (68.4 / 31.6) and is carried separately. R83's correction also confirms: the
+  effective floor is `max(global filter, natural floor)`, so the **fine** cohort is uniform at
+  1.5626 m² and the **coarse** cohort is the heterogeneous one (2.9652–5.5719 m², 26 distinct values).
+  Decision 2026-08-06 stands: retain and explicitly document the mixed-floor primary product; a
+  common-floor target remains optional and must not reuse primary-product labels, model, calibration
+  or claims implicitly.
+  **Still open, and both need the rebuild:** (i) **R03 item (d)** — persisting per-image
+  `map_scale_mpp` + the measured floor into the Stage-1 and Stage-4 sidecars (a producer change);
+  (ii) **re-measuring the basis after Stage 4 re-runs** — it is a property of the label pool, so the
+  banked JSON goes stale the moment the pool changes. Add `scripts/measure_size_floor.py` to the tail
+  of the rebuild DAG, after Stage 4 and before the map drivers.

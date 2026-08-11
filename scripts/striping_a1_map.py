@@ -72,9 +72,10 @@ import src.modeling  # noqa: F401  OpenMP bootstrap; must precede numpy
 import numpy as np
 from rasterio.features import rasterize
 
-from scripts.map_region import (as_int32_cells, gate_cols, gate_summary, load_tile_sidecar,
-                                overlap_disagreement, partial_grid_id, partial_name,
-                                read_partial, reject_foreign_partials, sweep_manifest,
+from scripts.map_region import (DEFAULT_SIZE_FLOOR_BASIS, as_int32_cells, gate_cols,
+                                gate_summary, load_tile_sidecar, overlap_disagreement,
+                                partial_grid_id, partial_name, read_partial,
+                                reject_foreign_partials, size_floor_tags, sweep_manifest,
                                 sweep_mismatch, tile_is_reusable, window_offsets,
                                 write_json_atomic)
 from src.calibration import CalibrationLayer
@@ -406,8 +407,9 @@ def write_tile(tile, partials, grid_geom, crs_wkt, calibrator, args, a1_prov=Non
     if ab is not None:
         emitted.append(("abundance", scatter(ab)))
     rasters = []
-    for kind, arr in emitted:
-        p = write_geotiff(out_dir / f"{tile}_{kind}.tif", arr, transform, crs_wkt)
+    tags = size_floor_tags(args)          # R84: identical basis to the baseline arm, by design --
+    for kind, arr in emitted:             # the two rows are compared, so they must count the same
+        p = write_geotiff(out_dir / f"{tile}_{kind}.tif", arr, transform, crs_wkt, tags=tags)
         rasters.append({"name": p.name, "kind": kind, "bytes": p.stat().st_size,
                         "sha256": file_sha256(p), "shape": list(shape),
                         "n_finite": int(np.isfinite(arr.astype(np.float32)).sum())})
@@ -478,6 +480,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="R13 context-nodata gate. 0.0 = not one nodata pixel in the 96-px "
                          "context box, matching scripts/map_region.py. Safe on this arm only "
                          "since R38: the mask is explicit, not inferred from A1's output.")
+    ap.add_argument("--size-floor-basis", default=str(DEFAULT_SIZE_FLOOR_BASIS),
+                    help="R84: banked size-floor basis JSON. Must be the SAME basis the baseline "
+                         "arm used -- the two rows are compared cell for cell, so a raster that "
+                         "counts different boulders is not comparable however well it aligns.")
     ap.add_argument("--warn-clip-fraction", type=float, default=0.01,
                     help="R38: warn loudly when this share of a tile's valid pixels hits the A1 "
                          "clip bounds. Warn, not refuse -- a clipped pixel is a radiometric "

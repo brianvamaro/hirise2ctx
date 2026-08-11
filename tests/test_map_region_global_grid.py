@@ -164,6 +164,7 @@ def _fake_args(tmp_path, **kw):
     a = argparse.Namespace(
         out_dir=str(tmp_path), win_px=256, batch=4, max_zero_fraction=0.9,
         max_context_zero_fraction=0.0,            # R13, and it is the production default
+        size_floor_basis="",                      # R84: absent -> untagged + a warning, never faked
         no_isotonic=True, force=False, limit_windows=None, clean_partials=False,
         calibration="", ctx_tiles=str(tmp_path / "ctx"), _model_dir=None)
     for k, v in kw.items():

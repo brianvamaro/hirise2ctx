@@ -689,8 +689,17 @@ def verify_geotiff(path: str | Path, *, expect_shape=None, expect_count: int = 1
 
 def write_geotiff(path: str | Path, raster: np.ndarray, transform, crs_wkt: str,
                   *, nodata: float = np.nan, atomic: bool = True,
-                  verify: bool = True) -> Path:
+                  verify: bool = True, tags: dict | None = None) -> Path:
     """Write a single-band float32 GeoTIFF (the abundance/probability raster).
+
+    **R84 — `tags`.** This function wrote **no metadata at all**, so a shipped `*_abundance.tif`
+    could not state what its numbers mean. That matters most for the size convention: the layer is
+    quantile-matched onto a pool that mixes 27 distinct per-image detection floors (78.4 % of pool
+    tiles at 0.50 m/px, 21.6 % at 0.25 m/px), so "rock abundance" in this raster means *the area
+    share of boulders large enough to have been detected in whichever HiRISE image trained that
+    part of the pool* — and no per-image sidecar can state a mixture. `src.size_floor` builds the
+    tag set; anything comparing this raster to an external product needs it. Tag values must be
+    strings (GDAL metadata is string-valued); non-strings are coerced.
 
     **R14 — atomic.** `rasterio.open(path, "w")` occupies the *destination* for the whole
     write: measured, the file existed at 7,799,350 of 7,854,955 bytes before `close()`, and a
@@ -718,6 +727,8 @@ def write_geotiff(path: str | Path, raster: np.ndarray, transform, crs_wkt: str,
             nodata=nodata, compress="deflate", tiled=True, blockxsize=256, blockysize=256,
         ) as dst:
             dst.write(data, 1)
+            if tags:
+                dst.update_tags(**{str(k): str(v) for k, v in tags.items()})
         if verify:
             why = verify_geotiff(dest, expect_shape=data.shape, expect_finite=n_finite)
             if why is not None:

@@ -78,6 +78,9 @@ from src.mapping import (CONTEXT_ZERO_HIST_EDGES, COARSE_GRID_ID, artifact_diges
 CTX_TILES = REPO_ROOT / "cache_v2" / "ctx_tiles"
 DEFAULT_MODEL_PARENT = REPO_ROOT / "models" / "deployable"
 DEFAULT_CALIBRATION = DEFAULT_MODEL_PARENT / "calibration.npz"
+# R84: a property of the CALIBRATION POOL, so it lives beside the calibrator that was fitted on it
+# and goes stale the moment Stage 4 re-runs.
+DEFAULT_SIZE_FLOOR_BASIS = DEFAULT_MODEL_PARENT / "size_floor_basis.json"
 DEFAULT_OUT = REPO_ROOT / "reports" / "map_region"
 TILE_PX = 32  # frozen S=32 (160 m at 5 m/px)
 
@@ -412,6 +415,35 @@ def as_int32_cells(v: np.ndarray, name: str, tile: str) -> np.ndarray:
     return v.astype(np.int32)
 
 
+def size_floor_tags(args) -> dict:
+    """**R84.** Product-level size-floor metadata for every raster this driver writes.
+
+    `fractional_area` is the area share of boulders large enough to have been *detected in the
+    HiRISE image that trained that part of the pool*, and the deployed layer is quantile-matched
+    onto a mixture of 27 such floors. No per-image sidecar can state a mixture, which is why this
+    is a product attribute — and why it goes on `_prob.tif` too, not just `_abundance.tif`: the
+    rich/poor class is `fa > 1e-2`, so it inherits the same floor dependence (R83).
+
+    Absent basis file -> a warning and no tags, never a fabricated one. Re-measure with
+    `scripts/measure_size_floor.py`; the basis is a property of the label pool, so **it goes
+    stale whenever Stage 4 re-runs**.
+    """
+    raw = getattr(args, "size_floor_basis", None)
+    # `Path("")` is `.`, and `Path(".").exists()` is True -- an unset basis would then try to
+    # load the working directory. Test the string first, then require a FILE: a directory that
+    # happens to sit at the path must not read as a measured basis either.
+    path = Path(raw) if raw else None
+    if path is None or not path.is_file():
+        print(f"  ⚠ no size-floor basis at {raw or '(unset)'} -- rasters will carry no "
+              f"SIZE_FLOOR_* tags, so they cannot state which boulders they count (R84). "
+              f"Run scripts/measure_size_floor.py.", flush=True)
+        return {}
+    from src.size_floor import SizeFloorBasis
+
+    basis = SizeFloorBasis.load(path)
+    return {**basis.product_tags(), "SIZE_FLOOR_BASIS_PATH": str(path)}
+
+
 def gate_cols(pred, tile: str) -> dict:
     """**R13.** The per-window nodata-gate record that goes into a partial.
 
@@ -737,8 +769,10 @@ def write_tile_geotiffs(murray_tile, partials, grid_geom, crs_wkt, calibrator, a
     if has_cal:
         emitted += [("abundance", scatter(abundance)), ("prob_raw", scatter(prob_raw))]
     rasters = []
+    tags = size_floor_tags(args)          # R84: the same basis on every raster of the tile
     for kind, arr in emitted:
-        p = write_geotiff(out_dir / f"{murray_tile}_{kind}.tif", arr, transform, crs_wkt)
+        p = write_geotiff(out_dir / f"{murray_tile}_{kind}.tif", arr, transform, crs_wkt,
+                          tags=tags)
         rasters.append({"name": p.name, "kind": kind, "bytes": p.stat().st_size,
                         "sha256": file_sha256(p), "shape": list(shape),
                         "n_finite": int(np.isfinite(arr.astype(np.float32)).sum())})
@@ -818,6 +852,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="where --model is searched when it is not given explicitly")
     ap.add_argument("--calibration", default=str(DEFAULT_CALIBRATION),
                     help="banked CalibrationLayer .npz")
+    ap.add_argument("--size-floor-basis", default=str(DEFAULT_SIZE_FLOOR_BASIS),
+                    help="R84: banked size-floor basis JSON (scripts/measure_size_floor.py). "
+                         "Stamped as SIZE_FLOOR_* tags on every raster, so the product can state "
+                         "which boulders its abundance number counts. Missing = a warning and "
+                         "untagged rasters, never a fabricated attribute.")
     ap.add_argument("--raw", action="store_true",
                     help="render RAW P(rich) only (skip the Stage-1 CalibrationLayer)")
     ap.add_argument("--no-isotonic", action="store_true",
@@ -908,6 +947,10 @@ def main() -> int:
         # them cannot answer "were these two tiles gated the same way?".
         "max_zero_fraction": float(args.max_zero_fraction),
         "max_context_zero_fraction": float(args.max_context_zero_fraction),
+        # R84: which size-floor basis this run stamped, by content, so two runs that tagged
+        # rasters from different label pools are distinguishable after the fact.
+        "size_floor_basis": str(args.size_floor_basis),
+        "size_floor_basis_digest": artifact_digest(args.size_floor_basis),
         "tiles": tiles, "elapsed_s": round(time.monotonic() - t0, 1),
     })
     write_json_atomic(manifest, {

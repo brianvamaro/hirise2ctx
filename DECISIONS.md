@@ -7915,3 +7915,87 @@ the `.prj`; pass `None` to `tile_is_reusable`. The two wiring tests scan the **A
 **With this, every code task the audit register produced is done.** What remains is R06 (A1 has
 never been generated), R03/R83/R84 (leg 4's pixel-scale size floor, a different track), and the
 rebuild — gated on isolation criterion 5, the ≈110 GB backup.
+
+## 2026-08-11b — leg 4 / R84: the abundance layer now states which boulders it counts
+
+PLAN_RegionalMap leg 4 (the LOIO truth anchor) and every external comparison were blocked by
+**R84**: the deployed abundance raster is quantile-matched onto a pool that **mixes** per-image
+detection floors, and `write_geotiff` wrote **no metadata at all**, so a shipped `*_abundance.tif`
+could not state what its numbers count. R84 is explicit that R03's remedy is *necessary but not
+sufficient* — "fine for legs 1–3 (within-map rank statistics), insufficient for leg 4 … because the
+deployed layer's floor is a *mixture* that no per-image sidecar can state."
+
+**R84's 78.4 / 21.6 was flagged unverified. It is now independently verified.** Measured read-only
+over all 38 `cache_v2/reprojected_detections/*.gpkg`, `cache_v2/pds_labels/*.LBL` and the S=32 label
+pool:
+
+| quantity | R84 claimed | measured 2026-08-11 |
+|---|---|---|
+| pool size at S=32 | 161,005 | **161,005** ✅ |
+| coarse / fine **tile** share | 78.4 % / 21.6 % | **78.3914 % / 21.6086 %** ✅ |
+| `calibration.npz` `t2_y` max == pool max `fa` | the proof of which pool | **0.293242 == 0.293242** ✅ |
+
+**The audit's warning was worth heeding: tile share is not image share.** By image the split is
+**68.4 / 31.6**. Quoting one for the other is wrong by ten points, and R84's number is the tile one.
+Both are now carried, separately and labelled, precisely so they cannot be confused again.
+
+**R83's correction to R03 also confirms, and it inverts R03's picture.** The effective floor is not
+the Stage-1 polygon minimum: Stage 4's global `min_size_m = 1.4105 m` (1.5626 m²) is applied
+*afterwards*, and it sits above every fine image's natural floor and below every coarse one's. So
+the **fine** cohort's floor is uniformly the filter — 1.5626 m² for all 12 — while each **coarse**
+image keeps its own, 2.9652–5.5719 m² (1.943–2.664 m diameter) over 26 distinct values. The coarse
+cohort is the internally heterogeneous one; R03 had it the other way round because it read the
+Stage-1 minima as if they were post-filter. Pool-wide: **27 distinct floors, tile-weighted mean
+3.3687 m².**
+
+**What landed.** `src/size_floor.py` — `effective_floor_m2` (the one line that is R83's correction),
+`SizeFloorBasis` (measured, versioned, JSON-bankable, refuses a foreign version), and
+`product_tags()`. `scripts/measure_size_floor.py` re-derives it in ~215 s and has `--dry-run` plus a
+flag for every root. `write_geotiff(tags=...)` is R84's fix proper. Both map drivers stamp the same
+basis on **every** raster they write — including `_prob.tif`, not just `_abundance.tif`, because the
+rich/poor class is `fa > 1e-2` and inherits the identical floor dependence (R83). The run manifest
+records the basis path and digest.
+
+**Design choices worth not relitigating:**
+- **Measured, never asserted.** A provenance field that asserts rather than measures has been caught
+  four times on this project, so the basis is derived from artifacts, carries its inputs, and can be
+  re-derived by one command. `SizeFloorBasis.from_records` is a pure seam so it is testable without
+  touching 7 M polygons.
+- **The pixel scale comes from the PDS `.LBL`, not the manifest.** `build_vclaire_manifest.py` takes
+  `MapPixel_mpp` from the label *spreadsheet*, which is why two cohort rows are blank
+  (`LabelSource: none`). Both are 0.5 m/px and the `.LBL`s are cached. Reading the `.LBL` makes a
+  blank impossible rather than patching two of them, and the driver **refuses to build a basis** if
+  any scale is unknown — a mixture measured with unknown members silently under-counts one cohort.
+- **Tile-weighted, not image-weighted.** The layer is calibrated per tile; an image-weighted mean
+  floor would over-represent the fine cohort by ~1.5× here.
+- **An image with zero pool tiles contributes no floor.** It is in the cohort but not in the
+  product, so it must not widen the stated range.
+- **The per-image records stay out of the raster header.** 38 records do not belong in every tile's
+  metadata; `SIZE_FLOOR_BASIS_VERSION` + the banked JSON is the audit trail.
+
+**A trap the suite caught, worth recording.** `Path("")` is `.`, and `Path(".").exists()` is **True**
+— so an unset `--size-floor-basis` sailed past an `exists()` guard and tried to parse the working
+directory as JSON. The check is now "non-empty string, and `is_file()`", and a test pins `""`,
+`None`, an absent attribute and a *directory* all yielding no tags. Absent must mean untagged, never
+fabricated and never a crash.
+
+**Scope, stated honestly.** This makes the size floor *recordable and recorded*, which is what R84
+named and what unblocks leg 4's interpretation. Two things it does **not** do:
+1. **The per-image half of R03 (item d) is still open** — `map_scale_mpp` and the measured floor are
+   not yet persisted into the Stage-1 sidecar or `dataset_v2/labels/{obs}.json`. That is a producer
+   change and therefore rebuild-pending; the product-level attribute does not depend on it.
+2. **Leg 4 itself has not been re-run.** R83 measured `Spearman(sub-floor area share, per-image AUC)
+   = −0.468, p = 0.003`, surviving every control — *including inside the 0.50 m/px cohort alone*
+   (−0.467, p 0.016, n 26), so it is mostly small-boulder terrain rather than pixel scale. Re-running
+   the LOIO anchor with the floor as a covariate is the next leg-4 step and is now possible.
+
+**The basis is NOT yet banked.** `models/deployable/size_floor_basis.json` does not exist; the
+measurement has only been run with `--dry-run`. Writing it is a one-command step into a protected
+root and is Brian's call. Until it exists both drivers warn and emit untagged rasters — deliberately
+the safe direction. It also **goes stale whenever Stage 4 re-runs**, so the rebuild must re-measure
+it; `docs/PENDING_REBUILD.md` carries the note.
+
+**Verification.** 16 new tests in `tests/test_size_floor.py`; fast suite 784 → **800 passed**, 1
+skipped. Mutation-verified 5/5: ignore the Stage-4 filter (R03's own error); report image share where
+tile share is meant; make `write_geotiff` drop tags again; accept an empty pool; assume the pixel
+scale instead of reading it.
