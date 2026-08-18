@@ -8221,7 +8221,25 @@ a following session by Brian.
 up so nothing is at risk, but the rebuild must **not** regenerate them, and the execution plan needs
 an explicit line saying so.
 
-### 2026-08-18 addendum — the SHA-256 pass FAILED on a device disconnect, and the drive threw disk errors
+### 2026-08-18 addendum — the SHA-256 pass FAILED because the laptop slept (NOT a drive fault)
+
+> **RESOLVED, same day.** My first reading of this was a possible hardware fault and it was wrong.
+> Brian: the machine went to sleep at that moment because he closed the lid. That explains every
+> symptom better — USB devices power down on suspend, so the bus drop, the seven Event 51s mid-I/O,
+> the volume re-enumerating on wake and the process dying are all one cause. **The drive is fine; do
+> not chase ports, cables or the enclosure.** The fix is simply to keep the machine awake and re-run
+> `scripts/backup_artifacts.ps1 -SkipCopy -Hash`.
+>
+> **This is worth more than a correction, though: it is Brian's own Sherlock argument, demonstrated.**
+> Hours earlier he chose Sherlock for the GPU work on exactly this reasoning — "a big pass will end up
+> being affected by sleep on the laptop and it will be easier to have confidence it will be run on
+> Sherlock." The prediction then materialised within the same session, on the backup verification.
+> Two consequences for the rebuild plan: the Sherlock decision is empirically vindicated, and
+> **Stages 1–5, which stay local, need explicit sleep mitigation** — `powercfg /change
+> standby-timeout-ac 0` for the duration, and do not close the lid. A multi-hour local CPU pass is
+> exposed to precisely this.
+>
+> The paragraphs below are retained as written, except the hardware speculation, which is superseded.
 
 Correction to the entry above, which said a content pass was "running separately". It ran to roughly
 95 % (119 of 125.55 GB read) and then **died**, on this:
@@ -8246,21 +8264,14 @@ the fault. The 125.8 GB write counter independently corroborates the copy. That 
 the 2026-08-06 non-mutation check used, so **criterion 5 stands closed** — but at path-and-size, not
 byte-for-byte.
 
-**The device itself is now the open question, and it changes the risk picture.** A drive that drops
-off the bus under sustained sequential read is not a drive to trust as a *sole* snapshot. Three
-things to try before relying on it, cheapest first:
+**~~The device itself is now the open question~~ — SUPERSEDED, see the note at the head of this
+addendum.** The cause was suspend, not hardware. The remaining action is simply: keep the machine
+awake and re-run `scripts/backup_artifacts.ps1 -SkipCopy -Hash`.
 
-1. **Different USB port and cable.** By far the most common cause, and free to test.
-2. **Disable USB selective suspend** for the duration (`powercfg` / Device Manager → USB Root Hub →
-   Power Management). Aggressive power management dropping an external drive under load is a classic
-   Event-51 generator.
-3. **Re-run `scripts/backup_artifacts.ps1 -SkipCopy -Hash`** and see whether it completes. If it
-   faults again at a similar point, suspect the enclosure or the disk, not the port.
-
-Until one of those completes cleanly, treat the snapshot as **good but unconfirmed at the byte
-level**, and prefer keeping the source intact on C: over relying on D: alone. The residual exposure is
-narrow — a bit flip that preserved file length — but it is exactly what the hash pass existed to rule
-out, and it has not been ruled out.
+What still stands: until that pass completes, treat the snapshot as **good but unconfirmed at the byte
+level**, and keep the source intact on C: rather than relying on D: alone. The residual exposure is
+narrow — a bit flip that preserved file length — but it is exactly what the hash pass exists to rule
+out, and it has not been ruled out yet. That is a *pending verification*, not a suspected fault.
 
 **This does not block the rebuild.** The snapshot is materially better than no snapshot, every file
 verifies present and correctly sized twice over, and the rebuild's own risk (overwriting the
