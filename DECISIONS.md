@@ -8220,3 +8220,49 @@ a following session by Brian.
 — 0.39 GB each, ~2.7 GB total — are F-programme arms. F was hard-aborted 2026-07-30. They are backed
 up so nothing is at risk, but the rebuild must **not** regenerate them, and the execution plan needs
 an explicit line saying so.
+
+### 2026-08-18 addendum — the SHA-256 pass FAILED on a device disconnect, and the drive threw disk errors
+
+Correction to the entry above, which said a content pass was "running separately". It ran to roughly
+95 % (119 of 125.55 GB read) and then **died**, on this:
+
+```
+Get-FileHash : The file 'D:\HiRISE2CTX Backup\repo\cache_v2\hirise_color\ESP_045139_2270_COLOR.JP2'
+cannot be read: A device which does not exist was specified.
+```
+
+"A device which does not exist" is a **USB bus drop**, not a file-level problem. Corroborated in the
+System event log at 16:24:00 — **seven `disk` Event ID 51** records (device error during a paging
+operation) plus an `Ntfs` Event 98. The volume re-enumerated afterwards (the raw perf counter reset
+to zero, which is what first exposed this), so it came back, but it went away mid-read.
+
+**No verdict JSON was written for the hash pass**, so there is **no content verification** of this
+snapshot. Do not read the earlier "hashed" language as achieved.
+
+**What IS established, and it is not nothing.** Path-and-size verification passed **twice**: once at
+the end of the copy, and again *after* the disconnect (`-SkipCopy`, 8/8 roots, 11,260 files, 0
+missing / 0 extra / 0 size mismatch). So every file is present, readable and the right length after
+the fault. The 125.8 GB write counter independently corroborates the copy. That is the same standard
+the 2026-08-06 non-mutation check used, so **criterion 5 stands closed** — but at path-and-size, not
+byte-for-byte.
+
+**The device itself is now the open question, and it changes the risk picture.** A drive that drops
+off the bus under sustained sequential read is not a drive to trust as a *sole* snapshot. Three
+things to try before relying on it, cheapest first:
+
+1. **Different USB port and cable.** By far the most common cause, and free to test.
+2. **Disable USB selective suspend** for the duration (`powercfg` / Device Manager → USB Root Hub →
+   Power Management). Aggressive power management dropping an external drive under load is a classic
+   Event-51 generator.
+3. **Re-run `scripts/backup_artifacts.ps1 -SkipCopy -Hash`** and see whether it completes. If it
+   faults again at a similar point, suspect the enclosure or the disk, not the port.
+
+Until one of those completes cleanly, treat the snapshot as **good but unconfirmed at the byte
+level**, and prefer keeping the source intact on C: over relying on D: alone. The residual exposure is
+narrow — a bit flip that preserved file length — but it is exactly what the hash pass existed to rule
+out, and it has not been ruled out.
+
+**This does not block the rebuild.** The snapshot is materially better than no snapshot, every file
+verifies present and correctly sized twice over, and the rebuild's own risk (overwriting the
+originals) is covered. It does mean the "independent device" reassurance is weaker than it looked at
+16:00, and that is worth knowing before the source trees are overwritten.
