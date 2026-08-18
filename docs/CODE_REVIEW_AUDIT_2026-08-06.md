@@ -180,7 +180,23 @@ Before running slow tests or a rebuild:
      arm-specific head/calibration parameterization the "Product semantics" section requires.
    - ⬜ The runtime write guard is **test-only**. Scripts and notebooks are not covered by it, so the
      absolute-scratch-root discipline is the only control there.
-5. ⬜ Snapshot ignored caches, datasets, models, and reports separately before regeneration.
+5. ✅ **CLOSED 2026-08-18 — the snapshot exists (DECISIONS 2026-08-18).** `D:\HiRISE2CTX Backup`, a
+   genuinely independent device (disk 1, `WD My Passport 2628` on USB; C: is disk 0, internal NVMe —
+   confirmed, not assumed). **11,260 files / 125.55 GB, all 8 roots verified at 0 missing / 0 extra /
+   0 size mismatch.** Procedure is version-controlled as `scripts/backup_artifacts.ps1` (read-only on
+   every source, `-DryRun` first, `-SkipCopy`/`-Hash` to re-verify). Two corrections to the table
+   below, found by executing it: the **junction trap is real** — `robocopy /E` follows the four
+   `cache_v2` junctions and would have duplicated 61 GB, so `/XJ` + `/XD` are both required (proof:
+   `repo\cache` copied 0.37 GB, not 61.4 GB) — and the **≈110 GB figure under-counted by ~15 GB**,
+   missing `cache_v2/hirise_color` (8.89), `cache_v2/validation` (2.24), `craters`, `minconf_sweep`,
+   `stage7` and the `pds_*` trees, the cached PDS `.LBL`s among them. Verification is
+   **path-and-size**, the same standard as the 2026-08-06 non-mutation check; a SHA-256 content pass
+   is separate and its `hashed` flag is recorded in `_backup_meta/backup_<stamp>.json`.
+   ⚠ **This does not retire the rest of this document.** The runtime write guard is still test-only,
+   so hand-run producers and notebooks still depend on the absolute-scratch-root discipline. What
+   changed is that a mistake is now recoverable rather than terminal.
+   *Original text, retained for the record:* Snapshot ignored caches, datasets, models, and reports
+   separately before regeneration.
    **Deferred 2026-08-06** pending an external drive; the interim reconstruction plan is
    [ARTIFACT_RECOVERY.md](ARTIFACT_RECOVERY.md), which also records the ~30 GB that **no** plan can
    reconstruct -- including the 4.18 GB of BoulderNet detections that live outside the repo and were
@@ -352,7 +368,7 @@ For the baseline-versus-A1 comparison:
 
 | Gate | Must be true before regeneration starts |
 |---|---|
-| Safety | Isolation criteria 1–4 ✅ **CLOSED 2026-08-06** (copy-staging, runtime write guard, static AST scan, every rebuild-DAG script root now a flag), and the full suite verified non-mutating at 581 passed. Still open: criterion 5 — an independent ≈110 GB backup of the ignored trees. The guard is test-only, so notebooks and hand-run producers still rely on the absolute-scratch-root discipline. |
+| Safety | ✅ **ALL FIVE CLOSED.** Criteria 1–4 closed 2026-08-06 (copy-staging, runtime write guard, static AST scan, every rebuild-DAG script root now a flag), full suite verified non-mutating at 581 passed. **Criterion 5 closed 2026-08-18**: 11,260 files / 125.55 GB snapshotted to an independent USB device and verified 8/8 roots at 0 missing / 0 extra / 0 size mismatch (`scripts/backup_artifacts.ps1`; DECISIONS 2026-08-18). ⚠ The guard remains **test-only**, so notebooks and hand-run producers still rely on the absolute-scratch-root discipline — the snapshot makes a mistake recoverable, it does not make one safe. |
 | Review state | Stale statuses and rejected fix alternatives are normalized; R91 is closed, R78 is marked partial, and R97 is in the live queue. |
 | Label semantics | R56 ✅ **CLOSED 2026-08-06** — re-scored with the target held fixed; verdict withdrawn. R23 remedy ✅ **DECIDED** (Brian: retain + document, temporary pending v3). Mixed-floor metadata contract ✅ **BUILT** (`source_integrity` / `null_geometry_basis` / `realised_label_basis`) but ⬜ **not yet emitted** — zero banked sidecars carry it, so Stage 1 + Stage 4 must re-run. Common-floor target ✅ numerically specified (**0.617257475852966**) and priced, and explicitly **deferred**. All: DECISIONS 2026-08-06o. |
 | Stage 1 | Run it if source geometry/filtering, CRS logic, or Stage-1 provenance changes. It is required if the R23 filtering/provenance fix lands. |

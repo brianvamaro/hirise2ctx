@@ -7999,3 +7999,76 @@ it; `docs/PENDING_REBUILD.md` carries the note.
 skipped. Mutation-verified 5/5: ignore the Stage-4 filter (R03's own error); report image share where
 tile share is meant; make `write_geotiff` drop tags again; accept an empty pool; assume the pixel
 scale instead of reading it.
+
+## 2026-08-18 — isolation criterion 5: the artifact snapshot exists
+
+The last gate on the batched v2 rebuild. Criterion 5 asked for "an independent backup of the ignored
+trees, ≈110 GB", deferred 2026-08-06 pending a drive. Brian supplied one; the snapshot is taken and
+verified.
+
+**Target: `D:\HiRISE2CTX Backup`, and it is genuinely independent.** Two distinct physical devices,
+confirmed rather than assumed: disk 0 is the internal Micron NVMe (`MTFDKBA2T0QGN`, 1908 GB, C:),
+disk 1 is a `WD My Passport 2628` on USB (1863 GB, D:). That matters because the two risks here are
+different — a same-volume copy would have controlled the *rebuild overwriting the originals* (the
+risk criterion 5 names, and the one that has bitten this project twice) but not device failure. This
+covers both. 1012.6 GB free against 125.55 GB required.
+
+**Snapshot: 11,260 files / 125.55 GB, verified 8/8 roots at 0 missing, 0 extra, 0 size mismatch.**
+
+| root | files | GB |
+|---|---|---|
+| `repo\dataset_v2` | 2,482 | 78.34 |
+| `repo\reports` | 2,750 | 21.18 |
+| `repo\cache_v2` | 563 | 15.09 |
+| `repo\dataset` | 328 | 4.97 |
+| `external\hirise_40_vClaire` | 200 | 4.17 |
+| `repo\models` | 3,049 | 1.41 |
+| `repo\cache` | 1,837 | 0.37 |
+| `external\hirise_priority10_detections` | 51 | 0.01 |
+
+Cross-check worth recording: 11,260 files sits right against the **11,218**-file manifest the
+2026-08-06 non-mutation verification built over the six repo roots — an independently derived
+enumeration landing on the same count, with the difference explained by the two out-of-repo trees
+(251 files) and five days of new `reports`/`models` output.
+
+**The procedure is version-controlled: `scripts/backup_artifacts.ps1`.** Read-only on every source;
+the only writes are under `-Destination`. `-DryRun` (robocopy `/L`) first, `-SkipCopy` to re-verify an
+existing snapshot, `-Hash` for content verification. It refuses to run if the destination sits inside
+the source tree, and it checks free space with 5 % headroom before copying.
+
+**Two things the audit's own table got wrong, both now fixed in the procedure.**
+
+1. **The junction trap is real and would have cost 61 GB.** `cache_v2/{ctx_tiles, hirise_decimated,
+   hirise_jp2, pds_labels}` are all junctions into `cache/`, and `robocopy /E` **follows junctions**.
+   Without `/XJ` this snapshot would have silently duplicated 41.2 GB of Murray CTX zips and 19.8 GB
+   of HiRISE JP2s — both re-downloadable. Measured proof the exclusion works: `repo\cache` came out at
+   **0.37 GB** instead of 61.4 GB. Both `/XJ` and an explicit `/XD` are used, because this is the
+   documented trap and one mechanism is not worth trusting alone.
+2. **The 110 GB figure under-counted by ~15 GB.** The table enumerated four derived cache subdirs at
+   4.3 GB and missed `cache_v2/hirise_color` (8.89 GB), `cache_v2/validation` (2.24 GB), `craters`,
+   `minconf_sweep`, `stage7` and the `pds_*` trees — **the cached PDS `.LBL`s among them**, which are
+   load-bearing for the HiRISE SP1 correction *and* for `src.size_floor`'s `MAP_SCALE` (the
+   authoritative pixel scale, since the manifest column is blank for two images). The rule is now
+   "copy everything except the two big re-downloadable archives", which is simpler, has less to get
+   wrong, and captures what an enumeration missed. Real total: **125.55 GB**, not 110.
+
+**Verification level, stated precisely.** What is established is a **path-and-size** match across all
+11,260 files — the same standard the 2026-08-06 non-mutation check used. A **SHA-256 content pass**
+(`-SkipCopy -Hash`, ~250 GB of reads across both devices) is running separately; until it returns,
+this snapshot is verified against truncation, omission and misplacement but **not** against silent
+bit corruption. Criterion 5 should be read as closed at that standard and upgraded when the hash pass
+lands. The verdict JSON under `D:\HiRISE2CTX Backup\_backup_meta\` records which level was achieved
+via its `hashed` flag, so the distinction is auditable rather than remembered.
+
+**What this unblocks.** The rebuild. `docs/PENDING_REBUILD.md`'s nine rows (R74, R27, R28, R29/R75,
+R65, R01, R07, R13, R38) plus R03 item (d), R23's provenance sidecars and a post-Stage-4 re-run of
+`scripts/measure_size_floor.py` can now be executed as one batched pass, following the DAG and
+remaining safety notes in `docs/CODE_REVIEW_AUDIT_2026-08-06.md`. **The snapshot is not a licence to
+skip the rest of that document** — the runtime write guard is still test-only, so hand-run producers
+and notebooks continue to depend on the absolute-scratch-root discipline. What has changed is that a
+mistake is now recoverable instead of terminal.
+
+**Standing caveat.** This snapshot is a *point-in-time* copy of the pre-rebuild state. Once the
+rebuild starts writing, it becomes the only record of what the artifacts looked like before —
+so it must not be refreshed mid-rebuild, and `--DryRun` remains the right first move on any
+re-snapshot.

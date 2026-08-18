@@ -1,6 +1,15 @@
 # Pending rebuild — code fixed, artifacts not yet regenerated
 
-> **Critical update (2026-08-06):** do not execute this rebuild or an unfiltered/slow test suite until
+> **Update (2026-08-18): the isolation gate is CLOSED — the rebuild is unblocked.** All five criteria
+> in [CODE_REVIEW_AUDIT_2026-08-06.md](CODE_REVIEW_AUDIT_2026-08-06.md) are met; criterion 5's snapshot
+> is `D:\HiRISE2CTX Backup` (11,260 files / 125.55 GB on an independent USB device, verified 8/8 roots
+> at 0 missing / 0 extra / 0 size mismatch — `scripts/backup_artifacts.ps1`, DECISIONS 2026-08-18).
+> **Two things this does NOT license.** The runtime write guard is still **test-only**, so hand-run
+> producers and notebooks remain governed by the absolute-scratch-root discipline — a mistake is now
+> *recoverable*, not *harmless*. And the snapshot is point-in-time: once the rebuild starts writing it
+> becomes the only record of the pre-rebuild state, so do not refresh it mid-rebuild.
+>
+> *Superseded, retained for the record —* **Critical update (2026-08-06):** do not execute this rebuild or an unfiltered/slow test suite until
 > the isolation gates in [CODE_REVIEW_AUDIT_2026-08-06.md](CODE_REVIEW_AUDIT_2026-08-06.md) are closed.
 > That audit supersedes this file's older claims that the full suite cannot write live data, records
 > the complete Stage 2 → Stage 3 → Stage 4/4b → Stage 5 → model/calibration → baseline+A1 map chain,

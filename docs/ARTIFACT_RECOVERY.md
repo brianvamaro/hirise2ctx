@@ -62,7 +62,21 @@ ever been watching.
 
 ## When the drive arrives
 
-**Deferred by Brian on 2026-08-06 — no backup runs until then.** The set to copy, with v1 dropped:
+> ✅ **THE DRIVE ARRIVED AND THE BACKUP IS DONE — 2026-08-18.** `D:\HiRISE2CTX Backup`, an independent
+> USB device: **11,260 files / 125.55 GB**, verified 8/8 roots at 0 missing / 0 extra / 0 size
+> mismatch. See `scripts/backup_artifacts.ps1` and DECISIONS 2026-08-18.
+>
+> **The prioritised subset below was not needed** — with 1,012 GB free there was no reason to triage,
+> so the whole irreplaceable set went in one pass, including everything Tier 0 names. In particular
+> the **4.18 GB of detections (`hirise_40_vClaire` + `hirise_priority10_detections`) are backed up**;
+> they were the item this document called highest-priority and "no manifest in this review has ever
+> been watching", and they are now covered under `external\` in the snapshot.
+>
+> This section is retained because the triage order remains the right one if a future snapshot is ever
+> space-constrained.
+
+**Deferred by Brian on 2026-08-06 — no backup runs until then.** *(Superseded — see above.)* The set
+to copy, with v1 dropped:
 
 ```
 detections (both roots)        4.18 GB   <- highest priority; nothing else can be rebuilt without it
