@@ -8072,3 +8072,151 @@ mistake is now recoverable instead of terminal.
 rebuild starts writing, it becomes the only record of what the artifacts looked like before —
 so it must not be refreshed mid-rebuild, and `--DryRun` remains the right first move on any
 re-snapshot.
+
+## 2026-08-18b — rebuild approach: Sherlock, retrain-as-frozen, and the size floor deferred to v3
+
+Design discussion held before drafting the execution plan. Four rulings, plus one measurement that
+changes what a "single size floor" can mean.
+
+### Context that reframes the whole rebuild (Brian, 2026-08-18)
+
+**A v3 detection campaign is already in progress** — BoulderNet is being retrained and applied to a
+more diverse set of locations. That will force a rerun regardless. So **this rebuild is a WAYPOINT,
+not a final result**: its purpose is to characterise honestly what the *current* dataset supports,
+understanding that the dataset is about to be superseded. Every decision below follows from that.
+(It is also consistent with R23's existing disposition — Brian's ruling there was already "the fix is
+a v3 re-detection dataset he will supply".)
+
+### 1. The frozen recipe is RETRAINED AS-IS, not re-selected
+
+The recipe `fw_emb_mlp_ens3_gem96_S32_fa_gt_1e-2` was selected by a bake-off on the *pre-fix* labels,
+and the rebuild moves the target underneath it: R74 recovers ~3,236 S=32 tiles (93 % rich) and
+R29/R75 swaps 6,202 out / 6,255 in, so ~6 % of the pool changes status and rich prevalence moves
+**0.3598 → 0.3733**. Strictly, "which recipe is best" reopens.
+
+**Ruled: retrain the frozen recipe unchanged and report the new numbers.** Not a full bake-off. Two
+reasons: it preserves the pre-registration property that makes the numbers trustworthy, and
+re-selecting against a label basis that v3 will replace spends effort on a waypoint. The banked
+headline figures (pooled PR-AUC **0.7832**, median per-image AUC **0.7865**, prec@5 % 0.948) must all
+be re-derived because they are prevalence-conditioned — not because they were wrong, but because they
+describe a different label basis.
+
+**Scope reduction found while checking this:** the recipe card is embeddings-only
+(`embedding: fang_vit_b16_gem_p3`, no tabular features), so **R27 and R28 do not touch the deployed
+model at all** — they affect the GBM baseline and the W1 error atlas only.
+
+### 2. GPU work runs on SHERLOCK — and the argument is confidence, not throughput
+
+Brian's reasoning: a long local pass will be interrupted by laptop sleep, and it is easier to have
+confidence in a Sherlock run. That is the right criterion — a 16 GPU-h pass that silently suspends at
+hour 3 is worse than a slower run you can trust.
+
+**The split falls out of the data, and the Sherlock half is cheap to stage.** Measured:
+
+| needs to go to Sherlock | GB |
+|---|---|
+| `dataset_v2/context_patches` (own-patch geometry self-check) | 17.00 |
+| `models/pretrained` (Fang-ViT ckpt) | 0.32 |
+| `cache_v2/ctx_windows` (what the embedder reads) | 0.19 |
+| `dataset_v2/labels` + `splits` | 0.01 |
+| **total up** | **~17.5** |
+
+Coming back: ~35 rasters + sidecars, order **300 MB**. The 26 Murray CTX zips (41 GB) are fetched
+**on** Sherlock from Murray Lab, as the previous regional run did — not uploaded. And **`packaged`
+(48.93 GB) does not need to move at all**: it is Stage-5 tabular packaging for the GBM baseline,
+irrelevant to an embeddings-only recipe.
+
+Stages 1→5 stay **local**: they need the local archives (41 GB CTX zips, 20 GB JP2s, 4.2 GB
+detections) and, because everything is cached, they need **no network**. Sleep mitigation there is
+`powercfg /change standby-timeout-ac 0` plus the fact that they are per-image resumable.
+
+**On the queue worry — the answer is a job ARRAY, not one long job.** `run_region_array.sbatch`
+already submits 26 independent elements at ~0.6 GPU-h each; `SHERLOCK_RUN.md` records 13–19 GPU-h / N
+≈ 2–3 h wall clock on 6 GPUs. Short elements schedule far better than one 16-hour allocation. And
+**R14 is what makes pre-emption safe**: before it, a killed job left partials that either crashed
+assembly forever or silently mixed two runs at 63 % stale pixels; now atomic staged writes,
+CRC-checked partials, content-and-provenance resume and set-equality assembly mean a pre-empted
+element can simply be resubmitted. The queue anxiety is largely retired by work already done.
+
+### 3. The size floor: Brian's principle is ACCEPTED, the 1 m target is not attainable, and it moves to v3
+
+**The principle, and it is a better framing than the audit's.** Brian: the mixed floor is wrong
+because *CTX resolution does not change* — it is incorrect for the label definition to vary with
+whatever HiRISE resolution happened to be available at that location. The audit's disposition was
+"retain and document"; this states the mixed floor as a **defect of definition**, not an
+inconvenience, and that framing should be carried forward.
+
+**But the arithmetic says a 1 m floor goes the wrong way.** Converted to equivalent-circle diameter
+(the unit `min_size_m` uses), measured 2026-08-11:
+
+| | area | diameter |
+|---|---|---|
+| current global filter | 1.5626 m² | **1.4105 m** |
+| fine cohort natural floor (12 images) | 0.830–1.156 m² | **1.028–1.213 m** |
+| coarse cohort natural floor (26 images) | 2.965–5.572 m² | **1.943–2.664 m** |
+
+A 1 m diameter floor is **0.785 m² — below the current filter and below even the fine cohort's
+detection limit**, so imposing it removes nothing anywhere. It is equivalent to no filter, and it
+makes the mixing *worse*, because today's 1.4105 m filter at least trims the smallest fine
+detections while removing nothing from the coarse cohort. **A floor cannot be imposed below what the
+detector found.** Unification requires *raising* the floor to the worst image's limit —
+**2.664 m diameter / 5.572 m²**, set by `ESP_017355_2260`.
+
+Cost of that, already measured: R83 — fine-cohort rich prevalence **halves** (0.326 → 0.164) while
+coarse barely moves (0.369 → 0.366), up to **64 %** of one image's tiles flip, and it is a
+**re-ranking, not a rescale** (within-image Spearman 0.60–0.98), so calibration provably cannot
+absorb it. R03's verifier: ~**67 %** of a fine image's labelled boulder area lies below it.
+
+**Ruled (TENTATIVE, Brian 2026-08-18): option C — make the uniform floor a v3 design requirement.**
+Keep mixed-and-documented for this waypoint rebuild; specify uniform (or uniformly-achievable)
+HiRISE pixel scale in the v3 campaign, where the locations are being chosen anyway, and *design* a
+~1.1–1.2 m uniform floor rather than retrofitting a 2.66 m one. Retrofitting spends 67 % of the fine
+cohort's labelled area on a dataset that is about to be replaced. The two rejected alternatives are
+recorded because they remain live if v3 slips: **A** common floor at ~2.66 m over all 38 images
+(uniform, keeps diversity, coarse and expensive); **B** fine images only at ~1.2 m (uniform *and*
+fine, but the pool drops 161,005 → 34,791 tiles = 21.6 % and loses 26 images of spread, cutting
+against the v3 diversity goal).
+
+**Methodological caveat for whenever a common floor is set.** What was measured is the **sample
+minimum** polygon per image, not a completeness limit — over ~250k polygons the smallest one found is
+a noisy estimator. The principled floor is the **size-frequency-distribution rollover per image**.
+That is real work and must not be skipped by reusing the sample minimum.
+
+### 4. Efficiency was NEVER reviewed, and it is now a named gap
+
+Checked against the register: the 2026-07-31 review's 35 areas were correctness, provenance and
+safety. Every `slow` hit concerns pytest markers; the GPU-h figures concern *wasted* work (R36's
+tautological gate authorising ~265 CPU-h + 33 GPU-h), never optimisation. **There is no performance
+finding in the register.** With wider-area inference as a goal, that is a real gap.
+
+Evidence of headroom, both found *incidentally* while fixing correctness this tranche — nobody was
+looking: R07's per-frame statistic 45 min → **3.4 min/tile (13×)** via a bbox pre-filter +
+`bincount`; R13's context gate 0.44 s/+419 MB → **0.016 s/+18 MB (27×)** via a lattice-block form.
+
+Where the cost is: ~0.6 GPU-h/tile, and a tile is 1479² ≈ **2.19 M cells, each taking its own
+ViT-B/16 forward at 224×224**. Extrapolated to full Murray coverage (~4,050 tiles) that is ~2,400
+GPU-h — the scaling wall.
+
+Hypotheses, ranked by expected payoff, **explicitly not measured**:
+1. **The 96→224 bicubic upsample may be pure waste.** Interpolation cannot add information, yet it
+   costs 5.4× the pixels and 196 tokens instead of 36 — and attention is quadratic, so that term is
+   ~30×. Possibly the largest single win. It IS a recipe change and needs re-validation.
+2. **~9× redundant computation** — stride 32 with a 96-px window embeds every pixel ~9 times. Dense
+   prediction shares the backbone; the per-box resize is what currently blocks that.
+3. Infrastructure only, no recipe change: `torch.compile`, `channels_last`, SDPA, larger batches.
+   Perhaps 1.3–2×, low risk.
+4. **Distillation** to a small CNN — potentially 10–100× for production, at the cost of the
+   frozen-foundation-model provenance.
+5. **Cell skipping** via a cheap texture pre-filter — big potential, but it *biases* the map and must
+   be validated against full computation.
+
+Items 1 and 2 are recipe changes and therefore belong with **v3**, not this rebuild. **Agreed next
+action: profile one tile** (read / resize / ViT / head / write) before proposing anything. Deferred to
+a following session by Brian.
+
+### 5. Incidental: seven dead embedding stores must not be regenerated
+
+`dataset_v2/fang_embeddings_f{,_global,_minnaert,_minnaert_w,_minnaert_wl,_minnaert_cubic,_minnaert_center}`
+— 0.39 GB each, ~2.7 GB total — are F-programme arms. F was hard-aborted 2026-07-30. They are backed
+up so nothing is at risk, but the rebuild must **not** regenerate them, and the execution plan needs
+an explicit line saying so.
