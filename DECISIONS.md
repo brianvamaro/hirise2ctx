@@ -8748,3 +8748,62 @@ Murray names (`W008_N32`, `E020_S64`) while the tile cache uses **signed unpadde
 both artifacts of the naming convention, not real gaps. A false reading here implies a ~30 GB download
 that is not actually required. The correct transform is `[EW]ddd_[NS]dd` → signed ints →
 `E{lon}_N{lat}`, unpadded. (Companion to the `murray_ctx_conventions` memory note.)
+
+### 2026-08-20c — DAG step 3 (Stage 3) COMPLETE and verified; the CRS gate passes
+
+**39 / 39 solved, 0 skipped, ~40 s.** Method tally: **`block_median` 38, `single_window_fallback` 1**
+(`ESP_046803_2325`, genuinely bland — 3 of 44 blocks cleared the 0.5 peak floor, below the 6-block
+minimum).
+
+### The CRS sanity gate — the abort condition — PASSES
+
+|shift| **min 79.9 m, median 194.7 m, max 327.3 m.** CLAUDE.md's standing rule is that after correct
+per-image local-radius reprojection the residual HiRISE↔CTX offset is **O(200 m), not km**, and that a
+kilometre-scale result means the CRS handling is wrong and must fail loudly. The median is 194.7 m.
+This is the strongest end-to-end confirmation available that step 1's seven distinct per-image radii
+were applied correctly — a hardcoded 3396190 m sphere would have shown up here as a km-scale residual.
+
+`dy` dominates `dx` on most images (e.g. +186, +234, +249, +263 m), consistent with the known
+systematic north–south offset that the 2026-06-10c sign-error fix addressed.
+
+### R65 verified — components, not a composite
+
+⚠ **My first verification pass reported these "MISSING 38/39". That was my error, not the
+pipeline's** — I searched for top-level keys; they are nested under `block_field`, and the one
+"missing" image is the fallback, which legitimately has no confident-block population.
+
+`peak_correlation_kind` labels the semantics rather than conflating them:
+- **38 × `conditional_median_of_confident_block_peaks`**
+- **1 × `post_shift_pearson_of_applied_shift`** (the fallback, peak 0.4396)
+
+That labelling is precisely R65's remedy. The register's own proposed fix — an unconditional median —
+was refuted before implementation because it reads ~0.75 on a perfectly registered image with 25 %
+junk blocks. `block_field` now carries `quality_version: 2`, `n_blocks`, `n_confident_blocks`,
+`confident_fraction`, `median_block_peak`, `median_block_peak_is_conditional`, the full
+`all_block_peak` five-number summary, `block_mad_px` and `block_mad_px_is_conditional`.
+
+The `peak_correlation` distribution (min 0.440) dips below the 0.5 block floor only for the fallback
+image, whose peak is a *different quantity* — which is exactly the confusion R65 existed to prevent.
+
+**Provenance chain intact: 39/39 sidecars bind the Stage-2 `ctx_window_sha256`**, plus
+`hirise_mask_sha256` and the full `coverage_mask` block (`version: 2`). `shift_id` present 39/39. So
+the R74 → Stage 3 dependency the audit's DAG asserts is materialised in the artifacts.
+
+**Minor, not a finding:** the fallback image's `block_field` omits `confident_fraction` and
+`quality_version` although both are computable there (3/44 = 0.068). The raw counts are present, so
+nothing is lost; it is an inconsistency in derived-field emission, worth tidying whenever Stage 3 is
+next touched.
+
+### `coregistration.enabled: false` in `config_v2.yaml` is a DEAD KEY
+
+`run_stage3.py` reads only `fft_window_px`, `block_px`, `block_peak_min` and `min_confident_blocks`
+from that block. **Nothing anywhere reads `coregistration.enabled`** — the only `"enabled"` consumers
+in `src/` and `scripts/` are the `features` block. Stage 3 always computes; Stage 4 applies the shift
+by default (`apply_coreg = not args.no_coreg_shift`).
+
+This is a documentation hazard rather than a bug: read literally, the config says v2 has no
+co-registration, which would badly misstate the label basis given the y-shift sign-error history.
+**Deliberately NOT changed mid-rebuild** — editing a config key now would move `cfg.hash` and
+invalidate the Stage-2 sidecars just written against it. Fix after step 12, or delete the key.
+
+Cumulative: steps 1–3 in **~21 min**.
