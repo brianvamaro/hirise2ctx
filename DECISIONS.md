@@ -9013,3 +9013,126 @@ drifts: one builds three images whose floors differ by ≤8.1e-9 m² plus a real
 times the tolerance — is still counted as two, so the fix cannot be widened into merging real floors.
 
 **Fast suite: 802 passed, 1 skipped, 21 deselected** (was 800; +2 new).
+
+### 2026-08-20h — SEQUENCING ERROR: step 4b was skipped; Stage 5 aborted and re-ordered
+
+**My error, not a decision.** The audit DAG and PLAN_Rebuild §3 both order **4 → 4b → 5**. After
+step 4 I wrote a status summary that listed "4 → 4c → 5", omitting 4b, then followed my own summary
+instead of the plan on the next two turns. Brian caught it.
+
+**What ran wrongly.** `run_stage5.py --all` started against **2026-06-11 features** — the stale
+pre-R27/R28 generation — while the labels underneath had just been rebuilt. Stopped mid-flight.
+State when stopped:
+
+| artifact | state |
+|---|---|
+| `dataset_v2/features/` | 2026-06-11, stale (untouched — 4b never ran) |
+| `splits/loio_nfold.json` | rewritten 14:55 today |
+| `splits/within_image_4fold.json` | 2026-06-11, not reached |
+| `packaged/` | **42 of 1603 files** rewritten from new labels × stale features |
+
+`packaged/` was therefore left genuinely mixed-generation — the exact hazard the in-place decision
+accepted (DECISIONS 2026-08-19, ground rule §1.2), realised by a sequencing slip rather than a crash.
+
+**Recovery is clean and needs no deletion.** Neither `run_stage4b.py` nor `run_stage5.py` skips
+existing outputs (4b's `exists()` checks are Stage-4 *input* readiness; Stage 5's only "skip" is
+`--no-package`). So 4b regenerates every feature + context patch, and a full Stage 5 re-run
+overwrites all 42 mixed files. Nothing else in `splits/` is at risk — `loio_nfold_ctx_illum.json`
+and `loio_nfold_nbr_s5.json` belong to other stages and Stage 5 does not write them.
+
+### ⚠ The real finding: DAG order is enforced NOWHERE in code
+
+`loaders.verify_package_freshness` is a **read-side** check, invoked from `load_fold`. Stage 5 will
+package stale features without complaint; the mismatch only surfaces later, when something tries to
+*train* on the package. So:
+
+- nothing stopped Stage 5 from consuming a feature generation three months older than its labels;
+- the only thing that caught it was a human reading the plan.
+
+That is a gap worth closing, and not only for 4b: the same class of error is available at every
+remaining step — embedding before Stage 5 completes, mapping before calibration is banked, rendering
+with a `size_floor_basis.json` older than Stage 4. Each producer already *records* its input digests;
+none *checks* them at write time.
+
+Cheapest sufficient fix (deferred, not done mid-rebuild): give each producer a write-time precondition
+that its declared inputs' recorded digests match what is on disk — the read-side check already knows
+how to compute this, it simply runs too late. Recorded as a post-step-12 item.
+
+**Process correction for the rest of this rebuild:** read the step's row in PLAN_Rebuild §3 before
+launching it, not the running summary in conversation. The summary is a convenience; the table is the
+runbook.
+
+### 2026-08-20i — DAG step 4b COMPLETE and verified; R27 and R28 both land
+
+**38 / 38 in 957 s (~16 min).** 3,581,340 feature rows — matching Stage 4's eligible-tile total
+exactly. Context patches regenerated: **S=32 3.67 GB + S=64 14.67 GB = 18.3 GB** (was 17.0; grew with
+the pool). Byte arithmetic checks out — 1024 B × 3,581,340 = 3.67 GB, 4096 B × 3,581,340 = 14.67 GB —
+so the equal per-scale counts are correct, not a reporting bug: every feature row carries both a
+32-px and a 64-px patch.
+
+**R27 — the out-of-range sentinel is gone.**
+
+| | before | after |
+|---|---|---|
+| `lacunarity_shadow_b{2,4}` exactly `0.0` (S≥32) | 42,015 (21.2 %) | **0** |
+| NaN | — | 42,032 (20.6 %) |
+| values in the impossible interval (0, 1) | present via Stage-6a averaging | **0** |
+| smallest genuine value | 1.0 | **1.0000** |
+
+All **42,032** shadow-free rows are NaN — 100 % correspondence with `shadow_fraction == 0`, exactly
+the population R27 identified.
+
+**R28 — `edge_density` no longer tracks per-image radiometry.**
+
+| | before | after |
+|---|---|---|
+| per-image Spearman(`edge_density`, `intensity_std`) | **0.965** | **0.2656** (p = 0.107, n.s.) |
+| per-image `edge_density` spread | **12.2×** | **1.91×** |
+| `ESP_068402_2240` share of S=64 tiles with zero edges | **33.8 %** | **1.9 %** |
+
+The coupling is broken rather than merely reduced: at n=38 the residual correlation is not
+significant. Worst-case zero-edge share is now 26.2 % (`ESP_069669_2220`), down from 33.8 %.
+
+These close the *feature* half of PENDING_REBUILD rows 2–3. Per the FM-path-only ruling (2026-08-19)
+the downstream tabular numbers — Stage 6a neighbour features, the GBM sweep, the W1 error atlas — are
+**not** re-derived, so those rows stay open with that annotation.
+
+### 2026-08-20j — DAG step 5 (Stage 5) COMPLETE and verified, re-run in the correct order
+
+Re-run after 4b landed, so it packaged **fresh labels × fresh features** — what should have happened
+the first time (2026-08-20h).
+
+| scheme | folds | files | refreshed |
+|---|---|---|---|
+| `loio_nfold` | **38** | 230 | **230/230** |
+| `within_image_4fold` | **152** | 914 | **914/914** |
+
+`within_image_4fold` `test_rows_sum = 3,581,340` — exactly the feature-row total, so every tile
+appears in **exactly one** test fold. `train_rows_sum` 10,744,020 = 3× that, as a 4-fold scheme
+requires. The 42 mixed-generation files the aborted run left in `loio_nfold` are overwritten; no
+manual deletion was needed.
+
+**R04 freshness gate PASSES on both schemes.** `load_fold("loio_nfold", 0, scale_idx=2)` returns
+X_train **(150394, 52)** + X_test **(14250, 52)** = **164,644** — the S=32 pool exactly.
+Package metadata binds `split_hash`, `config_hash 9bce49b6214f`, `obs_to_int` (38 images) and
+`source_digests` v1 with **per-obs `labels_sha256` + `labels_inputs`** — the R74 chain, so a content
+change at fixed cohort is detectable.
+
+### ⚠ Two stale variant packages now pass the gate with a WARNING, not an error
+
+`packaged/loio_nfold_ctx_illum` (2026-05-30) and `packaged/loio_nfold_nbr_s5` (2026-06-10) are Stage-6a
+variants that `run_stage5.py --all` does not write, so they still describe the **pre-rebuild** labels.
+`verify_package_freshness` **passes** them, emitting:
+
+> *"packaged/… predates source-digest provenance (R04/R74): its label and feature contents cannot be
+> verified, so a pre-R74 label generation would be undetectable here. Re-package it before quoting
+> numbers from it."*
+
+That is by design and the warning is honest — check 3 cannot run without recorded digests, and checks
+1–2 pass because their cohort and split hash are internally consistent. But the practical consequence
+is real: **two packages on disk now silently describe the old label basis and will not raise.** Under
+the FM-path-only ruling they are out of scope to rebuild, so they should be **deleted or renamed
+`.stale`** before step 12, rather than left to be found by a future `load_fold`. Recorded as a step-12
+item, not actioned now.
+
+Cumulative compute: steps 1–5 ≈ **50 min**.
