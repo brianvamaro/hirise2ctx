@@ -8701,3 +8701,50 @@ analysis of the null-geometry population, work the original run never did. **Exp
 estimates to under-read wherever a stage gained provenance work in the fixing tranche** — Stage 2
 (R74 mask + digests), Stage 3 (R65 components + `shift_id`) and Stage 4 (R29/R80) are all in that
 category. The 1.5–2 day total still holds; the per-stage figures are floors, not forecasts.
+
+### 2026-08-20b — DAG step 2 (Stage 2) COMPLETE and verified
+
+**39 / 39 windows + coverage masks, 0 failed, 11 min**, in place into `cache_v2/ctx_windows/`.
+No network: all 39 manifest rows resolved to a cached Murray zip.
+
+| check | result |
+|---|---|
+| images | **39/39, 0 failed** |
+| `ctx_window_sha256` | **39/39 present** |
+| coverage-mask `version` | **2 on all 39** — the definitive marker that R74 is in effect (`version: 1` anywhere = the fix did not take) |
+| mask method | `decimated_nonzero_with_interior_shadow_fill` ×39 |
+| `max_interior_hole_px` | 16 on all 39, config-driven and recorded per artifact |
+| R74 shadow-hole fill | **6,514 px re-marked across 39/39 images** — every image had at least one |
+| `footprint_source` | **`polygon_bbox` ×39** |
+| `hirise_coverage_fraction` | min 0.4666, median 0.5450, max 0.6313 |
+
+**R67 is confirmed on live output.** The audit closed R67 at LOW on the argument that the nominal
+fallback branch is "provably unreachable for v2 (39/39 take `polygon_bbox`)". The rebuild reproduces
+exactly that: 39/39 `polygon_bbox`, 0 fallbacks. The R67 footprint defects therefore remain latent
+and touch no v2 artifact, as the audit predicted.
+
+### ⚠ Correction to the step-1 timing generalisation
+
+After step 1 ran 3.5× **slower** than its mtime estimate I wrote that the §3a figures are "floors, not
+forecasts" wherever a stage gained provenance work. **Step 2 ran 5× FASTER — 11 min against 58 min.**
+The generalisation was wrong. The correct reading is narrower: **mtime-derived estimates are
+unreliable in both directions, and for unrelated reasons.** Step 1 gained R23's byte-integrity scan
+and score-rank analysis (slower); step 2's original 58 min *included downloading the Murray tile
+zips*, which are now cached (faster). Treat §3a as an order-of-magnitude sanity check, not a schedule.
+
+Net so far: steps 1–2 in **~20 min** against a combined ~61 min estimate.
+
+### The plan's step-2 command was WRONG, and it would have failed immediately
+
+`scripts/run_stage2.py` takes a **single positional ObsId and has no `--all`** — unlike stages 1, 3, 4,
+4b and 5. `run_stage2.py --config config_v2.yaml` dies on a missing argument. The DAG step is a
+**loop**, now recorded as such in the plan, with a runner that continues past a failure and prints a
+tally (Stage 1 established that per-image failures do not produce a nonzero exit, so the count is the
+only real gate).
+
+**Also worth recording, because it cost three attempts:** the manifest stores **zero-padded compass**
+Murray names (`W008_N32`, `E020_S64`) while the tile cache uses **signed unpadded** ones (`E-8_N32`,
+`E20_N-64`). Two successive bad transforms of mine reported "39 missing" and then "18 missing" tiles —
+both artifacts of the naming convention, not real gaps. A false reading here implies a ~30 GB download
+that is not actually required. The correct transform is `[EW]ddd_[NS]dd` → signed ints →
+`E{lon}_N{lat}`, unpadded. (Companion to the `murray_ctx_conventions` memory note.)
