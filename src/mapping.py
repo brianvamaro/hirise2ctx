@@ -385,25 +385,60 @@ def artifact_digest(path: str | Path) -> str | None:
     return h.hexdigest()
 
 
+def tile_vsizip(zip_path: str | Path, inner_tif: str) -> str:
+    """The `/vsizip/` path `read_tile_window` reads. One definition, two callers."""
+    return f"/vsizip/{Path(zip_path).as_posix()}/{inner_tif}"
+
+
+def open_tile(zip_path: str | Path, inner_tif: str):
+    """Open a Murray tile once, for a caller that will window it many times.
+
+    **Why this exists (DECISIONS 2026-08-18c).** `rasterio.open` on one of these costs a
+    measured **7.95 s**, every time, and it is *not* the read: with the handle held, a
+    4096² window is **1.4 s** and a full sequential pass over the whole 47,420² tile is
+    **16.6 s**. The inner TIFF is `compression=None`, `tiled=False`, `blockysize=1` inside a
+    DEFLATE zip member, so GDAL must inflate ≈2.25 GB to reach the strip-offset table on
+    every open. A sweep driver that opens per window therefore pays 144 × 7.95 s = 0.318 h
+    per tile — **23 % of map wall-clock** — to re-read the same header.
+
+    Use as a context manager and pass the handle to `read_tile_window(..., dataset=src)`.
+    Scope it to ONE tile so a 26-tile run holds one handle at a time, not 26.
+    """
+    import rasterio
+
+    return rasterio.open(tile_vsizip(zip_path, inner_tif))
+
+
 def read_tile_window(zip_path: str | Path, inner_tif: str, row_off: int, col_off: int,
-                     size: int) -> CtxWindow:
+                     size: int, *, dataset=None) -> CtxWindow:
     """Window-read a `size x size` uint8 block from `/vsizip/{zip}/{inner_tif}`.
 
     No full-tile materialization: rasterio reads only the requested window via the
     zip's internal tiling. Returns a `CtxWindow` carrying the read offset (grid
     origin), the window's affine, and the tile CRS.
+
+    `dataset` is an already-open rasterio handle for this same tile (see `open_tile`);
+    when given, the open is skipped and the handle is NOT closed — it belongs to the
+    caller. `zip_path`/`inner_tif` are then unused for I/O but still required, so every
+    call site keeps naming the tile it means. The returned window is bit-identical either
+    way: same `src.read`, same `window_transform`, same CRS.
     """
-    import rasterio
     from rasterio.windows import Window
 
-    vsizip = f"/vsizip/{Path(zip_path).as_posix()}/{inner_tif}"
-    with rasterio.open(vsizip) as src:
-        window = Window(col_off=int(col_off), row_off=int(row_off), width=int(size), height=int(size))
+    window = Window(col_off=int(col_off), row_off=int(row_off),
+                    width=int(size), height=int(size))
+
+    def _read(src) -> CtxWindow:
         data = src.read(1, window=window).astype(np.uint8, copy=False)
         wt = src.window_transform(window)
         crs_wkt = src.crs.to_wkt() if src.crs else ""
-    return CtxWindow(data=data, row_off=int(row_off), col_off=int(col_off),
-                     transform=tuple(wt)[:6], crs_wkt=crs_wkt)
+        return CtxWindow(data=data, row_off=int(row_off), col_off=int(col_off),
+                         transform=tuple(wt)[:6], crs_wkt=crs_wkt)
+
+    if dataset is not None:
+        return _read(dataset)
+    with open_tile(zip_path, inner_tif) as src:
+        return _read(src)
 
 
 # ============================================================================

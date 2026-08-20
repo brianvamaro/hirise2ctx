@@ -71,7 +71,8 @@ import src.modeling  # noqa: F401  -- OpenMP/DLL bootstrap; must precede numpy
 import numpy as np
 
 from src.mapping import (CONTEXT_ZERO_HIST_EDGES, COARSE_GRID_ID, artifact_digest,
-                         assert_shared_lattice, file_sha256, predict_window, read_tile_window,
+                         assert_shared_lattice, file_sha256, open_tile, predict_window,
+                         read_tile_window,
                          tile_global_grid, uncovered_cells, verify_geotiff, window_offsets,
                          write_geotiff)
 
@@ -609,64 +610,79 @@ def map_one_tile(murray_tile: str, embedder, head, calibrator, *, args) -> dict:
 
     done_tiles = 0
     t_tile = time.monotonic()
-    for k, (row_off, col_off) in enumerate(grid):
-        part_path = partial_dir / partial_name(row_off, col_off)
-        if part_path.exists() and not args.force:
-            # R14: "exists" is not "usable". A partial truncated by a wall-clock kill was
-            # skipped here and then blew up at assembly, so every re-run crashed at the same
-            # point forever. Validate it (CRC included) and recompute it if it is damaged.
-            try:
-                read_partial(part_path)
-                continue
-            except Exception as exc:                     # noqa: BLE001
-                print(f"[{murray_tile}] partial {part_path.name} is unreadable "
-                      f"({type(exc).__name__}) -> recomputing", flush=True)
-                part_path.unlink(missing_ok=True)
-        if args.limit_windows is not None and done_tiles >= args.limit_windows:
-            print(f"[{murray_tile}] --limit-windows {args.limit_windows} reached", flush=True)
-            break
+    # DECISIONS 2026-08-18c: ONE open for the whole sweep. `rasterio.open` on a Murray vsizip
+    # costs a measured 7.95 s (GDAL inflates ~2.25 GB of DEFLATE to reach the strip-offset
+    # table of an uncompressed, blockysize=1 TIFF), against 1.4 s for the 4096² read itself.
+    # Opening per window cost 144 x 7.95 s = 0.318 h/tile, 23 % of map wall-clock, to re-read
+    # the same header. Opened LAZILY so a tile whose partials are all present and valid is
+    # still skipped without paying for a read it does not need, and closed in `finally` so a
+    # mid-sweep raise does not leak the handle across the remaining tiles of a 26-tile run.
+    tile_src = None
+    try:
+        for k, (row_off, col_off) in enumerate(grid):
+            part_path = partial_dir / partial_name(row_off, col_off)
+            if part_path.exists() and not args.force:
+                # R14: "exists" is not "usable". A partial truncated by a wall-clock kill was
+                # skipped here and then blew up at assembly, so every re-run crashed at the same
+                # point forever. Validate it (CRC included) and recompute it if it is damaged.
+                try:
+                    read_partial(part_path)
+                    continue
+                except Exception as exc:                     # noqa: BLE001
+                    print(f"[{murray_tile}] partial {part_path.name} is unreadable "
+                          f"({type(exc).__name__}) -> recomputing", flush=True)
+                    part_path.unlink(missing_ok=True)
+            if args.limit_windows is not None and done_tiles >= args.limit_windows:
+                print(f"[{murray_tile}] --limit-windows {args.limit_windows} reached", flush=True)
+                break
 
-        t0 = time.monotonic()
-        window = read_tile_window(zip_path, inner_tif, row_off, col_off, win)
-        pred = predict_window(window, embedder, head, tile_px=TILE_PX,
-                              batch=args.batch, max_zero_fraction=args.max_zero_fraction,
-                              max_context_zero_fraction=args.max_context_zero_fraction,
-                              calibrator=calibrator, apply_isotonic=not args.no_isotonic,
-                              global_grid=grid_geom.as_tuple)
-        keep = np.isfinite(pred.prob)
-        cols = {
-            # ti/tj are GLOBAL cell indices now. int32 is ample -- at S=32 the whole planet
-            # spans row +-90*11855/32 = +-33,342 and col +-180*11855/32 = +-66,684 cells --
-            # but the cast is where a future tile_px or ppd change would silently wrap, so
-            # range-check rather than assume.
-            "ti": as_int32_cells(pred.ti[keep], "ti", murray_tile),
-            "tj": as_int32_cells(pred.tj[keep], "tj", murray_tile),
-            "prob": pred.prob[keep].astype(np.float32),
-            "grid_id": np.array(COARSE_GRID_ID),
-            **gate_cols(pred, murray_tile),
-        }
-        if calibrator is not None:
-            cols["prob_raw"] = pred.prob_raw[keep].astype(np.float32)
-            cols["abundance"] = pred.abundance[keep].astype(np.float32)
-        # R14: stage then rename, so the final name never exists in a half-written state --
-        # `np.savez_compressed` writes the zip in place with no tmp+rename of its own.
-        # Write through a HANDLE: `np.savez_compressed` appends ".npz" to a path that does not
-        # already end in it, so a `.npz.tmp` target silently becomes `.npz.tmp.npz`. Keeping
-        # the ".tmp" suffix also keeps these out of the `*.npz` glob the set gate uses.
-        tmp_part = part_path.with_name(part_path.name + ".tmp")
-        try:
-            with open(tmp_part, "wb") as fh:
-                np.savez_compressed(fh, **cols)
-            read_partial(tmp_part)                       # CRC round-trip before it counts
-            tmp_part.replace(part_path)
-        except BaseException:
-            tmp_part.unlink(missing_ok=True)
-            raise
-        done_tiles += 1
-        dt = time.monotonic() - t0
-        rate = int(keep.sum() / dt) if dt > 0 else 0
-        print(f"[{murray_tile}] win {k + 1}/{len(grid)} off=({row_off},{col_off}) "
-              f"kept={int(keep.sum())} {dt:.1f}s ~{rate} tiles/s", flush=True)
+            t0 = time.monotonic()
+            if tile_src is None:
+                tile_src = open_tile(zip_path, inner_tif)
+            window = read_tile_window(zip_path, inner_tif, row_off, col_off, win,
+                                      dataset=tile_src)
+            pred = predict_window(window, embedder, head, tile_px=TILE_PX,
+                                  batch=args.batch, max_zero_fraction=args.max_zero_fraction,
+                                  max_context_zero_fraction=args.max_context_zero_fraction,
+                                  calibrator=calibrator, apply_isotonic=not args.no_isotonic,
+                                  global_grid=grid_geom.as_tuple)
+            keep = np.isfinite(pred.prob)
+            cols = {
+                # ti/tj are GLOBAL cell indices now. int32 is ample -- at S=32 the whole planet
+                # spans row +-90*11855/32 = +-33,342 and col +-180*11855/32 = +-66,684 cells --
+                # but the cast is where a future tile_px or ppd change would silently wrap, so
+                # range-check rather than assume.
+                "ti": as_int32_cells(pred.ti[keep], "ti", murray_tile),
+                "tj": as_int32_cells(pred.tj[keep], "tj", murray_tile),
+                "prob": pred.prob[keep].astype(np.float32),
+                "grid_id": np.array(COARSE_GRID_ID),
+                **gate_cols(pred, murray_tile),
+            }
+            if calibrator is not None:
+                cols["prob_raw"] = pred.prob_raw[keep].astype(np.float32)
+                cols["abundance"] = pred.abundance[keep].astype(np.float32)
+            # R14: stage then rename, so the final name never exists in a half-written state --
+            # `np.savez_compressed` writes the zip in place with no tmp+rename of its own.
+            # Write through a HANDLE: `np.savez_compressed` appends ".npz" to a path that does not
+            # already end in it, so a `.npz.tmp` target silently becomes `.npz.tmp.npz`. Keeping
+            # the ".tmp" suffix also keeps these out of the `*.npz` glob the set gate uses.
+            tmp_part = part_path.with_name(part_path.name + ".tmp")
+            try:
+                with open(tmp_part, "wb") as fh:
+                    np.savez_compressed(fh, **cols)
+                read_partial(tmp_part)                       # CRC round-trip before it counts
+                tmp_part.replace(part_path)
+            except BaseException:
+                tmp_part.unlink(missing_ok=True)
+                raise
+            done_tiles += 1
+            dt = time.monotonic() - t0
+            rate = int(keep.sum() / dt) if dt > 0 else 0
+            print(f"[{murray_tile}] win {k + 1}/{len(grid)} off=({row_off},{col_off}) "
+                  f"kept={int(keep.sum())} {dt:.1f}s ~{rate} tiles/s", flush=True)
+    finally:
+        if tile_src is not None:
+            tile_src.close()
 
     # Assemble. R14: this gate was `len(present) < len(grid)` — a COUNT over a glob, which a
     # superset satisfies. Measured on the reachable stale state (a completed --win-px 2048

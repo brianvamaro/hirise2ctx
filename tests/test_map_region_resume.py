@@ -37,6 +37,17 @@ _fake_args, _synthetic_tile = _g._fake_args, _g._synthetic_tile
 TILE_PX = 32
 
 
+class _NullSrc:
+    """Stand-in for the per-tile rasterio handle the drivers now hold open.
+
+    The sweep drivers `open_tile(...)` once and pass the handle to `read_tile_window`
+    (DECISIONS 2026-08-18c). Every test here fakes `read_tile_window`, so the handle is
+    never read from -- it only has to exist and close.
+    """
+
+    def close(self):
+        pass
+
 def _uncommit(tmp_path, tile):
     """Remove the tile-level commit so the next call reaches the PARTIAL gates."""
     for p in tmp_path.glob(f"{tile}*.tif"):
@@ -52,13 +63,14 @@ def _drive(monkeypatch, tmp_path, out_dir=None, **kw):
     tile, transform, extent = _synthetic_tile(tmp_path)
     a, b, c, d, e, f = transform
 
-    def fake_read(zip_path, inner_tif, row_off, col_off, size):
+    def fake_read(zip_path, inner_tif, row_off, col_off, size, **_kw):
         h, w = min(size, extent - row_off), min(size, extent - col_off)
         return CtxWindow(data=np.full((h, w), 200, dtype=np.uint8),
                          row_off=row_off, col_off=col_off,
                          transform=(a, b, c + col_off * a, d, e, f + row_off * e),
                          crs_wkt=_WKT)
 
+    monkeypatch.setattr(mr, "open_tile", lambda *a_, **k_: _NullSrc())
     monkeypatch.setattr(mr, "read_tile_window", fake_read)
     args = _fake_args(tmp_path, out_dir=str(out_dir or tmp_path), win_px=256, **kw)
     return mr, tile, args

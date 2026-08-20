@@ -8277,3 +8277,373 @@ out, and it has not been ruled out yet. That is a *pending verification*, not a 
 verifies present and correctly sized twice over, and the rebuild's own risk (overwriting the
 originals) is covered. It does mean the "independent device" reassurance is weaker than it looked at
 16:00, and that is worth knowing before the source trees are overwritten.
+
+---
+
+## 2026-08-18c — Map inference PROFILED: the read is 32 % of wall-clock and 86 % of that is `rasterio.open`
+
+Efficiency was the one axis the 2026-07-31 review never covered (35 areas, all correctness /
+provenance / safety). Brian asked for one tile profiled before any optimisation is proposed. This is
+that measurement. **Read-only throughout** — the profilers live in the session scratchpad, opened
+cached artifacts only, and wrote nothing under any live root.
+
+**Setup.** Tile `E-12_N36` (47,420², 1.61 GiB zip), shipped config `--win-px 4096 --batch 96`,
+`tile_px=32`, one full mid-tile window (15,876 cells) instrumented stage by stage with
+`torch.cuda.synchronize()` around each, extrapolated ×144 windows/tile. GPU = RTX 5070 Laptop
+(8 GiB, sm_120), torch 2.12.0+cu130.
+
+| stage | s / window | % | h / tile (×144) |
+|---|---|---|---|
+| 1 windowed read | 11.117 | **32.1** | 0.445 |
+| 2 grid enumeration | 0.002 | 0.0 | 0.000 |
+| 3 slice 96² context boxes | 0.047 | 0.1 | 0.002 |
+| 4a H2D + normalize | 0.171 | 0.5 | 0.007 |
+| 4b **bicubic 96→224** | 0.066 | **0.2** | 0.003 |
+| 5 **ViT-B/16 forward** | 22.343 | **64.6** | 0.894 |
+| 6 GeM pool + D2H | 0.388 | 1.1 | 0.016 |
+| 7 nodata gates | 0.071 | 0.2 | 0.003 |
+| 8 head predict | 0.404 | 1.2 | 0.016 |
+| 9 rasterize | 0.002 | 0.0 | 0.000 |
+| **TOTAL** | **34.611** | 100 | **1.384** |
+
+### Finding 1 (NEW, and it is free): 144 redundant `rasterio.open`s per tile
+
+`scripts/map_region.py:630` calls `read_tile_window(zip_path, …)` **inside** the window loop, and
+`src.mapping.read_tile_window` opens `/vsizip/…` on every call. Measured separately:
+
+- `rasterio.open` of the vsizip alone: **7.99 / 7.91 / 7.95 s** (three trials).
+- With **one** open held, a 4096² window read costs **1.4 s**, a backward re-read **0.00 s**, and a
+  **full sequential pass over the entire 47,420² tile costs 16.6 s** (135.6 Mpx/s).
+
+So of the 0.445 h/tile read term, **144 × 7.95 s = 0.318 h (23 % of total wall-clock) is opening the
+same file 144 times**.
+
+**Mechanism, verified rather than assumed.** The inner TIFF is `compression=None`, `tiled=False`,
+`blockysize=1` — 47,420 blocks of one scanline each — stored inside a DEFLATE zip member. GDAL must
+inflate the member to reach the IFD/strip-offset table, ≈2.25 GB at ≈280 MB/s ≈ 8 s, **per open**.
+This is the memory note's "TIFF block-size pitfall", now quantified.
+
+A second consequence of the same geometry: a 4096×4096 square read costs **the same** as the
+full-width 4096×47,420 band (9.52 s vs 9.54 s) — **11.58× read amplification**, the square throws
+away 91 % of every strip it decompresses. Hoisting the open makes this mostly moot (1.4 s/window),
+but band-wise reading would take the read term to ~0.005 h/tile.
+
+**Fix is numerically identical output** — same pixels, same order, same partials, R14 resume
+untouched. Read term 0.445 → ~0.058 h/tile; total **1.384 → ~1.00 h/tile, −28 %**.
+
+⚠ **Unmeasured on Sherlock.** The open cost is CPU+I/O and GPU-independent, so on an L40S — where the
+GPU term shrinks ~2.3× but the open does not — the read should be a *larger* share, plausibly
+~45–55 % of wall-clock with the GPU idle throughout. That inference needs one confirming measurement
+on Sherlock before it is quoted as fact.
+
+### Finding 2: the lead hypothesis is real but 6×, not 30×
+
+The 96→224 bicubic upsample was hypothesised as "possibly the biggest single win, ~30× on the
+attention term". Measured, same architecture at `img_size=96` (36+1 tokens vs 196+1):
+
+- batch 96: 0.1323 → 0.0217 s/batch = **6.09×**
+- batch 256, pure fp16: 725 → 4,091 img/s = **5.64×**
+
+Directionally confirmed, magnitude one fifth of the guess. **Why:** `src.fm_embeddings._build_block`
+already uses `F.scaled_dot_product_attention`, so the quadratic term is already a flash kernel and is
+*not* where ViT-B/16 spends its time at 197 tokens; the win is the ~5.4× token/pixel reduction in the
+patch-embed conv and the MLPs, not the attention. **The resize itself is negligible** — 0.066 s/window,
+0.2 %. The cost was never the interpolation, it was the 196 tokens it produces.
+
+This remains a **recipe change** and therefore v3 work, per 2026-08-18b.
+
+### Finding 3: the "1.3–2× free GPU levers" are already spent
+
+Measured on the actual Fang ViT, batch 256, RTX 5070:
+
+| lever | img/s | vs autocast fp16 |
+|---|---|---|
+| autocast fp16 (shipped) | 725.0 | 1.00× |
+| pure fp16 weights | 714.8 | **0.99×** |
+| `channels_last` + fp16 | 717.6 | **0.99×** |
+| SDPA / flash attention | — | **already in use** |
+| `torch.compile` | — | untestable here (no Triton on Windows) |
+
+Batch size is also saturated: 32 / 96 / 256 / 512 → 766 / 723 / 730 / 731 img/s. **Raising `--batch`
+buys nothing** and the docstring's "larger batches better saturate an L40S/A100" is unverified on this
+GPU and should not be assumed. `torch.compile` is the only untested member of this group and can only
+be measured on Sherlock (Linux); at ~13 % of the card's fp16 peak there is theoretical headroom, so it
+is worth one Sherlock probe, but it is a *hope*, not a measured lever.
+
+### Corrected cost picture
+
+| scenario | h/tile (RTX 5070) | 26-tile region | full Murray ≈4,050 tiles |
+|---|---|---|---|
+| as shipped | 1.384 | 36.0 h | 5,600 h |
+| **+ hoist the open** (free, no recipe change) | ~1.00 | 26.0 h | 4,050 h |
+| + native-96 ViT (**recipe change → v3**) | ~0.25 | 6.5 h | 1,010 h |
+
+Scaled to Sherlock's L40S (the banked ≈0.6 GPU-h/tile, ≈2,400 GPU-h full-Murray figures): hoisting the
+open alone should take full Murray to roughly **1,550 GPU-h**, and hoisting + native-96 to roughly
+**450 GPU-h**. Those are extrapolations from a laptop GPU and are quoted as such.
+
+**Ruling: the open-hoist is the only optimisation on the table for THIS rebuild** — it is provably
+output-identical, touches one call site, and is worth ~28 % of wall-clock. Everything else is either
+already done (SDPA, batch), a no-op (fp16, channels_last), or a recipe change that belongs with v3
+(native-96, the 9× stride redundancy, distillation). Whether the hoist lands before or after the
+rebuild is Brian's call — it is not a correctness dependency.
+
+---
+
+## 2026-08-19 — Rebuild execution plan DRAFTED; three more decisions ruled; A1's cost measured
+
+[PLAN_Rebuild.md](PLAN_Rebuild.md) now exists: the audit's 12-step DAG turned into commands, roots,
+per-step verification gates, abort conditions and a local/Sherlock split. **Nothing has been run** —
+it is drafted for approval.
+
+### Three decisions ruled (Brian, 2026-08-19)
+
+**1. Build IN PLACE into `dataset_v2`, gated on the SHA-256 backup pass completing first.**
+I opened this proposing a separate generation root and Brian pushed back correctly: `D:` *is* a full
+copy — `repo\dataset_v2` is inside the 125.55 GB — so rollback exists, and at ~120 MB/s a full
+78.34 GB restore is ~11–15 min. That retires the argument I led with.
+
+What survives the challenge, and why the hash pass is the gate: **right now two independent copies
+exist, so a length-preserving bit flip is detectable by comparison. After an in-place overwrite `D:`
+is the only record, and its byte-integrity is still unproven.** Running the owed hash pass first
+closes exactly that. Two lesser arguments are accepted as residual risk: a mid-stage abort leaves a
+mixed generation in `dataset_v2` (detectable via the post-2026-08-06 sidecar `inputs` digests, hence
+the plan's per-step verify gates), and rollback requires re-attaching `D:`. Brian is handling
+stay-awake himself; no `powercfg` change was made.
+
+**2. Land the `rasterio.open` hoist before step 11** (DECISIONS 2026-08-18c). Acceptance is
+bit-identical `scripts/parity_check.py` against the existing reference, or it does not land.
+
+**3. FM path only.** R27/R28 change `features/`, but the frozen recipe is embeddings-only, so no GBM
+sweep and no W1 error atlas. Stage 4b still runs (`context_patches` feed the embeddings).
+PENDING_REBUILD rows 2–3 stay open, annotated *"features regenerated; downstream tabular numbers not
+re-derived."*
+
+### The Sherlock split SHRANK — a consequence of 2026-08-18c's measurement
+
+2026-08-18b sized the upload at ~17.5 GB (`context_patches` 17.0 + ckpt 0.32 + `ctx_windows` 0.19 +
+labels/splits 0.01), on the assumption that step 6's embeddings run on Sherlock. **They should not.**
+
+- The training pool is **161,005 tiles** = ~161 k ViT forwards. At the measured **730 img/s** that is
+  **≈3.7 min of GPU** (≈8 min if both P32 and P96 inputs are banked). So `context_patches` (17.0 GB)
+  **never moves**, and the upload drops to the head + calibration artifacts.
+- The A1 embedding arm could not move cheaply in any case: `--norm a1` calls
+  `src.striping.a1_stats_native_tile`, which **streams the parent Murray tile** and reads the cached
+  SeamMaps — `cache/ctx_tiles/` (24 zips, 19 `_seammap_*`, 36 `_frames_*.gpkg`), none of it in the
+  17.5 GB list. Locally those inputs are already on disk.
+- **Only step 11 is genuinely GPU-heavy**: 26 tiles × 2 arms ≈ 31 GPU-h, ≈23 GPU-h post-hoist.
+
+**Net: everything local except step 11.** This is not a change of mind about Sherlock — the *reason*
+for Sherlock (laptop sleep during a long unattended GPU job, demonstrated 2026-08-18) applies to
+step 11 and only step 11.
+
+### A1's computational cost, MEASURED (read-only, `E-12_N36`, 81 dissolved source frames)
+
+| component | cost |
+|---|---|
+| `load_frames` (SeamMap, dissolved by PRODUCT_ID) | 1.45 s |
+| `a1_stats_native_tile` — once-per-tile streaming pass | **154.9 s (2.58 min)** |
+| `frame_labels_on` — rasterize 81 frames onto one 4096² window | **2.67 s** ×144 |
+| `a1_normalize_native` — apply per-frame (median, IQR) | **1.09 s** ×144 |
+
+Provenance from the same run: **80/81** frames got their own statistic, fallback covers **8.1e-5** of
+valid pixels, R38 clip fraction **1.9e-4** — all consistent with R08's ratified contract (the fallback
+population is isolated single pixels, normalized rather than dropped).
+
+**Per-window A1 overhead 3.756 s; per tile 0.193 h** = 0.043 h stats + **0.150 h** per-window. That is
+**+14 %** on the 1.384 h baseline tile — and the distribution is the surprise: **the streaming stats
+pass is only 22 % of it; 78 % is re-rasterizing the same 81 unchanging polygons onto all 144 windows.**
+
+Two latent wins, **not** taken in this rebuild (they are a second and third driver change on top of
+the hoist, and need Brian's call):
+- **Cache/reuse the frame labels across windows.** A whole-tile native int32 label map is ~4.5 GB (the
+  code comment says so, which is why it rasterizes per block), but rasterizing once per 4096-row band
+  instead of once per window is ~12× on that term: **0.150 h → ~0.012 h, A1's overhead +14 % → +4 %**.
+- **`frame_hist_native` pays the same 11.58× strip amplification** as `map_region`: it correctly opens
+  once, then reads 144 4096² *squares*, each decompressing full-width strips. Full-width bands would
+  take 154.9 s toward ~25 s.
+
+**Rebuild budget from these numbers:** step 6's A1 arm ≈ 24 parent tiles × 2.58 min ≈ **1.0 h** local;
+step 11's A1 arm ≈ **5 GPU-h** extra on Sherlock above the A1 renders themselves.
+
+### Two more measurements that CLOSE levers rather than open them
+
+- **Gate-before-embed is worth ≈0 here.** `predict_window` embeds first and masks after, so
+  gate-failing cells are computed then discarded. On the profiled window `n_usable == n_valid ==
+  15,876` and nonzero = 1.000 — the circum-Chryse mosaic is fully populated. Only relevant to
+  full-Murray coverage at high latitude / mosaic gaps.
+- **Window overlap duplicates exactly 4.51 % of embeddings** — across the 26 shipped tiles
+  `n_predicted_tiles` sums to 59,436,338 against 56,873,466 unique cells (1479²). Deduplicating would
+  recover ~4.3 % of GPU time but overlap is precisely what R14's `overlap_disagreement` cross-run
+  detector runs on. **Bad trade; not taken.** Relatedly, a larger `--win-px` is *worse*, not better:
+  edge clamping grows faster than the overlap shrinks (8192 ≈ 5.3 % duplication vs 4096's 4.51 %), so
+  **4096 is already near-optimal** and should not be changed.
+
+### Gotcha recorded
+
+`conda run … python -c` **rejects newlines in the argument** (`NotImplementedError: Support for
+scripts where arguments contain newlines not implemented`). Multi-line probes must go in a file.
+Companion to the existing `--no-capture-output` note.
+
+### 2026-08-19 addendum — the SHA-256 pass COMPLETED: `VERIFIED`, byte level
+
+Ran `scripts/backup_artifacts.ps1 -SkipCopy -Hash` 10:30:28 → ~11:12 (**≈42 min**), exit 0.
+**8/8 roots OK: 0 missing / 0 extra / 0 size mismatch / 0 hash mismatch across 11,260 files /
+125.55 GB.** Verdict JSON exists this time —
+`D:\HiRISE2CTX Backup\_backup_meta\backup_20260819_103028.json`, `"hashed": true`,
+`"verdict": "VERIFIED"`.
+
+**This closes the 2026-08-18 correction.** That entry said "there is **no content verification** of
+this snapshot — do not read the earlier 'hashed' language as achieved", and left criterion 5 standing
+at path-and-size. It now stands at **byte-for-byte**. The residual exposure it named — "a bit flip
+that preserved file length" — is ruled out.
+
+**The lid-closed diagnosis is confirmed by the re-run.** Same drive, same enclosure, same cable, same
+~250 GB of reads (both sides), machine kept awake: **no Event 51, no `Ntfs` 98, no bus drop.** The
+hardware speculation in the first 2026-08-18 reading was wrong and the suspend explanation was right.
+
+**Gate 0a of [PLAN_Rebuild.md](PLAN_Rebuild.md) is CLOSED.** Remaining pre-rebuild gates: 0b (detach
+`D:`), 0c (the open-hoist at bit-identical parity), 0d (fast suite green after 0c), 0e (clean tree).
+
+Measured in passing, and it revises a number quoted earlier the same day: the drive sustains
+**53.5 MB/s** read under concurrent C: load (C: 45.4 MB/s), not the ~120 MB/s assumed. A full 78.34 GB
+`dataset_v2` restore is therefore **~25 min**, not ~11–15. It does not change decision 3 — 25 minutes
+of recovery is still cheap — but the rollback is not as instant as the in-place argument implied.
+
+---
+
+## 2026-08-19b — The open-hoist LANDED and is bit-neutral; and leg 2 caught something else
+
+Gate 0c executed. `src/mapping.py` gains `open_tile()` + a keyword-only `dataset=` on
+`read_tile_window`; `scripts/map_region.py` and `scripts/striping_a1_map.py` open **once per tile,
+lazily, under `try/finally`**. Seven test fakes gained `**_kw` and eight `monkeypatch.setattr` sites
+gained an `open_tile` stub (`_NullSrc`).
+
+### Speed: better than the estimate
+
+Real driver, `E-12_N36`, `--win-px 4096 --limit-windows 3`:
+
+| | win 1 | win 2 | win 3 |
+|---|---|---|---|
+| before | 33.5 s | 33.6 s | 33.2 s |
+| after | 40.6 s (pays the single open) | **22.6 s** | **22.8 s** |
+
+Steady-state **33.4 → 22.7 s/window, −32 %**. Full tile: 40.6 + 143 × 22.7 ≈ **0.91 h** against
+1.34 h, i.e. **−32 %**, better than the −28 % projected. Across 52 tile-renders that is ≈**16 GPU-h**.
+
+### The hoist is bit-neutral — proven three ways
+
+1. **Window identity**: `read_tile_window` with and without `dataset=` returns bit-identical `data`,
+   `transform` and `crs_wkt` at four offsets (0 differing pixels).
+2. **`parity_check.py --rtol 0 --atol 0`**: `max|d| = 0.00e+00` on `prob_raw`, `abundance` *and*
+   `prob(cal)`.
+3. **Driver partials**: original-code run #2 == hoisted run #1 == hoisted run #2, **bit-identical**
+   across all 9 arrays in all 3 partials.
+
+### ⚠ NEW FINDING — `map_region.py` is not bit-reproducible across runs, and isotonic amplifies it
+
+Leg 2 failed on the first comparison. The cause is **not** the hoist: running the **unmodified**
+code twice produced *the same disagreement*.
+
+| comparison | code | result |
+|---|---|---|
+| before vs before2 | **identical (original)** | **DIFFERS** |
+| before2 vs after | original vs hoisted | identical |
+| after vs after2 | identical (hoisted) | identical |
+
+So run #1 of the session is the outlier; runs #2–#4 all agree. Magnitudes, per partial:
+
+| partial | `prob_raw` | `abundance` | `prob` (calibrated) |
+|---|---|---|---|
+| `000000_000000` | 1.01e-04 | 6.84e-06 | — |
+| `000000_004000` | 1.31e-05 | — | — |
+| `000000_008000` | 1.53e-04 | 4.05e-03 | **0.1318** |
+
+The underlying non-determinism is **~1e-4 on `prob_raw`** — ordinary fp16/cuBLAS reduction-order
+variation. **The isotonic calibrator turns it into 0.13 on the shipped `prob` raster** by stepping
+across a knot, exactly as `parity_check`'s own note warns ("isotonic step-amplifies the prob_raw
+diff"). Cause of the run-1 divergence is **not identified** — plausibly cuBLAS algorithm selection
+under different free VRAM on the 8 GB card. Observed **once in four runs**; it needs a proper
+repeat-run characterisation before step 11, not a single anecdote.
+
+### ⚠ AND the consequence is a live risk to the Sherlock array plan
+
+**Correction to my own 2026-08-19 entry.** I recorded "window overlap duplicates exactly 4.51 % of
+embeddings" from the *pre-R01* shipped sidecars. Measured directly on the **current R01 sweep**
+(`E-12_N36`, 144 windows, CPU-only enumeration): **2,250,000 cells emitted, 2,187,441 unique,
+62,559 duplicated = 2.78 %.** The 4.51 % figure describes the old tile-anchored sweep; **2.78 % is
+the right number.**
+
+That also contradicts `overlap_disagreement`'s docstring, which asserts "measured on the sweep this
+driver uses, 900 cells over 36 windows with **0 computed twice** … within one run this returns
+`(0, 0.0)` **by construction** and can never false-positive." That measurement is from a 36-window
+test sweep; **on the real 144-window sweep 62,559 cells ARE computed twice.** The conclusion still
+holds within a single run — a cell's value depends only on the cell — but it holds for the *other*
+reason the docstring gives, not the partition claim.
+
+**Chain the two findings and the guard becomes a trap:**
+- 62,559 cells per tile are computed twice, and
+- across runs the same cell can differ by ~1.5e-4, and
+- `map_region.py:755` does `if n_dis and max_dis > 1e-6: raise SystemExit(... Refusing to assemble)`.
+
+So a tile whose partials span **two runs — a Slurm pre-emption resume** — can refuse to assemble.
+That is precisely the scenario DECISIONS 2026-08-18b decision 6 relies on ("R14 is what makes
+pre-emption safe — resubmit and it resumes"). **Not yet observed in the wild** — it needs both a
+resume boundary and the non-determinism to bite — but the mechanism is established and it is a
+26-tile × 2-arm array job.
+
+**Not fixed here, because the options are Brian's call:** (a) raise the guard threshold above the
+observed noise (1e-3 still catches the stale-partial case it was built for — that one showed 63.1 %
+of pixels from the wrong run); (b) force deterministic inference (`torch.use_deterministic_algorithms`,
+TF32 off, pinned cuBLAS workspace) at some throughput cost; (c) deduplicate cells so windows really
+do partition — which would *also* recover the 2.78 % and remove the failure mode, at the price of the
+cross-run detector's signal. **This revises my earlier "overlap dedup is a bad trade" call: it is a
+better trade than I said**, because the duplication is not only wasted compute, it is the thing that
+makes the guard trip.
+
+### 2026-08-19b addendum — characterised: 1 anomaly in 15 runs, hoist fully exonerated, guard stays
+
+Brian's call was "characterise before choosing a threshold". Done: **10 further independent runs** of
+the same 3 windows (`E-12_N36`, `--win-px 4096 --limit-windows 3`), plus a decisive control.
+
+**Result: 45 of 45 pairwise comparisons bit-identical.** `prob_raw`, `prob` and `abundance` all
+`max|Δ| = 0.000e+00`. **0 pairs would trip the 1e-6 assembly guard.**
+
+**The control that settles it.** I restored `src/mapping.py` *and* `scripts/map_region.py` to their
+**pristine `HEAD`** contents from git and re-ran:
+
+| comparison | result |
+|---|---|
+| **pristine HEAD vs hoisted** | **BIT-IDENTICAL** |
+| pristine HEAD vs `hoist_before` (the outlier) | differs, *exactly* the same deltas as every other comparison against it |
+
+So the hoist is **fully exonerated against the committed baseline**, not merely against another run of
+itself — this is stronger evidence than the acceptance criterion asked for. **Leg 2 PASSES.**
+
+**The anomaly is real but singular: 1 run in 15.** `hoist_before` — the session's first `map_region`
+invocation — disagrees with all fourteen later runs (which agree among themselves across 45+ pairs),
+including with pristine HEAD code. Its deltas are identical against every counterpart, so it is one
+divergent artifact set, not drifting noise.
+
+**Cause: NOT identified, and I am not going to invent one.** Candidates that fit but are unproven: a
+transient cuBLAS algorithm choice under different free VRAM, or an uncorrected bit error (this is a
+consumer laptop GPU — **no ECC**). Ruled out: the hoist, the `mapping.py` refactor, code drift, and
+run-order determinism.
+
+**Ruling: leave the guard at 1e-6.** Reasoning, and it inverts the framing I opened with:
+- The guard is **fail-safe**. It *refuses to assemble*; it does not ship a wrong raster. The cost of a
+  trip is re-running one tile with `--force` (~0.9 GPU-h), not a corrupted deliverable.
+- At ~1 in 15 runs — and possibly a true one-off — the expected cost across step 11 is small.
+- If the mechanism really is an uncorrected memory error, then a tripped guard is **a real error
+  signal**, and raising the threshold to 1e-3 would suppress exactly the thing worth knowing about.
+- Weakening a detector that was built after a 63.1 %-wrong raster, on the strength of one unexplained
+  event, is the wrong trade.
+
+**What to do instead — document the signature.** If step 11 ever dies with
+`N cells were written twice with DIFFERENT values (max |Δ| = ...)`: a `max|Δ|` of order **1e-4 or
+below** is this phenomenon → re-run that tile with `--force`. A `max|Δ|` of order **0.1–1** is the
+stale-partial case R14 was built for → **investigate, do not force.** The 2.78 % duplicated cells are
+what makes the collision possible at all.
+
+**Residual risk accepted, and it is bounded:** a resumed tile can refuse assembly; recovery is one
+`--force` re-render. **§4a's "do not start step 11" hold is LIFTED.**

@@ -81,7 +81,8 @@ from scripts.map_region import (DEFAULT_SIZE_FLOOR_BASIS, as_int32_cells, gate_c
 from src.calibration import CalibrationLayer
 from src.fm_embeddings import FangEmbedder
 from src.mapping import (COARSE_GRID_ID, artifact_digest, assert_shared_lattice, file_sha256,
-                         predict_window, read_tile_window, tile_global_grid, uncovered_cells,
+                         open_tile, predict_window, read_tile_window, tile_global_grid,
+                         uncovered_cells,
                          write_geotiff)
 from src.modeling.mlp_head import DeployableHead, require_norm_arm
 from src.striping import (A1_ARM, A1_MIN_FRAME_PX, A1_REF_IQR, A1_REF_MEDIAN, A1_VALID_FLOOR,
@@ -298,50 +299,62 @@ def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
 
     grid = [(r, c) for r in row_offs for c in col_offs]
     t_tile = time.monotonic()
-    for k, (row_off, col_off) in enumerate(grid):
-        part = partial_dir / partial_name(row_off, col_off)
-        if part.exists() and not args.force:
-            try:                                         # R14: "exists" is not "usable"
-                read_partial(part)
-                continue
-            except Exception as exc:                     # noqa: BLE001
-                print(f"[{tile}] partial {part.name} unreadable ({type(exc).__name__}) "
-                      f"-> recomputing", flush=True)
-                part.unlink(missing_ok=True)
-        t0 = time.monotonic()
-        window = read_tile_window(zip_path, inner_tif, row_off, col_off, win)
-        w_a1, nodata_mask = a1_window(window, frames, stats, fallback)
-        n_norm = int((w_a1.data > 0).sum())
-        pred = predict_window(w_a1, embedder, head, tile_px=TILE_PX, batch=args.batch,
-                              max_zero_fraction=args.max_zero_fraction,
-                              max_context_zero_fraction=args.max_context_zero_fraction,
-                              calibrator=calibrator,
-                              apply_isotonic=not args.no_isotonic,
-                              global_grid=grid_geom.as_tuple,
-                              nodata_mask=nodata_mask)
-        keep = np.isfinite(pred.prob)
-        cols = {"ti": as_int32_cells(pred.ti[keep], "ti", tile),
-                "tj": as_int32_cells(pred.tj[keep], "tj", tile),
-                "prob": pred.prob[keep].astype(np.float32),
-                "grid_id": np.array(COARSE_GRID_ID),
-                **gate_cols(pred, tile)}
-        if calibrator is not None:
-            cols["prob_raw"] = pred.prob_raw[keep].astype(np.float32)
-            cols["abundance"] = pred.abundance[keep].astype(np.float32)
-        else:
-            cols["prob_raw"] = pred.prob[keep].astype(np.float32)
-        tmp = part.with_name(part.name + ".tmp")         # R14: stage, CRC-check, rename
-        try:
-            with open(tmp, "wb") as fh:
-                np.savez_compressed(fh, **cols)
-            read_partial(tmp)
-            tmp.replace(part)
-        except BaseException:
-            tmp.unlink(missing_ok=True)
-            raise
-        if k % 10 == 0 or k == len(grid) - 1:
-            print(f"[{tile}] win {k + 1}/{len(grid)} kept={int(keep.sum())} "
-                  f"a1px={n_norm:,} {time.monotonic() - t0:.1f}s", flush=True)
+    # DECISIONS 2026-08-18c, same fix as `map_region.py`: one open for the whole sweep instead
+    # of 144. `rasterio.open` on a Murray vsizip costs 7.95 s against 1.4 s for the read.
+    # Lazy, so an already-partialled tile still costs nothing; `finally`, so a raise mid-sweep
+    # does not leak the handle across the rest of a multi-tile run.
+    tile_src = None
+    try:
+        for k, (row_off, col_off) in enumerate(grid):
+            part = partial_dir / partial_name(row_off, col_off)
+            if part.exists() and not args.force:
+                try:                                         # R14: "exists" is not "usable"
+                    read_partial(part)
+                    continue
+                except Exception as exc:                     # noqa: BLE001
+                    print(f"[{tile}] partial {part.name} unreadable ({type(exc).__name__}) "
+                          f"-> recomputing", flush=True)
+                    part.unlink(missing_ok=True)
+            t0 = time.monotonic()
+            if tile_src is None:
+                tile_src = open_tile(zip_path, inner_tif)
+            window = read_tile_window(zip_path, inner_tif, row_off, col_off, win,
+                                      dataset=tile_src)
+            w_a1, nodata_mask = a1_window(window, frames, stats, fallback)
+            n_norm = int((w_a1.data > 0).sum())
+            pred = predict_window(w_a1, embedder, head, tile_px=TILE_PX, batch=args.batch,
+                                  max_zero_fraction=args.max_zero_fraction,
+                                  max_context_zero_fraction=args.max_context_zero_fraction,
+                                  calibrator=calibrator,
+                                  apply_isotonic=not args.no_isotonic,
+                                  global_grid=grid_geom.as_tuple,
+                                  nodata_mask=nodata_mask)
+            keep = np.isfinite(pred.prob)
+            cols = {"ti": as_int32_cells(pred.ti[keep], "ti", tile),
+                    "tj": as_int32_cells(pred.tj[keep], "tj", tile),
+                    "prob": pred.prob[keep].astype(np.float32),
+                    "grid_id": np.array(COARSE_GRID_ID),
+                    **gate_cols(pred, tile)}
+            if calibrator is not None:
+                cols["prob_raw"] = pred.prob_raw[keep].astype(np.float32)
+                cols["abundance"] = pred.abundance[keep].astype(np.float32)
+            else:
+                cols["prob_raw"] = pred.prob[keep].astype(np.float32)
+            tmp = part.with_name(part.name + ".tmp")         # R14: stage, CRC-check, rename
+            try:
+                with open(tmp, "wb") as fh:
+                    np.savez_compressed(fh, **cols)
+                read_partial(tmp)
+                tmp.replace(part)
+            except BaseException:
+                tmp.unlink(missing_ok=True)
+                raise
+            if k % 10 == 0 or k == len(grid) - 1:
+                print(f"[{tile}] win {k + 1}/{len(grid)} kept={int(keep.sum())} "
+                      f"a1px={n_norm:,} {time.monotonic() - t0:.1f}s", flush=True)
+    finally:
+        if tile_src is not None:
+            tile_src.close()
 
     # R14: set equality, not a count -- a superset satisfies a count gate.
     want_names = {partial_name(r, c) for r, c in grid}

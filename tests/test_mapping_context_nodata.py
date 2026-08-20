@@ -33,6 +33,17 @@ from src.mapping import (
 )
 
 
+class _NullSrc:
+    """Stand-in for the per-tile rasterio handle the drivers now hold open.
+
+    The sweep drivers `open_tile(...)` once and pass the handle to `read_tile_window`
+    (DECISIONS 2026-08-18c). Every test here fakes `read_tile_window`, so the handle is
+    never read from -- it only has to exist and close.
+    """
+
+    def close(self):
+        pass
+
 class _FakeEmbedder:
     """Valid everywhere the real box geometry is valid, so the gate is what is under test."""
     def embed_window(self, arr, ti, tj, *, tile_px, row0, col0, pool, batch):
@@ -280,7 +291,7 @@ def test_the_tile_sidecar_records_the_gate(tmp_path, monkeypatch):
     # one small square gap, well inside the tile, so a handful of cells are gated
     gap = (500, 560, 500, 560)
 
-    def fake_read(zip_path, inner_tif, row_off, col_off, size):
+    def fake_read(zip_path, inner_tif, row_off, col_off, size, **_kw):
         h, w = min(size, extent - row_off), min(size, extent - col_off)
         arr = np.full((h, w), 200, dtype=np.uint8)
         r0, r1 = max(gap[0] - row_off, 0), min(gap[1] - row_off, h)
@@ -290,6 +301,7 @@ def test_the_tile_sidecar_records_the_gate(tmp_path, monkeypatch):
         return CtxWindow(data=arr, row_off=row_off, col_off=col_off,
                          transform=(a, b, c + col_off * a, d, e, f + row_off * e), crs_wkt=g._WKT)
 
+    monkeypatch.setattr(mr, "open_tile", lambda *a_, **k_: _NullSrc())
     monkeypatch.setattr(mr, "read_tile_window", fake_read)
     args = g._fake_args(tmp_path, out_dir=str(tmp_path), win_px=256,
                         max_zero_fraction=0.3, max_context_zero_fraction=0.0)
@@ -343,12 +355,13 @@ def test_the_context_threshold_is_a_resume_match_field(tmp_path, monkeypatch):
     tile, transform, extent = g._synthetic_tile(tmp_path)
     a, b, c, d, e, f = transform
 
-    def fake_read(zip_path, inner_tif, row_off, col_off, size):
+    def fake_read(zip_path, inner_tif, row_off, col_off, size, **_kw):
         h, w = min(size, extent - row_off), min(size, extent - col_off)
         return CtxWindow(data=np.full((h, w), 200, dtype=np.uint8), row_off=row_off,
                          col_off=col_off,
                          transform=(a, b, c + col_off * a, d, e, f + row_off * e), crs_wkt=g._WKT)
 
+    monkeypatch.setattr(mr, "open_tile", lambda *a_, **k_: _NullSrc())
     monkeypatch.setattr(mr, "read_tile_window", fake_read)
     args = g._fake_args(tmp_path, out_dir=str(tmp_path), win_px=256)
     mr.map_one_tile(tile, g._StubEmbedder(), g._StubHead(), None, args=args)

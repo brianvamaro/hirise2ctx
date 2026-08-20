@@ -37,6 +37,17 @@ PHASES = list(range(0, TILE_PX, 4))   # gcd(47420,32)=4, so only multiples of 4 
 
 # ---------------------------------------------------------------- the window sweep
 
+class _NullSrc:
+    """Stand-in for the per-tile rasterio handle the drivers now hold open.
+
+    The sweep drivers `open_tile(...)` once and pass the handle to `read_tile_window`
+    (DECISIONS 2026-08-18c). Every test here fakes `read_tile_window`, so the handle is
+    never read from -- it only has to exist and close.
+    """
+
+    def close(self):
+        pass
+
 @pytest.mark.parametrize("phase", PHASES)
 def test_the_sweep_computes_every_cell_at_every_phase(phase):
     """The configuration the drivers use must lose nothing, at any tile's phase."""
@@ -215,13 +226,14 @@ def test_map_one_tile_renders_on_the_global_lattice(tmp_path, monkeypatch):
     tile, transform, extent = _synthetic_tile(tmp_path)
     a, b, c, d, e, f = transform
 
-    def fake_read(zip_path, inner_tif, row_off, col_off, size):
+    def fake_read(zip_path, inner_tif, row_off, col_off, size, **_kw):
         h, w = min(size, extent - row_off), min(size, extent - col_off)
         return CtxWindow(data=np.full((h, w), 200, dtype=np.uint8),
                          row_off=row_off, col_off=col_off,
                          transform=(a, b, c + col_off * a, d, e, f + row_off * e),
                          crs_wkt=_WKT)
 
+    monkeypatch.setattr(mr, "open_tile", lambda *a_, **k_: _NullSrc())
     monkeypatch.setattr(mr, "read_tile_window", fake_read)
     status = mr.map_one_tile(tile, _StubEmbedder(), _StubHead(), None,
                              args=_fake_args(tmp_path, win_px=256))
@@ -266,6 +278,7 @@ def test_the_coverage_guard_checks_each_axis_against_its_own_phase(tmp_path, mon
         return []
 
     monkeypatch.setattr(mr, "uncovered_cells", spy)
+    monkeypatch.setattr(mr, "open_tile", lambda *a_, **k_: _NullSrc())
     monkeypatch.setattr(mr, "read_tile_window", lambda *a_, **k_: CtxWindow(
         data=np.full((256, 256), 200, dtype=np.uint8), row_off=0, col_off=0,
         transform=(a, b, c, d, e, f), crs_wkt=_WKT))
@@ -293,6 +306,7 @@ def test_the_driver_refuses_a_sweep_that_would_leave_holes(tmp_path, monkeypatch
         return offs[:2] + offs[3:] if len(offs) > 3 else offs
 
     monkeypatch.setattr(mr, "window_offsets", holey)
+    monkeypatch.setattr(mr, "open_tile", lambda *a_, **k_: _NullSrc())
     monkeypatch.setattr(mr, "read_tile_window", lambda *a_, **k_: CtxWindow(
         data=np.full((256, 256), 200, dtype=np.uint8), row_off=0, col_off=0,
         transform=(a, b, c, d, e, f), crs_wkt=_WKT))
@@ -376,13 +390,14 @@ def test_a_committed_tile_is_reused_and_a_half_committed_one_is_not(tmp_path, mo
     tile, transform, extent = _synthetic_tile(tmp_path)
     a, b, c, d, e, f = transform
 
-    def fake_read(zip_path, inner_tif, row_off, col_off, size):
+    def fake_read(zip_path, inner_tif, row_off, col_off, size, **_kw):
         h, w = min(size, extent - row_off), min(size, extent - col_off)
         return CtxWindow(data=np.full((h, w), 200, dtype=np.uint8),
                          row_off=row_off, col_off=col_off,
                          transform=(a, b, c + col_off * a, d, e, f + row_off * e),
                          crs_wkt=_WKT)
 
+    monkeypatch.setattr(mr, "open_tile", lambda *a_, **k_: _NullSrc())
     monkeypatch.setattr(mr, "read_tile_window", fake_read)
     args = _fake_args(tmp_path, win_px=256)
     assert mr.map_one_tile(tile, _StubEmbedder(), _StubHead(), None,
@@ -507,7 +522,7 @@ def test_a1_renders_on_the_same_lattice_as_the_baseline(tmp_path, monkeypatch):
     a, b, c, d, e, f = transform
     side = json.loads((tmp_path / "ctx" / f"{tile}.json").read_text(encoding="utf-8"))
 
-    def fake_read(zip_path, inner_tif, row_off, col_off, size):
+    def fake_read(zip_path, inner_tif, row_off, col_off, size, **_kw):
         h, w = min(size, extent - row_off), min(size, extent - col_off)
         return CtxWindow(data=np.full((h, w), 200, dtype=np.uint8),
                          row_off=row_off, col_off=col_off,
@@ -522,7 +537,9 @@ def test_a1_renders_on_the_same_lattice_as_the_baseline(tmp_path, monkeypatch):
         {"n_frames": 1, "n_frames_with_stats": 1, "n_frames_too_small": 0,
          "fallback_pixel_fraction": 0.0, "a1_arm": a1.A1_ARM}))
     monkeypatch.setattr(a1, "load_frames", lambda t: _OneFrame())
+    monkeypatch.setattr(a1, "open_tile", lambda *a_, **k_: _NullSrc())
     monkeypatch.setattr(a1, "read_tile_window", fake_read)
+    monkeypatch.setattr(mr, "open_tile", lambda *a_, **k_: _NullSrc())
     monkeypatch.setattr(mr, "read_tile_window", fake_read)
 
     base_dir, a1_dir = tmp_path / "base", tmp_path / "a1"

@@ -85,6 +85,8 @@ pointers**. The full original build spec is preserved verbatim in
 - **Methods writeups (for non-coders):** [docs/methods.md](docs/methods.md), [docs/index.md](docs/index.md)
 - **Current code-review/fixing handoff:**
   [docs/CODE_REVIEW_AUDIT_2026-08-06.md](docs/CODE_REVIEW_AUDIT_2026-08-06.md)
+- **The rebuild execution plan:** [PLAN_Rebuild.md](PLAN_Rebuild.md) — drafted 2026-08-19, awaiting
+  approval. Read it before running any producer; it, not `docs/PENDING_REBUILD.md`, is the runbook.
 - **Live session state:** the `project_state_*` memory notes (not the stale `HANDOFF_NEXT_SESSION.md`)
 
 When reality diverges from a doc, update DECISIONS (and the relevant PLAN/ROADMAP) in the same change —

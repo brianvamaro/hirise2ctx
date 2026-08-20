@@ -9,6 +9,7 @@ commits, numbers). The `PLAN_*.md` files sit between them — architecture-level
 
 | Plan | What it is | Status |
 |---|---|---|
+| [PLAN_Rebuild.md](PLAN_Rebuild.md) | **The batched v2 rebuild** — executes the 12-step DAG in [docs/CODE_REVIEW_AUDIT_2026-08-06.md](docs/CODE_REVIEW_AUDIT_2026-08-06.md): commands, roots, verification gates, abort conditions, and the local/Sherlock split | **DRAFTED 2026-08-19, awaiting approval — nothing has run.** Four design decisions ruled in DECISIONS 2026-08-18b, three more 2026-08-19: build **in place** gated on the SHA-256 backup pass, land the `rasterio.open` hoist before step 11, **FM path only** (no GBM sweep / W1 atlas). A **WAYPOINT** — v3 (BoulderNet retrain + more diverse locations) forces another rerun regardless |
 | [PLAN_RegionalMap.md](PLAN_RegionalMap.md) | Regional circum-Chryse abundance map + thermal/Rodriguez-2016 validation legs (first real off-HiRISE deployment of the frozen head + CalibrationLayer) | **ACTIVE** — map shipped (26 tiles, Sherlock); MOLA leg done; THEMIS night-IR leg-1 done but weak (ρ ≈ +0.07); remaining thermal legs wait for the **final (post-mitigation) map** |
 
 ## ✅ CLOSED / SHIPPED plans (chronological program arc)

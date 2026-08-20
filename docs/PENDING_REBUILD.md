@@ -28,6 +28,14 @@ known, accepted divergence — do not re-file it as a finding.**
 > this table alone is not an execution plan. Then re-derive every number the "invalidates" column names
 > and update the docs that quote them.
 > **After the rebuild:** empty this table and say so in `DECISIONS.md`.
+>
+> **The execution plan now exists (2026-08-19): [../PLAN_Rebuild.md](../PLAN_Rebuild.md)** — the audit's
+> 12-step DAG turned into commands, roots, per-step verification gates and the local/Sherlock split.
+> ⚠ **Rows 2 and 3 below will NOT be fully discharged by that pass.** Brian ruled it **FM-path only**
+> (DECISIONS 2026-08-19): the frozen recipe is embeddings-only, so Stage 4b regenerates `features/`
+> (and `context_patches`, which feed the embeddings) but **no GBM sweep and no W1 error atlas are
+> re-run**. After the rebuild, rows 2–3 stay open annotated *"features regenerated; downstream tabular
+> numbers not re-derived."* Row 1 (R74) is discharged in full.
 
 ## Fixes applied, rebuild outstanding
 
