@@ -46,7 +46,20 @@ import numpy as np
 # rather than imported, because this module must be able to describe a *banked* product whose
 # config may since have moved; `measure()` records the value it actually used.
 DEFAULT_MIN_SIZE_M = 1.4105
-SIZE_FLOOR_BASIS_VERSION = "v2_mixed_floor_1"
+SIZE_FLOOR_BASIS_VERSION = "v2_mixed_floor_2"
+
+# Two floors are the SAME floor unless they differ by at least this much (m²). Counting raw
+# float equality reported **27** distinct floors on the v2 cohort when the physical count is
+# **20** (DECISIONS 2026-08-20f): five groups of images agreed to 6 dp but differed at
+# 1e-9–1e-12 m² — square nanometres. That residue is not a measurement, it is each image
+# reprojecting through **its own local-radius CRS**, so identical native polygon areas land at
+# very slightly different projected areas.
+#
+# 1e-6 m² = one square millimetre, absurdly fine for a detection floor of 1.6–5.6 m², so this
+# cannot merge two genuinely different floors. It is also not a tuned value: the count is
+# **20 at every tolerance from 1e-3 down to 1e-6**, and only reaches 27 below ~1e-12. The
+# stability is the point — a number stamped on every output raster must not depend on ULP noise.
+FLOOR_EQUALITY_TOL_M2 = 1e-6
 
 
 def diameter_to_area(diam_m: float) -> float:
@@ -122,8 +135,11 @@ class SizeFloorBasis:
             floor_min_m2=float(floors.min()), floor_max_m2=float(floors.max()),
             floor_tile_weighted_mean_m2=float((floors * w).sum() / w.sum()),
             # distinct floors are counted only where they carry tiles -- an image with no pool
-            # tiles contributes no floor to the product, however distinct its own happens to be
-            n_distinct_floors=int(np.unique(floors[w > 0]).size),
+            # tiles contributes no floor to the product, however distinct its own happens to be.
+            # Quantised to FLOOR_EQUALITY_TOL_M2 first: raw float equality counted ULP noise from
+            # the per-image local-radius reprojection as separate floors (27 vs the physical 20).
+            n_distinct_floors=int(np.unique(
+                np.round(floors[w > 0] / FLOOR_EQUALITY_TOL_M2)).size),
             tile_share_by_scale=_share("map_scale_mpp", n_tiles, w),
             image_share_by_scale=_share("map_scale_mpp", len(recs), np.ones(len(recs))),
             per_image=sorted(recs, key=lambda r: r["obs_id"]),

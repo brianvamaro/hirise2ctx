@@ -8874,3 +8874,142 @@ expected to move. That is the intended behaviour and is exactly why the plan put
 
 **Splits unchanged:** 38 images survive, so `loio_nfold: 38` and `within_image_4fold: 152` stand for
 step 5. Cumulative: steps 1–4 in **~28 min**.
+
+### 2026-08-20e — Brian's v3 ruling: ONE HiRISE resolution, therefore ONE size threshold
+
+**Brian, 2026-08-20:** the next dataset will use images of **all the same resolution**, so there is a
+single minimum size threshold. **The mixed-floor apparatus built for v2 is therefore TEMPORARY and
+must be treated as such.**
+
+This upgrades the 2026-08-18b size-floor decision from "deferred to v3 (option C, **tentative**)" to a
+**stated v3 design requirement with a concrete mechanism**. It is also the cheapest possible
+resolution of the problem: the rejected options all tried to *repair* a mixture after the fact —
+option A (common 2.66 m floor over 38 images) and option B (fine-only at ~1.2 m, pool 161,005 →
+34,791) both destroy data, and R83 measured that calibration provably cannot absorb the change (it is
+a **re-ranking**, within-image Spearman 0.60–0.98, fine rich prevalence halving 0.326 → 0.164).
+Choosing uniform-resolution inputs means the mixture is never created, so none of that cost is paid.
+
+**What this means for the code, concretely.** `src/size_floor.py`, `scripts/measure_size_floor.py`,
+the `SIZE_FLOOR_*` raster tags and `SizeFloorBasis` are **scaffolding with a known end date**. They
+exist to make an unavoidable v2 defect *legible*, not to fix it. Do not invest further in them, and do
+not let a future session treat the mixture machinery as permanent architecture. When v3 lands with one
+resolution, `n_distinct_floors` collapses toward 1 and most of this can retire — the tags should stay
+(a product should always state which boulders it counts) but the mixture bookkeeping should not.
+
+### ⚠ One wrinkle: uniform HiRISE resolution removes only ONE of the two floor-variation sources
+
+Worth stating now, while it is cheap to design around. Step 4 measured **two independent** sources:
+
+1. **The natural detector floor** — the smallest rock BoulderNet found, which varies with HiRISE
+   m/px (fine cohort 1.028–1.213 m diameter, coarse 1.943–2.664 m). **Uniform resolution fixes this.**
+2. **The global filter's realised physical value** — `min_size_m: 1.4105` is applied **in the
+   reprojected CTX frame**, so its realised physical size varies with the equirectangular projection's
+   latitude-dependent scale. Step 4 measured **seven distinct realised floors, 0.9930–1.3664 m**, and
+   those seven map **one-to-one onto the seven per-image local radii / PDS centre-latitude bands
+   (20–50°)** — not onto the two resolution classes. **Uniform resolution does NOT fix this.**
+
+So "one minimum size threshold" needs both: uniform input resolution *and* the size filter applied in
+a frame where 1.4105 m means the same thing everywhere — the image's own native/local frame, or with
+an explicit cos(lat) correction — rather than in the shared reprojected frame. Otherwise v3 inherits a
+smaller but still real spread (~1.4× in diameter across a 20–50° latitude span) from source 2 alone.
+
+Not a v2 action. Recorded as a v3 design input while the measurement that revealed it is fresh.
+
+### A plan defect this step caught
+
+PLAN_Rebuild §3 step 4c had `--detections` pointing at the **raw BoulderNet root**
+(`hirise_40_vClaire`). It must be the **Stage-1 reprojected gpkgs**
+(`cache_v2/reprojected_detections`, which is the script's own default) — the natural floor has to be
+measured in the same projected frame the labels were built in. Corrected in the plan.
+
+### 2026-08-20f — DAG step 4c: size-floor basis BANKED, and a defect found in it
+
+`models/deployable/size_floor_basis.json` now exists for the first time (only `--dry-run` had ever
+run). Measured in **33 s**, not the ~6–7 min its docstring predicts — it reads the Stage-1 gpkgs, not
+the raw shapefiles.
+
+| quantity | R84 (old 161,005 pool) | **rebuilt (164,644)** |
+|---|---|---|
+| pool | 161,005 / 38 img | **164,644 / 38 img** |
+| effective floor range | — | **1.5626 – 5.5719 m²** |
+| tile-weighted mean | 3.3687 m² | **3.3914 m²** |
+| tile share 0.5 / 0.25 m/px | 78.3914 / 21.6086 % | **78.73 / 21.27 %** |
+| image share | 68.4 / 31.6 % | **68.42 / 31.58 %** (unchanged — image counts didn't move) |
+| `n_distinct_floors` | 27 | **27** |
+
+The shares moved slightly, exactly as predicted for a pool that grew by 3,639 tiles. `min_size_m`
+1.4105 and `version: v2_mixed_floor_1` recorded. Product sentence emitted:
+
+> *Target = area share of boulders above a per-image detection floor of 1.563–5.572 m² equivalent-circle
+> area (1.41–2.66 m diameter); the calibration pool is a mixture of 27 floors over 38 HiRISE images
+> (78.7 % at 0.5 m/px, 21.3 % at 0.25 m/px, by pool tile). NOT size-independent rock abundance.*
+
+### ⚠ FINDING: "27 distinct floors" is a FLOATING-POINT ARTIFACT. The real count is 20.
+
+Reconciling `n_distinct_floors` against the `per_image` records did not add up, so I counted at
+several precisions:
+
+| rounding | distinct effective floors |
+|---|---|
+| full float | **27** |
+| 12 dp | 27 |
+| 9 dp | 25 |
+| **6 dp** | **20** |
+| 4 dp | 20 |
+| 3 dp | 20 |
+
+Five groups of images share a floor to 6 dp but differ at the **1e-9 – 1e-12 m²** level:
+
+| floor (m²) | images | full-precision values |
+|---|---|---|
+| 3.320527 | 4 | `…103718`, `…103946`, `…109165`, `…111836` |
+| 3.600986 | 3 | `…883565`, `…883813`, `…887190` |
+| 3.336990 | 2 | `…420708`, `…426182` |
+| 4.099416 | 2 | `…180130`, `…183923` |
+| 1.562558 | 12 | genuinely identical (all clamped to the global filter constant) |
+
+Differences of ~1e-9 m² are **square nanometres**. They cannot be distinct physical detection floors;
+they are ULP noise from each image reprojecting through **its own local-radius CRS**, so identical
+native polygon areas land at very slightly different projected areas. The mechanism is the same
+per-image-radius machinery step 1 verified — this is its harmless downstream residue, miscounted.
+
+**The correct count is 20**: 12 fine images clamped to one exact global-filter value + **19** distinct
+natural floors among the 26 coarse images. **20 is stable from 3 dp to 6 dp**, so it is not an
+artifact of a chosen tolerance — unlike 27, which only survives at ≥12 dp.
+
+**Why it matters despite being small.** No *numeric* result is affected — mean, shares, min and max
+are computed from values, not counts. But "27" is (a) quoted in R84's DECISIONS entry, and (b)
+**stamped onto every raster both map drivers write**, via the product sentence above. A product that
+states "a mixture of 27 floors" when there are 20 is asserting a false fact about itself, and that is
+precisely the class of number that ends up in a paper.
+
+**This is an inherited error, not a regression** — R84 recorded 27 from the old pool by the same
+counting. The rebuild reproduced it faithfully.
+
+**Not patched unilaterally** — it is a `src/size_floor.py` change mid-rebuild. Nothing downstream has
+consumed the basis yet (no map has run), and re-measuring costs 33 s, so the fix is cheap whenever
+Brian rules. Fix = round to a physical tolerance before `len(set(...))`.
+
+### 2026-08-20g — the floor-count defect is FIXED (Brian: fix now); basis re-banked at 20
+
+`src/size_floor.py`: new `FLOOR_EQUALITY_TOL_M2 = 1e-6`, applied by quantising before
+`np.unique` in `from_records`. Version bumped **`v2_mixed_floor_1` → `v2_mixed_floor_2`**, so
+`SizeFloorBasis.load` refuses a stale basis rather than silently serving one with the old count.
+
+**Re-measured in 18 s. `n_distinct_floors` 27 → 20. Every other number is bit-unchanged** — pool
+164,644, range 1.5626–5.5719 m², tile-weighted mean 3.3914 m², shares 78.73/21.27 by tile and
+68.42/31.58 by image. As predicted: the defect was in a *count*, never in a value.
+
+Product sentence now reads "**a mixture of 20 floors over 38 HiRISE images**".
+
+**Why 1e-6 m² and why it is not a tuned knob.** One square millimetre, against detection floors of
+1.6–5.6 m² — it cannot merge two genuinely different floors. And the count is **20 at every tolerance
+from 1e-3 to 1e-6**, only reaching 27 below ~1e-12. A number stamped on every output raster must not
+depend on ULP noise, and this one now provably does not.
+
+**Two tests added** (`tests/test_size_floor.py`), because a tolerance with no test is a tolerance that
+drifts: one builds three images whose floors differ by ≤8.1e-9 m² plus a real neighbour and asserts
+**2** floors, pinning `FLOOR_EQUALITY_TOL_M2 == 1e-6`; the other asserts a 1e-5 m² difference — ten
+times the tolerance — is still counted as two, so the fix cannot be widened into merging real floors.
+
+**Fast suite: 802 passed, 1 skipped, 21 deselected** (was 800; +2 new).

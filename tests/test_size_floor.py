@@ -231,3 +231,45 @@ def test_a_malformed_map_scale_returns_none_rather_than_guessing(tmp_path):
     lbl = tmp_path / "bad.LBL"
     lbl.write_text("MAP_SCALE = UNKNOWN\n", encoding="utf-8")
     assert map_scale_from_pds_label(lbl) is None
+
+
+def test_ulp_noise_from_per_image_reprojection_is_not_a_distinct_floor():
+    """DECISIONS 2026-08-20f. Raw float equality counted **27** floors on the real v2 cohort
+    where the physical count is **20**.
+
+    Five groups of images agreed on their floor to 6 dp but differed at 1e-9-1e-12 m² --
+    square nanometres. That is not a measurement: each image reprojects through **its own
+    local-radius CRS** (7 distinct radii over the cohort), so identical native polygon areas
+    land at very slightly different projected areas. The count is stamped on every raster both
+    map drivers write, so it must not track ULP noise.
+    """
+    from src.size_floor import FLOOR_EQUALITY_TOL_M2
+
+    # three coarse images whose floors differ only in the last few ULPs, plus one real neighbour
+    base = 3.320527103718
+    per_image = [
+        {"obs_id": "A", "map_scale_mpp": 0.5, "natural_floor_m2": base},
+        {"obs_id": "B", "map_scale_mpp": 0.5, "natural_floor_m2": base + 2.3e-10},
+        {"obs_id": "C", "map_scale_mpp": 0.5, "natural_floor_m2": base + 8.1e-9},
+        {"obs_id": "D", "map_scale_mpp": 0.5, "natural_floor_m2": base + 0.28},
+    ]
+    counts = {"A": 100, "B": 100, "C": 100, "D": 100}
+    basis = SizeFloorBasis.from_records(per_image, counts)
+
+    assert basis.n_distinct_floors == 2, (
+        "A/B/C differ by <= 8.1e-9 m2 -- square nanometres -- and are ONE floor; D is a second")
+    # the tolerance is physical, not tuned: a square millimetre against floors of 1.6-5.6 m2
+    assert FLOOR_EQUALITY_TOL_M2 == 1e-6
+    # and it must still separate floors that genuinely differ
+    assert basis.floor_max_m2 - basis.floor_min_m2 == pytest.approx(0.28, abs=1e-6)
+
+
+def test_a_genuinely_small_but_real_floor_difference_is_still_counted():
+    """The tolerance must not be so wide it merges real floors. 1e-5 m2 is 10x the tolerance
+    and still ~5 orders below any real floor spacing in the cohort, so it must survive."""
+    per_image = [
+        {"obs_id": "A", "map_scale_mpp": 0.5, "natural_floor_m2": 3.0},
+        {"obs_id": "B", "map_scale_mpp": 0.5, "natural_floor_m2": 3.0 + 1e-5},
+    ]
+    basis = SizeFloorBasis.from_records(per_image, {"A": 10, "B": 10})
+    assert basis.n_distinct_floors == 2
