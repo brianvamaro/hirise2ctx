@@ -8647,3 +8647,57 @@ what makes the collision possible at all.
 
 **Residual risk accepted, and it is bounded:** a resumed tile can refuse assembly; recovery is one
 `--force` re-render. **§4a's "do not start step 11" hold is LIFTED.**
+
+---
+
+## 2026-08-20 — REBUILD STARTED. DAG step 1 (Stage 1) COMPLETE and verified
+
+First producer run of the batched v2 rebuild, from code provenance point **`3d74530`**, **in place**
+into `cache_v2/reprojected_detections/`. Pre-flight: gates 0a–0e closed, `D:` confirmed detached,
+tree clean and synced, target covered by the byte-level `VERIFIED` snapshot.
+
+`conda run -n geospatial python -u scripts/run_stage1.py --config config_v2.yaml --all`
+→ **39 / 39 reprojected, 0 failed.** ~9 min wall.
+
+### Verification gate — all checks pass
+
+| check | result |
+|---|---|
+| images processed | **39/39, 0 failed** (the failure mode here is per-image `FAILED` + `None`, not a nonzero exit, so the count is the real gate) |
+| SP1 correction | **32 `sp1_corrected_from_pds_label` + 7 `trusted_prj` = 39**, exactly matching the manifest's `PrjSP1Corrected` tally `{True: 32, False: 7}` |
+| **per-image local radius** | **7 distinct radii, 3384416.50 – 3393833.26 m, none equal to the standard 3396190 m** |
+| R23 metadata contract | `source_integrity` **39/39**, `null_geometry_basis` **39/39** |
+| byte-truncated sources | 3 flagged, all reproducing DECISIONS 2026-08-06o |
+
+**The #1 gotcha is demonstrably handled.** The seven radii come from each image's own PDS `.LBL`
+`A_AXIS_RADIUS`, and one of them is **3393833.26 m** — the exact value CLAUDE.md cites as the
+canonical example. Nothing hardcoded the standard sphere.
+
+**The R23 truncation numbers reproduce exactly**, which is the strongest available evidence the
+re-run is faithful:
+
+| ObsId | raw rows | kept | dropped | realised floor |
+|---|---|---|---|---|
+| ESP_017355_2260 | 1,105,447 | **359,933** | 745,514 (67.44 %) | 0.617257 |
+| ESP_046803_2325 | 658,290 | 367,140 | 291,150 (44.23 %) | 0.473417 |
+| ESP_068483_2280 | 1,057,153 | 727,160 | 329,993 (31.22 %) | 0.406698 |
+
+`ESP_017355_2260`'s kept count is **359,933**, matching the audit table's "records that fit 359,933 /
+pipeline kept 359,933 / Δ **0**" to the unit. Total kept polygons across 39 images: **6,278,986**.
+
+### Two corrections to PLAN_Rebuild §3's step-1 verify row (now fixed in the plan)
+
+- **`realised_label_basis` is a STAGE 4 field**, not Stage 1 — it is emitted by
+  `src/labeling.py:1070` via `_describe_realised_label_basis`. Stage 1's half of the mixed-floor
+  contract is `source_integrity` + `null_geometry_basis` only. The plan listed all three under step 1.
+- **The "residual HiRISE↔CTX offset O(200 m), not km" check does not belong to step 1.** Stage 1 only
+  reprojects; that residual is a **co-registration** quantity and is checked at step 3. Moved.
+
+### Timing: 3× the estimate, and the reason is known
+
+**~9 min against the ~2.6 min** reconstructed from the original build's mtimes. Not a problem, but the
+estimate's basis was wrong: R23 added a byte-integrity scan of every source `.shp` plus a score-rank
+analysis of the null-geometry population, work the original run never did. **Expect the §3a mtime
+estimates to under-read wherever a stage gained provenance work in the fixing tranche** — Stage 2
+(R74 mask + digests), Stage 3 (R65 components + `shift_id`) and Stage 4 (R29/R80) are all in that
+category. The 1.5–2 day total still holds; the per-stage figures are floors, not forecasts.
