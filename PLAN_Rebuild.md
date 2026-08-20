@@ -1,6 +1,9 @@
 # PLAN_Rebuild.md — the batched v2 rebuild (a WAYPOINT, not a destination)
 
-> **Status: gates §0 ALL CLOSED 2026-08-19 (`bdc1d19`). Steps 1–12 awaiting Brian's go-ahead — no producer has run.**
+> **Status 2026-08-20: §0 gates all closed; steps 1 → 5 EXECUTED and verified** (`7362d97`).
+> Done: 1, 2, 3, 4, 4b, 4c, 5 — all in place into `dataset_v2`, ~50 min of compute.
+> **Next: step 6 (embeddings, both arms).** Headline so far: rich prevalence **0.373272**
+> (predicted 0.3733), pool 161,005 → **164,644**, CRS gate 194.7 m median.
 > Supersedes nothing; it *executes* the "Complete v2 rebuild DAG" in
 > [docs/CODE_REVIEW_AUDIT_2026-08-06.md](docs/CODE_REVIEW_AUDIT_2026-08-06.md) §"Complete v2 rebuild
 > DAG" (12 steps). [docs/PENDING_REBUILD.md](docs/PENDING_REBUILD.md) lists *what* is stale; the audit
