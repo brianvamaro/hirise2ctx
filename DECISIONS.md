@@ -8807,3 +8807,70 @@ co-registration, which would badly misstate the label basis given the y-shift si
 invalidate the Stage-2 sidecars just written against it. Fix after step 12, or delete the key.
 
 Cumulative: steps 1–3 in **~21 min**.
+
+### 2026-08-20d — DAG step 4 (Stage 4) COMPLETE: rich prevalence lands on 0.3733, as predicted
+
+**38 / 38 solved, 0 skipped, ~7 min.** 3,581,340 eligible tiles across all four scales.
+`EXCLUDED_FROM_SWEEP` = `{ESP_057469_2215, ESP_046803_2325}` — the first is a v1 row absent from the
+v2 manifest, the second is the featureless image, so 39 manifest rows → **38 labelled**.
+
+### THE headline number, and it matched the prediction
+
+| quantity | previous | predicted | **rebuilt** |
+|---|---|---|---|
+| S=32 pool | 161,005 | ~+3,236 (+1.97 %) | **164,644 (+3,639, +2.26 %)** |
+| **rich prevalence (fa > 1e-2)** | 0.3598 | **≈0.3733** | **0.373272** |
+| n rich | — | — | 61,457 |
+| pool max `fa` | 0.293242 | — | **0.293242** |
+
+**The prevalence matched the R74 counterfactual to four decimal places.** That is a stronger result
+than it had any right to be: PENDING_REBUILD explicitly warned "these are not guaranteed final-rebuild
+counts because Stage 3 and R23/R29 can change alignment, eligibility, and targets", and all three
+*did* change under it. The honest reading is that those changes moved **eligibility** — the pool grew
+2.26 % against a predicted 1.97 % — but left the rich **fraction** essentially untouched. The
+counterfactual was a better estimator of prevalence than of pool size.
+
+**`pool max fa == 0.293242` reproduces the R84 banked invariant exactly.** Worth noting because R84
+pinned `calibration.npz` `t2_y` max == pool max `fa` == 0.293242; the equality survives the rebuild,
+so the calibration join will still be able to assert it.
+
+Per-image rich prevalence spans **0.0015** (`ESP_047976_2020`) to **0.9786** (`ESP_054622_2240`),
+median 0.2314 — the extreme between-image heterogeneity that motivates LOIO in the first place.
+
+### Provenance gates: all 38/38
+
+`coreg_mask_shift` (R29) **38/38** · `realised_size_basis.realised_physical_min_size_m` (R80)
+**38/38** · `realised_label_basis` **38/38** (the field I wrongly attributed to Stage 1 on 2026-08-20).
+
+**R80's realised-floor measurement reproduces exactly.** Seven distinct realised physical floors,
+**0.9930 – 1.3664 m**, against the configured `min_size_m: 1.4105`:
+
+| realised floor | images |
+|---|---|
+| 0.9930 m | 1 |
+| 1.1826 m | 12 |
+| 1.2315 m | 15 |
+| 1.2741 m | 5 |
+| 1.3107 m | 2 |
+| 1.3414 m | 2 |
+| 1.3664 m | 1 |
+
+R80 recorded the range as "0.993–1.367 m, not the configured 1.4105 m" — reproduced to the digit.
+**And the seven floors correspond one-to-one with step 1's seven distinct per-image local radii**,
+i.e. the seven PDS centre-latitude bands (20–50°). That is the expected mechanism: the floor is
+applied in the reprojected CTX frame, so it scales with the local radius. Two independent stages
+agreeing on "seven" is a good sign the CRS chain is coherent end to end.
+
+**Confirmed live, the `tile_size_m` trap:** S=32 carries **three** distinct `tile_size_m` floats
+(159.99918352980166 / …70 / …74) from per-image FP noise. `tile_size_px == 32` is the only safe pool
+selector, exactly as the memory note says.
+
+### Consequence for step 4c
+
+The R83/R84 mixture figures (78.3914/21.6086 % of **161,005** tiles, 27 distinct floors, tile-weighted
+mean 3.3687 m²) were measured on the **old** pool. The pool is now **164,644**, so
+`measure_size_floor.py` will describe a different population and those banked percentages should be
+expected to move. That is the intended behaviour and is exactly why the plan puts 4c after Stage 4.
+
+**Splits unchanged:** 38 images survive, so `loio_nfold: 38` and `within_image_4fold: 152` stand for
+step 5. Cumulative: steps 1–4 in **~28 min**.
