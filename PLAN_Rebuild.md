@@ -1,6 +1,6 @@
 # PLAN_Rebuild.md — the batched v2 rebuild (a WAYPOINT, not a destination)
 
-> **Status: DRAFTED 2026-08-19, awaiting Brian's approval to execute. Nothing has run.**
+> **Status: gates §0 ALL CLOSED 2026-08-19 (`bdc1d19`). Steps 1–12 awaiting Brian's go-ahead — no producer has run.**
 > Supersedes nothing; it *executes* the "Complete v2 rebuild DAG" in
 > [docs/CODE_REVIEW_AUDIT_2026-08-06.md](docs/CODE_REVIEW_AUDIT_2026-08-06.md) §"Complete v2 rebuild
 > DAG" (12 steps). [docs/PENDING_REBUILD.md](docs/PENDING_REBUILD.md) lists *what* is stale; the audit
@@ -33,7 +33,7 @@ question.
 | 0b | **Detach `D:` and leave it detached for the whole rebuild.** An unmounted snapshot cannot be clobbered by a stray `--out-dir`. Do **not** refresh it mid-rebuild — it is the point-in-time record of the pre-rebuild state. | physical |
 | 0c | ✅ **CLOSED 2026-08-19 — landed and bit-neutral.** Steady state 33.4 → 22.7 s/window (**−32 %**, better than the −28 % projected); ≈16 GPU-h across 52 tile-renders. Verified three ways (§4). Leg 2 passed against **pristine HEAD** (bit-identical). It also surfaced a cross-run non-determinism anomaly, since characterised as 1 run in 15 and NOT caused by the hoist — §4a. | §4 |
 | 0d | ✅ **CLOSED 2026-08-19** — `pytest -m "not slow"` = **800 passed, 1 skipped, 21 deselected**, identical to the pre-change baseline, after the hoist + the 7 fake / 8 stub test edits. | local |
-| 0e | Working tree clean and pushed, so the rebuild has an exact code provenance point. | `git status` |
+| 0e | ✅ **CLOSED 2026-08-19** — committed and pushed as **`bdc1d19`** (11 files, +901/−116). Tree clean, `HEAD == origin/fm-deployable-head-and-map-pilot`. **This is the code provenance point the rebuild runs from.** | `git status` |
 
 ## §1 — Ground rules that hold for every step
 
