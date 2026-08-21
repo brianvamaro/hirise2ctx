@@ -322,6 +322,36 @@ def extract_one(model: ViTB16, obs_id: str, keys: pd.DataFrame, device: torch.de
     print(f"  {obs_id}: n={n}  192-valid={int(valid192.sum())} ({valid192.mean():.1%})", flush=True)
 
 
+def _cache_is_stale(obs_id: str, keys) -> str | None:
+    """`None` if the cached store for `obs_id` matches `keys` exactly, else why it doesn't.
+
+    **DECISIONS 2026-08-20k.** The resume used to be `if npz.exists(): skip`, with no comparison
+    of any kind. On the v2 rebuild that made the whole of step 6 a **4-second silent no-op**: the
+    cached stores held the pre-rebuild pool (161,005 tiles) while the fresh labels held 164,644,
+    every one of the 38 images had a different (ti, tj) set, and 7,390 new tiles had no embedding
+    at all. Nothing downstream would have noticed — the npz records no provenance whatsoever, so
+    a stale store and a fresh one are indistinguishable on disk.
+
+    The key set IS the provenance we have. Comparing it makes the skip safe rather than merely
+    bypassable, which is why this is a check and not a `--force` flag (`--force` exists too, but
+    it should never be the thing standing between you and a correct rebuild).
+    """
+    ctx = OUT_DIR / f"{obs_id}_P{CONTEXT_PX}.npz"
+    own = OUT_DIR / f"{obs_id}_P{TILE_PX}.npz"
+    if not (ctx.is_file() and own.is_file()):
+        return "absent"
+    try:
+        with np.load(ctx) as z:
+            cached = set(zip(z["ti"].tolist(), z["tj"].tolist()))
+    except Exception as exc:                                   # noqa: BLE001
+        return f"cached store is unreadable ({type(exc).__name__})"
+    want = set(zip(keys["ti"].tolist(), keys["tj"].tolist()))
+    if cached == want:
+        return None
+    return (f"key set differs: cached {len(cached)} vs labels {len(want)} "
+            f"({len(want - cached)} new tiles missing, {len(cached - want)} cached tiles gone)")
+
+
 def main() -> int:
     from src.modeling.loaders import load_fold
 
@@ -332,6 +362,8 @@ def main() -> int:
                     help="a1 = per-window robust offset+gain CTX normalization (striping mitigation)")
     ap.add_argument("--out-suffix", default="",
                     help="suffix on the output store dir, e.g. _a1 -> dataset_v2/fang_embeddings_a1")
+    ap.add_argument("--force", action="store_true",
+                    help="recompute every image even if its cached key set matches")
     args = ap.parse_args()
     TILE_PX = args.tile_px
     CONTEXT_PX = 3 * TILE_PX
@@ -354,12 +386,21 @@ def main() -> int:
     keys_all = pd.concat([fold.keys_train, fold.keys_test], ignore_index=True)
     print(f"S={TILE_PX} tiles: {len(keys_all)} across {keys_all['obs_id'].nunique()} images\n")
 
+    n_reused = n_stale = 0
     for obs_id, g in keys_all.groupby("obs_id", sort=True):
-        done = OUT_DIR / f"{obs_id}_P{CONTEXT_PX}.npz"
-        if done.exists() and (OUT_DIR / f"{obs_id}_P{TILE_PX}.npz").exists():
-            print(f"  {obs_id}: cached, skipping", flush=True)
+        g = g.reset_index(drop=True)
+        why = "--force" if args.force else _cache_is_stale(obs_id, g)
+        if why is None:
+            print(f"  {obs_id}: cached and key-set matches, skipping", flush=True)
+            n_reused += 1
             continue
-        extract_one(model, obs_id, g.reset_index(drop=True), device)
+        if why != "absent":
+            print(f"  {obs_id}: RECOMPUTING -- {why}", flush=True)
+            n_stale += 1
+        extract_one(model, obs_id, g, device)
+
+    print(f"\nreused {n_reused} cached / recomputed {len(keys_all.groupby('obs_id')) - n_reused} "
+          f"({n_stale} of them because the cached key set was stale)")
 
     print(f"\ndone in {time.monotonic() - t_start:.0f} s -> {OUT_DIR}")
     return 0

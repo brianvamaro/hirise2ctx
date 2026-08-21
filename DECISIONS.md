@@ -9136,3 +9136,99 @@ the FM-path-only ruling they are out of scope to rebuild, so they should be **de
 item, not actioned now.
 
 Cumulative compute: steps 1–5 ≈ **50 min**.
+
+### 2026-08-20k — ⚠ NEAR MISS: step 6 was a 4-second silent no-op. Resume made safe.
+
+`scripts/probes/_w2_fang_embed.py --tile-px 32 --norm none` **exited 0 in 4 s having recomputed
+nothing** — "cached, skipping" for all 38 images. Its resume was
+`if npz.exists() and other.exists(): skip`: existence only, no content comparison, no `--force`.
+
+**Had the exit code been trusted, every downstream artifact would have been built on 2026-06-12
+embeddings.** Quantified against the fresh labels:
+
+| | |
+|---|---|
+| cached embedding tiles | **161,005** (the pre-rebuild pool) |
+| fresh label tiles (S=32) | **164,644** |
+| images with a mismatched `(ti, tj)` set | **38 of 38** |
+| new tiles with **no** cached embedding | **7,390** |
+
+It is not a clean subset either — tiles moved **both** ways. `ESP_017355_2260`: 13,457 cached vs
+14,250 labelled, overlap only 13,103, so **354 cached tiles no longer exist**. A size-only check would
+have missed that class entirely. Step 7's LOIO join would have silently dropped or misaligned
+thousands of tiles per image.
+
+**Two aggravating facts.**
+
+1. **The audit asserts this is already fixed.** Its Modeling/calibration gate row reads
+   "`fm-embeddings-3`/`fm-embeddings-4` are fixed so arm/suffix, store provenance, **existence-only
+   resume**, persisted model hash, and nuisance-basis consistency are enforced." That is **false for
+   the script PLAN_Rebuild step 6 actually invokes.** Whatever was fixed, it was not this path. The
+   audit's gate table should not be read as a guarantee about probe-tier drivers.
+2. **The npz records no provenance whatsoever** — keys are exactly
+   `['ti','tj','valid','cls','mean','gem']`. No config hash, no source digest, no model hash, no arm.
+   A stale store and a fresh one are **indistinguishable on disk**, and the arm is carried only by the
+   parent directory name — the identical weakness R07 called out for heads.
+
+**Fix (Brian: "add a staleness check that refuses to skip").** New `_cache_is_stale(obs_id, keys)`
+compares the cached `(ti, tj)` set against the current labels and skips **only on an exact match**,
+reporting how many tiles are new and how many are gone. `--force` added as an escape hatch, but the
+check — not the flag — is what makes the resume safe. The key set is the only provenance these stores
+carry, so comparing it is the strongest available check short of adding real provenance.
+
+**Five tests** (`tests/test_fang_embed_resume.py`): absent store recomputes; exact match still skips;
+a grown pool recomputes; **a same-size but shifted key set recomputes** (the case a count check
+misses); a half-written store recomputes.
+
+**Follow-up, not done now:** the npz should carry the label-generation digest and the arm, so
+staleness is detectable without reconstructing the key set. Same family as the write-time DAG check
+logged in 2026-08-20h. Post-step-12.
+
+**Process note.** This is the second silent no-op this rebuild has produced (after the 4b skip), and
+both were caught by reading output rather than exit codes. `--all`-style drivers here fail *quietly*
+by design: Stage 1 prints `FAILED` per image and exits 0; Stage 5 used to swallow errors (R04); this
+skips. **Exit 0 means nothing in this pipeline. Read the tally.**
+
+**Baseline arm re-run with the check active: `reused 0 cached / recomputed 38 (38 of them because the
+cached key set was stale)`, 466 s.** Verified after: **164,644 embeddings vs 164,644 labels, 0 of 38
+images mismatched, 0 tiles missing.** Ground rule §1.4 holds — all **252** files across the seven
+`fang_embeddings_f*` stores are byte-identical in mtime and size to the pre-run snapshot.
+
+The per-image output vindicates comparing the key **set** rather than a count. `ESP_069669_2220`:
+cached 4,428 against 4,430 labels — a net **+2** — but **159 new tiles missing and 157 gone**, so 316
+tiles actually changed. A count check would have seen +2 and plausibly passed it.
+
+*Cosmetic, not fixed:* the per-image progress line prints `192-valid=` regardless of `--tile-px`, so
+at S=32 it reports "192" where the context box is 96. Harmless but misleading in a log; tidy whenever
+the script is next touched.
+
+### 2026-08-20l — DAG step 6 COMPLETE: both arms rebuilt and verified
+
+| arm | runtime | result |
+|---|---|---|
+| baseline (`--norm none`) | 466 s | 38/38 recomputed, all stale |
+| A1 (`--norm a1 --out-suffix _a1`) | 4,281 s (71 min) | 38/38 recomputed, all stale |
+
+**Both stores verified against the fresh labels: 164,644 embeddings vs 164,644 labels, 0 of 38
+images mismatched, 0 tiles missing.** `192-valid = 100.0 %` on every image, so no context box spilled
+its Stage-2 window.
+
+**Ground rule §1.4 holds after both arms** — all **252** files across the seven `fang_embeddings_f*`
+stores byte-identical in mtime and size to the pre-run snapshot. The hard-aborted F programme's
+artifacts are untouched, demonstrated rather than asserted.
+
+**A1 runtime reconciles with the direct measurement.** 38 images span **19** distinct parent Murray
+tiles; `_A1_TILE_CACHE` streams each once. A1 overhead = 4,281 − 466 = 3,815 s = **201 s per parent
+tile**, against the **155 s** measured directly on `E-12_N36` (2026-08-19), the remainder being
+per-window `frame_labels_on` + `a1_normalize_native`. R07's per-frame native statistic is doing the
+work it is supposed to. Sampled provenance: `E0_N40` 47/47 frames with their own statistic, fallback
+0.0083 % of valid px; `E20_N-64` 21/22 frames, fallback 0.0175 % — both consistent with R08's ratified
+contract (the fallback population is tiny and normalised, never dropped).
+
+⚠ **My own capture error, recorded so it is not repeated.** I launched both arms piped through
+`| tail -30`, so the task log retained only the last 30 lines. That discarded 17 of the 19 A1
+streaming messages and led me to briefly read "only 2 parent tiles streamed" as a finding. It was not
+— the arithmetic above accounts for all 19. **Do not pipe a long background run through `tail`;** the
+pipe truncates the record, and on a rebuild the log *is* the evidence.
+
+Cumulative: steps 1–6 ≈ **2.4 h** of compute.
