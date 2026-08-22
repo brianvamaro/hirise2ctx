@@ -9232,3 +9232,51 @@ streaming messages and led me to briefly read "only 2 parent tiles streamed" as 
 pipe truncates the record, and on a rebuild the log *is* the evidence.
 
 Cumulative: steps 1–6 ≈ **2.4 h** of compute.
+
+### 2026-08-21 — DAG step 7 baseline arm COMPLETE; headline numbers re-derived
+
+**First attempt HARD-FAILED, correctly:** `AssertionError: join loss vs T1: 164644 -> 157254` — the
+7,390 new tiles exactly. `verdict()` joins fresh predictions against the Tier-1 reference, which for
+`fa_gt_1e-2` resolves via `SCALE_CONFIG` to two **2026-06-12 LightGBM sweep artifacts**
+(`models/lightgbm_classification/2d046f48c722f0a5/scale_S32_tfa_gt_1e-2/predictions.parquet`,
+`models/_sweep_binary/20260612T062412Z/summary.parquet`) keyed to the old pool — i.e. the GBM path
+excluded by decision 4.
+
+**This assertion deserves credit.** It refused to compare fresh predictions against a stale reference
+instead of quietly joining on the overlap and printing a plausible verdict. That is the opposite of
+the two silent no-ops earlier in this rebuild, and it is why the fix keeps the assertion intact rather
+than softening it to a warning.
+
+**Fix (Brian): `--no-verdict`** on `_fm_freeze_window.py run`, threaded through both the per-seed and
+the ens3 paths. Predictions are banked either way; only the Tier-1 gate is skipped. Justification: the
+gate is how the recipe originally *earned* its freeze, decision 1 is retrain-as-is with no bake-off,
+and no headline number depends on Tier-1.
+
+Note `write_run_artifacts` runs **before** the verdict, so seed 0's predictions had already been
+banked when the first attempt died — the failure cost one seed, not the run.
+
+**Re-run banked all four artifacts** (seeds 0/1/2 + ens3), 164,644 predictions each, ~9 min/seed.
+
+### The frozen recipe on the corrected label basis
+
+| metric | banked (0.3598 prevalence) | **rebuilt (0.373272)** | Δ |
+|---|---|---|---|
+| pooled `pr_auc@1e-2` | 0.7832 | **0.7826** | −0.0006 |
+| median per-image AUC | 0.7865 | **0.7778** | −0.0087 |
+| `precision@5%` | 0.948 | **0.9638** | +0.0158 |
+| `meaningful_auc` | — | **0.8342** | new |
+| Spearman(pred, `fractional_area`) | — | **0.6050** | new |
+
+Predictions↔labels join is exact: **164,644 / 164,644**.
+
+**Read these with the prevalence shift in hand.** Chance PR-AUC *is* the prevalence, so a flat PR-AUC
+at a higher prevalence is a small *real* decline: skill above chance is
+`(0.7826−0.3733)/(1−0.3733) = 0.6530` against `(0.7832−0.3598)/(1−0.3598) = 0.6614`. `precision@5%`
+rising is likewise partly mechanical. The prevalence-insensitive read is **median per-image AUC, down
+0.0087**.
+
+**All three agree on a very small decline — and it is not material.** Per-image AUC has sd 0.0886 over
+38 images, so SE ≈ 0.0144; a 0.0087 drop sits well inside one standard error. The defensible statement
+is that **the frozen recipe transfers to the corrected label basis unchanged**, not that it degraded.
+Per-image AUC still ranges widely (fold 30 `ESP_068483_2280` 0.5589 at 82 % positive; fold 37
+`ESP_076723_2265` 0.8780), which is the known between-image heterogeneity.

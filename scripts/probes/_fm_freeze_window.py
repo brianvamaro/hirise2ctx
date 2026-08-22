@@ -176,7 +176,8 @@ def print_verdict(v: dict) -> None:
 
 
 def run_cell(factory, name: str, *, matrix: str, head: str, pool: str,
-             tile_px: int, target_id: str, bank, force: bool) -> pd.DataFrame:
+             tile_px: int, target_id: str, bank, force: bool,
+             no_verdict: bool = False) -> pd.DataFrame:
     """One LOIO cell -> banked predictions + (non-baseline) verdict; returns preds."""
     scale_idx = SCALE_CONFIG[tile_px][0]
     target = get_target(target_id)
@@ -206,7 +207,7 @@ def run_cell(factory, name: str, *, matrix: str, head: str, pool: str,
     write_run_artifacts(result, out_dir)
     print(f"  [{name}] {time.monotonic() - t0:.0f} s -> {out_dir.relative_to(REPO_ROOT)}",
           flush=True)
-    if matrix != "t1":
+    if matrix != "t1" and not no_verdict:
         t1_path, t1_auc = resolve_t1_baseline(tile_px, target_id)
         v = verdict(name, result.predictions, t1_path, t1_auc)
         (out_dir / "verdict.json").write_text(json.dumps(v, indent=2), encoding="utf-8")
@@ -229,7 +230,8 @@ def cmd_run(args) -> int:
             seed_preds[s] = run_cell(
                 lambda s=s: MLPArchHead(seed=s, hidden=tuple(args.hidden), dropout=args.dropout),
                 name, matrix=args.matrix, head=f"mlp{tag}", pool=pool,
-                tile_px=tile_px, target_id=target_id, bank=bank, force=args.force)
+                tile_px=tile_px, target_id=target_id, bank=bank, force=args.force,
+                no_verdict=args.no_verdict)
         if len(args.seeds) > 1:
             base = None
             for s in args.seeds:
@@ -244,11 +246,16 @@ def cmd_run(args) -> int:
             out_dir.mkdir(parents=True, exist_ok=True)
             base[["obs_id", "ti", "tj", "y_true", "y_pred"]].to_parquet(
                 out_dir / "predictions.parquet", index=False)
-            t1_path, t1_auc = resolve_t1_baseline(tile_px, target_id)
-            v = verdict(ens_name, base, t1_path, t1_auc)
-            (out_dir / "verdict.json").write_text(json.dumps(v, indent=2), encoding="utf-8")
             print(f"=== {ens_name} (mean of {len(args.seeds)} seeds) ===")
-            print_verdict(v)
+            if args.no_verdict:
+                print(f"  --no-verdict: {len(base)} predictions banked, Tier-1 gate "
+                      f"skipped", flush=True)
+            else:
+                t1_path, t1_auc = resolve_t1_baseline(tile_px, target_id)
+                v = verdict(ens_name, base, t1_path, t1_auc)
+                (out_dir / "verdict.json").write_text(
+                    json.dumps(v, indent=2), encoding="utf-8")
+                print_verdict(v)
         return 0
 
     factories = {
@@ -364,6 +371,11 @@ def main() -> int:
     r.add_argument("--dropout", type=float, default=DEFAULT_DROPOUT)
     r.add_argument("--seeds", nargs="+", type=int, default=[0, 1, 2])
     r.add_argument("--force", action="store_true")
+    r.add_argument("--no-verdict", action="store_true",
+                   help="bank predictions but skip the Tier-1 comparison. For fa_gt_1e-2 the T1 "
+                        "reference is a banked LightGBM SWEEP artifact (SCALE_CONFIG), so on a "
+                        "rebuilt label pool it is stale and the join asserts. The gate is a "
+                        "selection-era read, not a headline number -- DECISIONS 2026-08-21.")
     r.set_defaults(func=cmd_run)
 
     e = sub.add_parser("eval", help="verdict for a banked spec (+ optional calibration)")
