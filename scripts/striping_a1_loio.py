@@ -98,9 +98,17 @@ def run_store(store_name: str, avail: set[str] | None = None,
         head = DeployableHead(recipe=dict(target_id=TARGET))
         head.fit(f.X_train, ytr, groups=f.groups_train, obs_to_int=f.obs_to_int, verbose=False)
         p = head.predict(f.X_test)
-        obs = f.keys_test["obs_id"].to_numpy()
+        kt = f.keys_test
+        obs = kt["obs_id"].to_numpy()
         keep = np.isfinite(p) & np.isfinite(yte)
-        rows.append(pd.DataFrame({"obs_id": obs[keep], "y": yte[keep], "p": p[keep],
+        # ti/tj are CARRIED, not dropped. The audit's rebuild-DAG bullet: "every arm's
+        # prediction artifact must retain unique tile keys" -- `bank_calibration.py` joins
+        # on (obs_id, ti, tj) and asserts one-to-one, so an artifact without them cannot
+        # calibrate the A1 arm at all. DECISIONS 2026-08-21.
+        rows.append(pd.DataFrame({"obs_id": obs[keep],
+                                  "ti": kt["ti"].to_numpy()[keep],
+                                  "tj": kt["tj"].to_numpy()[keep],
+                                  "y": yte[keep], "p": p[keep],
                                   "store": store_name}))
         o0 = obs[0]
         auc = (roc_auc_score(yte[keep], p[keep])
@@ -108,6 +116,39 @@ def run_store(store_name: str, avail: set[str] | None = None,
         print(f"  [{store_name}] {o0}: n={keep.sum()} pos={int(yte[keep].sum())} AUC={auc:.3f}",
               flush=True)
     return pd.concat(rows, ignore_index=True)
+
+
+
+def write_arm_predictions(preds_all, out_dir, tag: str = "") -> dict:
+    """Per-arm `predictions.parquet` in the BASELINE schema. Returns {store: path}.
+
+    **DECISIONS 2026-08-21.** This driver used to emit only `obs_id, y, p`. The audit's
+    rebuild-DAG bullet says "every arm's prediction artifact must retain unique tile keys",
+    and `scripts/bank_calibration.py` joins on `(obs_id, ti, tj)` with `validate="one_to_one"`
+    -- so without the keys the A1 arm simply cannot be calibrated, and step 9 is blocked.
+
+    The skill-gate CSVs are left exactly as they were; these parquets are the calibration
+    inputs. Duplicate keys are a hard error: a LOIO artifact has one row per tile by
+    construction, so a duplicate means folds overlapped or a store was concatenated twice.
+    """
+    from pathlib import Path
+
+    out_dir = Path(out_dir)
+    written = {}
+    for store, sub in preds_all.groupby("store"):
+        arm_dir = out_dir / f"loio_{store}{tag}"
+        arm_dir.mkdir(parents=True, exist_ok=True)
+        out = (sub[["obs_id", "ti", "tj", "y", "p"]]
+               .rename(columns={"y": "y_true", "p": "y_pred"}))
+        dup = int(out.duplicated(subset=["obs_id", "ti", "tj"]).sum())
+        if dup:
+            raise SystemExit(f"{store}: {dup} duplicate (obs_id, ti, tj) keys -- a LOIO "
+                             f"prediction artifact needs exactly one row per tile")
+        path = arm_dir / "predictions.parquet"
+        out.to_parquet(path, index=False)
+        written[store] = path
+        print(f"  {store}: {len(out)} predictions -> {path}", flush=True)
+    return written
 
 
 def summarize(df: pd.DataFrame, label: str) -> dict:
@@ -157,8 +198,9 @@ def main():
     tag = args.tag
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    pd.concat(allrows, ignore_index=True).to_csv(
-        out_dir / f"striping_a1_loio_preds{tag}.csv", index=False)
+    preds_all = pd.concat(allrows, ignore_index=True)
+    preds_all.to_csv(out_dir / f"striping_a1_loio_preds{tag}.csv", index=False)
+    write_arm_predictions(preds_all, out_dir, tag)
     summ = pd.DataFrame([results["fang_embeddings"], results["fang_embeddings_a1"]])
     summ.to_csv(out_dir / f"striping_a1_loio_summary{tag}.csv", index=False)
     print("\n=== SKILL GATE: baseline vs A1 ===")

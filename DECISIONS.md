@@ -9280,3 +9280,64 @@ rising is likewise partly mechanical. The prevalence-insensitive read is **media
 is that **the frozen recipe transfers to the corrected label basis unchanged**, not that it degraded.
 Per-image AUC still ranges widely (fold 30 `ESP_068483_2280` 0.5589 at 82 % positive; fold 37
 `ESP_076723_2265` 0.8780), which is the known between-image heterogeneity.
+
+### 2026-08-23 — DAG step 7 A1 arm COMPLETE. The skill gate PASSES, and A1's cost has collapsed.
+
+`striping_a1_loio.py` patched first so it retains tile keys (Brian's ruling, 2026-08-21), then run over
+both stores, 38 LOIO folds each.
+
+### SKILL GATE: PASS
+
+| store | median per-image AUC | mean | frac ≥ 0.7 | pooled PR-AUC |
+|---|---|---|---|---|
+| `fang_embeddings` (baseline) | **0.783499** | 0.784339 | 0.842105 | 0.775446 |
+| `fang_embeddings_a1` | **0.781057** | 0.783774 | 0.842105 | 0.783631 |
+
+**Δ median per-image AUC (A1 − baseline) = −0.0024** (gate: ≥ −0.02) → **PASS**
+**Δ pooled PR-AUC = +0.0082** — A1 is *better* on the pooled read.
+
+### This is the end-to-end re-check the audit demanded, and the answer changed
+
+The banked A1 figures were **η² 0.196→0.141 and −0.024 AUC**, which the audit explicitly ruled
+"came from different A1 definitions and remain non-comparable until [parity is re-checked] end to
+end". This run is that re-check. **A1's skill cost is now −0.0024, an order of magnitude smaller than
+the −0.024 of record**, and it *gains* +0.0082 pooled PR-AUC.
+
+The mechanism is R07 + R38, exactly as designed. The old number was produced when training used one
+whole-window statistic and deployment used a per-frame one — two different normalisations compared as
+though they were one. Both sides now call `src.striping.A1_ARM`, the per-frame **native** statistic,
+and R38's `A1_VALID_FLOOR = 1` stops the clip manufacturing nodata out of dark terrain. Fixing the
+definition removed almost all of the apparent cost.
+
+**Consequence: the "A1 costs skill" caveat should not be carried forward at −0.024.** Any document
+quoting it needs updating at step 12. What A1 buys (the η² striping reduction) has *not* been
+re-measured here — that is a map-time quantity and comes at step 11/12.
+
+⚠ **η² is NOT re-derived by this run.** Do not pair the new −0.0024 with the old 0.141 η²; they would
+again be two different definitions spliced together, which is the precise error this entry records
+being fixed.
+
+### Both artifacts are calibration-ready
+
+`reports/figures/loio_{fang_embeddings,fang_embeddings_a1}/predictions.parquet`: **164,644 rows each,
+columns exactly `obs_id, ti, tj, y_true, y_pred`, 0 duplicate keys, join to labels 164,644/164,644.**
+Step 9 can now bank a calibration for either arm with the same driver. The skill-gate CSVs are
+unchanged.
+
+### Cross-harness agreement on the baseline
+
+This script's baseline median per-image AUC is **0.783499**; yesterday's `_fm_freeze_window` banked
+**0.7778** on the same embeddings and labels. **Δ = +0.0057.** The harnesses differ deliberately
+(different fold plumbing and inner-val rotation), so exact equality was never expected; agreement to
+~0.006 on a quantity with sd 0.089 across 38 images is reassuring rather than alarming. **Quote the
+`_fm_freeze_window` number as the recipe's figure of record** — it is the one the deployable head is
+trained from — and treat this one as the A1 comparison's internal control.
+
+**Code:** `write_arm_predictions()` extracted from `main()` so it is testable, with 4 tests
+(`tests/test_a1_loio_keys.py`): both arms in the calibration schema, keys surviving the round-trip,
+duplicate keys raising rather than reaching the calibrator, and `--tag` isolating a `--restrict-store`
+run from the files of record.
+
+**Gotcha:** `conda run python -` with a heredoc **silently does not write** — it printed success while
+leaving the file untouched. Companion to the `python -c` newline rejection. Rule: put multi-line
+Python in a file and pass the path.
