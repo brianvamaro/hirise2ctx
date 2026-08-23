@@ -203,17 +203,45 @@ def test_declaring_an_arm_changes_the_recipe_hash_and_omitting_it_does_not():
     assert plain.recipe_hash() == DeployableHead(norm_arm=None).recipe_hash()
 
 
-def test_the_shipped_heads_are_the_unversioned_ones_this_finding_is_about():
-    """Documents the state R07 found: eleven heads, one recipe_hash, no arm recorded."""
+def test_banked_heads_split_into_pre_and_post_R07_generations():
+    """R07 on disk. **Updated 2026-08-23** — the v2 rebuild trained the first armed heads.
+
+    This test used to assert `armed == 0`, pinning the pre-fix state R07 found: eleven heads
+    sharing one `recipe_hash` with the arm recorded nowhere, so the ONLY thing distinguishing
+    them was the parent directory name. It carried its own instruction to be updated once a
+    head declared an arm. That has now happened, so it pins the *invariant* instead of the
+    snapshot:
+
+      * the legacy collision is still on disk and still documents what R07 found;
+      * every head that declares an arm has a hash unique to that arm.
+
+    The second clause is the part that must hold forever. If two heads with DIFFERENT arms
+    ever share a `recipe_hash`, R07 has regressed and a raster can be rendered with the wrong
+    preprocessing and no error.
+    """
     cards = sorted((REPO / "models").glob("deployable*/*/recipe.json"))
     if not cards:
         pytest.skip("no banked heads on disk")
-    hashes, armed = {}, 0
+    by_hash: dict[str, list] = {}
     for c in cards:
         d = json.loads(c.read_text(encoding="utf-8"))
-        hashes.setdefault(d.get("recipe_hash"), []).append(c.parent.parent.name)
-        armed += d.get("norm_arm") is not None
-    biggest = max(hashes.values(), key=len)
-    assert len(biggest) > 1, "expected the pre-R07 recipe_hash collision"
-    assert armed == 0, ("a head now declares norm_arm -- retrained under R07? update this "
-                        "test, it pins the pre-fix state deliberately")
+        by_hash.setdefault(d.get("recipe_hash"), []).append(
+            (c.parent.parent.name, d.get("norm_arm")))
+
+    unversioned = {h: v for h, v in by_hash.items() if all(a is None for _, a in v)}
+    armed = {h: v for h, v in by_hash.items() if any(a is not None for _, a in v)}
+
+    assert unversioned, "expected the pre-R07 unversioned heads to still be on disk"
+    assert max((len(v) for v in unversioned.values()), default=0) > 1, (
+        "expected the pre-R07 recipe_hash collision among the legacy heads")
+
+    # THE INVARIANT: one hash never spans two arms.
+    for h, members in armed.items():
+        arms = {a for _, a in members}
+        assert len(arms) == 1, (
+            f"recipe_hash {h} spans arms {sorted(arms)} across {[n for n, _ in members]} -- "
+            f"R07 has regressed; a head can now be fed the wrong preprocessing silently")
+
+    # and an undeclared arm must still reproduce the historical hash, so legacy dirs resolve
+    assert DeployableHead(norm_arm=None).recipe_hash() != DeployableHead(
+        norm_arm="a1").recipe_hash()

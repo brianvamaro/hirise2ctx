@@ -267,3 +267,30 @@ def test_lambda_consistency_survives_save_load(tmp_path):
     reloaded = DeployableHead.load(out)
     assert reloaded.lambda_consistency == 3.0
     np.testing.assert_allclose(reloaded.predict(X), p, rtol=0, atol=1e-6)
+
+
+def test_the_frozen_recipe_carries_no_measured_metrics():
+    """R09's residue. A recipe is a CONFIGURATION; performance is a measurement.
+
+    `FROZEN_RECIPE` is stamped verbatim into every head's `recipe.json`, so a metric
+    constant here becomes a claim every head makes about itself. R09 caught the F head
+    asserting pooled PR-AUC 0.7832 when its real value was 0.7438; the v2 rebuild caught
+    both new heads asserting 0.7832 / 0.7865 when the corrected basis measures
+    0.7826 / 0.7778 -- and the A1 head asserting the baseline's numbers outright.
+
+    It must also stay out of the recipe HASH: an unchanged configuration would otherwise
+    hash differently the day its LOIO is re-run.
+    """
+    from src.modeling.mlp_head import FROZEN_RECIPE
+
+    banned = [k for k in FROZEN_RECIPE
+              if any(t in k.lower() for t in ("auc", "_pr_", "precision", "recall",
+                                              "brier", "rmse", "spearman", "score"))]
+    assert not banned, (
+        f"FROZEN_RECIPE must not contain measured metrics, found {banned}. "
+        f"Metrics belong beside the head (LOIO predictions/summaries), not in the card "
+        f"that describes how to build it -- see R09 and DECISIONS 2026-08-23.")
+
+    # and the values that WERE there must not have crept back under any name
+    assert 0.7832 not in FROZEN_RECIPE.values()
+    assert 0.7865 not in FROZEN_RECIPE.values()

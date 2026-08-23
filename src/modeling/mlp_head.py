@@ -299,8 +299,21 @@ FROZEN_RECIPE = {
     "input_px": 96,          # 3x3-context box side fed to the ViT
     "pool": "gem",
     "embedding": "fang_vit_b16_gem_p3",
-    "loio_pooled_pr_auc": 0.7832,
-    "loio_med_per_image_auc": 0.7865,
+    # NO measured metrics here. **R09's residue, removed 2026-08-23.**
+    #
+    # This dict used to carry `loio_pooled_pr_auc: 0.7832` and `loio_med_per_image_auc: 0.7865`,
+    # and it is stamped verbatim into every head's `recipe.json`. R09 recorded the consequence
+    # for the F head — its card claimed 0.7832 when its true pooled PR-AUC was 0.7438 — and the
+    # arm half of R09 was fixed by putting `norm_arm` in the hash. The metrics half was not: on
+    # the v2 rebuild both freshly trained heads shipped cards asserting 0.7832 / 0.7865 while the
+    # measured values on the corrected label basis are **0.7826 / 0.7778** (DECISIONS 2026-08-21),
+    # and the A1 head asserted the *baseline's* numbers, which it never had under any basis.
+    #
+    # A recipe is a CONFIGURATION. Performance is a measurement of a particular fit against a
+    # particular label generation, so it cannot be a constant, and it must not be inside the
+    # recipe hash — hashing it would make an identical configuration hash differently the day its
+    # LOIO is re-run. Metrics belong beside the head (step 7's `predictions.parquet` and the
+    # per-arm LOIO summaries), not inside the card that describes how to build it.
 }
 
 

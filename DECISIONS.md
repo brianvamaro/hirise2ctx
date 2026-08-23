@@ -9341,3 +9341,62 @@ run from the files of record.
 **Gotcha:** `conda run python -` with a heredoc **silently does not write** — it printed success while
 leaving the file untouched. Companion to the `python -c` newline rejection. Rule: put multi-line
 Python in a file and pass the path.
+
+### 2026-08-23b — DAG step 8 COMPLETE: two heads, distinct arms, and R09's residue closed
+
+| arm | `norm_arm` | recipe_hash | model_hash | in-sample AUC |
+|---|---|---|---|---|
+| baseline | `none` | **a5ffca2dcc536855** | e13762fd4a71909e | 0.9615 |
+| A1 | `a1` | **7bbd8a8e1d377f6e** | 08ee3637dd62f6ff | 0.9796 |
+
+Both on 164,644 × 768, pos_rate 0.3733, 38 images, 0 NaN rows; save/load round-trip max |dp| ≤ 3.1e-07.
+~100 s each. Written to **`models/deployable_g2/` and `models/deployable_a1_g2/`** rather than beside
+the legacy head, because `map_region.resolve_model_dir` picks `hits[-1]` **by name** — a new hash next
+to `86c51a5dca220f63` would be an ambiguity the audit already flagged. Step 11 must pass
+`--model-parent` explicitly.
+
+**R07 gate PASSES:** the two arms produce different recipe hashes and neither reuses the legacy one.
+
+### ⚠ R09's residue found live, and closed
+
+The audit lists R09 as fixed. Only its **arm** half was: `norm_arm` is in the hash. Its **metric** half
+was not. `FROZEN_RECIPE` hardcoded `loio_pooled_pr_auc: 0.7832` and `loio_med_per_image_auc: 0.7865`,
+and that dict is stamped verbatim into every head's `recipe.json` — so **both freshly trained heads
+shipped cards asserting 0.7832 / 0.7865 when step 7 measured 0.7826 / 0.7778 on the corrected basis**,
+and the **A1 head asserted the baseline's numbers, which it never had under any basis.** Exactly R09's
+original failure (the F head claiming 0.7832 against a true 0.7438), reproduced on new artifacts.
+
+**Fix:** the two metric keys are removed from `FROZEN_RECIPE`. A recipe is a *configuration*;
+performance is a *measurement of one fit against one label generation*. It cannot be a constant, and
+it must not sit inside the recipe hash — hashing it would make an unchanged configuration hash
+differently the day its LOIO is re-run. Metrics live beside the head, in step 7's
+`predictions.parquet` and the per-arm LOIO summaries.
+
+**Test added** (`tests/test_deployable_head.py`): `FROZEN_RECIPE` may contain no key matching
+auc/pr/precision/recall/brier/rmse/spearman/score, and neither 0.7832 nor 0.7865 by value.
+
+**A clean confirmation from the retrain:** recipe hashes changed (`c1783d53…`→`a5ffca2d…`,
+`f8795fff…`→`7bbd8a8e…`) while **model hashes did not** (`e13762fd…`, `08ee3637…` both identical to
+the first run). Removing metrics from the recipe changed the configuration identity and nothing about
+the weights — and it independently re-confirms the head training is deterministic.
+
+### Still open, deferred by ruling: the embedding store is not in the card
+
+The audit requires "the preprocessing arm, embedding-store identity/digest, and target definition in
+the head recipe/card/hash". Arm ✓ and target ✓; **store name and store digest are absent** (grep: 0
+occurrences). `embedding: "fang_vit_b16_gem_p3"` names the *model*, not the store. So nothing records
+that a head consumed `fang_embeddings_a1` rather than `fang_embeddings` except `norm_arm` — a
+command-line label, not a measured property of the input. Brian deferred this: nothing is *misstated*
+by the absence, and a digest over a 3.5 GB store is a design choice to make deliberately. Post-step-12,
+alongside the embedding-npz provenance gap (2026-08-20k) and the write-time DAG check (2026-08-20h) —
+all three are the same missing idea: **producers record their inputs but never verify them.**
+
+**A test caught the change and asked to be updated — correctly.**
+`test_the_shipped_heads_are_the_unversioned_ones_this_finding_is_about` asserted `armed == 0`,
+pinning the pre-R07 snapshot, and carried its own instruction: *"a head now declares norm_arm —
+retrained under R07? update this test, it pins the pre-fix state deliberately."* Training the first
+armed heads tripped it exactly as designed. Rewritten as
+`test_banked_heads_split_into_pre_and_post_R07_generations`, which pins the **invariant** rather than
+the snapshot: the legacy collision must still be on disk (it documents what R07 found), and **no
+`recipe_hash` may ever span two arms** — if one does, a raster can be rendered with the wrong
+preprocessing and no error. Fast suite **812 passed**.
