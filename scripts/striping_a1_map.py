@@ -74,7 +74,8 @@ import numpy as np
 from rasterio.features import rasterize
 
 from scripts.map_region import (DEFAULT_SIZE_FLOOR_BASIS, as_int32_cells, check_overlap,
-                                gate_cols, gate_summary, load_tile_sidecar,
+                                compute_device_name, gate_cols, gate_summary,
+                                load_tile_sidecar, project_tile_cost, require_device,
                                 partial_grid_id, partial_name, read_partial,
                                 reject_foreign_partials, size_floor_tags, sweep_manifest,
                                 run_tile_isolated, sweep_mismatch, tile_is_reusable,
@@ -171,7 +172,7 @@ def seammap_digest(tile: str) -> str | None:
 
 
 def a1_sweep_manifest(grid_geom, row_offs, col_offs, args, *, extent, tile,
-                      head_digest, calibration_digest) -> dict:
+                      head_digest, calibration_digest, device=None) -> dict:
     """The identity of an A1 sweep — `map_region`'s, plus what makes A1 *A1*.
 
     **R14 on the A1 arm, which never had it.** This driver deleted a `partials/<tile>/_sweep.json`
@@ -192,7 +193,8 @@ def a1_sweep_manifest(grid_geom, row_offs, col_offs, args, *, extent, tile,
     """
     return {
         **sweep_manifest(grid_geom, row_offs, col_offs, args, extent=extent,
-                         head_digest=head_digest, calibration_digest=calibration_digest),
+                         head_digest=head_digest, calibration_digest=calibration_digest,
+                         device=device),
         "variant": "A1",
         "norm_arm": A1_ARM,
         "a1_ref": [A1_REF_MEDIAN, A1_REF_IQR],
@@ -234,7 +236,8 @@ def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
     want_sweep = a1_sweep_manifest(
         grid_geom, row_offs, col_offs, args, extent=(H, W), tile=tile,
         head_digest=artifact_digest(args.head),
-        calibration_digest=artifact_digest(args.calibration) if args.calibration else None)
+        calibration_digest=artifact_digest(args.calibration) if args.calibration else None,
+        device=compute_device_name(embedder))
 
     # R14: resume on the SIDECAR, not on the first artifact written. This driver's sentinel was
     # `{tile}_prob_raw.tif`, which `write_tile` emits FIRST -- the identical defect map_region
@@ -312,6 +315,7 @@ def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
     # Where the per-window time goes. `cost["stats"]` is the once-per-tile streaming pass;
     # the rest accumulate over the sweep. Printed with DONE and banked in the sidecar.
     cost = {"stats": t_stats, "read": 0.0, "a1": 0.0, "predict": 0.0, "write": 0.0}
+    n_computed = 0                  # windows this process actually computed (not resumed)
     # DECISIONS 2026-08-18c, same fix as `map_region.py`: one open for the whole sweep instead
     # of 144. `rasterio.open` on a Murray vsizip costs 7.95 s against 1.4 s for the read.
     # Lazy, so an already-partialled tile still costs nothing; `finally`, so a raise mid-sweep
@@ -370,9 +374,13 @@ def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
                 tmp.unlink(missing_ok=True)
                 raise
             cost["write"] += time.monotonic() - t_pred
+            dt = time.monotonic() - t0
             if k % 10 == 0 or k == len(grid) - 1:
                 print(f"[{tile}] win {k + 1}/{len(grid)} kept={int(keep.sum())} "
-                      f"a1px={n_norm:,} {time.monotonic() - t0:.1f}s", flush=True)
+                      f"a1px={n_norm:,} {dt:.1f}s", flush=True)
+            n_computed += 1
+            if n_computed == 1:
+                print(project_tile_cost(tile, dt, len(grid), k), flush=True)
     finally:
         if tile_src is not None:
             tile_src.close()
@@ -503,6 +511,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--calibration", default=None,
                     help="CalibrationLayer npz; omit for raw P(rich) only (η² is scored on raw P)")
     ap.add_argument("--win-px", type=int, default=4096)
+    ap.add_argument("--require-device", action="append", metavar="SUBSTRING",
+                    help="refuse to render unless the GPU name contains this (repeatable). "
+                         "See scripts/map_region.py:require_device.")
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--max-zero-fraction", type=float, default=0.3)
     # R13 x R38 — ENABLED (0.0) as of 2026-08-10, and here is why it was not before. A1 used to
@@ -557,6 +568,7 @@ def main() -> int:
     # pass as correct -- and the A1 head has to be retrained for R07 regardless, which is
     # exactly when it will start declaring the arm.
     require_norm_arm(head, A1_ARM, where=str(args.head), strict=True)
+    require_device(embedder, args.require_device)
     print(f"A1 map: {len(tiles)} tiles {tiles}\n  head={Path(args.head).parent.name}, "
           f"A1 ref (median, IQR) = ({A1_REF_MEDIAN}, {A1_REF_IQR}), "
           f"calibration={'on' if calibrator else 'raw only'}", flush=True)

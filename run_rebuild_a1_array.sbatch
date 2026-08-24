@@ -5,24 +5,23 @@
 # record came from one E8_N44 crop (`striping_a1_infer_crop.py`, which saved only a PNG) or from
 # the LOIO skill gate. This is the first A1 raster.
 #
-# COST -- read this before choosing --time again. The first attempt (job 40572495) TIMED OUT
-# at 10:00:15 and the budget below does NOT explain that, so one term is still unmeasured.
+# COST -- RESOLVED 2026-08-24e from logs/h2c-rebuild-a1-40572495_*.out. The 10 h timeout was
+# the GPU ALLOCATION, not this arm: task 0 drew a Tesla P100 and tasks 1-5 TITAN Xps, while the
+# baseline arm had RTX 2080 Tis throughout. See the PIN THE GPU note below.
 #
-#   baseline arm, measured on the 2080 Ti     0.717 h/tile   (job 40561654 manifest)
-#   A1 overhead, measured on the laptop      +0.193 h/tile   (DECISIONS 2026-08-19)
-#     of which frame_labels_on               +0.107 h/tile   -> now 0.031 h (bbox prefilter,
-#                                                               3.4-4.2x, bit-identical)
-#   => expected after the prefilter            0.79 h/tile   -> 5 tiles = 4.0 h, not 10 h
+#   baseline, 2080 Ti, measured             0.717 h/tile   (job 40561654 manifest)
+#   A1 overhead, measured on the laptop    +0.193 h/tile   (DECISIONS 2026-08-19)
+#     of which frame_labels_on             +0.107 h/tile   -> 0.031 h after the bbox prefilter
+#                                                             (354.0 -> 102.8 s over 144 real
+#                                                              windows, every one bit-identical)
+#   => A1 on a 2080 Ti                      ~0.79 h/tile   -> 26 tiles = ~21 GPU-h
 #
-# So the prefilter is real and verified (`test_frame_labels_on_prefilter_is_identical`, plus a
-# 144-window run on the real E-12_N36 frames: 354.0 s -> 102.8 s, every window bit-identical),
-# but it accounts for ~0.08 h of a >1 h/tile shortfall. ⚠ Do NOT repeat the earlier reading that
-# `CPU Utilized 09:59:32 / 12.49 % of 8 cores` proves a CPU-bound overrun: the baseline arm is
-# GPU-bound and its host process also pegs ~1 core, so that ratio is what a healthy run here
-# looks like. The missing term is in `logs/h2c-rebuild-a1-40572495_*.out` -- per-tile
-# `DONE in Ns` (now with a read/a1/predict/write breakdown), the `win k/144 ... Ns` lines, and
-# the streaming-pass message. --time is 06:00 for ONE tile, which is >7x the expected cost and
-# absorbs a 2x surprise; revise it once the log is read.
+# So A1's own overhead is ~10 % of a tile, and 90 % of the overrun was the card. --time 06:00
+# for ONE tile is ~7.5x the 2080 Ti cost; it would NOT fit a TITAN Xp tile, which is deliberate
+# -- --require-device refuses that allocation up front rather than half-rendering into a wall.
+#
+# ⚠ Retracted from 2026-08-24b: `CPU Utilized 09:59:32 / 12.49 % of 8 cores` is NOT evidence of
+# a CPU-bound overrun. The baseline arm is GPU-bound and its host process also pegs ~1 core.
 #
 # The 19 parent-tile SeamMaps do not need uploading: `src.striping.load_frames` pulls the
 # shapefile out of the tile zip via /vsizip/vsicurl/ range requests and caches it as a GeoPackage,
@@ -67,7 +66,7 @@ TILES=(
 #   * a 26-way array of short jobs also schedules faster on the gpu partition than 6 long ones.
 # `ONLY` restricts the run to named tiles, so a resubmit can target just what is left instead
 # of spawning 21 tasks that only print "skip":
-#   ONLY="E0_N36 E0_N44 E4_N44 E8_N36 E16_N44" sbatch --array=0-4 run_rebuild_map_array.sbatch
+#   ONLY="E0_N36 E0_N44 E4_N44 E8_N36 E16_N44" sbatch --array=0-4 run_rebuild_a1_array.sbatch
 if [[ -n "${ONLY:-}" ]]; then
   read -r -a TILES <<< "$ONLY"
 fi
@@ -80,6 +79,7 @@ fi
 SEL=()
 for (( j=I; j<${#TILES[@]}; j+=N )); do SEL+=( "${TILES[j]}" ); done
 
+REQUIRE_DEVICE="${REQUIRE_DEVICE:-2080 Ti}"   # see the PIN THE GPU note above
 BATCH="${BATCH:-96}"
 # The A1 driver takes the head DIRECTLY (no --model-parent), and R07 makes it REFUSE -- strict=True
 # -- a head it cannot verify as this arm. The arm id is the VERSIONED string
@@ -107,6 +107,7 @@ python scripts/striping_a1_map.py \
   --calibration "$A1_PARENT/calibration.npz" \
   --size-floor-basis "$A1_PARENT/size_floor_basis.json" \
   --clean-partials \
+  --require-device "$REQUIRE_DEVICE" \
   --tiles "${SEL[@]}"
 
 echo "task $SLURM_ARRAY_TASK_ID done -> $OUT"
@@ -118,6 +119,32 @@ echo "task $SLURM_ARRAY_TASK_ID done -> $OUT"
 #
 # NOTE on isotonic: do NOT add --no-isotonic to get an uncalibrated comparison. Every run already
 # writes <tile>_prob_raw.tif alongside <tile>_prob.tif, so isotonic-vs-raw is free from one pass.
+# ---------------------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------------------
+# ⚠ PIN THE GPU. This is the single biggest cost lever in step 11, and it is not in the code.
+#
+# The gpu partition hands out whatever is free, and per-window cost varies **11x** across it.
+# MEASURED, both arms, 144 windows per tile:
+#
+#     NVIDIA GeForce RTX 2080 Ti   17.9 s/window   0.72 h/tile   <- all 6 baseline tasks
+#     Tesla P100-PCIE-16GB         91.7 s/window   3.67 h/tile   <- A1 task 0      (5.1x)
+#     NVIDIA TITAN Xp             ~202  s/window   8.08 h/tile   <- A1 tasks 1-5  (11.2x)
+#
+# That, not the code, is why the A1 array timed out at 10 h: one TITAN Xp tile alone exceeds
+# the wall. Projected 26-tile A1 arm: ~21 GPU-h on 2080 Ti, ~95 on P100, ~210 on TITAN Xp.
+#
+# TWO defences, use both:
+#   1. `--constraint` at submit time, in the cluster's feature vocabulary. Find the tokens with
+#        sinfo -p gpu -o "%30N %90f" | tr ',' '\n' | grep -i '^GPU_' | sort -u
+#      then submit e.g.  sbatch -C "GPU_SKU:RTX_2080Ti" run_rebuild_map_array.sbatch
+#      (a command-line -C overrides any --constraint directive in this file).
+#   2. `--require-device`, below, which is checked by the driver itself against the device name
+#      inference will actually run on. A Slurm feature name that is wrong or renamed fails
+#      SILENTLY; this cannot. Costs ~60 s of startup on a bad allocation instead of the wall.
+#
+# To deliberately accept a slower card, widen REQUIRE_DEVICE and raise --time together:
+#   REQUIRE_DEVICE="P100" sbatch --time=05:00:00 ... run_rebuild_a1_array.sbatch
 # ---------------------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------------------

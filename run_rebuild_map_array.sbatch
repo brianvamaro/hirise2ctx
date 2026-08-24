@@ -76,6 +76,7 @@ fi
 SEL=()
 for (( j=I; j<${#TILES[@]}; j+=N )); do SEL+=( "${TILES[j]}" ); done
 
+REQUIRE_DEVICE="${REQUIRE_DEVICE:-2080 Ti}"   # see the PIN THE GPU note above
 BATCH="${BATCH:-96}"
 MODEL_PARENT="${MODEL_PARENT:-models/deployable_g2}"
 OUT="${MAP_OUT:-$SCRATCH/hirise2ctx/map_region_g2}"
@@ -94,9 +95,36 @@ python scripts/map_region.py \
   --calibration "$MODEL_PARENT/calibration.npz" \
   --size-floor-basis "$MODEL_PARENT/size_floor_basis.json" \
   --clean-partials \
+  --require-device "$REQUIRE_DEVICE" \
   --tiles "${SEL[@]}"
 
 echo "task $SLURM_ARRAY_TASK_ID done -> $OUT"
+
+# ---------------------------------------------------------------------------------------
+# ⚠ PIN THE GPU. This is the single biggest cost lever in step 11, and it is not in the code.
+#
+# The gpu partition hands out whatever is free, and per-window cost varies **11x** across it.
+# MEASURED, both arms, 144 windows per tile:
+#
+#     NVIDIA GeForce RTX 2080 Ti   17.9 s/window   0.72 h/tile   <- all 6 baseline tasks
+#     Tesla P100-PCIE-16GB         91.7 s/window   3.67 h/tile   <- A1 task 0      (5.1x)
+#     NVIDIA TITAN Xp             ~202  s/window   8.08 h/tile   <- A1 tasks 1-5  (11.2x)
+#
+# That, not the code, is why the A1 array timed out at 10 h: one TITAN Xp tile alone exceeds
+# the wall. Projected 26-tile A1 arm: ~21 GPU-h on 2080 Ti, ~95 on P100, ~210 on TITAN Xp.
+#
+# TWO defences, use both:
+#   1. `--constraint` at submit time, in the cluster's feature vocabulary. Find the tokens with
+#        sinfo -p gpu -o "%30N %90f" | tr ',' '\n' | grep -i '^GPU_' | sort -u
+#      then submit e.g.  sbatch -C "GPU_SKU:RTX_2080Ti" run_rebuild_map_array.sbatch
+#      (a command-line -C overrides any --constraint directive in this file).
+#   2. `--require-device`, below, which is checked by the driver itself against the device name
+#      inference will actually run on. A Slurm feature name that is wrong or renamed fails
+#      SILENTLY; this cannot. Costs ~60 s of startup on a bad allocation instead of the wall.
+#
+# To deliberately accept a slower card, widen REQUIRE_DEVICE and raise --time together:
+#   REQUIRE_DEVICE="P100" sbatch --time=05:00:00 ... run_rebuild_map_array.sbatch
+# ---------------------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------------------
 # THE OVERLAP GUARD IS FIXED -- the triage note that used to live here is obsolete.

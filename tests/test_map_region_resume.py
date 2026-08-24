@@ -431,3 +431,84 @@ def test_isolation_does_not_swallow_a_cancel():
 
     with pytest.raises(KeyboardInterrupt):
         mr.run_tile_isolated("T", boom)
+
+
+# ------------------------------------- device provenance (2026-08-24e, soft resume field)
+
+def test_a_recorded_device_change_is_a_mismatch():
+    """Partials from an RTX 2080 Ti and a TITAN Xp are two fp16 regimes, not one run."""
+    import scripts.map_region as mr
+
+    want = {"win_px": 4096, "device": "NVIDIA GeForce RTX 2080 Ti"}
+    assert mr.sweep_mismatch(dict(want), want) is None
+    why = mr.sweep_mismatch({"win_px": 4096, "device": "NVIDIA TITAN Xp"}, want)
+    assert why is not None and "device" in why
+
+
+def test_an_absent_device_is_unknown_not_a_mismatch():
+    """The field was added mid-rebuild, after 7 A1 tiles and 255 windows were banked without
+    it. Treating those as mismatched would discard real work by fiat."""
+    import scripts.map_region as mr
+
+    want = {"win_px": 4096, "device": "NVIDIA GeForce RTX 2080 Ti"}
+    assert mr.sweep_mismatch({"win_px": 4096}, want) is None          # key absent
+    assert mr.sweep_mismatch({"win_px": 4096, "device": None}, want) is None   # recorded null
+    # but a HARD field is still refused when absent
+    assert "win_px" in mr.sweep_mismatch({"device": want["device"]}, want)
+    assert mr.SWEEP_SOFT_FIELDS == frozenset({"device"})
+
+
+def test_the_sweep_manifest_carries_the_device(tmp_path, monkeypatch):
+    mr, tile, args = _drive(monkeypatch, tmp_path)
+    mr.map_one_tile(tile, _StubEmbedder(), _StubHead(), None, args=args)
+    rec = json.loads((tmp_path / f"{tile}.json").read_text(encoding="utf-8"))
+    assert "device" in rec["run"]
+
+
+def test_compute_device_name_never_raises_on_a_stub():
+    """Provenance must not be able to kill a render."""
+    import scripts.map_region as mr
+
+    class NoDevice:
+        pass
+
+    assert isinstance(mr.compute_device_name(NoDevice()), str)
+    assert isinstance(mr.compute_device_name(None), str)
+
+
+# ------------------------------------------------------------- the cost projection line
+
+def test_project_tile_cost_reports_the_hours_the_allocation_implies():
+    """The line that would have flagged the A1 timeout at minute four."""
+    import scripts.map_region as mr
+
+    # TITAN Xp: 202 s/window over 144 windows = 8.1 h, against a 10 h wall for 5 tiles
+    msg = mr.project_tile_cost("E-12_N36", 202.0, 144)
+    assert "8.08 h" in msg and "144 remaining" in msg
+    # RTX 2080 Ti baseline: 17.9 s/window = 0.72 h
+    assert "0.72 h" in mr.project_tile_cost("E-12_N36", 17.9, 144)
+    # a resumed tile projects only what is LEFT
+    assert "48 remaining" in mr.project_tile_cost("E0_N32", 202.0, 144, 96)
+
+
+def test_require_device_refuses_an_unbudgeted_gpu():
+    """A TITAN Xp costs 8.08 h/tile against a wall sized for 0.72 h. Refuse in seconds."""
+    import scripts.map_region as mr
+
+    class Stub:
+        pass
+
+    monkey = mr.compute_device_name
+    try:
+        mr.compute_device_name = lambda _e: "NVIDIA TITAN Xp"
+        with pytest.raises(SystemExit, match="REFUSING to render"):
+            mr.require_device(Stub(), ["2080 Ti"])
+        mr.compute_device_name = lambda _e: "NVIDIA GeForce RTX 2080 Ti"
+        assert mr.require_device(Stub(), ["2080 ti"]) == "NVIDIA GeForce RTX 2080 Ti"
+        assert mr.require_device(Stub(), ["P100", "2080 Ti"]) is not None
+        # unconstrained must keep working -- CPU smoke tests and laptop runs depend on it
+        mr.compute_device_name = lambda _e: "cpu"
+        assert mr.require_device(Stub(), None) == "cpu"
+        assert mr.require_device(Stub(), []) == "cpu"
+    finally:
+        mr.compute_device_name = monkey

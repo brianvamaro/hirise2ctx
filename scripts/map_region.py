@@ -332,8 +332,39 @@ def read_partial(path) -> dict:
         return {k: z[k] for k in z.files}
 
 
+# Sweep fields whose ABSENCE is "unknown", not "differs". Everything else in the manifest
+# is a hard resume-match field: absent means the partials predate it, and reusing them would
+# assemble a mixture. `device` is different only because it was added mid-rebuild
+# (2026-08-24e), after 7 A1 tiles and 255 windows had already been banked without it --
+# treating those as mismatched would discard real work by fiat rather than by evidence. A
+# device that is RECORDED and DIFFERENT is still a mismatch.
+SWEEP_SOFT_FIELDS = frozenset({"device"})
+
+
+def compute_device_name(embedder) -> str:
+    """Human-readable name of the device inference will actually run on.
+
+    **Why this is a provenance field (2026-08-24e).** Step 11's two arms were rendered on
+    whatever the gpu partition handed out, and it was not the same hardware: the baseline arm
+    got RTX 2080 Ti class at 17.9 s/window, while the A1 array drew a Tesla P100 (91.7 s) and
+    five TITAN Xps (198-206 s) — 5.1x and 11.2x, which is what actually blew the 10 h wall.
+    Nothing in the manifest recorded that, so (a) the cost surprise was invisible until the
+    timeout email, and (b) a resume could mix windows computed under different fp16 behaviour
+    into one raster, which the overlap fraction gate would then refuse *at assembly*, after
+    the whole render was paid for.
+    """
+    try:
+        import torch
+        if torch.cuda.is_available():
+            idx = getattr(getattr(embedder, "device", None), "index", None)
+            return str(torch.cuda.get_device_name(idx))
+    except Exception:                           # noqa: BLE001 -- provenance, never fatal
+        pass
+    return str(getattr(getattr(embedder, "device", None), "type", "cpu"))
+
+
 def sweep_manifest(grid_geom, row_offs, col_offs, args, *, extent, head_digest,
-                   calibration_digest) -> dict:
+                   calibration_digest, device=None) -> dict:
     """The identity of the sweep that a set of partials belongs to.
 
     **R14.** Resume used to be `path.exists()`, which cannot tell a partial written by a
@@ -357,15 +388,27 @@ def sweep_manifest(grid_geom, row_offs, col_offs, args, *, extent, head_digest,
         "isotonic": (not args.no_isotonic),
         "calibrated": calibration_digest is not None,
         "head_digest": head_digest, "calibration_digest": calibration_digest,
+        # A SOFT field -- see SWEEP_SOFT_FIELDS. fp16 reductions are not bit-identical across
+        # GPU architectures, so partials from two devices are two computation regimes.
+        "device": device,
     }
 
 
 def sweep_mismatch(have: dict, want: dict) -> str | None:
-    """First field on which two sweep manifests differ, or None. Missing counts as differing."""
+    """First field on which two sweep manifests differ, or None.
+
+    Missing counts as differing — a partial that predates a resume-match field cannot vouch
+    for it — **except** for `SWEEP_SOFT_FIELDS`, where absent means unknown. A soft field that
+    is recorded on both sides and differs is still a mismatch.
+    """
     for k, v in want.items():
         if k not in have:
+            if k in SWEEP_SOFT_FIELDS:
+                continue
             return f"{k} absent (partials predate this field)"
         if have[k] != v:
+            if k in SWEEP_SOFT_FIELDS and have[k] is None:
+                continue                        # recorded as unknown, not as a different value
             return f"{k}: partials have {have[k]!r}, this run wants {v!r}"
     return None
 
@@ -598,6 +641,56 @@ def gate_summary(loaded, *, max_zero_fraction, max_context_zero_fraction) -> dic
             "context_zero_hist_is_window_sum": True}
 
 
+def project_tile_cost(tile: str, seconds: float, n_windows: int, n_done: int = 0) -> str:
+    """One line, printed after the first computed window, projecting the whole tile.
+
+    **Why (2026-08-24e).** Step 11's A1 array spent 60 GPU-h discovering at the wall what its
+    first window already implied. The gpu partition hands out whatever is free, and this
+    pipeline's cost per window varies **11x** across the cards in that pool (RTX 2080 Ti
+    17.9 s, Tesla P100 91.7 s, TITAN Xp ~202 s), so a per-tile budget is not a property of the
+    code — it is a property of the allocation, and it is knowable four minutes in.
+    """
+    remaining = max(n_windows - n_done, 1)
+    hours = seconds * remaining / 3600.0
+    return (f"[{tile}] first window {seconds:.1f}s -> projected {hours:.2f} h for the "
+            f"{remaining} remaining window(s) of {n_windows}. Compare `--time`; if this is far "
+            f"above the budget the allocation is the reason, not the tile.")
+
+
+def require_device(embedder, wanted: list[str] | None) -> str:
+    """Resolve the compute device and refuse it unless it matches one of `wanted`.
+
+    **Why a driver-side check and not just `sbatch --constraint` (2026-08-24e).** A Slurm
+    constraint is the right first line, but it is expressed in the cluster's feature vocabulary
+    and silently does nothing if a feature name is wrong or gets renamed. This check is
+    expressed in the vocabulary that actually matters — the device name inference will run on —
+    and it costs the ~60 s of process startup rather than the wall:
+
+        RTX 2080 Ti   17.9 s/window   0.72 h/tile   (both step-11 arms were budgeted for this)
+        Tesla P100    91.7 s/window   3.67 h/tile   5.1x
+        TITAN Xp     ~202  s/window   8.08 h/tile   11.2x  -> exceeds a 10 h wall on ONE tile
+
+    Matching is a case-insensitive substring, so `--require-device "2080 Ti"` accepts
+    "NVIDIA GeForce RTX 2080 Ti" without pinning the vendor string. Empty/omitted = accept
+    anything, because pinning hardware must stay opt-in: a CPU-only smoke test and a laptop
+    run both have to keep working.
+    """
+    name = compute_device_name(embedder)
+    if not wanted:
+        print(f"  device={name} (unconstrained)", flush=True)
+        return name
+    low = name.lower()
+    if not any(w.lower() in low for w in wanted):
+        raise SystemExit(
+            f"REFUSING to render on '{name}': --require-device {wanted} did not match. "
+            f"Per-window cost varies ~11x across this partition's GPUs, so an unbudgeted "
+            f"card does not overrun by a margin, it overruns by a factor. Either resubmit "
+            f"with a Slurm --constraint that pins the card, or pass --require-device "
+            f"'{name}' and a --time that fits it.")
+    print(f"  device={name} (matched --require-device {wanted})", flush=True)
+    return name
+
+
 def map_one_tile(murray_tile: str, embedder, head, calibrator, *, args) -> dict:
     """Sweep one Murray tile and write its GeoTIFFs. Returns a status dict."""
     info = load_tile_sidecar(murray_tile, getattr(args, "ctx_tiles", None))
@@ -644,6 +737,7 @@ def map_one_tile(murray_tile: str, embedder, head, calibrator, *, args) -> dict:
     # a resume cannot tell a partial from a different --win-px, head or masking threshold from
     # one of its own -- and the old count gate let 719 files satisfy a 144-window grid.
     want_sweep = sweep_manifest(grid_geom, row_offs, col_offs, args, extent=(H, W),
+                                device=compute_device_name(embedder),
                                 head_digest=artifact_digest(getattr(args, "_model_dir", ""))
                                 if getattr(args, "_model_dir", None) else None,
                                 calibration_digest=(artifact_digest(args.calibration)
@@ -697,6 +791,7 @@ def map_one_tile(murray_tile: str, embedder, head, calibrator, *, args) -> dict:
 
     done_tiles = 0
     t_tile = time.monotonic()
+    n_computed = 0                  # windows this process actually computed (not resumed)
     # DECISIONS 2026-08-18c: ONE open for the whole sweep. `rasterio.open` on a Murray vsizip
     # costs a measured 7.95 s (GDAL inflates ~2.25 GB of DEFLATE to reach the strip-offset
     # table of an uncompressed, blockysize=1 TIFF), against 1.4 s for the 4096² read itself.
@@ -767,6 +862,9 @@ def map_one_tile(murray_tile: str, embedder, head, calibrator, *, args) -> dict:
             rate = int(keep.sum() / dt) if dt > 0 else 0
             print(f"[{murray_tile}] win {k + 1}/{len(grid)} off=({row_off},{col_off}) "
                   f"kept={int(keep.sum())} {dt:.1f}s ~{rate} tiles/s", flush=True)
+            n_computed += 1
+            if n_computed == 1:
+                print(project_tile_cost(murray_tile, dt, len(grid), k), flush=True)
     finally:
         if tile_src is not None:
             tile_src.close()
@@ -937,6 +1035,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="only the 19 net-new expansion tiles (EXPANSION_TILES); skips the "
                         "7 already-run tiles regardless of $SCRATCH state")
     ap.add_argument("--win-px", type=int, default=4096, help="read-window side in CTX px")
+    ap.add_argument("--require-device", action="append", metavar="SUBSTRING",
+                    help="refuse to render unless the GPU name contains this (repeatable, "
+                         "case-insensitive). Costs ~60s on a bad allocation instead of the "
+                         "whole wall -- see `require_device`. Omit to accept anything.")
     ap.add_argument("--batch", type=int, default=96,
                     help="embedder batch size. Default 96 matches the parity reference. The ViT is "
                          "per-sample so larger batches (e.g. 256) better saturate an L40S/A100 and "
@@ -1038,8 +1140,8 @@ def main() -> int:
     # on an unversioned one, since unversioned + raw is exactly the pre-R07 status quo and
     # blocking the baseline re-render on a provenance field would buy no safety.
     require_norm_arm(head, NO_NORM_ARM, where=str(model_dir), strict=False)
-    dev = getattr(getattr(embedder, "device", None), "type", "?")
-    print(f"  embedder device={dev}  head seeds={card.get('n_seeds', '?')}", flush=True)
+    require_device(embedder, args.require_device)
+    print(f"  head seeds={card.get('n_seeds', '?')}", flush=True)
 
     results = []
     t0 = time.monotonic()

@@ -9898,3 +9898,80 @@ write Vs (unaccounted Us)`) and banks it as `cost_s` in the result row, so the *
 this itself instead of costing a separate measurement session. `--time=06:00:00` for one tile is
 >7× the expected cost and absorbs a 2× surprise, but it is a margin, not a diagnosis: revise it once
 the log is read.
+
+### 2026-08-24e — RESOLVED: the A1 timeout was the GPU allocation, not the A1 arm
+
+2026-08-24d left one thing open — a >1 h/tile unexplained term. `logs/h2c-rebuild-a1-40572495_*.out`
+closes it, and the answer is not in the code at all.
+
+| | GPU | s/window | h/tile | vs baseline |
+|---|---|---|---|---|
+| baseline arm (job 40561654, **all 6 tasks**) | **NVIDIA GeForce RTX 2080 Ti** | 17.9 | 0.717 | 1× |
+| A1 task 0 | **Tesla P100-PCIE-16GB** | 91.7 | 3.67 | **5.1×** |
+| A1 tasks 1–5 | **NVIDIA TITAN Xp** | 198–206 | 7.9–8.2 | **11.2×** |
+
+Every `DONE in` reconciles to the per-window rate: 144 × 91.7 = 13,104 s vs **13,211** measured
+(task 0); 144 × 202 = 29,088 vs **28,507 / 29,107 / 29,523 / 29,597**. Tasks 2+3 shared
+`sh02-14n09` and 4+5 shared `sh02-14n13` with no contention penalty (202.1 / 205.5 and 198.1 /
+205.0 s/window), so it is the card, not the node.
+
+**One TITAN Xp tile at 8.1 h exceeds nothing but the 10 h wall on its own.** That is the whole
+overrun. A1's own overhead is ~5 s of a 201 s window; on a 2080 Ti it would have been 0.79 h/tile
+and the 26-tile arm ~21 GPU-h, against **~95 on P100 and ~210 on TITAN Xp**.
+
+The mechanism is fp16: TITAN Xp is GP102, which runs fp16 at **1/64** of fp32 rate; the P100 is
+GP100, the one Pascal part with 2:1 fp16; the 2080 Ti is Turing with real fp16 tensor cores. The
+three measured rates order exactly that way. `MaxRSS` 4.4–5.8 GB of 32 G on every task, so memory
+was never in it.
+
+**Both 2026-08-24b inferences are now formally retracted.** `CPU Utilized 09:59:32 / 12.49 % of
+8 cores` is what a *healthy* GPU-bound task looks like here — the baseline arm's host process also
+pegs ~1 core — so it was never evidence of a CPU-bound overrun; and "~65 GPU-h to do ~5 GPU-h of
+inference" double-counted. **The bbox prefilter (2026-08-24d) remains correct and worth keeping** —
+its 3.4× is measured directly — but it is 9 % of a 2080 Ti window and 1 % of a TITAN Xp one. It was
+not the cause and would not have prevented the timeout.
+
+⚠ **The lesson is the general one, and it is not about A1.** No artifact this pipeline writes
+recorded which GPU produced it, so a **11× cost swing** was invisible until a timeout email, and
+the per-tile budget in every sbatch header was a property of the allocation masquerading as a
+property of the code.
+
+#### Banked A1 work
+
+**7 of 26 A1 tiles are committed** (`E-12_N32/36/40/44`, `E-8_N32/36/40`) with partials correctly
+cleaned — `--clean-partials` deletes only after a successful assemble, and it behaved. Six tiles
+hold partials: `E0_N32` 96/144, `E-4_N40` 35, `E-8_N44` 35, `E-4_N32` 32, `E-4_N44` 29,
+`E-4_N36` 28 — **255 windows, all computed on Pascal.**
+
+**Brian's call: keep the 7 Pascal-rendered tiles and record the mixed provenance** rather than
+probe or re-render the cross-architecture difference. Estimated magnitude ~1e-3 on `prob`, the same
+order as the 5e-4 within-run fp16 noise measured on 2026-08-24b, against an A1 effect orders larger
+— **but this is an estimate, not a measurement, and it is now a documented property of the A1 row.**
+The 7 tiles' sidecars predate the `device` field, so they are identifiable exactly by its absence.
+
+⚠ The **255 partials must be discarded** (`--force`) when those six tiles are re-run on a 2080 Ti.
+Mixing Pascal- and Turing-computed windows in one tile puts a large fraction of that tile's ~62–80 k
+duplicated cells across the two regimes, and the new fraction gate would refuse at assembly — after
+paying for the render. At 21.7 s/window that is 1.5 GPU-h of banked work, so discarding is free.
+
+#### What landed
+
+- **`device` in the sweep manifest** (`torch.cuda.get_device_name`), so a cross-GPU resume is
+  refused in seconds by `sweep_mismatch` instead of at assembly. It is the first member of
+  **`SWEEP_SOFT_FIELDS`**: every other manifest field treats *absent* as *differing*, because a
+  partial that predates a resume-match field cannot vouch for it — but `device` was added after 7
+  tiles and 255 windows were banked, and refusing those would discard real work by fiat rather than
+  by evidence. Absent = unknown; recorded-and-different = mismatch.
+- **`--require-device SUBSTRING`** (repeatable, case-insensitive substring) on both drivers,
+  defaulting to `2080 Ti` in both sbatch files via `REQUIRE_DEVICE`. `sbatch --constraint` is the
+  right first line but is expressed in the cluster's feature vocabulary and **fails silently if a
+  feature name is wrong or renamed**; this is expressed in the vocabulary that decides the cost, and
+  it refuses after ~60 s of process startup. Omitted/empty accepts anything, so CPU smoke tests and
+  laptop runs keep working. The sbatch note carries the `sinfo -p gpu` incantation for finding the
+  real `GPU_*` feature tokens (a bare `%60f` truncates before reaching them).
+- **`project_tile_cost`** — after the *first computed* window, both drivers now print
+  `first window 212.1s -> projected 8.48 h for the 144 remaining window(s) of 144`. The old log had
+  `win 1/144 ... 212.1s` at minute four and `DONE in 29597s` ten hours later, with nothing in
+  between saying the tile could not fit. On a resumed tile it projects only what is left.
+
+839 fast tests (was 833). No producer run.
