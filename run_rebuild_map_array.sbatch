@@ -79,10 +79,21 @@ echo "task $SLURM_ARRAY_TASK_ID done -> $OUT"
 
 # ---------------------------------------------------------------------------------------
 # TRIAGE, if assembly dies with "N cells were written twice with DIFFERENT values":
-#   max|delta| <= ~1e-4  -> cross-run fp non-determinism (DECISIONS 2026-08-19b: observed once
-#                           in 15 runs, cause unidentified, no ECC on consumer GPUs). The sweep
-#                           duplicates 62,559 cells/tile (2.78%), so a resume across two jobs can
-#                           collide. Re-run THAT tile with --force.
-#   max|delta| ~ 0.1-1   -> the stale-partial case R14 exists for (a real mixture measured at
-#                           63.1% of pixels from the wrong run). INVESTIGATE. Do not --force.
+#
+# **Judge by the COUNT, not the magnitude** (corrected 2026-08-24c; the earlier magnitude-band
+# rule here was wrong and would have blocked a correct re-run). Isotonic amplification is a
+# lottery on knot placement, so |delta| on `prob` tells you little: measured on E0_N36, the
+# underlying prob_raw disagreement was 5.3e-4 across 242 cells while `prob` showed 6.0e-3 on
+# exactly 1 cell -- an 11x amplification of ordinary fp16 noise.
+#
+#   a handful of cells (<~0.01% of duplicated)  -> fp16 GEMM noise. A cell that appears in two
+#       overlapping windows sits at a different batch position each time, and fp16 reductions
+#       are not position-invariant. Harmless. NOTE it happens WITHIN one run, so a plain
+#       resubmit re-raises on the same cells and --force is only a re-roll.
+#   a large fraction of cells             -> the stale/mixed-partial case R14 exists for. Its
+#       measured instance had 63.1% of finite pixels from the wrong run. INVESTIGATE.
+#
+# Decompose before deciding -- load the tile's partials and run overlap_disagreement on
+# prob_raw, prob and abundance separately. fp noise shows ~1e-4 on prob_raw and near-nothing
+# on abundance; a real mixture shows large disagreement on all three.
 # ---------------------------------------------------------------------------------------

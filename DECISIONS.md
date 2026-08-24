@@ -9625,3 +9625,77 @@ would otherwise have been stamped as "27" onto every one of these rasters. It wa
 four hours to spare.
 
 **A1 array (40561659, resubmitted after the norm_arm fix) is still running at session end.**
+
+### 2026-08-24c — Why 2 of 26 baseline tiles stalled: within-run fp disagreement, amplified by isotonic
+
+The array-summary email said **`Failed, Mixed, ExitCode [0-1]`** — some tasks exited 0, some **1**.
+Task `_5` ran 2:45:24 against an 8 h limit, so **nothing timed out; two tasks raised.** My wall-clock
+hypothesis (2026-08-24b) was wrong.
+
+**Stride reconstruction accounts for all 26 tiles exactly.** With `TILES[i::6]`:
+
+| task | tiles | outcome |
+|---|---|---|
+| 0, 2, 4, 5 | 17 tiles | all `done` |
+| **1** | E-12_N36 ✓, E-8_N44 ✓, **E0_N36 ✗**, E4_N44, E16_N44 | died on tile 3/5 — rest never started |
+| **3** | E-12_N44 ✓, E-4_N36 ✓, **E0_N44 ✗**, E8_N36 | died on tile 3/4 — rest never started |
+
+17 + 2 + 2 = **21 done**; the 3 "missing" tiles simply never ran because a `SystemExit` in
+`map_one_tile` kills the whole task's remaining stride.
+
+**Cause, reproduced locally on the downloaded partials:** `overlap_disagreement` raised.
+
+| tile | disagreeing cells | of 79,059 duplicated | max\|Δ\| |
+|---|---|---|---|
+| E0_N36 | **1** | 0.0013 % | 6.008e-03 |
+| E0_N44 | **3** | 0.0038 % | 6.418e-03 |
+
+### The mechanism, and it corrects two earlier beliefs
+
+Decomposing by layer:
+
+| layer | n_dis | max\|Δ\| |
+|---|---|---|
+| `prob_raw` | **242** | 5.3e-04 / 7.7e-04 |
+| `prob` (isotonic) | **1 / 3** | 6.0e-03 / 6.4e-03 |
+| `abundance` (qmatch) | 48 / 81 | 2.6e-05 / 3.1e-05 |
+
+Isotonic *collapses* 242 raw disagreements to 1–3 — most nearby raw values map to an identical
+calibrated output — while *amplifying* the survivors **8–11×** by pushing them across a knot. The
+abundance layer is essentially unaffected.
+
+**Correction 1 — this is WITHIN-run, not cross-run.** Job 40561654 was submitted once and never
+resubmitted; each tile is processed by one task in one process. So all 144 partials for E0_N36 came
+from a single run, and 242 duplicated cells still disagreed. **`overlap_disagreement`'s docstring is
+wrong that within one run it returns `(0, 0.0)` "by construction".** The likely mechanism: a cell
+appears in two overlapping windows at *different positions within different batches*, and fp16 GEMM
+reductions are not position-invariant. This also revises 2026-08-19b, which framed the
+non-determinism as a rare cross-run event seen "1 run in 15" — it is systematic and per-tile.
+
+**Correction 2 — my own triage rule was wrong and would have blocked the fix.** I wrote
+`≲1e-4 → force` / `0.1–1 → investigate` into both sbatch files. **6e-3 falls in the gap**, and the
+rule as coded says "LARGE — do not force". That is a false alarm.
+
+**Magnitude is the wrong discriminator**, precisely because isotonic amplification is a lottery on
+knot placement. **The discriminator is the COUNT, and `prob_raw`:**
+
+- fp noise → `prob_raw` disagrees at ~1e-4 across a couple of hundred cells; `prob` disagrees on a
+  handful; `abundance` barely at all.
+- genuine stale/mixed partials → R14's measured case had **63.1 % of finite pixels** from the wrong
+  run. Not 3 cells in 79,059.
+
+**Verdict for these two tiles: fp noise, safe to proceed.**
+
+### ⚠ Consequences for finishing step 11 — decide before resubmitting
+
+1. **A plain resubmit will fail identically.** The 144 partials are on disk and valid, so the windows
+   are skipped and assembly re-raises on the same cells.
+2. **`--force` recomputes every window — but the same within-run mechanism applies**, so it is *not*
+   guaranteed to clear. It is a re-roll, not a fix.
+3. **This will hit the A1 arm too** (running now). Expect ~2 of 26 tiles.
+
+Options, none yet chosen: (a) raise the guard threshold to ~1e-2 — still catches a 63.1 % mixture by
+orders of magnitude, and tolerates isotonic-amplified fp noise; (b) gate on **count** (e.g. raise only
+if disagreeing cells exceed some fraction of duplicated cells) which matches the actual failure mode;
+(c) make assembly take the first value per cell and *record* the disagreement rather than refusing.
+**(b) is the most faithful to what the guard is for.**
