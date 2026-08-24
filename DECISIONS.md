@@ -9400,3 +9400,54 @@ armed heads tripped it exactly as designed. Rewritten as
 the snapshot: the legacy collision must still be on disk (it documents what R07 found), and **no
 `recipe_hash` may ever span two arms** — if one does, a raster can be rendered with the wrong
 preprocessing and no error. Fast suite **812 passed**.
+
+### 2026-08-23c — DAG step 9 COMPLETE: both calibration layers banked; R54's instrument is the real finding
+
+| arm | Tier-1 ECE (LOIO) | gate ≤0.05 | Tier-2 top_ratio | marginal_L1 | banked |
+|---|---|---|---|---|---|
+| baseline | **0.020405** | PASS (+0.0296) | 0.86 | 0.0003 | `models/deployable_g2/calibration.npz` |
+| A1 | **0.052263** | **FAIL (−0.0023)** | 0.87 | 0.0004 | `models/deployable_a1_g2/calibration.npz` (**forced**) |
+
+**The fail-before-write fix worked.** A1's first run exited **1**, wrote nothing, and said so — exactly
+the defect the audit recorded ("the layer was saved before the gates were evaluated, so a run that
+printed FAIL still overwrote the banked calibrator, and `main` returned 0 regardless").
+
+**Brian's ruling:** 0.0023 over a 0.05 threshold is immaterial; bank A1 with `--force` and render both
+arms **with** isotonic. The override is recorded honestly — A1's meta carries
+`gates_passed=False, forced=True`, baseline `gates_passed=True, forced=False`. Anyone reading the
+layer can see it missed.
+
+**The isotonic-vs-raw comparison Brian asked for is FREE — no second render.** Both map drivers
+already emit `<tile>_prob.tif` (isotonic), `<tile>_prob_raw.tif` (**uncalibrated, always kept**) and
+`<tile>_abundance.tif` (qmatch) from one pass. A `--no-isotonic` render would spend ~23 GPU-h
+producing a `_prob.tif` identical to the `_prob_raw.tif` already on disk.
+
+**R84's invariant holds on both layers:** `t2_y` max = **0.293242** = pool max `fractional_area`,
+matching the value step 4 reproduced. The qmatch maps onto the true marginal, tail included.
+
+### ⚠ R54's per-image level instrument is NOT emitted — and what it shows is worse than A1's ECE miss
+
+PLAN_Rebuild §3 step 9 requires "R54's per-image `mean(pred)/mean(true)` distribution + count", and
+the audit's gate row states it "is emitted beside pooled results". `grep` finds **no trace** of it in
+`bank_calibration.py`. **That is the fourth audit gate row this rebuild has found overstated**, after
+existence-only resume, LOIO tile keys, and R09's metrics.
+
+Computed by hand on the abundance product:
+
+| arm | pooled mean(pred)/mean(true) | per-image median | per-image IQR | within 0.8–1.2 | min | max |
+|---|---|---|---|---|---|---|
+| baseline | **1.0220** | 1.106 | 0.568 – 1.628 | **8/38 (21 %)** | 0.013 | 6.546 |
+| A1 | **1.0278** | 1.077 | 0.552 – 1.583 | **7/38 (18 %)** | 0.000 | 5.973 |
+
+**Pooled level agreement is excellent (1.02) while only about one image in five sits within ±20 %**,
+and per-image ratios span 0.013× to 6.5×. The pooled figure averages away errors that partly cancel.
+This is precisely why R54 exists and why the audit demanded the per-image distribution be reported
+*beside* the pooled one with an explicit rule about which governs promotion.
+
+**This matters more than A1's 0.0023 ECE overshoot.** It says the abundance product's **per-place
+level** is unreliable even where the pooled marginal is near-perfect — the same axis on which the
+F build was hard-aborted 2026-07-30 (between-place level coherence). It does not block step 11; it
+governs how the resulting map may be described. **Do not quote the pooled 1.02 as evidence of
+per-place level accuracy.**
+
+Emission of the instrument is left as a step-12 item; the numbers above are the record for now.
