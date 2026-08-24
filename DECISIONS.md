@@ -9699,3 +9699,41 @@ orders of magnitude, and tolerates isotonic-amplified fp noise; (b) gate on **co
 if disagreeing cells exceed some fraction of duplicated cells) which matches the actual failure mode;
 (c) make assembly take the first value per cell and *record* the disagreement rather than refusing.
 **(b) is the most faithful to what the guard is for.**
+
+### 2026-08-24d — A1 array TIMED OUT, and the cause is a missing bbox prefilter
+
+Job 40572495 task `_5`: **TIMEOUT at 10:00:15** against the `--time=10:00:00` I set. Unlike the
+baseline stalls (2026-08-24c) this is a genuine wall-clock kill.
+
+**The telling number is CPU, not wall:** `CPU Utilized 09:59:32` on a 10:00:15 wall, 12.49 % of 8
+cores. That is **one core pegged for the entire ten hours** — a GPU inference job should not look like
+that.
+
+**Cause: `src.striping.frame_labels_on` rasterizes EVERY frame polygon, with no bbox prefilter, once
+per read window — 144× per tile.** Its sibling `frame_hist_native`, which runs *once* per tile, does
+prefilter, and carries the reason in a comment:
+
+> *"rasterizing all of them per block **dominated the runtime (measured: ~45 min/tile**, which would
+> have made the per-frame native statistic impractical for both training and deploy). **Pre-filtering
+> by bounding box is what makes R07's fix affordable.**"*
+
+**The optimization identified as essential for the once-per-tile path was never applied to the
+144-times-per-tile path.** That is precisely the 78 % of A1's per-tile overhead measured on
+2026-08-19 (2.67 s/window rasterize vs 1.09 s normalize, against a 154.9 s once-per-tile statistic).
+The laptop measurement made it look like a 12 min/tile annoyance; on Sherlock's slower CPU it is the
+whole budget.
+
+**Fix (next session, not done now):** give `frame_labels_on` the same bbox prefilter — compute
+`frames.geometry.bounds` once, select the frames intersecting the window's extent, rasterize only
+those. Most 4096-px windows touch a handful of the ~81 frames, so the expected win on that term is
+large; A1's per-tile overhead should fall from ~0.193 h toward ~0.06 h. Needs a test asserting the
+prefiltered raster is **identical** to the unfiltered one (it must be — excluded frames cannot
+contribute pixels to a window they do not intersect), plus a before/after timing.
+
+**This also revises the A1 cost estimate in PLAN_Rebuild §4b** (~5 GPU-h extra over baseline): true on
+the laptop, badly wrong on Sherlock's CPU. Re-measure after the prefilter lands rather than raising
+`--time` and paying for the waste.
+
+⚠ **Do not simply resubmit with a longer `--time`.** A1 is resumable (R14), so a resubmit *would*
+eventually finish — but at roughly 10 h per 4 tiles it would burn ~65 GPU-h to do ~5 GPU-h of
+inference. Land the prefilter first.
