@@ -9581,3 +9581,47 @@ PLAN_Rebuild step 8 amended to say **omit `--norm-arm`**.
 estimate and the `--time` limits (8 h baseline / 10 h A1) were sized against an L40S. A 2080 Ti is
 roughly 2–3× slower on fp16 ViT, so tasks may hit the wall. That is **not** a failure — R14 makes it
 resumable; re-`sbatch` the same command and finished tiles are skipped, partial windows kept.
+
+### 2026-08-24b — Step 11 baseline arm is 21/26, not complete. Extracted and verified.
+
+The download (`~/Downloads/map_region_g2.zip`, 300 MB) was extracted to `reports/map_region_g2/`.
+**It is not a finished map:**
+
+| status | count | tiles |
+|---|---|---|
+| complete (3 tifs + sidecar) | **21** | — |
+| **partial** | **2** | `E0_N36`, `E0_N44` — both at **144/144 windows** |
+| **missing** | **3** | `E4_N44`, `E8_N36`, `E16_N44` |
+
+288 `.npz` partials survive under `partials/`, and `--clean-partials` removes those only *after* a
+tile assembles — so their presence is itself the marker of an unfinished run.
+
+**The two partials are at 144/144 windows: all compute done, no assembly.** Either the task was killed
+by the 8 h wall clock between the last window and assembly, or **assembly raised** — most plausibly
+the `overlap_disagreement` guard, which is exactly the scenario 2026-08-19b predicted for a resumed
+tile (62,559 duplicated cells/tile × cross-run fp non-determinism). **Check the Sherlock logs for
+those two tiles before re-running them** — the distinction matters: a wall-clock kill needs only a
+resubmit, whereas a guard trip at `max|Δ| ~ 0.1–1` means stale partials and must be investigated, not
+forced.
+
+Cost to finish is small: the 2 partial tiles skip all 144 windows and assemble in seconds; only the 3
+missing tiles need full renders. **Resubmitting the same sbatch is the whole fix** — R14 skips
+finished tiles and keeps partial windows.
+
+**The 21 that did finish verify clean**, and the provenance chain holds end to end:
+
+| check | result |
+|---|---|
+| `SIZE_FLOOR_*` tags | **21/21** |
+| `SIZE_FLOOR_N_DISTINCT` | **20** — the corrected count (2026-08-20g) reached the products |
+| `SIZE_FLOOR_BASIS_VERSION` | `v2_mixed_floor_2` |
+| `SIZE_FLOOR_N_POOL_TILES` | 164,644 |
+| sidecar `grid_id` | `murray_v01_clon0_R3396190_ppd11855_S32_anchor_lonlat0` (R01) |
+| sidecar head digest | `29e833be74e5cc15…` = the uploaded baseline head |
+| raster | 1479×1479 @ 160.0 m, Mars_2015 clon_0 |
+
+That `N_DISTINCT = 20` is worth noting: the floating-point floor-count defect found on 2026-08-20f
+would otherwise have been stamped as "27" onto every one of these rasters. It was caught with about
+four hours to spare.
+
+**A1 array (40561659, resubmitted after the norm_arm fix) is still running at session end.**
