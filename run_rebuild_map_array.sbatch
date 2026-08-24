@@ -34,6 +34,7 @@
 #SBATCH --mem=32G
 #SBATCH --time=03:00:00
 #SBATCH --array=0-25
+#SBATCH --constraint="GPU_SKU:RTX_2080Ti"
 #SBATCH --output=logs/h2c-rebuild-base-%A_%a.out
 #SBATCH --error=logs/h2c-rebuild-base-%A_%a.out
 #SBATCH --mail-type=END,FAIL
@@ -114,10 +115,16 @@ echo "task $SLURM_ARRAY_TASK_ID done -> $OUT"
 # the wall. Projected 26-tile A1 arm: ~21 GPU-h on 2080 Ti, ~95 on P100, ~210 on TITAN Xp.
 #
 # TWO defences, use both:
-#   1. `--constraint` at submit time, in the cluster's feature vocabulary. Find the tokens with
-#        sinfo -p gpu -o "%30N %90f" | tr ',' '\n' | grep -i '^GPU_' | sort -u
-#      then submit e.g.  sbatch -C "GPU_SKU:RTX_2080Ti" run_rebuild_map_array.sbatch
-#      (a command-line -C overrides any --constraint directive in this file).
+#   1. `--constraint`, now a directive above: **GPU_SKU:RTX_2080Ti**, VERIFIED 2026-08-24e as the
+#      real token on this cluster. `scontrol show node sh03-12n12` ->
+#        GPU_GEN:TUR, GPU_BRD:GEFORCE, GPU_SKU:RTX_2080Ti, GPU_MEM:11GB, GPU_CC:7.5
+#      16 nodes x 4 = 64 such cards, all sh03-12n*, on AMD EPYC 7502P hosts -- which is also
+#      where the baseline arm ran, so this pins the CPU that does A1's per-window rasterize as
+#      well as the GPU. The Pascal cards that blew the wall live on the older Intel sh02-* nodes.
+#      A command-line `-C` overrides the directive. To find the tokens again:
+#        sinfo -p gpu -o "%30N %130f" | tr ',' '\n' | grep -i '^GPU_' | sort -u
+#      WARNING: a narrow %f width TRUNCATES before GPU_SKU. That is why the first look at this
+#      showed only GPU_BRD and GPU_GEN and made the SKU look unavailable.
 #   2. `--require-device`, below, which is checked by the driver itself against the device name
 #      inference will actually run on. A Slurm feature name that is wrong or renamed fails
 #      SILENTLY; this cannot. Costs ~60 s of startup on a bad allocation instead of the wall.

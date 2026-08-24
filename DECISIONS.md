@@ -9975,3 +9975,17 @@ paying for the render. At 21.7 s/window that is 1.5 GPU-h of banked work, so dis
   between saying the tile could not fit. On a resumed tile it projects only what is left.
 
 839 fast tests (was 833). No producer run.
+
+**GPU token VERIFIED (same day).** `scontrol show node sh03-12n12` →
+`GPU_GEN:TUR, GPU_BRD:GEFORCE, GPU_SKU:RTX_2080Ti, GPU_MEM:11GB, GPU_CC:7.5`. **16 nodes × 4 = 64
+RTX 2080 Ti**, all on `sh03-12n*`, whose hosts are **AMD EPYC 7502P** — the same nodes the baseline
+arm ran on, so `#SBATCH --constraint="GPU_SKU:RTX_2080Ti"` (now a directive in both step-11 sbatch
+files) pins the CPU that does A1's per-window rasterize as well as the GPU. The Pascal cards that
+blew the wall are on the older **Intel BDW `sh02-*`** nodes — `sh02-12n04` (P100), `sh02-13n11`,
+`sh02-14n09`, `sh02-14n13` (TITAN Xp), exactly the hosts in the timed-out job's logs. So "the gpu
+partition handed out something slower" was really "the array landed on the previous hardware
+generation", and `GPU_SKU` selects against that precisely.
+
+⚠ **`GPU_SKU` was there all along.** The first probe used `sinfo -o "%...N %90f"`, and a narrow `%f`
+width **truncates the feature list before `GPU_SKU`** — it showed only `GPU_BRD` and `GPU_GEN` and
+made the SKU look unavailable on this cluster. Use `%130f`.
