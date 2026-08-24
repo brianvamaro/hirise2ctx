@@ -60,6 +60,7 @@ import argparse
 import json
 import sys
 import time
+import traceback
 from dataclasses import replace
 from pathlib import Path
 
@@ -72,11 +73,12 @@ import src.modeling  # noqa: F401  OpenMP bootstrap; must precede numpy
 import numpy as np
 from rasterio.features import rasterize
 
-from scripts.map_region import (DEFAULT_SIZE_FLOOR_BASIS, as_int32_cells, gate_cols,
-                                gate_summary, load_tile_sidecar, overlap_disagreement,
+from scripts.map_region import (DEFAULT_SIZE_FLOOR_BASIS, as_int32_cells, check_overlap,
+                                gate_cols, gate_summary, load_tile_sidecar,
                                 partial_grid_id, partial_name, read_partial,
                                 reject_foreign_partials, size_floor_tags, sweep_manifest,
-                                sweep_mismatch, tile_is_reusable, window_offsets,
+                                run_tile_isolated, sweep_mismatch, tile_is_reusable,
+                                window_offsets,
                                 write_json_atomic)
 from src.calibration import CalibrationLayer
 from src.fm_embeddings import FangEmbedder
@@ -87,7 +89,8 @@ from src.mapping import (COARSE_GRID_ID, artifact_digest, assert_shared_lattice,
 from src.modeling.mlp_head import DeployableHead, require_norm_arm
 from src.striping import (A1_ARM, A1_MIN_FRAME_PX, A1_REF_IQR, A1_REF_MEDIAN, A1_VALID_FLOOR,
                           CTX_ZIP_DIR, _inner_tif_name, a1_normalize_native,
-                          a1_stats_native_tile, find_seam_shp, frame_labels_on, load_frames)
+                          a1_stats_native_tile, find_seam_shp, frame_bounds, frame_labels_on,
+                          load_frames)
 
 TILE_PX = 32
 A1_HEAD = REPO / "models" / "deployable_a1" / "86c51a5dca220f63"
@@ -116,7 +119,8 @@ def frame_stats_native(tile: str, frames) -> tuple[dict, tuple, dict]:
     return a1_stats_native_tile(tile, frames)
 
 
-def a1_window(window, frames, stats: dict, fallback: tuple[float, float]):
+def a1_window(window, frames, stats: dict, fallback: tuple[float, float], *,
+              frames_bounds=None):
     """Per-frame A1 remap of one native window. Returns `(window', nodata_mask, clip_report)`.
 
     **R07/R08.** This used to leave any pixel outside a qualifying frame at **raw DN**, mixing
@@ -138,7 +142,8 @@ def a1_window(window, frames, stats: dict, fallback: tuple[float, float]):
     per-window pixel counts double-count the seams, and a resumed run only sees the windows it
     recomputed.
     """
-    labels_nat = frame_labels_on(window.transform, window.data.shape, frames, dtype="int32")
+    labels_nat = frame_labels_on(window.transform, window.data.shape, frames, dtype="int32",
+                                bounds=frames_bounds)
     nodata_mask = window.data == 0                # from the RAW DN, before any normalization
     out = a1_normalize_native(window.data, labels_nat, stats, fallback)
     return replace(window, data=out), nodata_mask
@@ -251,7 +256,9 @@ def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
     frames = load_frames(tile)
     print(f"[{tile}] streaming the native tile for per-frame A1 statistics (R07) ...",
           flush=True)
+    t_stats = time.monotonic()
     stats, fallback, a1_prov = frame_stats_native(tile, frames)
+    t_stats = time.monotonic() - t_stats
     print(f"[{tile}] {H}x{W}px, {a1_prov['n_frames_with_stats']}/{a1_prov['n_frames']} frames "
           f"with A1 stats ({a1_prov['n_frames_too_small']} too small), fallback covers "
           f"{a1_prov['fallback_pixel_fraction']:.3%} of valid px, "
@@ -298,7 +305,13 @@ def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
     write_json_atomic(grid_path, want_sweep)
 
     grid = [(r, c) for r in row_offs for c in col_offs]
+    # Hoisted out of the 144-window loop: the bboxes are a property of `frames`, not of any
+    # window, and `frame_labels_on` prefilters against them (see its docstring).
+    frames_bounds = frame_bounds(frames)
     t_tile = time.monotonic()
+    # Where the per-window time goes. `cost["stats"]` is the once-per-tile streaming pass;
+    # the rest accumulate over the sweep. Printed with DONE and banked in the sidecar.
+    cost = {"stats": t_stats, "read": 0.0, "a1": 0.0, "predict": 0.0, "write": 0.0}
     # DECISIONS 2026-08-18c, same fix as `map_region.py`: one open for the whole sweep instead
     # of 144. `rasterio.open` on a Murray vsizip costs 7.95 s against 1.4 s for the read.
     # Lazy, so an already-partialled tile still costs nothing; `finally`, so a raise mid-sweep
@@ -320,8 +333,13 @@ def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
                 tile_src = open_tile(zip_path, inner_tif)
             window = read_tile_window(zip_path, inner_tif, row_off, col_off, win,
                                       dataset=tile_src)
-            w_a1, nodata_mask = a1_window(window, frames, stats, fallback)
+            t_read = time.monotonic()
+            cost["read"] += t_read - t0
+            w_a1, nodata_mask = a1_window(window, frames, stats, fallback,
+                                          frames_bounds=frames_bounds)
             n_norm = int((w_a1.data > 0).sum())
+            t_a1 = time.monotonic()
+            cost["a1"] += t_a1 - t_read
             pred = predict_window(w_a1, embedder, head, tile_px=TILE_PX, batch=args.batch,
                                   max_zero_fraction=args.max_zero_fraction,
                                   max_context_zero_fraction=args.max_context_zero_fraction,
@@ -329,6 +347,8 @@ def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
                                   apply_isotonic=not args.no_isotonic,
                                   global_grid=grid_geom.as_tuple,
                                   nodata_mask=nodata_mask)
+            t_pred = time.monotonic()
+            cost["predict"] += t_pred - t_a1
             keep = np.isfinite(pred.prob)
             cols = {"ti": as_int32_cells(pred.ti[keep], "ti", tile),
                     "tj": as_int32_cells(pred.tj[keep], "tj", tile),
@@ -349,6 +369,7 @@ def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
             except BaseException:
                 tmp.unlink(missing_ok=True)
                 raise
+            cost["write"] += time.monotonic() - t_pred
             if k % 10 == 0 or k == len(grid) - 1:
                 print(f"[{tile}] win {k + 1}/{len(grid)} kept={int(keep.sum())} "
                       f"a1px={n_norm:,} {time.monotonic() - t0:.1f}s", flush=True)
@@ -375,8 +396,15 @@ def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
         for p in present:
             p.unlink()
         grid_path.unlink(missing_ok=True)
-    print(f"[{tile}] DONE in {time.monotonic() - t_tile:.0f}s", flush=True)
-    return {"tile": tile, "status": "done", "windows": len(grid)}
+    elapsed = time.monotonic() - t_tile
+    print(f"[{tile}] DONE in {elapsed:.0f}s  |  "
+          + "  ".join(f"{k} {v:.0f}s" for k, v in cost.items())
+          + f"  (unaccounted {elapsed - sum(cost.values()) + cost['stats']:.0f}s)", flush=True)
+    return {"tile": tile, "status": "done", "windows": len(grid),
+            "elapsed_s": round(elapsed, 1),
+            # R06: the breakdown the last A1 array could not supply. `a1` is
+            # frame_labels_on + a1_normalize_native; `stats` is the streaming pass.
+            "cost_s": {k: round(v, 1) for k, v in cost.items()}}
 
 
 def write_tile(tile, partials, grid_geom, crs_wkt, calibrator, args, a1_prov=None,
@@ -409,11 +437,11 @@ def write_tile(tile, partials, grid_geom, crs_wkt, calibrator, args, a1_prov=Non
         r[ti - ti_min, tj - tj_min] = v
         return r
 
-    # R14: overlapping windows of one run agree by construction; disagreement means two runs.
-    n_dis, max_dis = overlap_disagreement(ti, tj, prob)
-    if n_dis and max_dis > 1e-6:
-        raise SystemExit(f"[{tile}] {n_dis} cells written twice with different values "
-                         f"(max |Δ| = {max_dis:.4g}) — partials from more than one run.")
+    # R14: the fraction of duplicated cells that disagree, on `prob_raw`. Not a magnitude on
+    # `prob` -- that test stalled two fully-rendered baseline tiles on fp16 noise. See
+    # `check_overlap`. The A1 arm was expected to hit the same lottery on ~2 of its 26 tiles.
+    overlap = check_overlap(tile, ti, tj,
+                            {"prob_raw": prob_raw, "prob": prob, "abundance": ab})
 
     # R14: commit as a SET, sidecar LAST. The old sentinel was `_prob_raw.tif`, written first.
     emitted = [("prob_raw", scatter(prob_raw)), ("prob", scatter(prob))]
@@ -428,7 +456,9 @@ def write_tile(tile, partials, grid_geom, crs_wkt, calibrator, args, a1_prov=Non
                         "n_finite": int(np.isfinite(arr.astype(np.float32)).sum())})
     write_json_atomic(out_dir / f"{tile}.json", {
         "murray_tile": tile, "tile_px": TILE_PX, "raster_shape": list(shape),
-        "rasters": rasters, "overlap_disagreements": n_dis,
+        "rasters": rasters,
+        "overlap": overlap,                 # R14: full per-layer record; see `check_overlap`
+        "overlap_disagreements": overlap[overlap["gate_layer"]]["n_disagree"],
         # R14: the commit record. `rasters` lets a resume verify content without re-deriving it;
         # `run` lets it verify the content was made the way this run would -- including the A1
         # arm, reference and SeamMap digest, which no content check can see.
@@ -533,7 +563,9 @@ def main() -> int:
 
     results = []
     for tile in tiles:
-        results.append(process_tile(tile, embedder, head, calibrator, args))
+        # same isolation as the baseline arm: one bad tile must not forfeit the stride
+        results.append(run_tile_isolated(
+            tile, lambda t=tile: process_tile(t, embedder, head, calibrator, args)))
     (Path(args.out_dir) / "a1_manifest.json").write_text(
         json.dumps({"tiles": results, "head": str(args.head),
                     "head_digest": artifact_digest(args.head),
@@ -549,7 +581,13 @@ def main() -> int:
     if missing:
         print(f"⚠ {len(missing)} tile(s) had no cached CTX zip and were skipped: {missing}\n"
               f"  §5.1's common footprint is the tiles that DID render — record it on the table.")
-    return 0
+    failed = [r["tile"] for r in results if r["status"] == "failed"]
+    if failed:
+        print(f"⚠ {len(failed)}/{len(tiles)} tile(s) FAILED: {failed}")
+        for r in results:
+            if r["status"] == "failed":
+                print(f"    {r['tile']}: {r['error']}")
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

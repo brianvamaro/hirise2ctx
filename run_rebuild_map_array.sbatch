@@ -19,15 +19,21 @@
 # Usage (from $HOME/hirise2ctx on Sherlock):
 #   mkdir -p logs && sbatch run_rebuild_map_array.sbatch
 # Re-submitting after a wall-clock limit or pre-emption resumes: done tiles are skipped via
-# tile_is_reusable, partial windows are kept. See the triage note at the bottom.
+# tile_is_reusable, partial windows are kept.
+#
+# MEASURED on the 2080 Ti this actually landed on, from the 4 surviving tasks of job 40561654
+# (region_manifest.json `runs[].elapsed_s` / tiles): 2,469 / 2,519 / 2,725 / 2,605 s per tile
+# = **0.717 h/tile**, so 03:00:00 for one tile is ~4x margin. The two tiles that stalled at
+# 144/144 windows need no GPU at all on resubmit -- their partials are intact and
+# `--clean-partials` only deletes AFTER a successful assemble, so they just re-assemble.
 #
 #SBATCH --job-name=h2c-rebuild-base
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --time=08:00:00
-#SBATCH --array=0-5
+#SBATCH --time=03:00:00
+#SBATCH --array=0-25
 #SBATCH --output=logs/h2c-rebuild-base-%A_%a.out
 #SBATCH --error=logs/h2c-rebuild-base-%A_%a.out
 #SBATCH --mail-type=END,FAIL
@@ -50,8 +56,23 @@ TILES=(
   E12_N44  E16_N44
 )
 
+# ONE TILE PER TASK (was 6 tasks x 4-5 tiles, 2026-08-24d). Two reasons, both measured:
+#   * a task that overran or raised took its remaining tiles down with it -- step 11 lost 3
+#     never-attempted baseline tiles that way, and the A1 array's 10 h timeout forfeited
+#     whatever its tasks had not reached. One tile per task makes the blast radius one tile.
+#   * a 26-way array of short jobs also schedules faster on the gpu partition than 6 long ones.
+# `ONLY` restricts the run to named tiles, so a resubmit can target just what is left instead
+# of spawning 21 tasks that only print "skip":
+#   ONLY="E0_N36 E0_N44 E4_N44 E8_N36 E16_N44" sbatch --array=0-4 run_rebuild_map_array.sbatch
+if [[ -n "${ONLY:-}" ]]; then
+  read -r -a TILES <<< "$ONLY"
+fi
 N=$(( SLURM_ARRAY_TASK_MAX - SLURM_ARRAY_TASK_MIN + 1 ))
 I=$(( SLURM_ARRAY_TASK_ID - SLURM_ARRAY_TASK_MIN ))
+if (( I >= ${#TILES[@]} )); then
+  echo "task $SLURM_ARRAY_TASK_ID: nothing to do (${#TILES[@]} tile(s) selected)"
+  exit 0
+fi
 SEL=()
 for (( j=I; j<${#TILES[@]}; j+=N )); do SEL+=( "${TILES[j]}" ); done
 
@@ -78,22 +99,16 @@ python scripts/map_region.py \
 echo "task $SLURM_ARRAY_TASK_ID done -> $OUT"
 
 # ---------------------------------------------------------------------------------------
-# TRIAGE, if assembly dies with "N cells were written twice with DIFFERENT values":
+# THE OVERLAP GUARD IS FIXED -- the triage note that used to live here is obsolete.
 #
-# **Judge by the COUNT, not the magnitude** (corrected 2026-08-24c; the earlier magnitude-band
-# rule here was wrong and would have blocked a correct re-run). Isotonic amplification is a
-# lottery on knot placement, so |delta| on `prob` tells you little: measured on E0_N36, the
-# underlying prob_raw disagreement was 5.3e-4 across 242 cells while `prob` showed 6.0e-3 on
-# exactly 1 cell -- an 11x amplification of ordinary fp16 noise.
+# What it said to do by hand, `check_overlap` now does: the gate is the FRACTION of duplicated
+# cells that disagree, measured on `prob_raw` (pre-isotonic), not a magnitude on `prob`.
+#   fp16 GEMM noise, within one run:  242 / 79,059 duplicated cells = 0.31 %   -> passes
+#   stale-partial mixture, two runs:  63.1 % of finite pixels                  -> refuses
+# Every tile sidecar now carries the full per-layer record under `overlap`, and every run
+# prints it, so "did this tile disagree, and how much" no longer needs a laptop session.
 #
-#   a handful of cells (<~0.01% of duplicated)  -> fp16 GEMM noise. A cell that appears in two
-#       overlapping windows sits at a different batch position each time, and fp16 reductions
-#       are not position-invariant. Harmless. NOTE it happens WITHIN one run, so a plain
-#       resubmit re-raises on the same cells and --force is only a re-roll.
-#   a large fraction of cells             -> the stale/mixed-partial case R14 exists for. Its
-#       measured instance had 63.1% of finite pixels from the wrong run. INVESTIGATE.
-#
-# Decompose before deciding -- load the tile's partials and run overlap_disagreement on
-# prob_raw, prob and abundance separately. fp noise shows ~1e-4 on prob_raw and near-nothing
-# on abundance; a real mixture shows large disagreement on all three.
+# Also: a failing tile no longer kills the rest of the task (`run_tile_isolated`). The driver
+# prints the traceback, carries on, and exits 1 with a list of failed tiles. **`exit 0` still
+# means nothing on its own in this pipeline -- read the `N/M tiles complete` tally.**
 # ---------------------------------------------------------------------------------------

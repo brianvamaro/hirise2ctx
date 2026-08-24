@@ -9737,3 +9737,164 @@ the laptop, badly wrong on Sherlock's CPU. Re-measure after the prefilter lands 
 ⚠ **Do not simply resubmit with a longer `--time`.** A1 is resumable (R14), so a resubmit *would*
 eventually finish — but at roughly 10 h per 4 tiles it would burn ~65 GPU-h to do ~5 GPU-h of
 inference. Land the prefilter first.
+
+### 2026-08-24d — step 11 unblocked: bbox prefilter landed, R14's premise corrected, arrays resized
+
+Three code changes, 833 fast tests (was 817). **No producer run.** One question left open, and it is
+the one that governs the A1 resubmit — see the last section.
+
+#### 1. R06 CLOSES: `frame_labels_on` now bbox-prefilters, and it is bit-identical
+
+The fix is what 2026-08-24b prescribed: compute each frame's bounds once, select the frames whose
+bbox overlaps the read window, rasterize only those. Filtered indices keep their **original** index
+and ascending order, so both the label *values* and `rasterize`'s overlap precedence (later geometry
+wins) are preserved. `frame_bounds` is hoisted out of the 144-window loop in `striping_a1_map.py`
+and threaded in via `a1_window(..., frames_bounds=)`.
+
+**Measured on the real cached SeamMap of `E-12_N36` (81 dissolved frames, 144 windows of 4096² at
+5 m/px), which is the tile the original 2.67 s/window figure came from:**
+
+| | 144 windows | per window |
+|---|---|---|
+| unfiltered (before) | **354.0 s** | 2.46 s |
+| prefiltered (after) | **102.8 s** | 0.71 s |
+| | **3.4×** | median **6** of 81 frames hit a window (max 15) |
+
+**Every one of the 144 output arrays is bit-identical** (`np.array_equal`, not a tolerance), which is
+the whole contract — an excluded frame cannot place a pixel centre in a window its bbox misses.
+Pinned by `test_frame_labels_on_prefilter_is_identical` (64 windows walked across the extent,
+including windows that touch no frame), plus overlap-precedence, off-extent, zero-frames and
+timing tests.
+
+Two things the implementation had to get right that the plan did not mention:
+
+- **The bbox test is inclusive (`<=`/`>=`), not strict.** `frame_hist_native` has always used strict
+  `<`/`>`. Under `all_touched=False` a frame merely tangent to the window edge contributes no pixel
+  centres, so keeping it is wasted work but never wrong — whereas dropping it on a strict comparison
+  is wrong the moment a bound lands exactly on the edge. Cost of the looser test: nothing measurable.
+- **`window_extent` must accept a bare 6-tuple.** `CtxWindow.transform` is a plain tuple in places
+  (`rasterize` accepts either), so `transform * (0, 0)` raised `TypeError: can't multiply sequence`.
+  Caught by `test_a1_renders_on_the_same_lattice_as_the_baseline`, not by my own new tests — those
+  built transforms with `from_origin` and got `Affine` every time. Now normalised through
+  `guard_transform`, and **all four corners** are mapped rather than two, so a rotated transform
+  cannot put the extent's min/max on the other diagonal and silently under-cover the window.
+
+#### 2. R14's premise was FALSE, and correcting it is what unstalls the 2 baseline tiles
+
+`overlap_disagreement`'s docstring claimed the sweep partitions the cells — "900 cells over 36
+windows with 0 computed twice", therefore `(0, 0.0)` within one run "by construction". **That
+measurement was taken on a 36-window sweep. The shipped sweep is 144 windows.** Read straight off
+the 21 rendered step-11 sidecars:
+
+| | duplicated cells per Murray tile |
+|---|---|
+| `E-12_N*`, `E-8_N*`, `E4_N40`, `E8_N4*`, `E12_N44` | 62,559 |
+| `E-4_N*`, `E-8_N32`, `E4_N32`, `E8_N32` | 64,059 |
+| `E0_N40` | 79,059 |
+| `E0_N32` | 80,570 |
+
+So the guard has always been comparing tens of thousands of real duplicate pairs. It passed for a
+second reason: **all 21 recorded `overlap_disagreements: 0`** — measured on `prob`, *after* isotonic.
+The underlying `prob_raw` disagreement is ~242 cells per tile at 5–8e-4 (fp16 reductions are not
+position-invariant, and a cell sits at a different batch position in each of its two windows);
+isotonic collapses almost all of them onto a shared knot and amplifies the survivors 8–11×. Whether
+the guard fired was a lottery on knot placement, and it lost twice — `E0_N36` and `E0_N44`, both at
+144/144 windows with the render already paid for.
+
+**Brian's call: gate on the FRACTION of duplicated cells that disagree, measured on `prob_raw`.**
+
+```
+fp16 GEMM noise (within one run):    242 / 79,059 = 0.31 %   -> pass
+stale-partial mixture (two runs):  49,886 / 79,059 = 63.1 %   -> refuse
+```
+
+Two orders of magnitude apart, so the 1 % threshold sits in open space. `prob_raw` rather than
+`prob` because it is what the model actually emits and is comparable across tiles in a way that
+post-knot magnitudes are not; `prob` and `abundance` are still *measured* and recorded, because
+"abundance disagrees too" is how a real mixture distinguishes itself from float noise.
+
+A second condition is needed and was not in the plan: **an absolute floor of 16 disagreeing cells.**
+On a sweep with a handful of duplicated cells the fraction is a very noisy estimator of "two runs" —
+4 of 4 duplicated cells disagreeing is 100 % and means nothing. A genuine mixture is tens of
+thousands. Also fixed while in there: a cell written **three** times now counts once, not twice, and
+a **one-sided NaN** counts as a disagreement (one run masked the cell and the other did not — that is
+a mixture, not noise) while two NaNs count as agreement.
+
+`check_overlap` runs every layer, prints the per-layer summary, refuses on the gate layer, and
+returns the record. Sidecars now carry `overlap: {gate_layer, prob_raw: {n_dup, n_disagree,
+fraction, max_abs}, prob: {...}, abundance: {...}}`; `overlap_disagreements` is retained as the gate
+layer's count so older readers still work. ⚠ **The 21 already-written sidecars record the old
+`prob`-based 0.** Their rasters are unaffected — only the diagnostic field differs — but a step-12
+QA table that reads `overlap` must not treat a missing key as zero.
+
+Six tests pin the new behaviour, including the two real measured cases and
+`test_a_larger_sweep_really_does_duplicate_cells`, which walks the real 144-window geometry so the
+false premise cannot quietly return. The old test that asserted the partition was **renamed**
+(`test_this_small_sweep_...`) with the generalisation explicitly disclaimed, not deleted — the
+partition is true of that sweep, and the error was the inference from it.
+
+#### 3. A failing tile no longer forfeits the rest of its task's stride
+
+`run_tile_isolated` catches per-tile failures, prints the traceback, carries on, and `main` exits 1
+with the list. This is worth **3 tiles of the 5 outstanding**: `E4_N44`, `E8_N36` and `E16_N44` were
+never attempted, because `map_one_tile` raised `SystemExit` on the 3rd tile of tasks 1 and 3 and tore
+down the process. `KeyboardInterrupt` is deliberately still fatal — `scancel` means stop now. Both
+drivers now also record per-tile `elapsed_s`; until now only the whole-run `elapsed_s` existed, so
+per-tile cost had to be reconstructed as run/n_tiles, and a task that died mid-stride wrote **no
+manifest at all** — which is exactly the case you most want the number for.
+
+#### 4. Both arrays resized to ONE TILE PER TASK
+
+`--array=0-25`, `--time` 03:00:00 (baseline) / 06:00:00 (A1), plus an `ONLY="tile tile"` env
+override so a resubmit can target what is left instead of spawning 21 tasks that only print "skip".
+Blast radius becomes one tile, and a 26-way array of short jobs schedules faster on the gpu
+partition than 6 long ones. Verified the selection arithmetic by dry-run, including the
+oversized-array case (extra tasks no-op rather than index past the end).
+
+**The 2 stalled baseline tiles need no GPU at all.** `--clean-partials` deletes partials only *after*
+a successful assemble, so `E0_N36` and `E0_N44` still have all 144 intact and will simply
+re-assemble under the corrected gate.
+
+#### 5. ⚠ STILL OPEN: the A1 timeout is NOT fully explained, and the log is the only evidence
+
+Per-tile cost on the **2080 Ti this actually landed on**, from the 4 surviving tasks of the baseline
+job (`region_manifest.json` `runs[].elapsed_s ÷ tiles`): 9,874.6/4, 10,077.0/4, 10,899.0/4,
+13,027.4/5 = 2,469 / 2,519 / 2,725 / 2,605 s = **0.717 h/tile**. (Only 17 of the 21 rendered tiles
+appear in the manifest: the 2 tasks that died wrote none, which is what §3 fixes.)
+
+```
+baseline, measured on the 2080 Ti        0.717 h/tile
+A1 overhead, measured on the laptop     +0.193 h/tile
+  of which frame_labels_on              +0.107  ->  +0.031 after the prefilter
+=> expected A1 cost                      ~0.79 h/tile  ->  5 tiles = 4.0 h
+```
+
+**The A1 array timed out at 10:00:15.** 0.79 h/tile does not produce that, so **a term of >1 h/tile
+is unmeasured**, and the prefilter — real, verified, 3.4× — accounts for only ~0.08 h of it. Landing
+it and resubmitting on that basis alone would be acting on an explanation that does not add up.
+
+⚠ **Retract one inference from 2026-08-24b.** `CPU Utilized 09:59:32, 12.49 % of 8 cores` was read
+there as proof of a CPU-bound overrun ("one core pegged for ten hours, on a GPU job"). It is not: the
+baseline arm is GPU-bound and *its* host process also pegs ~1 core, so that ratio is what a healthy
+run looks like here. The prefilter is still the right fix — its 3.4× is measured directly — but it
+was not established by that email.
+
+Equally, the same note's "resubmitting as-is would burn ~65 GPU-h to do ~5 GPU-h of inference" does
+not survive: the whole measured A1 overhead is 26 × 0.193 = 5 GPU-h, so that framing double-counted.
+
+The missing term is recorded in `logs/h2c-rebuild-a1-40572495_*.out`. What answers it:
+
+1. per-tile `[tile] DONE in Ns` — how many tiles each task actually finished, and at what rate;
+2. the `[tile] win k/144 ... Ns` lines — per-window cost, against the 3.756 s laptop figure;
+3. `[tile] streaming the native tile ...` → the next line — the once-per-tile pass, against 154.9 s
+   on a local SSD. **Prime suspect: `$SCRATCH`/`/oak` I/O, not CPU.** A1 pays a full 2.2 Gpx
+   streaming pass *in addition to* the 144 windowed reads the baseline arm also pays;
+4. the `nvidia-smi` line — whether the A1 tasks got the same GPU as the baseline tasks;
+5. `sacct -j 40572495 --format=JobID,State,Elapsed,MaxRSS` and `ls $SCRATCH/hirise2ctx/map_a1_g2/`
+   + per-tile `partials/*/` counts — how much A1 work is already banked and resumable.
+
+The A1 driver now prints its own breakdown (`DONE in Ns | stats Xs read Ys a1 Zs predict Ws
+write Vs (unaccounted Us)`) and banks it as `cost_s` in the result row, so the *next* run answers
+this itself instead of costing a separate measurement session. `--time=06:00:00` for one tile is
+>7× the expected cost and absorbs a 2× surprise, but it is a margin, not a diagnosis: revise it once
+the log is read.

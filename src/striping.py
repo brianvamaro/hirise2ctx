@@ -20,6 +20,7 @@ import numpy as np
 import rasterio
 from rasterio.warp import reproject, Resampling
 from rasterio.features import rasterize
+from rasterio.transform import guard_transform
 from scipy.ndimage import gaussian_filter, sobel
 from shapely.geometry import LineString, MultiLineString
 
@@ -462,9 +463,66 @@ def a1_clip_counts_from_hist(hist, med: float, iqr: float,
             "n_ceiled": int(h[v > 255].sum())}
 
 
-def frame_labels_on(transform, shape, frames, *, dtype: str = "int32") -> np.ndarray:
-    """Rasterize dissolved source frames onto an arbitrary grid; -1 where no frame covers."""
-    return rasterize([(g, i) for i, g in enumerate(frames.geometry)], out_shape=tuple(shape),
+def window_extent(transform, shape) -> tuple[float, float, float, float]:
+    """Axis-aligned `(x0, y0, x1, y1)` world extent of an `out_shape` grid under `transform`.
+
+    `transform` may be an `Affine` **or a bare 6-tuple** — `guard_transform` normalises both,
+    which matters because `src.mapping.CtxWindow.transform` is a plain tuple in places and
+    `rasterize` accepts either. All FOUR corners are mapped, not two: for the north-up
+    transforms this pipeline uses two would do, but a rotated transform would put the extent's
+    min/max on the other diagonal and quietly under-cover the window.
+    """
+    tr = guard_transform(transform)
+    h, w = int(shape[0]), int(shape[1])
+    xs, ys = zip(*(tr * (c, r) for c, r in ((0, 0), (w, 0), (0, h), (w, h))))
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def frames_hitting(bounds: np.ndarray, transform, shape) -> np.ndarray:
+    """Indices of frames whose bbox overlaps the grid's extent. `bounds` is `(n, 4)` xyxy.
+
+    Inclusive comparisons: a frame merely tangent to the window edge contributes no pixel
+    centres under `all_touched=False`, so keeping it is wasted work but never wrong, whereas
+    dropping it on a strict `<` would be wrong the moment a bound lands exactly on the edge.
+    """
+    if bounds.size == 0:
+        return np.empty(0, dtype=np.intp)
+    x0, y0, x1, y1 = window_extent(transform, shape)
+    return np.where((bounds[:, 0] <= x1) & (bounds[:, 2] >= x0)
+                    & (bounds[:, 1] <= y1) & (bounds[:, 3] >= y0))[0]
+
+
+def frame_bounds(frames) -> np.ndarray:
+    """`(n, 4)` xyxy bounds of `frames.geometry`, in `frames` order. Hoist this out of loops."""
+    return np.array([g.bounds for g in frames.geometry], dtype=np.float64).reshape(-1, 4)
+
+
+def frame_labels_on(transform, shape, frames, *, dtype: str = "int32",
+                    bounds: np.ndarray | None = None) -> np.ndarray:
+    """Rasterize dissolved source frames onto an arbitrary grid; -1 where no frame covers.
+
+    **Bbox-prefiltered.** Only frames whose bounds overlap the grid extent are handed to
+    `rasterize`; the rest cannot place a pixel centre in this window, so the result is
+    *identical* to rasterizing all of them (`test_frame_labels_on_prefilter_is_identical`).
+    This is the same optimization `frame_hist_native` has always had, and the reason it needs
+    it is stronger here: the A1 map driver calls this **once per read window** (144x per Murray
+    tile) against ~81 dissolved frames, which is 78 % of A1's measured per-tile overhead.
+    Measured on the real `E-12_N36` SeamMap over all 144 windows: **354.0 s -> 102.8 s**, every
+    window bit-identical, median 6 of 81 frames hit a window. ⚠ This is *not* on its own the
+    explanation for the step-11 A1 timeout -- it is ~0.08 h of a >1 h/tile shortfall; see
+    DECISIONS 2026-08-24d §5. Filtered indices keep their **original** frame index and
+    ascending order, so both the label values and the overlap-precedence (later geometry wins)
+    are preserved.
+
+    Pass `bounds` (from `frame_bounds`) to hoist the per-call bounds computation out of a
+    window loop.
+    """
+    bnds = frame_bounds(frames) if bounds is None else bounds
+    geoms = list(frames.geometry)
+    hit = frames_hitting(bnds, transform, shape)
+    if not hit.size:
+        return np.full(tuple(shape), -1, dtype=dtype)
+    return rasterize([(geoms[i], int(i)) for i in hit], out_shape=tuple(shape),
                      transform=transform, fill=-1, dtype=dtype, all_touched=False)
 
 

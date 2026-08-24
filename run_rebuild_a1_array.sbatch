@@ -5,10 +5,24 @@
 # record came from one E8_N44 crop (`striping_a1_infer_crop.py`, which saved only a PNG) or from
 # the LOIO skill gate. This is the first A1 raster.
 #
-# Cost note: A1 is NOT the baseline arm plus a constant. Measured on E-12_N36 (DECISIONS
-# 2026-08-19): +0.193 h/tile, of which only 22% is the once-per-tile per-frame native statistic
-# (154.9 s) and 78% is re-rasterizing the same ~81 SeamMap polygons onto all 144 read windows
-# (2.67 s each). Budget ~26 x 0.193 = ~5 GPU-h ON TOP of the baseline arm's cost.
+# COST -- read this before choosing --time again. The first attempt (job 40572495) TIMED OUT
+# at 10:00:15 and the budget below does NOT explain that, so one term is still unmeasured.
+#
+#   baseline arm, measured on the 2080 Ti     0.717 h/tile   (job 40561654 manifest)
+#   A1 overhead, measured on the laptop      +0.193 h/tile   (DECISIONS 2026-08-19)
+#     of which frame_labels_on               +0.107 h/tile   -> now 0.031 h (bbox prefilter,
+#                                                               3.4-4.2x, bit-identical)
+#   => expected after the prefilter            0.79 h/tile   -> 5 tiles = 4.0 h, not 10 h
+#
+# So the prefilter is real and verified (`test_frame_labels_on_prefilter_is_identical`, plus a
+# 144-window run on the real E-12_N36 frames: 354.0 s -> 102.8 s, every window bit-identical),
+# but it accounts for ~0.08 h of a >1 h/tile shortfall. ⚠ Do NOT repeat the earlier reading that
+# `CPU Utilized 09:59:32 / 12.49 % of 8 cores` proves a CPU-bound overrun: the baseline arm is
+# GPU-bound and its host process also pegs ~1 core, so that ratio is what a healthy run here
+# looks like. The missing term is in `logs/h2c-rebuild-a1-40572495_*.out` -- per-tile
+# `DONE in Ns` (now with a read/a1/predict/write breakdown), the `win k/144 ... Ns` lines, and
+# the streaming-pass message. --time is 06:00 for ONE tile, which is >7x the expected cost and
+# absorbs a 2x surprise; revise it once the log is read.
 #
 # The 19 parent-tile SeamMaps do not need uploading: `src.striping.load_frames` pulls the
 # shapefile out of the tile zip via /vsizip/vsicurl/ range requests and caches it as a GeoPackage,
@@ -22,8 +36,8 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --time=10:00:00
-#SBATCH --array=0-5
+#SBATCH --time=06:00:00
+#SBATCH --array=0-25
 #SBATCH --output=logs/h2c-rebuild-a1-%A_%a.out
 #SBATCH --error=logs/h2c-rebuild-a1-%A_%a.out
 #SBATCH --mail-type=END,FAIL
@@ -46,8 +60,23 @@ TILES=(
   E12_N44  E16_N44
 )
 
+# ONE TILE PER TASK (was 6 tasks x 4-5 tiles, 2026-08-24d). Two reasons, both measured:
+#   * a task that overran or raised took its remaining tiles down with it -- step 11 lost 3
+#     never-attempted baseline tiles that way, and the A1 array's 10 h timeout forfeited
+#     whatever its tasks had not reached. One tile per task makes the blast radius one tile.
+#   * a 26-way array of short jobs also schedules faster on the gpu partition than 6 long ones.
+# `ONLY` restricts the run to named tiles, so a resubmit can target just what is left instead
+# of spawning 21 tasks that only print "skip":
+#   ONLY="E0_N36 E0_N44 E4_N44 E8_N36 E16_N44" sbatch --array=0-4 run_rebuild_map_array.sbatch
+if [[ -n "${ONLY:-}" ]]; then
+  read -r -a TILES <<< "$ONLY"
+fi
 N=$(( SLURM_ARRAY_TASK_MAX - SLURM_ARRAY_TASK_MIN + 1 ))
 I=$(( SLURM_ARRAY_TASK_ID - SLURM_ARRAY_TASK_MIN ))
+if (( I >= ${#TILES[@]} )); then
+  echo "task $SLURM_ARRAY_TASK_ID: nothing to do (${#TILES[@]} tile(s) selected)"
+  exit 0
+fi
 SEL=()
 for (( j=I; j<${#TILES[@]}; j+=N )); do SEL+=( "${TILES[j]}" ); done
 
@@ -92,22 +121,16 @@ echo "task $SLURM_ARRAY_TASK_ID done -> $OUT"
 # ---------------------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------------------
-# TRIAGE, if assembly dies with "N cells were written twice with DIFFERENT values":
+# THE OVERLAP GUARD IS FIXED -- the triage note that used to live here is obsolete.
 #
-# **Judge by the COUNT, not the magnitude** (corrected 2026-08-24c; the earlier magnitude-band
-# rule here was wrong and would have blocked a correct re-run). Isotonic amplification is a
-# lottery on knot placement, so |delta| on `prob` tells you little: measured on E0_N36, the
-# underlying prob_raw disagreement was 5.3e-4 across 242 cells while `prob` showed 6.0e-3 on
-# exactly 1 cell -- an 11x amplification of ordinary fp16 noise.
+# What it said to do by hand, `check_overlap` now does: the gate is the FRACTION of duplicated
+# cells that disagree, measured on `prob_raw` (pre-isotonic), not a magnitude on `prob`.
+#   fp16 GEMM noise, within one run:  242 / 79,059 duplicated cells = 0.31 %   -> passes
+#   stale-partial mixture, two runs:  63.1 % of finite pixels                  -> refuses
+# Every tile sidecar now carries the full per-layer record under `overlap`, and every run
+# prints it, so "did this tile disagree, and how much" no longer needs a laptop session.
 #
-#   a handful of cells (<~0.01% of duplicated)  -> fp16 GEMM noise. A cell that appears in two
-#       overlapping windows sits at a different batch position each time, and fp16 reductions
-#       are not position-invariant. Harmless. NOTE it happens WITHIN one run, so a plain
-#       resubmit re-raises on the same cells and --force is only a re-roll.
-#   a large fraction of cells             -> the stale/mixed-partial case R14 exists for. Its
-#       measured instance had 63.1% of finite pixels from the wrong run. INVESTIGATE.
-#
-# Decompose before deciding -- load the tile's partials and run overlap_disagreement on
-# prob_raw, prob and abundance separately. fp noise shows ~1e-4 on prob_raw and near-nothing
-# on abundance; a real mixture shows large disagreement on all three.
+# Also: a failing tile no longer kills the rest of the task (`run_tile_isolated`). The driver
+# prints the traceback, carries on, and exits 1 with a list of failed tiles. **`exit 0` still
+# means nothing on its own in this pipeline -- read the `N/M tiles complete` tally.**
 # ---------------------------------------------------------------------------------------

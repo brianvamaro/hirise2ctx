@@ -125,11 +125,15 @@ def test_partials_from_a_different_head_are_refused(tmp_path, monkeypatch):
                         args=_fake_args(tmp_path, out_dir=str(tmp_path), win_px=256))
 
 
-def test_the_sweep_assigns_every_cell_to_exactly_one_window(tmp_path, monkeypatch):
-    """Windows overlap in PIXELS (so every cell has context) but partition the CELLS.
+def test_this_small_sweep_assigns_every_cell_to_exactly_one_window(tmp_path, monkeypatch):
+    """Windows overlap in PIXELS (so every cell has context); on THIS sweep they also
+    partition the CELLS, so the overlap costs no duplicated inference.
 
-    Worth pinning: it is why the cross-run disagreement check cannot false-positive, and it
-    means the overlap costs no duplicated inference.
+    ⚠ **Do not generalise this to the shipped sweep.** It used to be pinned here as the reason
+    the disagreement check "cannot false-positive", and that inference was wrong: whether cells
+    partition depends on the window geometry, and the 144-window / 4096 px sweep the drivers
+    actually ship duplicates 62,559-80,570 cells per Murray tile. See
+    `test_a_larger_sweep_really_does_duplicate_cells` and `overlap_disagreement`.
     """
     mr, tile, args = _drive(monkeypatch, tmp_path)
     mr.map_one_tile(tile, _StubEmbedder(), _StubHead(), None, args=args)
@@ -137,7 +141,36 @@ def test_the_sweep_assigns_every_cell_to_exactly_one_window(tmp_path, monkeypatc
     ti = np.concatenate([mr.read_partial(p)["ti"] for p in parts]).astype(np.int64)
     tj = np.concatenate([mr.read_partial(p)["tj"] for p in parts]).astype(np.int64)
     assert np.unique(ti * (2 ** 21) + tj).size == ti.size, "a cell was computed twice"
-    assert mr.overlap_disagreement(ti, tj, np.full(ti.size, 0.5)) == (0, 0.0)
+    c = mr.overlap_disagreement(ti, tj, np.full(ti.size, 0.5))
+    assert (c.n_dup, c.n_disagree, c.fraction, c.max_abs) == (0, 0, 0.0, 0.0)
+    assert not c.refuse
+
+
+def test_a_larger_sweep_really_does_duplicate_cells():
+    """The measurement the old guard's premise was missing.
+
+    `window_offsets` on a Murray-scale extent yields windows whose cell sets overlap, so the
+    "cells are a partition, therefore within one run disagreement is 0 by construction" claim
+    only ever held for small sweeps. This walks the real geometry and asserts the duplicates
+    exist, so the premise cannot quietly come back.
+    """
+    import scripts.map_region as mr
+    extent, win, overlap = 47420, 4096, 3 * TILE_PX
+    offs = mr.window_offsets(extent, win, overlap, TILE_PX, tile_aligned=False)
+    assert len(offs) ** 2 == 144, f"geometry changed: {len(offs)}^2 windows"
+    cells = set()
+    dup = 0
+    for r0 in offs:
+        for c0 in offs:
+            # the cells a window contributes: its interior ring, on the global lattice
+            rr = range(r0 + TILE_PX, r0 + win - TILE_PX, TILE_PX)
+            cc = range(c0 + TILE_PX, c0 + win - TILE_PX, TILE_PX)
+            for r in rr:
+                for c in cc:
+                    if (r, c) in cells:
+                        dup += 1
+                    cells.add((r, c))
+    assert dup > 10_000, f"expected tens of thousands of duplicated cells, got {dup}"
 
 
 def test_partials_from_two_runs_disagree_and_are_refused(tmp_path, monkeypatch):
@@ -161,8 +194,106 @@ def test_partials_from_two_runs_disagree_and_are_refused(tmp_path, monkeypatch):
     grid_geom = mr.tile_global_grid(
         tuple(json.loads((tmp_path / "ctx" / f"{tile}.json").read_text())["inner_transform"]),
         _WKT, TILE_PX)
-    with pytest.raises(SystemExit, match="DIFFERENT values"):
+    with pytest.raises(SystemExit, match="duplicated cells disagree"):
         mr.write_tile_geotiffs(tile, parts + [stale], grid_geom, _WKT, None, args)
+
+
+# ------------------------------------------------------- the fraction gate (R14, 2026-08-24d)
+
+def _check(vals_a, vals_b):
+    """One duplicated cell block: the same `n` cells written twice, with `a` then `b`."""
+    import scripts.map_region as mr
+    n = len(vals_a)
+    ti = np.concatenate([np.arange(n), np.arange(n)])
+    tj = np.zeros(2 * n, dtype=np.int64)
+    return mr.overlap_disagreement(ti, tj, np.concatenate([vals_a, vals_b]))
+
+
+def test_fp16_noise_on_a_fraction_of_a_percent_is_not_refused():
+    """The case that stalled E0_N36 and E0_N44: 242 of 79,059 duplicated cells differ."""
+    n = 79_059
+    a = np.full(n, 0.5)
+    b = a.copy()
+    b[:242] += 5.3e-4                       # measured magnitude, measured count
+    c = _check(a, b)
+    assert (c.n_dup, c.n_disagree) == (n, 242)
+    assert c.fraction == pytest.approx(242 / n)
+    assert not c.refuse, "float noise must not block a correctly rendered tile"
+
+
+def test_a_stale_partial_mixture_is_refused():
+    """The case R14 exists for: 63.1 % of cells came from the wrong run."""
+    n = 79_059
+    k = int(0.631 * n)
+    a = np.full(n, 0.5)
+    b = a.copy()
+    b[:k] = 0.9                             # a different head wrote these
+    c = _check(a, b)
+    assert c.n_disagree == k
+    assert c.fraction == pytest.approx(0.631, abs=1e-3)
+    assert c.refuse
+
+
+def test_a_tiny_disagreeing_count_is_not_refused_even_at_a_high_fraction():
+    """The absolute floor. On a sweep with a handful of duplicated cells the fraction is a
+    very noisy estimator of "two runs", so both conditions must hold."""
+    c = _check(np.full(4, 0.5), np.array([0.9, 0.9, 0.9, 0.9]))
+    assert (c.n_dup, c.n_disagree, c.fraction) == (4, 4, 1.0)
+    assert not c.refuse                      # 4 <= OVERLAP_DISAGREE_MIN_CELLS
+    big = _check(np.full(40, 0.5), np.full(40, 0.9))
+    assert big.refuse                        # 40 > 16, fraction 1.0
+
+
+def test_a_cell_written_three_times_counts_once():
+    import scripts.map_region as mr
+    ti = np.array([7, 7, 7, 8])
+    tj = np.zeros(4, dtype=np.int64)
+    c = mr.overlap_disagreement(ti, tj, np.array([0.5, 0.5, 0.6, 0.1]))
+    assert (c.n_dup, c.n_disagree) == (1, 1)   # cell 7 only, not 2 pairs
+    assert c.max_abs == pytest.approx(0.1)
+
+
+def test_a_one_sided_nan_is_a_disagreement():
+    """One run masked the cell and the other did not -- that is a mixture, not float noise."""
+    n = 100
+    a = np.full(n, 0.5)
+    b = a.copy()
+    b[:50] = np.nan
+    c = _check(a, b)
+    assert c.n_disagree == 50 and not np.isfinite(c.max_abs)
+    assert c.refuse
+    both = _check(np.full(n, np.nan), np.full(n, np.nan))
+    assert both.n_disagree == 0 and not both.refuse   # both nan = agreement
+
+
+def test_check_overlap_gates_on_prob_raw_and_records_every_layer():
+    """Isotonic collapses most prob_raw noise and amplifies the survivors, so `prob` is not
+    the layer to judge on -- but it, and abundance, must still be recorded."""
+    import scripts.map_region as mr
+    n = 5_000
+    ti = np.concatenate([np.arange(n), np.arange(n)])
+    tj = np.zeros(2 * n, dtype=np.int64)
+
+    def dup(vals_a, vals_b):
+        return np.concatenate([vals_a, vals_b])
+
+    raw_a = np.full(n, 0.5)
+    raw_b = raw_a.copy()
+    raw_b[:20] += 5e-4                       # 0.4 % of cells: noise
+    prob_a = np.full(n, 0.3)
+    prob_b = prob_a.copy()
+    prob_b[0] += 6e-3                        # one amplified survivor
+    rec = mr.check_overlap("T", ti, tj, {"prob_raw": dup(raw_a, raw_b),
+                                         "prob": dup(prob_a, prob_b),
+                                         "abundance": None})
+    assert rec["gate_layer"] == "prob_raw"
+    assert rec["prob_raw"]["n_disagree"] == 20
+    assert rec["prob"]["n_disagree"] == 1
+    assert "abundance" not in rec            # None layers are skipped, not recorded as 0
+
+    # with no calibrator there is no prob_raw, so the gate falls back to prob
+    rec2 = mr.check_overlap("T", ti, tj, {"prob_raw": None, "prob": dup(prob_a, prob_b)})
+    assert rec2["gate_layer"] == "prob"
 
 
 # ------------------------------------------------------------------ partial integrity
@@ -269,3 +400,34 @@ def test_the_region_manifest_merges_across_runs_instead_of_clobbering(tmp_path):
     out = json.loads(m.read_text(encoding="utf-8"))
     assert out["tiles"] == ["A", "B", "C"]
     assert [r["win_px"] for r in out["runs"]] == [2048, 4096]
+
+
+# ----------------------------------------------- per-tile isolation of the array stride
+
+def test_a_failing_tile_does_not_forfeit_the_rest_of_the_stride():
+    """Step 11 lost 3 renderable tiles to a `SystemExit` on a sibling. It must not recur."""
+    import scripts.map_region as mr
+
+    seen = []
+
+    def fn(tile):
+        seen.append(tile)
+        if tile == "BAD":
+            raise SystemExit("cells were written twice")
+        return {"tile": tile, "status": "done"}
+
+    rows = [mr.run_tile_isolated(t, lambda t=t: fn(t)) for t in ("A", "BAD", "B")]
+    assert seen == ["A", "BAD", "B"], "the stride stopped at the failing tile"
+    assert [r["status"] for r in rows] == ["done", "failed", "done"]
+    assert "cells were written twice" in rows[1]["error"]
+
+
+def test_isolation_does_not_swallow_a_cancel():
+    """`scancel` / Ctrl-C means stop now, not 'record and carry on'."""
+    import scripts.map_region as mr
+
+    def boom():
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        mr.run_tile_isolated("T", boom)

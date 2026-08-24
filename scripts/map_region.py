@@ -60,7 +60,9 @@ import argparse
 import json
 import sys
 import time
+import traceback
 from pathlib import Path
+from typing import NamedTuple
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -379,32 +381,117 @@ def expected_cells_per_axis(extent: int, phase: int, tile_px: int = TILE_PX) -> 
     return len(range(tile_px + phase, extent - 2 * tile_px + 1, tile_px))
 
 
-def overlap_disagreement(ti, tj, values) -> tuple[int, float]:
-    """`(n_cells, max_abs_diff)` where overlapping windows wrote DIFFERENT values for a cell.
+# R14, re-derived 2026-08-24d. The gate is a FRACTION of the duplicated cells, not a
+# magnitude, and it needs an absolute floor as well because a sweep with only a handful of
+# duplicated cells makes the fraction a very noisy estimator of "these are two runs".
+#   fp16 GEMM noise (within one run):   242 / 79,059 = 0.31 %
+#   stale-partial mixture (two runs):  63.1 % of finite pixels
+# Two orders of magnitude apart, so 1 % sits in open space between them.
+OVERLAP_DISAGREE_FRACTION_MAX = 0.01
+OVERLAP_DISAGREE_MIN_CELLS = 16
 
-    **R14, and it is a CROSS-RUN detector specifically.** Windows overlap by 3·tile_px in
-    *pixels* so every cell has full context, but the cell assignment is a **partition**:
-    measured on the sweep this driver uses, 900 cells over 36 windows with 0 computed twice.
-    So within one run this returns `(0, 0.0)` by construction and can never false-positive.
 
-    It fires when partials from two runs are assembled together — both runs compute the same
-    cell set on the same lattice, so every cell collides, and a cell's value depends only on
-    the cell (its context box is fixed by the cell, not by the window). Measured on a real
-    stale-partial mixture: 63.1 % of finite pixels came from the stale run while every file
-    was structurally perfect and the raster came out the right shape. Neither a shape check
-    nor a decode can see that; this can.
+class OverlapCheck(NamedTuple):
+    """How much two windows that computed the same cell disagreed about it."""
+
+    n_dup: int          # cells written by more than one window
+    n_disagree: int     # of those, cells where at least one pair of writes differs
+    fraction: float     # n_disagree / n_dup; 0.0 when nothing was duplicated
+    max_abs: float      # largest |Δ| over disagreeing pairs (inf if one write was NaN)
+
+    @property
+    def refuse(self) -> bool:
+        """True iff this looks like a MIXTURE OF RUNS rather than float noise."""
+        return (self.n_disagree > OVERLAP_DISAGREE_MIN_CELLS
+                and self.fraction > OVERLAP_DISAGREE_FRACTION_MAX)
+
+    def as_dict(self) -> dict:
+        return {"n_dup": self.n_dup, "n_disagree": self.n_disagree,
+                "fraction": round(self.fraction, 8),
+                "max_abs": (None if not np.isfinite(self.max_abs) else float(self.max_abs))}
+
+
+def overlap_disagreement(ti, tj, values) -> OverlapCheck:
+    """Compare every cell that two overlapping windows both computed. **R14.**
+
+    ⚠ **The original premise of this check was wrong, and the correction is the whole point.**
+    It was written as a pure CROSS-RUN detector on the claim that the cell assignment is a
+    partition — "measured on the sweep this driver uses, 900 cells over 36 windows with 0
+    computed twice", therefore `(0, 0.0)` within one run "by construction". That measurement
+    was taken on a 36-window sweep. The sweep this driver actually ships is **144 windows**,
+    and there **62,559-80,570 cells per Murray tile are computed twice** (read straight off
+    the 21 rendered step-11 sidecars, 2026-08-24). So the guard has always been comparing tens
+    of thousands of real duplicate pairs, and its `> 1e-6` magnitude test was only ever
+    passing because of a second accident:
+
+    * A cell's *prediction* is a function of the cell alone (its context box is fixed by the
+      cell, not by the window), so the two writes are mathematically equal — but they are
+      computed in **fp16**, at different positions within different batches, and fp16
+      reductions are not position-invariant. Measured: **242 of 79,059** duplicated cells
+      differ on `prob_raw`, by ~5-8e-4.
+    * Isotonic calibration then collapses almost all of those onto a shared knot value —
+      which is why 21 of 23 assembled tiles recorded `overlap_disagreements: 0` on `prob` —
+      and **amplifies the survivors 8-11x**, to 6e-3 on 1-3 cells. Whether the guard fired
+      was therefore a lottery on knot placement, and it lost twice: `E0_N36` and `E0_N44`
+      each stalled at 144/144 windows with the render already paid for.
+
+    So the discriminator cannot be a magnitude on `prob`. It is the **fraction of duplicated
+    cells that disagree at all** — 0.31 % for float noise against 63.1 % for the real
+    stale-partial mixture this guard exists to catch (that instance had 63.1 % of finite
+    pixels from the wrong run while every file was structurally perfect and the raster came
+    out the right shape; neither a shape check nor a decode can see it, this can). Callers
+    should measure on **`prob_raw`**, pre-isotonic: it is what the model actually emits, and
+    it is comparable across tiles in a way that post-knot magnitudes are not.
+
+    Returns an `OverlapCheck`; `.refuse` applies the gate, `.as_dict()` is the sidecar record.
     """
     key = np.asarray(ti, dtype=np.int64) * (2 ** 21) + np.asarray(tj, dtype=np.int64)
     o = np.argsort(key, kind="stable")
     k, v = key[o], np.asarray(values, dtype=np.float64)[o]
-    dup = k[1:] == k[:-1]
-    if not dup.any():
-        return 0, 0.0
-    a, b = v[:-1][dup], v[1:][dup]
+    if k.size == 0:
+        return OverlapCheck(0, 0, 0.0, 0.0)
+    same = k[1:] == k[:-1]
+    # group id per element, so a cell written 3x counts once, not twice
+    grp = np.concatenate(([0], np.cumsum(~same)))
+    n_dup = int((np.bincount(grp) > 1).sum())
+    if not same.any():
+        return OverlapCheck(n_dup, 0, 0.0, 0.0)
+    a, b = v[:-1][same], v[1:][same]
     both_nan = np.isnan(a) & np.isnan(b)
-    diff = np.where(both_nan, 0.0, np.abs(a - b))
-    diff = np.nan_to_num(diff, nan=np.inf)
-    return int((diff > 0).sum()), float(diff.max())
+    # a one-sided NaN IS a disagreement (one run masked the cell, the other did not), and
+    # `inf` keeps it visible in max_abs instead of silently becoming 0 via nan comparison
+    diff = np.nan_to_num(np.where(both_nan, 0.0, np.abs(a - b)), nan=np.inf)
+    bad = diff > 0
+    n_disagree = int(np.unique(grp[1:][same][bad]).size)
+    frac = (n_disagree / n_dup) if n_dup else 0.0
+    return OverlapCheck(n_dup, n_disagree, float(frac), float(diff.max()))
+
+
+def check_overlap(tile: str, ti, tj, layers: dict) -> dict:
+    """Run `overlap_disagreement` over every emitted layer; refuse on the gate layer.
+
+    `layers` maps kind -> values (None allowed, e.g. `prob_raw` under `--raw`). The gate is
+    applied to `prob_raw` when present and to `prob` otherwise, for the reason given in
+    `overlap_disagreement`: isotonic amplification makes `prob` magnitudes incomparable. All
+    layers are still *measured*, because "abundance disagrees too" is exactly how a real
+    mixture distinguishes itself from float noise, and the sidecar should carry that.
+    """
+    checks = {kind: overlap_disagreement(ti, tj, v)
+              for kind, v in layers.items() if v is not None}
+    gate_kind = "prob_raw" if "prob_raw" in checks else "prob"
+    c = checks[gate_kind]
+    summary = " · ".join(f"{k}: {v.n_disagree}/{v.n_dup} (max |d| {v.max_abs:.3g})"
+                         for k, v in checks.items())
+    print(f"[{tile}] overlap on {gate_kind}: {c.n_disagree}/{c.n_dup} cells disagree "
+          f"({100 * c.fraction:.4f} %) — {summary}", flush=True)
+    if c.refuse:
+        raise SystemExit(
+            f"[{tile}] {c.n_disagree} of {c.n_dup} duplicated cells disagree on {gate_kind} "
+            f"({100 * c.fraction:.2f} % > {100 * OVERLAP_DISAGREE_FRACTION_MAX:.2f} %, "
+            f"max |d| = {c.max_abs:.4g}). Float noise disagrees on ~0.3 % of duplicated "
+            f"cells; a stale-partial mixture on tens of percent. Refusing to assemble — "
+            f"these partials come from more than one run. Per layer: {summary}")
+    return {"gate_layer": gate_kind, **{k: v.as_dict() for k, v in checks.items()}}
 
 
 def as_int32_cells(v: np.ndarray, name: str, tile: str) -> np.ndarray:
@@ -720,8 +807,13 @@ def map_one_tile(murray_tile: str, embedder, head, calibrator, *, args) -> dict:
             partial_dir.rmdir()
         except OSError:
             pass
-    print(f"[{murray_tile}] DONE in {time.monotonic() - t_tile:.0f}s", flush=True)
-    return {"tile": murray_tile, "status": "done", "windows": len(grid)}
+    elapsed = time.monotonic() - t_tile
+    print(f"[{murray_tile}] DONE in {elapsed:.0f}s", flush=True)
+    # Per-tile wall time. Until now only the whole-RUN `elapsed_s` was recorded, so per-tile
+    # cost had to be reconstructed as run/n_tiles -- and a task that died mid-stride wrote no
+    # manifest at all, which is exactly the case you most want the number for.
+    return {"tile": murray_tile, "status": "done", "windows": len(grid),
+            "elapsed_s": round(elapsed, 1)}
 
 
 def write_tile_geotiffs(murray_tile, partials, grid_geom, crs_wkt, calibrator, args,
@@ -748,16 +840,11 @@ def write_tile_geotiffs(murray_tile, partials, grid_geom, crs_wkt, calibrator, a
     abundance = (np.concatenate([z["abundance"] for z in loaded]).astype(np.float64)
                  if has_cal else None)
 
-    # R14: overlapping windows must agree. A cell's context box is fixed by the cell, not by
-    # the window that computed it, so two windows covering it produce the same prediction.
-    # Disagreement means two runs are being assembled into one raster -- the failure that is
-    # invisible to every structural check because each file is perfect and the shape is right.
-    n_dis, max_dis = overlap_disagreement(ti, tj, prob)
-    if n_dis and max_dis > 1e-6:
-        raise SystemExit(
-            f"[{murray_tile}] {n_dis} cells were written twice with DIFFERENT values "
-            f"(max |Δ| = {max_dis:.4g}). Overlapping windows of one run agree by construction, "
-            f"so these partials come from more than one run. Refusing to assemble.")
+    # R14: overlapping windows must agree ABOUT WHICH CELLS THEY DISAGREE ON. ~62-80 k cells
+    # per tile are computed twice, and fp16 makes a fraction of a percent of them differ within
+    # a single run, so the gate is that fraction and not any magnitude -- see `check_overlap`.
+    overlap = check_overlap(murray_tile, ti, tj,
+                            {"prob_raw": prob_raw, "prob": prob, "abundance": abundance})
 
     ti_min, ti_max = int(ti.min()), int(ti.max())
     tj_min, tj_max = int(tj.min()), int(tj.max())
@@ -800,7 +887,12 @@ def write_tile_geotiffs(murray_tile, partials, grid_geom, crs_wkt, calibrator, a
         "rasters": rasters,
         "run": sweep_prov,
         "n_unique_cells": n_unique,
-        "overlap_disagreements": n_dis,
+        # R14: the FULL per-layer overlap record, not one scalar measured on `prob`. The old
+        # field said 0 on 21 of 23 tiles while ~242 cells per tile really did disagree on
+        # `prob_raw` -- isotonic had collapsed them. `overlap` is now the honest instrument;
+        # `overlap_disagreements` is retained, on the gate layer, so older readers still work.
+        "overlap": overlap,
+        "overlap_disagreements": overlap[overlap["gate_layer"]]["n_disagree"],
         # R13: the "Record" half. Until now a tile sidecar carried neither the masking
         # thresholds nor how many cells they dropped, so a shipped raster could not be told
         # apart from one rendered with the gate off.
@@ -893,6 +985,28 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+def run_tile_isolated(tile: str, fn) -> dict:
+    """Run one tile's render, converting a failure into a `status: "failed"` result row.
+
+    **Why this exists.** Step 11's baseline array lost **3 fully-renderable tiles** that were
+    never attempted: `map_one_tile` raised `SystemExit` on the 3rd tile of tasks 1 and 3, which
+    tore down the whole process and forfeited the rest of each task's stride. A per-tile fault
+    should cost that tile, not its siblings and the GPU allocation they were queued behind.
+
+    The exit STATUS is still non-zero (`main` counts these rows) — `exit 0` in this pipeline has
+    already meant "silently did nothing" more than once, so the tally and the status must agree.
+    `KeyboardInterrupt` is deliberately not caught: a Ctrl-C or an `scancel` means stop now.
+    """
+    try:
+        return fn()
+    except (SystemExit, Exception) as exc:      # noqa: BLE001 -- the point is to keep going
+        traceback.print_exc()
+        print(f"[{tile}] FAILED ({type(exc).__name__}): {exc}\n"
+              f"[{tile}] continuing with the rest of this task's tiles", flush=True)
+        return {"tile": tile, "status": "failed",
+                "error": f"{type(exc).__name__}: {exc}"}
+
+
 def main() -> int:
     args = build_parser().parse_args()
 
@@ -930,7 +1044,8 @@ def main() -> int:
     results = []
     t0 = time.monotonic()
     for tile in tiles:
-        results.append(map_one_tile(tile, embedder, head, calibrator, args=args))
+        results.append(run_tile_isolated(
+            tile, lambda t=tile: map_one_tile(t, embedder, head, calibrator, args=args)))
 
     # R14: MERGE, do not clobber. The shipped manifest lists 4 tiles while 26 tiles' rasters
     # are on disk, because every run overwrote it -- so 22 of 26 shipped tiles have no manifest
@@ -975,9 +1090,15 @@ def main() -> int:
         "results": [by_tile[t] for t in sorted(by_tile)],
     })
     n_done = sum(r["status"] == "done" for r in results)
+    failed = [r["tile"] for r in results if r["status"] == "failed"]
     print(f"=== {n_done}/{len(tiles)} tiles complete  "
           f"{time.monotonic() - t0:.0f}s  manifest -> {manifest} ===", flush=True)
-    return 0
+    if failed:
+        print(f"=== {len(failed)}/{len(tiles)} tiles FAILED: {failed} ===", flush=True)
+        for r in results:
+            if r["status"] == "failed":
+                print(f"    {r['tile']}: {r['error']}", flush=True)
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
