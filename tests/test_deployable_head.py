@@ -294,3 +294,42 @@ def test_the_frozen_recipe_carries_no_measured_metrics():
     # and the values that WERE there must not have crept back under any name
     assert 0.7832 not in FROZEN_RECIPE.values()
     assert 0.7865 not in FROZEN_RECIPE.values()
+
+
+def test_the_arm_a_store_infers_is_the_arm_its_map_driver_demands():
+    """The two halves of R07 must agree, or a head trains fine and the map driver refuses it.
+
+    DECISIONS 2026-08-24. `train_deployable_head.py` records
+    `args.norm_arm or infer_norm_arm(store_name)`, and `scripts/striping_a1_map.py` calls
+    `require_norm_arm(head, src.striping.A1_ARM, strict=True)`. Those are two constants in
+    two modules. A head trained with `--norm-arm a1` -- a plausible-looking literal --
+    declares 'a1', which is NOT `A1_ARM`, so the driver rejects it. That killed all six
+    array tasks after GPUs had been allocated.
+
+    The guard behaved correctly; the invariant it depends on was simply untested.
+    """
+    from src.modeling.mlp_head import NO_NORM_ARM, infer_norm_arm, require_norm_arm
+    from src.striping import A1_ARM
+
+    inferred = infer_norm_arm("fang_embeddings_a1")
+    assert inferred == A1_ARM, (
+        f"infer_norm_arm gives {inferred!r} but striping.A1_ARM is {A1_ARM!r}; a head trained "
+        f"from the a1 store would be refused by scripts/striping_a1_map.py")
+    assert infer_norm_arm("fang_embeddings") == NO_NORM_ARM
+
+    # the bare "a1" must NOT satisfy the A1 driver -- that is the whole point of versioning it
+    class _Stub:
+        norm_arm = "a1"
+    with pytest.raises(ValueError, match="different input distributions"):
+        require_norm_arm(_Stub(), A1_ARM, where="stub", strict=True)
+
+
+def test_a_head_built_from_each_store_satisfies_its_own_driver():
+    """End-to-end on the constants: whatever a store infers must pass its driver's check."""
+    from src.modeling.mlp_head import NO_NORM_ARM, infer_norm_arm, require_norm_arm
+    from src.striping import A1_ARM
+
+    for store, expected in (("fang_embeddings_a1", A1_ARM), ("fang_embeddings", NO_NORM_ARM)):
+        class _Stub:
+            norm_arm = infer_norm_arm(store)
+        require_norm_arm(_Stub(), expected, where=store, strict=True)   # must not raise

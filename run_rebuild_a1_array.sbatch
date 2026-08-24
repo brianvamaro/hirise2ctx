@@ -52,11 +52,16 @@ SEL=()
 for (( j=I; j<${#TILES[@]}; j+=N )); do SEL+=( "${TILES[j]}" ); done
 
 BATCH="${BATCH:-96}"
-# The A1 driver takes the head DIRECTLY (no --model-parent), and R07 makes it REFUSE a head that
-# cannot be verified as the a1 arm -- so this path must be the armed head 7bbd8a8e1d377f6e
-# (norm_arm=a1), not the legacy models/deployable_a1/86c51a5dca220f63.
+# The A1 driver takes the head DIRECTLY (no --model-parent), and R07 makes it REFUSE -- strict=True
+# -- a head it cannot verify as this arm. The arm id is the VERSIONED string
+# `a1_native_perframe_tilesupport_v2` (src.striping.A1_ARM), NOT the bare "a1".
+#
+# 2026-08-24: training the head with `--norm-arm a1` produced exactly that refusal and killed all
+# 6 array tasks in 49 s. `train_deployable_head.py` does `args.norm_arm or infer_norm_arm(store)`,
+# and infer_norm_arm("fang_embeddings_a1") already returns the correct versioned id -- so the flag
+# should simply be OMITTED and the arm inferred from the store name. Head is now 66ec8b755b9c0b20.
 A1_PARENT="${A1_PARENT:-models/deployable_a1_g2}"
-A1_HEAD="${A1_HEAD:-$A1_PARENT/7bbd8a8e1d377f6e}"
+A1_HEAD="${A1_HEAD:-$A1_PARENT/66ec8b755b9c0b20}"
 OUT="${MAP_OUT:-$SCRATCH/hirise2ctx/map_a1_g2}"
 mkdir -p "$OUT"
 

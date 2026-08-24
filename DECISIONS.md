@@ -9536,3 +9536,48 @@ so it is already on Sherlock if the venv exists — only the two `*_g2` model di
 which is small enough for the OnDemand browser.
 
 Fast suite **815 passed**.
+
+### 2026-08-24 — Step 11 A1 array failed on the R07 guard. My error, caught before any GPU work.
+
+All **6 tasks of array 40561659 failed in 49 s**, exit 1, before a single tile was rendered:
+
+```
+ValueError: the head (models/deployable_a1_g2/7bbd8a8e1d377f6e) declares norm_arm='a1'
+but this path supplies 'a1_native_perframe_tilesupport_v2'. These are different input
+distributions; the output would look plausible and be wrong.
+```
+
+**Cause: I passed `--norm-arm a1` at step 8.** The arm identifier is *versioned* —
+`src.striping.A1_ARM == "a1_native_perframe_tilesupport_v2"` — and the bare string `a1` is not it.
+
+**It was entirely avoidable.** `train_deployable_head.py` does
+`norm_arm = args.norm_arm or infer_norm_arm(args.store_name)`, and
+`infer_norm_arm("fang_embeddings_a1")` **already returns the correct versioned id**. Omitting the flag
+would have been right. I overrode correct inference with a literal I invented when drafting the plan's
+step-8 row, then executed my own draft. The baseline arm survived only because `--norm-arm none`
+happens to equal `NO_NORM_ARM` exactly.
+
+**The guard behaved perfectly** — strict refusal, before any compute, with an error that names both
+values and the consequence ("the output would look plausible and be wrong"). This is the third R07/R14
+guard to catch something real this rebuild, and the second time a *loud* failure has saved a silent
+one: an unversioned match would have rendered 26 A1 tiles with a head trained on a different input
+distribution.
+
+**Fix:** A1 head retrained with the flag omitted → `norm_arm=a1_native_perframe_tilesupport_v2`,
+**recipe_hash `66ec8b755b9c0b20`**. `model_hash` is **`08ee3637dd62f6ff`, unchanged** — identical
+weights, only the arm label and the configuration identity moved, which also re-confirms training
+determinism for the third time. The wrong-armed `7bbd8a8e1d377f6e` is deleted so nobody can point at
+it. `calibration.npz` and `size_floor_basis.json` are unaffected.
+
+**Two tests added** (`tests/test_deployable_head.py`), because the broken invariant spanned two
+modules and was untested: `infer_norm_arm("fang_embeddings_a1")` must equal `striping.A1_ARM`; the
+bare `"a1"` must be *rejected* by `require_norm_arm(..., strict=True)`; and a head built from each
+store's inferred arm must satisfy its own driver.
+
+`run_rebuild_a1_array.sbatch` now points at `66ec8b755b9c0b20` and carries the reason inline.
+PLAN_Rebuild step 8 amended to say **omit `--norm-arm`**.
+
+**Unrelated but worth recording: Sherlock allocated RTX 2080 Ti (11 GB), not L40S.** The ≈23 GPU-h
+estimate and the `--time` limits (8 h baseline / 10 h A1) were sized against an L40S. A 2080 Ti is
+roughly 2–3× slower on fp16 ViT, so tasks may hit the wall. That is **not** a failure — R14 makes it
+resumable; re-`sbatch` the same command and finished tiles are skipped, partial windows kept.
