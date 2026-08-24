@@ -47,6 +47,12 @@ models/
 # Regional-map rasters + run checkpoints (475 MB; regenerable on Sherlock — the *.tif rule
 # already blocks the rasters, this also keeps the per-tile .json checkpoints out)
 reports/map_region/
+# ...and every OTHER map-output generation. 2026-08-24: `reports/map_region_g2/` was not covered
+# by the line above, so unpacking the rebuild download put 288 `.npz` window checkpoints (28.6 MB)
+# into a commit. The rasters were saved only by the global `*.tif` rule. Glob the generations.
+reports/map_region_g2/
+reports/map_region*/
+reports/map_a1*/
 # Per-tile LOIO prediction dump (18 MB; regenerable via scripts/striping_a1_loio.py;
 # the small striping_a1_loio_summary.csv IS tracked)
 reports/figures/striping_a1_loio_preds.csv
