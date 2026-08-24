@@ -187,10 +187,6 @@ docstring's advice stands: emit a second, gap-bearing reference on `E-8_N32` bef
 **Explicitly NOT in scope** (measured and rejected, DECISIONS 2026-08-18c): band reads (a further
 ~5% but it reorders the loop and R14's partial bookkeeping would need re-checking); gate-before-embed
 (worth ≈0 here — the circum-Chryse mosaic is fully populated, `n_usable == n_valid` in the profiled
-window); window-overlap dedup (**2.78 % measured on the R01 sweep — the 4.51 % first quoted was from pre-R01 sidecars, see §4a**; overlap is what R14's cross-run detector runs
-on); larger `--win-px` (**worse** — 8192 gives ~5.3% duplication vs 4096's 4.51%); `--batch` changes
-(flat 32→512); fp16 weights and `channels_last` (both 0.99×); SDPA (already in use).
-
 ## §4a — RESOLVED: a single unexplained run in 15; the guard stays at 1e-6
 
 **Found by leg 2 of gate 0c, and it is not caused by the hoist** (running the *unmodified* code twice
@@ -247,6 +243,87 @@ hoist, the refactor, code drift, run order.
   mechanism that makes the guard trip.
 
 **The hold on step 11 is LIFTED.** Residual risk accepted and bounded: a resumed tile can refuse assembly; recovery is one `--force` re-render.
+
+## §4b — Sherlock hand-off for steps 10–11 (prepared 2026-08-23)
+
+Steps 1–9 are done locally. Only step 11 is GPU-heavy, so only step 11 goes to Sherlock — the
+*reason* being laptop sleep on a long unattended job, demonstrated 2026-08-18, not throughput.
+
+### Upload: 347 MB, nine items, all digested
+
+| what | path | sha256[:16] |
+|---|---|---|
+| head, baseline (`norm_arm=none`) | `models/deployable_g2/a5ffca2dcc536855` | `29e833be74e5cc15` |
+| calibration, baseline (gates PASS) | `models/deployable_g2/calibration.npz` | `290a86614f190ced` |
+| size-floor basis | `models/deployable_g2/size_floor_basis.json` | `4e22a85aa1f02135` |
+| head, A1 (`norm_arm=a1`) | `models/deployable_a1_g2/7bbd8a8e1d377f6e` | `99f29c317ed2ef44` |
+| calibration, A1 (**forced**, ECE 0.0523) | `models/deployable_a1_g2/calibration.npz` | `6f2d7a77b5e70a0c` |
+| size-floor basis (A1 copy) | `models/deployable_a1_g2/size_floor_basis.json` | `4e22a85aa1f02135` |
+| Fang ViT checkpoint | `models/pretrained/mars-mae-dino-vit-base-v1.pth` | `bdaacc1b930559ba` |
+| sbatch, baseline arm | `run_rebuild_map_array.sbatch` | `a6206817f5eaf328` |
+| sbatch, A1 arm | `run_rebuild_a1_array.sbatch` | `f01c11d67e638628` |
+
+The two basis copies share a digest deliberately: the size-floor basis is a property of the **label
+pool**, not of CTX preprocessing, so both arms take the same file. One copy sits beside each head so
+each arm's provenance is self-contained.
+
+**Fetched ON Sherlock — do not upload:** the 26 Murray zips (~41 GB); the SeamMap shapefiles
+(`load_frames` pulls them out of the zips via `/vsizip/vsicurl/` range requests and caches them).
+**Stays local:** `context_patches` (18.3 GB — embeddings were computed here) and `packaged` (50 GB,
+tabular/GBM only).
+
+```bash
+# from the repo root, after `git push`
+rsync -avP models/deployable_g2 models/deployable_a1_g2 \
+      <sunet>@dtn.sherlock.stanford.edu:hirise2ctx/models/
+rsync -avP models/pretrained/mars-mae-dino-vit-base-v1.pth \
+      <sunet>@dtn.sherlock.stanford.edu:hirise2ctx/models/pretrained/
+# on Sherlock: git pull   (brings both sbatch files + the open-hoist + all step 1-9 code)
+```
+
+### ⚠ `git pull` on Sherlock is not optional
+
+The **open-hoist** (`bdc1d19`) is what makes step 11 cost ~23 GPU-h instead of ~31. Without it every
+tile pays 144 × 7.95 s of redundant `rasterio.open`. The same pull carries the `--no-verdict` flag,
+the embedding staleness check, and the A1 tile-key fix.
+
+### Two new sbatch scripts, and why the old one is not reused
+
+`run_region_array.sbatch` is left **untouched** as the record of how the shipped map was made. The
+rebuild uses `run_rebuild_map_array.sbatch` + `run_rebuild_a1_array.sbatch`, which differ in four
+ways that each matter:
+
+1. **26 tiles, not 19.** The old script covers `EXPANSION_TILES`. The rebuild invalidates all 26 —
+   rendering only the expansion would silently ship 7 pre-rebuild tiles.
+2. **`--model-parent models/deployable_g2`.** `resolve_model_dir` picks `hits[-1]` **by name**; with
+   the legacy `86c51a5dca220f63` also present the default is a coin flip.
+3. **`--size-floor-basis`.** Absent it, `size_floor_tags` warns and emits **no** `SIZE_FLOOR_*` tags,
+   so 52 rasters would ship unable to state which boulders they count.
+4. **`BATCH=96`, not 256.** 96 is the parity reference's batch, and 256 buys nothing measurable:
+   32/96/256/512 → 766/723/730/731 img/s. The larger batch was a guess that costs parity
+   comparability for no throughput.
+
+The A1 script passes `--head` directly (that driver has no `--model-parent`) and R07 makes it
+**refuse** a head it cannot verify as the `a1` arm — so the path must be the armed
+`7bbd8a8e1d377f6e`, never the legacy `models/deployable_a1/86c51a5dca220f63`.
+
+### Order, cost, and what closes
+
+Either arm may go first — **the DAG's "render baseline tiles first" is stale**, R07 removed A1's
+dependency on the baseline raster. Baseline ≈23 GPU-h; A1 ≈23 + ~5 GPU-h (its per-tile overhead is
++0.193 h, measured). ~4–6 h wall each on a 6-way array. **R06 closes with the A1 arm — A1 has never
+been generated at region scale.**
+
+### If assembly fails
+
+`N cells were written twice with DIFFERENT values`: `max|Δ| ≲ 1e-4` is the cross-run fp
+non-determinism (1 run in 15, cause unidentified, no ECC) hitting the 2.78 % of cells the sweep
+duplicates → re-run that tile with `--force`. `max|Δ| ~ 0.1–1` is the stale-partial case R14 exists
+for → **investigate, do not force.**
+
+window); window-overlap dedup (**2.78 % measured on the R01 sweep — the 4.51 % first quoted was from pre-R01 sidecars, see §4a**; overlap is what R14's cross-run detector runs
+on); larger `--win-px` (**worse** — 8192 gives ~5.3% duplication vs 4096's 4.51%); `--batch` changes
+(flat 32→512); fp16 weights and `channels_last` (both 0.99×); SDPA (already in use).
 
 ## §5 — What this rebuild deliberately does NOT do
 

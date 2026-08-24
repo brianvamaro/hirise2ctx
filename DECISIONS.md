@@ -9451,3 +9451,42 @@ governs how the resulting map may be described. **Do not quote the pooled 1.02 a
 per-place level accuracy.**
 
 Emission of the instrument is left as a step-12 item; the numbers above are the record for now.
+
+### 2026-08-23d — Sherlock prep for steps 10–11 complete (nothing submitted)
+
+Everything needed for step 11 is staged, digested and documented in **PLAN_Rebuild §4b**. No job has
+been submitted and nothing has been uploaded — this is preparation only.
+
+**Upload is 347 MB, nine items, each sha256'd** (table in §4b). Heads + calibrations + the size-floor
+basis + the 341 MB Fang checkpoint + the two new sbatch files. The two basis copies share digest
+`4e22a85aa1f02135` on purpose: the basis is a property of the **label pool**, not of CTX
+preprocessing, so both arms take the same file, one beside each head so each arm is self-contained.
+
+Not uploaded, fetched on Sherlock: the 26 Murray zips (~41 GB) and the SeamMap shapefiles
+(`load_frames` pulls them from the zips via `/vsizip/vsicurl/`). Not moved at all:
+`context_patches` (18.3 GB) and `packaged` (50 GB).
+
+**Two NEW sbatch scripts; `run_region_array.sbatch` is deliberately left untouched** as the record of
+how the shipped map was made. The rebuild scripts differ in four ways, each load-bearing:
+
+1. **26 tiles, not 19** — the old script covers `EXPANSION_TILES`; rendering only those would
+   silently ship 7 pre-rebuild tiles inside a "rebuilt" map.
+2. **`--model-parent models/deployable_g2`** — `resolve_model_dir` picks `hits[-1]` **by name**, so
+   with the legacy `86c51a5dca220f63` present the default parent is a coin flip.
+3. **`--size-floor-basis`** — absent it, `size_floor_tags` warns and emits **no** `SIZE_FLOOR_*`
+   tags; 52 rasters would ship unable to state which boulders they count.
+4. **`BATCH=96`, not 256** — 96 is the parity reference's batch, and the 256 default was a guess:
+   measured throughput is 32/96/256/512 → 766/723/730/731 img/s, i.e. flat. The larger batch cost
+   parity comparability for nothing.
+
+The A1 script passes `--head` directly (that driver has no `--model-parent`), and R07 makes it
+**refuse** a head it cannot verify as the `a1` arm — so it must be `7bbd8a8e1d377f6e`, never the
+legacy `models/deployable_a1/86c51a5dca220f63`.
+
+⚠ **`git pull` on Sherlock is not optional.** The open-hoist (`bdc1d19`) is what makes step 11
+≈23 GPU-h instead of ≈31; without it every tile pays 144 × 7.95 s of redundant `rasterio.open`. The
+same pull carries `--no-verdict`, the embedding staleness check and the A1 tile-key fix.
+
+Both sbatch files carry the assembly-failure triage inline (`max|Δ| ≲ 1e-4` → re-run that tile with
+`--force`; `~0.1–1` → the stale-partial case R14 exists for, investigate), so whoever is at the
+terminal at 2 a.m. does not have to find DECISIONS to interpret a crash.
