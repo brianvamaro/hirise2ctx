@@ -26,7 +26,14 @@ from shapely.geometry import LineString, MultiLineString
 REPO = Path(__file__).resolve().parents[1]
 MAP_DIR = REPO / "reports" / "map_region"
 CTX_ZIP_DIR = REPO / "cache_v2" / "ctx_tiles"
-SEAM_DIR = REPO / "cache" / "ctx_tiles"
+# SeamMaps live beside the tile zips they come out of. **This used to be `cache/ctx_tiles`
+# while `CTX_ZIP_DIR` was `cache_v2/ctx_tiles`** — two different roots that happen to be the
+# SAME directory on the dev laptop, where `cache_v2/ctx_tiles` is an NTFS junction into
+# `cache/`. On Linux there is no junction: a fresh Sherlock clone has no `cache/` at all
+# (it is gitignored), so `load_frames` fetched the SeamMap over vsicurl and then died writing
+# its GeoPackage cache into a directory that did not exist. Caught in pre-flight before the
+# step-11 A1 array was submitted (DECISIONS 2026-08-23e). One root, and it is created on use.
+SEAM_DIR = REPO / "cache_v2" / "ctx_tiles"
 PX_M = 160.0  # tile_px=32 * 5 m/px = 160 m per coarse (abundance) pixel
 
 
@@ -222,6 +229,8 @@ def load_frames(tile: str, dissolve: bool = True):
             g = g.to_crs(ab_crs)
         if dissolve:
             g = g.dissolve(by="PRODUCT_ID", as_index=False)
+        # the cache root may not exist yet on a fresh checkout -- see the SEAM_DIR note
+        cache_gpkg.parent.mkdir(parents=True, exist_ok=True)
         g.to_file(cache_gpkg, driver="GPKG")
     return g
 

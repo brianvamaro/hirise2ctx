@@ -9490,3 +9490,49 @@ same pull carries `--no-verdict`, the embedding staleness check and the A1 tile-
 Both sbatch files carry the assembly-failure triage inline (`max|Δ| ≲ 1e-4` → re-run that tile with
 `--force`; `~0.1–1` → the stale-partial case R14 exists for, investigate), so whoever is at the
 terminal at 2 a.m. does not have to find DECISIONS to interpret a crash.
+
+### 2026-08-23e — Pre-flight review caught a Sherlock-only crash in the A1 arm
+
+Reviewing the step-11 scripts before submission rather than after. One real defect, one non-issue
+confirmed, and the rest validated.
+
+**⚠ THE DEFECT: `src/striping.py` used two roots for one concept.**
+`CTX_ZIP_DIR = cache_v2/ctx_tiles` but `SEAM_DIR = cache/ctx_tiles`. On this laptop those are the
+**same directory** — `cache_v2/ctx_tiles` is an NTFS junction into `cache/` — so the split has been
+invisible for months. On Sherlock there is no junction: SHERLOCK_RUN.md §2 does
+`ln -sfn $SCRATCH/hirise2ctx/cache $HOME/hirise2ctx/cache_v2`, so **`cache_v2` exists and
+`$HOME/hirise2ctx/cache` does not.**
+
+Consequence: `load_frames` would find no cached GeoPackage, no local SeamMap, fetch the shapefile
+over `/vsizip/vsicurl/` (fine), and then **die on `g.to_file(cache_gpkg)` writing into a directory
+that does not exist** — with no `mkdir` anywhere in the path. That is the entire A1 arm, failing on
+its first tile, after the array had been queued and GPUs allocated.
+
+**Fix:** `SEAM_DIR = CTX_ZIP_DIR` (one root, resolves through the Sherlock symlink) plus
+`cache_gpkg.parent.mkdir(parents=True, exist_ok=True)` on write. On Windows this is a no-op — the
+junction already made the two paths identical — so no local artifact moves.
+
+**3 tests** (`tests/test_seammap_cache_root.py`): the two roots must be equal on every platform; a
+`load_frames` call against a non-existent cache root must create it and write; the second call must
+read back what the first wrote. The first test is the one that matters — it forbids the two-root
+split from reappearing, which is the shape of the bug, not its symptom.
+
+*Left alone:* `scripts/f_leg_b_frame_list.py:37` has its own `SEAM_DIR = cache/ctx_tiles` copy. It is
+an F-programme script and F was hard-aborted 2026-07-30, so it is not on any live path — noted, not
+touched.
+
+**Confirmed NOT an issue: A1 has no ordering dependency on the baseline raster.** `_tile_crs` reads
+the CRS from the **tile zip** and only falls back to `reports/map_region/{tile}_abundance.tif` if the
+zip is absent. On Sherlock the zips are present, so either arm may run first — the plan's reading of
+the stale DAG text is correct, now verified in code rather than inferred from a comment.
+
+**Validated mechanically, both scripts:** every flag used exists in the driver's argparse (7 each);
+the tile list equals `BLOCK_TILES` exactly (26, order-insensitive); and the `--array=0-5` stride
+covers each tile exactly once. Environment lines (`ml python/3.12.1`, the group venv path) match
+SHERLOCK_RUN.md verbatim.
+
+**Upload shrinks to ~5.3 MB.** `setup_sherlock_env.sh` downloads the 341 MB Fang checkpoint itself,
+so it is already on Sherlock if the venv exists — only the two `*_g2` model directories need to move,
+which is small enough for the OnDemand browser.
+
+Fast suite **815 passed**.
