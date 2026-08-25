@@ -75,7 +75,8 @@ from rasterio.features import rasterize
 
 from scripts.map_region import (DEFAULT_SIZE_FLOOR_BASIS, as_int32_cells, check_overlap,
                                 compute_device_name, gate_cols, gate_summary,
-                                load_tile_sidecar, project_tile_cost, require_device,
+                                load_tile_sidecar, merge_manifest, project_tile_cost,
+                                require_device,
                                 partial_grid_id, partial_name, read_partial,
                                 reject_foreign_partials, size_floor_tags, sweep_manifest,
                                 run_tile_isolated, sweep_mismatch, tile_is_reusable,
@@ -582,20 +583,28 @@ def main() -> int:
           f"A1 ref (median, IQR) = ({A1_REF_MEDIAN}, {A1_REF_IQR}), "
           f"calibration={'on' if calibrator else 'raw only'}", flush=True)
 
+    t0 = time.monotonic()
     results = []
     for tile in tiles:
         # same isolation as the baseline arm: one bad tile must not forfeit the stride
         results.append(run_tile_isolated(
             tile, lambda t=tile: process_tile(t, embedder, head, calibrator, args)))
-    (Path(args.out_dir) / "a1_manifest.json").write_text(
-        json.dumps({"tiles": results, "head": str(args.head),
-                    "head_digest": artifact_digest(args.head),
+    # 2026-08-25: this was a bare `write_text` of THIS run's results — no merge, not even
+    # atomic — so with one tile per array task the manifest recorded whichever single tile
+    # finished last. Measured: 1 of 26. `merge_manifest` derives `results` from the sidecars on
+    # disk, so the index is self-healing and this one write repairs all 26.
+    merge_manifest(
+        Path(args.out_dir) / "a1_manifest.json",
+        out_dir=Path(args.out_dir), grid_id=COARSE_GRID_ID, results=results,
+        run_record={"variant": "A1", "norm_arm": A1_ARM,
+                    "head": str(args.head), "head_digest": artifact_digest(args.head),
                     "calibration": str(args.calibration) if args.calibration else None,
                     "calibration_digest": (
                         artifact_digest(args.calibration) if args.calibration else None),
-                    "win_px": args.win_px, "grid_id": COARSE_GRID_ID,
-                    "batch": args.batch, "a1_ref_median": A1_REF_MEDIAN,
-                    "a1_ref_iqr": A1_REF_IQR}, indent=2), encoding="utf-8")
+                    "win_px": args.win_px, "batch": args.batch,
+                    "a1_ref_median": A1_REF_MEDIAN, "a1_ref_iqr": A1_REF_IQR,
+                    "device": compute_device_name(embedder),
+                    "tiles": tiles, "elapsed_s": round(time.monotonic() - t0, 1)})
     done = sum(1 for r in results if r["status"] == "done")
     print(f"\nA1 map: {done}/{len(tiles)} tiles complete -> {args.out_dir}")
     missing = [r["tile"] for r in results if r["status"] == "no_ctx_zip"]

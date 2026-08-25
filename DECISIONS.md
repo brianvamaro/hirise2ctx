@@ -10145,3 +10145,86 @@ them, because there are now **three** and conflating them is a live trap:
 | 2026-08-24f onward | adds `n_significant`, `fraction_raw`, `significant_abs` | the **gate** quantity |
 
 855 fast tests.
+
+### 2026-08-25b — the manifest INDEX was damaged three ways; product untouched
+
+Step 11 shipped **26/26 tiles on both arms** with the index wrong: `region_manifest.json` listed
+**21 of 26**, `a1_manifest.json` **1 of 26**. **No raster and no sidecar was affected** — all 52
+sidecars and 156 rasters verified present — but `runs[]` carries provenance recorded nowhere else,
+notably `win_px`, which R14 had already flagged as manifest-only.
+
+The 21 decomposes exactly, which is how the account was confirmed rather than assumed:
+
+| missing | cause |
+|---|---|
+| `E-12_N36`, `E-8_N44` | job 40561654 task 1 died on its 3rd tile, never reached its manifest write |
+| `E-12_N44`, `E-4_N36` | same, task 3 |
+| `E0_N36` | the `.tmp` collision below |
+
+17 previously recorded + the 4 tasks that succeeded on the 24th = 21. And
+`rebuild_map_manifest.py --dry-run` on the local partial download independently recovered
+**exactly** `E-12_N36, E-12_N44, E-4_N36, E-8_N44` — the four predicted from the stride arithmetic.
+
+#### Cause 1: `write_json_atomic` staged to a FIXED `<path>.tmp`
+
+```
+[E0_N36] DONE in 4s
+FileNotFoundError: '.../region_manifest.json.tmp' -> '.../region_manifest.json'
+```
+
+Atomic against a *reader*, unsafe against a concurrent *writer*: both processes write the same
+staging file, the first `replace()` renames it away, the second dies renaming a file that is gone.
+Tasks 0 and 1 were both assembly-only and both finished at **37 s**. Task 1 won.
+
+Three things worth keeping about this:
+
+- **The crash came AFTER the tile was committed** (`DONE in 4s` precedes the traceback). R14's
+  sidecar-last ordering held: the product was complete, only the index entry and the
+  `run_tile_isolated` tally were lost. That is why the symptom presented as *a missing log line*.
+- ⚠ **My own 2026-08-24d change exposed it.** One-tile-per-task was right for blast radius, but it
+  took the number of concurrent writers to one shared file from 6 staggered to 26 near-simultaneous.
+  A fix that improves one failure mode can uncover another; the exposure change was not considered.
+- The function was introduced *by R14, for write safety*. It was safe against the hazard it was
+  written for and not against the one that arrived later.
+
+Fixed: the staging name is now `<path>.<pid>.tmp`, so every writer owns its own file, `os.replace`
+is still atomic for a same-directory rename on POSIX and Windows, and the outcome is
+last-writer-wins instead of a crash.
+
+#### Cause 2: the merge was an unsynchronised read-modify-write
+
+Even without the crash, "read the previous manifest, merge my rows, write it back" loses an
+overtaken writer's entry, and never records a task that dies before reaching it.
+
+**Brian's call: derive `results` from the sidecars on disk at every write.** The sidecar is already
+the authority for how a tile was made — R14 writes it **last** as the completion marker and it
+carries the whole `run` block, `win_px` included — so a sidecar on disk *is* a completed tile. The
+index becomes **self-healing**: any later write repairs every earlier loss, and the worst a future
+collision can do is drop one `runs[]` record. `tiles` is now an optional *filter*, not the source of
+truth, so a run on a non-`BLOCK_TILES` footprint still yields a complete index.
+
+The trade, named rather than buried: **the manifest now tracks on-disk reality instead of
+accumulating history**, so a tile whose rasters were deleted drops out of the index rather than
+lingering as a claim about files that are gone. For an index of what exists that is the better
+failure direction. A `failed` row is still folded in from `results`, because its whole point is
+that no sidecar was written — and a sidecar beats a stale `failed` row.
+
+#### Cause 3: the A1 driver never merged at all
+
+`(out_dir / "a1_manifest.json").write_text(json.dumps({"tiles": results, ...}))` — no read, no
+merge, **not even atomic**. With one tile per task it recorded whichever tile finished last: 1 of 26.
+Now on `merge_manifest`, and its run record gains the `device` and an `elapsed_s` it never had.
+
+#### Repair, without a driver
+
+`scripts/rebuild_map_manifest.py` reconstructs both manifests from the sidecars — **no GPU, no
+re-render** — preserves existing `runs[]`, refuses a directory whose sidecars span two `grid_id`s
+(R01), and with `--note` appends a `rebuilt_from_sidecars` marker so the repair is visible in the
+provenance instead of silent. What cannot be recovered is the `runs[]` history of the tasks that
+died before writing; that is gone, and the marker says so rather than leaving a hole.
+
+Also new: `scripts/verify_map_download.py` (2026-08-25) finally *consumes* R14's `rasters[]`
+commit record — re-hashing every raster against its own sidecar — which nothing had ever done, so
+a transfer off Sherlock had been trusted on file count alone.
+
+868 fast + 21 slow tests.

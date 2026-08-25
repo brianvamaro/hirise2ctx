@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import traceback
@@ -304,10 +305,30 @@ def existing_product_off_lattice(prob_tif: Path) -> str | None:
 
 
 def write_json_atomic(path: Path, obj) -> Path:
-    """Write JSON via a `.tmp` sibling + rename, so a reader never sees half a record."""
+    """Write JSON via a **per-process** `.tmp` sibling + rename, so a reader never sees half a
+    record *and* two concurrent writers cannot destroy each other's staging file.
+
+    ⚠ **The temp name must be unique per writer, and it was not (fixed 2026-08-25).** This
+    staged to a fixed `<path>.tmp`, which is atomic against a *reader* but unsafe against a
+    concurrent *writer*: both processes write the same `<path>.tmp`, the first `replace()`
+    renames it away, and the second dies on
+
+        FileNotFoundError: '.../region_manifest.json.tmp' -> '.../region_manifest.json'
+
+    Measured: step 11's baseline array, tasks 0 and 1 both assembly-only and both finishing at
+    37 s, wrote `region_manifest.json` simultaneously. Task 1 won; **task 0 crashed after its
+    tile was fully committed**, losing only its index entry — and its `run_tile_isolated` tally,
+    which is why the failure looked like a missing log line rather than a crash. Going from 6
+    array tasks to one-tile-per-task is what exposed it; 6 staggered tasks rarely collide, 26
+    short ones do.
+
+    With a unique name every writer owns its staging file, so the write always lands and the
+    outcome is last-writer-wins rather than a crash. `os.replace` is atomic on both POSIX and
+    Windows for a same-directory rename, so a reader still never observes a partial file.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
         tmp.write_text(json.dumps(obj, indent=2), encoding="utf-8")
         tmp.replace(path)
@@ -315,6 +336,90 @@ def write_json_atomic(path: Path, obj) -> Path:
         tmp.unlink(missing_ok=True)
         raise
     return path
+
+
+MANIFEST_NAMES = ("region_manifest", "a1_manifest")
+
+
+def tile_sidecars(out_dir: Path) -> dict[str, Path]:
+    """Every per-tile sidecar in a map-output directory, keyed by tile. Excludes manifests."""
+    return {p.stem: p for p in sorted(Path(out_dir).glob("*.json"))
+            if p.stem not in MANIFEST_NAMES}
+
+
+def tile_result_rows(out_dir: Path, tiles: list[str] | None = None) -> list[dict]:
+    """Reconstruct the manifest's `results` rows from the tile sidecars ON DISK.
+
+    **Why derive rather than carry forward (2026-08-25).** The manifest used to be built by
+    reading the previous manifest and merging this run's rows into it. That is a
+    read-modify-write with no synchronisation, so a task whose write is overtaken silently
+    disappears from the index — and a task that never reaches the write (a wall-clock kill, a
+    dead GPU, the `.tmp` collision above) never appears at all. Measured damage on the shipped
+    baseline arm: **21 of 26 tiles indexed**, the five gaps being two tiles each from the two
+    step-11 tasks that died mid-stride, plus `E0_N36` from the `.tmp` collision. The A1 arm was
+    worse — its driver did not merge at all, so **1 of 26**.
+
+    Deriving from the sidecars makes the index **self-healing**: the sidecar is already the
+    authority for how a tile was made (it carries the full `run` block, `win_px` included), it
+    is written last as R14's completion marker, and so a sidecar on disk *is* a completed tile.
+    Any later write therefore repairs every earlier loss, and the worst a future collision can
+    do is drop one entry from `runs[]`.
+
+    The trade named plainly: the manifest now tracks **on-disk reality** instead of accumulating
+    history, so a tile whose rasters were deleted drops out of the index rather than lingering
+    as a claim about files that are gone. For an index of what exists, that is the better
+    failure direction.
+    """
+    found = tile_sidecars(out_dir)
+    # `tiles` is an optional filter, not the source of truth: passing None indexes whatever is
+    # on disk, so a driver run on a non-BLOCK_TILES footprint still produces a complete index.
+    want = sorted(found) if tiles is None else sorted(set(found) & set(tiles))
+    rows = []
+    for t in want:
+        p = found[t]
+        try:
+            rec = json.loads(p.read_text(encoding="utf-8"))
+        except ValueError:                      # a sidecar being rewritten right now
+            continue
+        rows.append({"tile": t, "status": "done",
+                     "windows": (rec.get("run") or {}).get("n_windows"),
+                     "elapsed_s": rec.get("elapsed_s"),
+                     "n_unique_cells": rec.get("n_unique_cells"),
+                     "raster_shape": rec.get("raster_shape")})
+    return rows
+
+
+def merge_manifest(path: Path, *, out_dir: Path, grid_id: str, run_record: dict | None,
+                   all_tiles: list[str] | None = None,
+                   results: list[dict] | None = None) -> dict:
+    """Compose a map manifest: `results` derived from the sidecars, `runs` appended.
+
+    `results` may be passed to fold in rows the sidecars cannot express — a `failed` row, whose
+    whole point is that no sidecar was written. Those are merged OVER the derived rows, so a
+    tile that failed this run and has no sidecar still shows up as failed.
+    """
+    prev = {}
+    if Path(path).exists():
+        try:
+            prev = json.loads(Path(path).read_text(encoding="utf-8"))
+        except ValueError:
+            prev = {}
+    by_tile = {r["tile"]: r for r in tile_result_rows(out_dir, all_tiles)}
+    for r in (results or []):
+        if isinstance(r, dict) and r.get("tile") and r.get("status") != "done":
+            by_tile.setdefault(r["tile"], r)     # keep the sidecar's row if there IS one
+    runs = [r for r in (prev.get("runs") or []) if isinstance(r, dict)]
+    if not runs and prev.get("model_dir"):       # fold a pre-R14 manifest in as run #0
+        runs.append({k: prev.get(k) for k in
+                     ("model_dir", "head_digest", "calibration", "calibration_digest",
+                      "ctx_tiles", "recipe_hash", "win_px", "calibrated", "raw")})
+    if run_record is not None:
+        runs.append(run_record)
+    doc = {"grid_id": grid_id,
+           "tiles": sorted(by_tile), "runs": runs,
+           "results": [by_tile[t] for t in sorted(by_tile)]}
+    write_json_atomic(path, doc)
+    return doc
 
 
 def partial_name(row_off: int, col_off: int) -> str:
@@ -1191,42 +1296,27 @@ def main() -> int:
     # block in each sidecar is the authority for how a tile was made; this file is an index of
     # runs, so the per-run scalars are appended as a list rather than kept as one lying scalar.
     manifest = Path(args.out_dir) / "region_manifest.json"
-    prev = {}
-    if manifest.exists():
-        try:
-            prev = json.loads(manifest.read_text(encoding="utf-8"))
-        except ValueError:
-            prev = {}
-    by_tile = {r["tile"]: r for r in (prev.get("results") or []) if isinstance(r, dict)}
-    by_tile.update({r["tile"]: r for r in results})
-    runs = list(prev.get("runs") or [])
-    if not runs and prev.get("model_dir"):          # fold a pre-R14 manifest in as run #0
-        runs.append({k: prev.get(k) for k in
-                     ("model_dir", "head_digest", "calibration", "calibration_digest",
-                      "ctx_tiles", "recipe_hash", "win_px", "calibrated", "raw")})
-    runs.append({
-        "model_dir": str(model_dir), "head_digest": artifact_digest(model_dir),
-        "calibration": str(args.calibration) if calibrator is not None else None,
-        "calibration_digest": (
-            artifact_digest(args.calibration) if calibrator is not None else None),
-        "ctx_tiles": str(args.ctx_tiles), "recipe_hash": card.get("recipe_hash"),
-        "win_px": args.win_px, "calibrated": calibrator is not None, "raw": args.raw,
-        # R13: the thresholds are per-run, so they belong on the run record as well as on
-        # each tile — a manifest that says which tiles a run touched but not how it masked
-        # them cannot answer "were these two tiles gated the same way?".
-        "max_zero_fraction": float(args.max_zero_fraction),
-        "max_context_zero_fraction": float(args.max_context_zero_fraction),
-        # R84: which size-floor basis this run stamped, by content, so two runs that tagged
-        # rasters from different label pools are distinguishable after the fact.
-        "size_floor_basis": str(args.size_floor_basis),
-        "size_floor_basis_digest": artifact_digest(args.size_floor_basis),
-        "tiles": tiles, "elapsed_s": round(time.monotonic() - t0, 1),
-    })
-    write_json_atomic(manifest, {
-        "grid_id": COARSE_GRID_ID,
-        "tiles": sorted(by_tile), "runs": runs,
-        "results": [by_tile[t] for t in sorted(by_tile)],
-    })
+    merge_manifest(
+        manifest, out_dir=Path(args.out_dir), grid_id=COARSE_GRID_ID, results=results,
+        run_record={
+            "model_dir": str(model_dir), "head_digest": artifact_digest(model_dir),
+            "calibration": str(args.calibration) if calibrator is not None else None,
+            "calibration_digest": (
+                artifact_digest(args.calibration) if calibrator is not None else None),
+            "ctx_tiles": str(args.ctx_tiles), "recipe_hash": card.get("recipe_hash"),
+            "win_px": args.win_px, "calibrated": calibrator is not None, "raw": args.raw,
+            # R13: the thresholds are per-run, so they belong on the run record as well as on
+            # each tile — a manifest that says which tiles a run touched but not how it masked
+            # them cannot answer "were these two tiles gated the same way?".
+            "max_zero_fraction": float(args.max_zero_fraction),
+            "max_context_zero_fraction": float(args.max_context_zero_fraction),
+            # R84: which size-floor basis this run stamped, by content, so two runs that tagged
+            # rasters from different label pools are distinguishable after the fact.
+            "size_floor_basis": str(args.size_floor_basis),
+            "size_floor_basis_digest": artifact_digest(args.size_floor_basis),
+            "device": compute_device_name(embedder),
+            "tiles": tiles, "elapsed_s": round(time.monotonic() - t0, 1),
+        })
     n_done = sum(r["status"] == "done" for r in results)
     failed = [r["tile"] for r in results if r["status"] == "failed"]
     print(f"=== {n_done}/{len(tiles)} tiles complete  "
