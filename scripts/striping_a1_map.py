@@ -466,7 +466,7 @@ def write_tile(tile, partials, grid_geom, crs_wkt, calibrator, args, a1_prov=Non
         "murray_tile": tile, "tile_px": TILE_PX, "raster_shape": list(shape),
         "rasters": rasters,
         "overlap": overlap,                 # R14: full per-layer record; see `check_overlap`
-        "overlap_disagreements": overlap[overlap["gate_layer"]]["n_disagree"],
+        "overlap_disagreements": overlap[overlap["gate_layer"]]["n_significant"],
         # R14: the commit record. `rasters` lets a resume verify content without re-deriving it;
         # `run` lets it verify the content was made the way this run would -- including the A1
         # arm, reference and SeamMap digest, which no content check can see.

@@ -9989,3 +9989,109 @@ generation", and `GPU_SKU` selects against that precisely.
 ⚠ **`GPU_SKU` was there all along.** The first probe used `sinfo -o "%...N %90f"`, and a narrow `%f`
 width **truncates the feature list before `GPU_SKU`** — it showed only `GPU_BRD` and `GPU_GEN` and
 made the SKU look unavailable on this cluster. Use `%130f`.
+
+### 2026-08-24f — step 11 COMPLETE (baseline 26/26, A1 25/26 + 1 dead GPU); overlap guard refined
+
+**Baseline arm: 26/26.** `E16_N44` (one of the three tiles the old fail-fast stride never
+attempted) rendered in **2,723 s = 0.756 h**, landing inside the 2,469–2,725 s band measured from
+the earlier manifest. `--time=03:00` gave 4× margin.
+
+⚠ **Empirical confirmation of the 2026-08-24e retraction.** `seff` on that task: *CPU Utilized
+00:44:58, CPU Efficiency 12.39 %*, on a job that **COMPLETED cleanly**. One core pegged for the
+whole run at ~12 % of 8 cores is simply what a GPU-bound task looks like here. The 2026-08-24b
+reading of the identical signature as proof of a CPU-bound overrun is now refuted by a positive
+control, not just by argument.
+
+**A1 arm: 18 of 19 tasks COMPLETE in 50–77 min each** against a 6 h wall (7 tiles were already
+banked → **25/26**). The one failure is **hardware**: `sh03-12n13`'s GPU fell off the bus.
+
+```
+[E4_N32] win 1/144 ... 34.8s
+error: NVML: Failed to get usage(15): GPU is lost
+```
+
+It printed window 1, never reached window 11, and sat `RUNNING` for 4.4 h with no GPU. Another
+instance of the standing rule that **state means nothing in this pipeline — only the tally does**;
+here even Slurm's `RUNNING` was the lie. Cancelled, partials discarded (a mid-failure GPU is not a
+trustworthy source for the handful of windows it may have written, and it is 4 min to redo),
+resubmitted with `--exclude=sh03-12n13`, node reported to SRCC.
+
+#### The cost model, confirmed component-wise
+
+Median over the 18 completed A1 tiles, from the new `cost_s` breakdown:
+
+| component | s/tile | s/window | share |
+|---|---|---|---|
+| `predict` (GPU inference) | 2,540 | **17.6** | **85 %** |
+| `a1` (`frame_labels_on` + `a1_normalize_native`) | 320 | 2.2 | 11 % |
+| `stats` (once-per-tile native streaming pass) | 170 | — | 6 % |
+| `read` | 44 | 0.3 | 1.5 % |
+| `write` | 3 | — | ~0 |
+
+Three conclusions, each now measured rather than inferred:
+
+- **`predict` at 17.6 s/window equals the baseline arm's 17.9**, and was ~202 s/window on the
+  TITAN Xp. The 11.5× lives entirely in the one term that should carry it, so 2026-08-24e's GPU
+  diagnosis is confirmed *component-wise*, not merely by total wall time.
+- **`stats` at 131–234 s brackets the 154.9 s measured on a local SSD**, and `read` is 0.3 s/window.
+  **The `$SCRATCH`/Lustre I/O-contention hypothesis of 2026-08-24d §5 is REFUTED** — it was the
+  leading suspect and it was wrong.
+- **`a1` at 2.2 s/window is the bbox prefilter delivering**, against 3.76 s/window unfiltered:
+  ~270 s/tile, **≈2 GPU-h over the 26**, matching the predicted 0.076 h/tile.
+
+Same-tile check, `E16_N44`: baseline 2,723 s vs A1 2,994 s (2,816 + 178 stats) = **+12.6 %**,
+against the 0.117 h/tile predicted post-prefilter. **A1 is the baseline plus ~13 %, not plus 10×.**
+
+#### The overlap guard's first real test — and a margin it did not have
+
+23 tiles reported. The guard **refused nothing** and reproduced the original diagnosis exactly:
+
+| tile | 2026-08-24b | 2026-08-24f (different nodes, weeks later) |
+|---|---|---|
+| `E0_N36` | 242 on `prob_raw`; **1** on `prob` @ 6.0e-3 | 242; **1** @ 6.01e-3 |
+| `E0_N44` | 242 on `prob_raw`; **3** on `prob` @ 6.4e-3 | 242; **3** @ 6.42e-3 |
+
+⚠ **So this "noise" is DETERMINISTIC.** fp16 reduction order is fixed for a given kernel and batch
+shape, so identical geometry reproduces the identical wobble — same counts, same magnitudes, other
+hardware, later date. Useful: the guard is auditable rather than a coin flip. The 2026-08-24b
+phrase "whether the guard fires is a lottery" was right about *which knot a cell lands on* and
+wrong if read as run-to-run randomness.
+
+**An internal consistency check also came out right.** 2026-08-24d put `n_dup` at 79,059 from
+`n_predicted − n_unique`; the instrument reports **77,715**. Both are correct and the difference is
+the fix: the sidecar arithmetic counts duplicate *writes*, the new code counts duplicated *cells*,
+and ~1,344 cells are written **three** times — 76,371 + 2×1,344 = 79,059 extra writes over 77,715
+cells.
+
+⚠ **But the gate had far less headroom than 2026-08-24d claimed.** `E4_N36` came in at
+**0.7825 %** — 78 % of the 1 % gate. The "two orders of magnitude apart, so 1 % sits in open
+space" framing rested on a **single** noise measurement (0.31 %); with 23 the noise side reaches
+0.78 % and the real margin was **1.28×, not ~30×**.
+
+Its `max |Δ|` is **2.09e-07** — float32 epsilon, ~1000× below ordinary fp16 wobble. Bit-level
+float noise was inflating the very count that decides the gate.
+
+**Brian's call: add a per-cell significance floor.** The magnitude test was never wrong; it was
+applied at the wrong *level*. Now two levels, deliberately separate:
+
+```
+per-cell    |Δ| > OVERLAP_SIGNIFICANT_ABS (1e-6)   -> this cell really disagrees
+per-tile    that fraction > 1 %                     -> these are two runs
+```
+
+`E4_N36` is **provably** driven to 0.0000 % (its maximum is below the floor). For the other tiles
+only the maximum is known, but the floor can only *reduce* a count — so every fraction is ≤ its
+logged value and the worst case across all 26 is ≤ **0.3114 %**, a margin of **≥3.2×**. 1e-6 sits
+~1000× below fp16 wobble and ~3× above float32 epsilon, so it separates "the arithmetic ran in a
+different order" from "a different model computed this". `n_disagree` (any magnitude) and
+`fraction_raw` are still recorded, so nothing becomes unauditable.
+
+⚠ **The 26 rendered tiles' sidecars predate this**: their `overlap` blocks carry `n_dup`,
+`n_disagree`, `fraction`, `max_abs` but **no `n_significant` / `fraction_raw` / `significant_abs`**,
+and their `fraction` is the *raw* fraction, not the gate quantity. **No re-render is warranted** —
+the gate outcome is identical (nothing was refused, nothing would be) and the rasters are
+untouched — but a step-12 QA table must not compare the two field sets as if they meant the same
+thing. Every logged number is preserved in the table above and in
+`logs/h2c-rebuild-{a1,base}-*.out`.
+
+843 fast tests (was 839).

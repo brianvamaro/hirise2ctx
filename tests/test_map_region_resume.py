@@ -512,3 +512,64 @@ def test_require_device_refuses_an_unbudgeted_gpu():
         assert mr.require_device(Stub(), []) == "cpu"
     finally:
         mr.compute_device_name = monkey
+
+
+# ------------------------------- the 1e-6 per-cell significance floor (2026-08-24f)
+
+def test_float32_epsilon_wobble_is_not_counted_as_disagreement():
+    """The measured `E4_N36` case: 482 of 61,596 duplicated cells differ, by 2.09e-07.
+
+    Counting every `delta > 0` put that tile at 0.7825 % — 78 % of the gate — on
+    disagreements a thousand times below ordinary fp16 wobble. It must read 0 significant.
+    """
+    n = 61_596
+    a = np.full(n, 0.5)
+    b = a.copy()
+    b[:482] += 2.09e-07
+    c = _check(a, b)
+    assert c.n_disagree == 482, "the raw count must still be recorded"
+    assert c.fraction_raw == pytest.approx(482 / n)
+    assert c.n_significant == 0 and c.fraction == 0.0
+    assert not c.refuse
+
+
+def test_ordinary_fp16_wobble_IS_counted():
+    """The floor must not swallow the real thing: 5-8e-4 is ~1000x above it."""
+    n = 77_715
+    a = np.full(n, 0.5)
+    b = a.copy()
+    b[:242] += 5.3e-4
+    c = _check(a, b)
+    assert c.n_significant == 242
+    assert c.fraction == pytest.approx(242 / n)          # 0.3114 %, the worst real case
+    assert c.fraction < 0.01 and not c.refuse
+
+
+def test_the_floor_does_not_rescue_a_real_mixture():
+    n = 77_715
+    k = int(0.631 * n)
+    a = np.full(n, 0.5)
+    b = a.copy()
+    b[:k] = 0.9
+    c = _check(a, b)
+    assert c.n_significant == k and c.fraction == pytest.approx(0.631, abs=1e-3)
+    assert c.refuse
+
+
+def test_the_gate_quantity_is_the_significant_fraction():
+    """A tile can be far over the gate on raw count and still pass, and that is the point."""
+    import scripts.map_region as mr
+
+    n = 10_000
+    a = np.full(n, 0.5)
+    b = a.copy()
+    b[:5_000] += 1e-9                                     # 50 % raw, 0 % significant
+    c = _check(a, b)
+    assert c.fraction_raw == pytest.approx(0.5) and c.fraction == 0.0
+    assert not c.refuse
+    rec = mr.check_overlap("T", np.concatenate([np.arange(n)] * 2),
+                           np.zeros(2 * n, dtype=np.int64),
+                           {"prob_raw": np.concatenate([a, b]), "prob": None})
+    assert rec["prob_raw"]["n_significant"] == 0
+    assert rec["prob_raw"]["n_disagree"] == 5_000
+    assert rec["prob_raw"]["significant_abs"] == mr.OVERLAP_SIGNIFICANT_ABS

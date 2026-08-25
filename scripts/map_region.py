@@ -424,12 +424,25 @@ def expected_cells_per_axis(extent: int, phase: int, tile_px: int = TILE_PX) -> 
     return len(range(tile_px + phase, extent - 2 * tile_px + 1, tile_px))
 
 
-# R14, re-derived 2026-08-24d. The gate is a FRACTION of the duplicated cells, not a
-# magnitude, and it needs an absolute floor as well because a sweep with only a handful of
-# duplicated cells makes the fraction a very noisy estimator of "these are two runs".
-#   fp16 GEMM noise (within one run):   242 / 79,059 = 0.31 %
-#   stale-partial mixture (two runs):  63.1 % of finite pixels
-# Two orders of magnitude apart, so 1 % sits in open space between them.
+# R14, re-derived 2026-08-24d, refined 2026-08-24f against 23 measured tiles. TWO levels, and
+# keeping them separate is the whole point:
+#
+#   per-cell   |delta| > OVERLAP_SIGNIFICANT_ABS  -> this cell really disagrees
+#   per-tile   that fraction  > OVERLAP_DISAGREE_FRACTION_MAX  -> these are two runs
+#
+# The original guard used magnitude as the TILE-LEVEL decision, which is what made it a
+# lottery on isotonic knots. Magnitude is the right test, at the per-cell level; the fraction
+# is the right test, at the tile level.
+#
+# Measured over the full 26-tile render (2026-08-24f), fraction of duplicated cells:
+#   raw (any delta > 0):       0.0000 - 0.7825 %   <- 0.7825 % is E4_N36, all at |d| 2.09e-07
+#   significant (> 1e-6):      0.0000 - 0.3114 %
+#   stale-partial mixture:     63.1 %
+# The 1e-6 floor is what buys the margin back: without it the worst noise case sits at 78 % of
+# the gate, with it at 31 %. 1e-6 is ~1000x below ordinary fp16 wobble (~5-8e-4) and ~3x above
+# float32 epsilon, so it separates "the arithmetic ran in a different order" from "a different
+# model computed this".
+OVERLAP_SIGNIFICANT_ABS = 1e-6
 OVERLAP_DISAGREE_FRACTION_MAX = 0.01
 OVERLAP_DISAGREE_MIN_CELLS = 16
 
@@ -437,20 +450,25 @@ OVERLAP_DISAGREE_MIN_CELLS = 16
 class OverlapCheck(NamedTuple):
     """How much two windows that computed the same cell disagreed about it."""
 
-    n_dup: int          # cells written by more than one window
-    n_disagree: int     # of those, cells where at least one pair of writes differs
-    fraction: float     # n_disagree / n_dup; 0.0 when nothing was duplicated
-    max_abs: float      # largest |Δ| over disagreeing pairs (inf if one write was NaN)
+    n_dup: int              # cells written by more than one window
+    n_disagree: int         # of those, cells differing AT ALL (any |delta| > 0)
+    n_significant: int      # of those, cells differing by more than OVERLAP_SIGNIFICANT_ABS
+    fraction: float         # n_significant / n_dup -- THE GATE QUANTITY
+    fraction_raw: float     # n_disagree / n_dup -- recorded for audit, not gated on
+    max_abs: float          # largest |delta| over disagreeing pairs (inf if one write was NaN)
 
     @property
     def refuse(self) -> bool:
         """True iff this looks like a MIXTURE OF RUNS rather than float noise."""
-        return (self.n_disagree > OVERLAP_DISAGREE_MIN_CELLS
+        return (self.n_significant > OVERLAP_DISAGREE_MIN_CELLS
                 and self.fraction > OVERLAP_DISAGREE_FRACTION_MAX)
 
     def as_dict(self) -> dict:
         return {"n_dup": self.n_dup, "n_disagree": self.n_disagree,
+                "n_significant": self.n_significant,
                 "fraction": round(self.fraction, 8),
+                "fraction_raw": round(self.fraction_raw, 8),
+                "significant_abs": OVERLAP_SIGNIFICANT_ABS,
                 "max_abs": (None if not np.isfinite(self.max_abs) else float(self.max_abs))}
 
 
@@ -462,29 +480,37 @@ def overlap_disagreement(ti, tj, values) -> OverlapCheck:
     partition — "measured on the sweep this driver uses, 900 cells over 36 windows with 0
     computed twice", therefore `(0, 0.0)` within one run "by construction". That measurement
     was taken on a 36-window sweep. The sweep this driver actually ships is **144 windows**,
-    and there **62,559-80,570 cells per Murray tile are computed twice** (read straight off
-    the 21 rendered step-11 sidecars, 2026-08-24). So the guard has always been comparing tens
-    of thousands of real duplicate pairs, and its `> 1e-6` magnitude test was only ever
-    passing because of a second accident:
+    and **61,596-79,162 cells per Murray tile are computed twice** (measured on all 26 rendered
+    tiles). So the guard has always been comparing tens of thousands of real duplicate pairs,
+    and its `> 1e-6` magnitude test was only ever passing because of a second accident:
 
     * A cell's *prediction* is a function of the cell alone (its context box is fixed by the
       cell, not by the window), so the two writes are mathematically equal — but they are
       computed in **fp16**, at different positions within different batches, and fp16
-      reductions are not position-invariant. Measured: **242 of 79,059** duplicated cells
-      differ on `prob_raw`, by ~5-8e-4.
+      reductions are not position-invariant. Measured: **242 of 77,715** duplicated cells
+      differ on `prob_raw`, by ~5-8e-4. ⚠ It is *deterministic*, not random: `E0_N36` and
+      `E0_N44` re-rendered on different nodes weeks apart reproduced 242 cells and 1 and 3
+      `prob` cells at 6.01e-3 / 6.42e-3 — the same counts and magnitudes, because fp16
+      reduction order is fixed for a given kernel and batch shape.
     * Isotonic calibration then collapses almost all of those onto a shared knot value —
-      which is why 21 of 23 assembled tiles recorded `overlap_disagreements: 0` on `prob` —
-      and **amplifies the survivors 8-11x**, to 6e-3 on 1-3 cells. Whether the guard fired
-      was therefore a lottery on knot placement, and it lost twice: `E0_N36` and `E0_N44`
-      each stalled at 144/144 windows with the render already paid for.
+      which is why most tiles recorded `overlap_disagreements: 0` on `prob` — and **amplifies
+      the survivors 8-11x**, to 6e-3 on 1-3 cells. Whether the guard fired was therefore a
+      lottery on knot placement, and it lost twice: `E0_N36` and `E0_N44` each stalled at
+      144/144 windows with the render already paid for.
 
-    So the discriminator cannot be a magnitude on `prob`. It is the **fraction of duplicated
-    cells that disagree at all** — 0.31 % for float noise against 63.1 % for the real
-    stale-partial mixture this guard exists to catch (that instance had 63.1 % of finite
-    pixels from the wrong run while every file was structurally perfect and the raster came
-    out the right shape; neither a shape check nor a decode can see it, this can). Callers
-    should measure on **`prob_raw`**, pre-isotonic: it is what the model actually emits, and
-    it is comparable across tiles in a way that post-knot magnitudes are not.
+    So the discriminator cannot be a magnitude *at the tile level*. It is the **fraction of
+    duplicated cells that disagree significantly** — up to 0.31 % for float noise against
+    63.1 % for the real stale-partial mixture this guard exists to catch (that instance had
+    63.1 % of finite pixels from the wrong run while every file was structurally perfect and
+    the raster came out the right shape; neither a shape check nor a decode can see it, this
+    can). Callers should measure on **`prob_raw`**, pre-isotonic: it is what the model actually
+    emits, and it is comparable across tiles in a way that post-knot magnitudes are not.
+
+    **The 1e-6 per-cell floor (2026-08-24f) is not cosmetic.** Counting every `delta > 0` put
+    `E4_N36` at 0.7825 % — 78 % of the gate — on 482 cells whose largest disagreement was
+    **2.09e-07**, i.e. float32 epsilon, a thousand times below ordinary fp16 wobble. Bit-level
+    float noise was inflating the count that decides the gate. With the floor it reports
+    0.0000 % and the worst observed noise case across 26 tiles is 0.3114 %.
 
     Returns an `OverlapCheck`; `.refuse` applies the gate, `.as_dict()` is the sidecar record.
     """
@@ -492,22 +518,27 @@ def overlap_disagreement(ti, tj, values) -> OverlapCheck:
     o = np.argsort(key, kind="stable")
     k, v = key[o], np.asarray(values, dtype=np.float64)[o]
     if k.size == 0:
-        return OverlapCheck(0, 0, 0.0, 0.0)
+        return OverlapCheck(0, 0, 0, 0.0, 0.0, 0.0)
     same = k[1:] == k[:-1]
-    # group id per element, so a cell written 3x counts once, not twice
+    # group id per element, so a cell written 3x counts once, not twice. (This is why the
+    # measured n_dup 77,715 is below the 79,059 you get from n_predicted - n_unique in a
+    # sidecar: that difference counts duplicate WRITES, and ~1,344 cells are written 3 times.)
     grp = np.concatenate(([0], np.cumsum(~same)))
     n_dup = int((np.bincount(grp) > 1).sum())
     if not same.any():
-        return OverlapCheck(n_dup, 0, 0.0, 0.0)
+        return OverlapCheck(n_dup, 0, 0, 0.0, 0.0, 0.0)
     a, b = v[:-1][same], v[1:][same]
     both_nan = np.isnan(a) & np.isnan(b)
     # a one-sided NaN IS a disagreement (one run masked the cell, the other did not), and
     # `inf` keeps it visible in max_abs instead of silently becoming 0 via nan comparison
     diff = np.nan_to_num(np.where(both_nan, 0.0, np.abs(a - b)), nan=np.inf)
-    bad = diff > 0
-    n_disagree = int(np.unique(grp[1:][same][bad]).size)
-    frac = (n_disagree / n_dup) if n_dup else 0.0
-    return OverlapCheck(n_dup, n_disagree, float(frac), float(diff.max()))
+    cell = grp[1:][same]
+    n_disagree = int(np.unique(cell[diff > 0]).size)
+    n_significant = int(np.unique(cell[diff > OVERLAP_SIGNIFICANT_ABS]).size)
+    frac = (n_significant / n_dup) if n_dup else 0.0
+    frac_raw = (n_disagree / n_dup) if n_dup else 0.0
+    return OverlapCheck(n_dup, n_disagree, n_significant, float(frac), float(frac_raw),
+                        float(diff.max()))
 
 
 def check_overlap(tile: str, ti, tj, layers: dict) -> dict:
@@ -523,17 +554,22 @@ def check_overlap(tile: str, ti, tj, layers: dict) -> dict:
               for kind, v in layers.items() if v is not None}
     gate_kind = "prob_raw" if "prob_raw" in checks else "prob"
     c = checks[gate_kind]
-    summary = " · ".join(f"{k}: {v.n_disagree}/{v.n_dup} (max |d| {v.max_abs:.3g})"
-                         for k, v in checks.items())
-    print(f"[{tile}] overlap on {gate_kind}: {c.n_disagree}/{c.n_dup} cells disagree "
-          f"({100 * c.fraction:.4f} %) — {summary}", flush=True)
+    summary = " · ".join(
+        f"{k}: {v.n_significant}/{v.n_disagree}/{v.n_dup} (max |d| {v.max_abs:.3g})"
+        for k, v in checks.items())
+    print(f"[{tile}] overlap on {gate_kind}: {c.n_significant} of {c.n_dup} duplicated cells "
+          f"disagree by >{OVERLAP_SIGNIFICANT_ABS:g} ({100 * c.fraction:.4f} %; "
+          f"{c.n_disagree} at any magnitude = {100 * c.fraction_raw:.4f} %) — "
+          f"significant/any/dup per layer — {summary}", flush=True)
     if c.refuse:
         raise SystemExit(
-            f"[{tile}] {c.n_disagree} of {c.n_dup} duplicated cells disagree on {gate_kind} "
+            f"[{tile}] {c.n_significant} of {c.n_dup} duplicated cells disagree on {gate_kind} "
+            f"by more than {OVERLAP_SIGNIFICANT_ABS:g} "
             f"({100 * c.fraction:.2f} % > {100 * OVERLAP_DISAGREE_FRACTION_MAX:.2f} %, "
-            f"max |d| = {c.max_abs:.4g}). Float noise disagrees on ~0.3 % of duplicated "
-            f"cells; a stale-partial mixture on tens of percent. Refusing to assemble — "
-            f"these partials come from more than one run. Per layer: {summary}")
+            f"max |d| = {c.max_abs:.4g}). Float noise disagrees significantly on at most "
+            f"~0.31 % of duplicated cells; a stale-partial mixture on tens of percent. "
+            f"Refusing to assemble — these partials come from more than one run. "
+            f"Per layer (significant/any/dup): {summary}")
     return {"gate_layer": gate_kind, **{k: v.as_dict() for k, v in checks.items()}}
 
 
@@ -990,7 +1026,7 @@ def write_tile_geotiffs(murray_tile, partials, grid_geom, crs_wkt, calibrator, a
         # `prob_raw` -- isotonic had collapsed them. `overlap` is now the honest instrument;
         # `overlap_disagreements` is retained, on the gate layer, so older readers still work.
         "overlap": overlap,
-        "overlap_disagreements": overlap[overlap["gate_layer"]]["n_disagree"],
+        "overlap_disagreements": overlap[overlap["gate_layer"]]["n_significant"],
         # R13: the "Record" half. Until now a tile sidecar carried neither the masking
         # thresholds nor how many cells they dropped, so a shipped raster could not be told
         # apart from one rendered with the gate off.
