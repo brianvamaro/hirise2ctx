@@ -10312,3 +10312,47 @@ a test of it.* (2) Both were found by Brian running the tool, not by me: a tool 
 runs inside the project's own conda env is never tested against the environment it exists for.
 
 874 fast tests.
+
+### 2026-08-25e — Python 2 is out of reach for any in-file guard; the shebang is the defence
+
+Third failure, and the last of this family:
+
+```
+File "scripts/rebuild_map_manifest.py", line 69
+    def manifest_path(d: Path) -> Path:
+SyntaxError: invalid syntax
+```
+
+Sherlock's bare `python` is **2.7**, where **function annotations and f-strings are
+Python-3-only syntax**. The file therefore fails to compile at its first `def`, and — as in
+2026-08-25d — no runtime check can precede a compile error. Making these tools 2.7-parseable
+would mean removing every annotation and every f-string from them, which is not worth it.
+
+⚠ **And my test could never have caught this.** `ast.parse(src, feature_version=(3, 6))` selects
+among **Python 3** grammars only; it says nothing about 2.x. I presented that check as if it
+established the guard was reachable, and it established only that it was reachable under old
+Python *3*. The test's docstring now says so explicitly instead of implying coverage it does not
+have.
+
+What actually defends against 2.7 is the **`#!/usr/bin/env python3` shebang** (both tools were
+`python`), so `./scripts/<tool>.py` can never select 2.7, plus the usage block now leading with
+`python3` and naming `ml python/3.12.1`. Two tests pin those.
+
+Reachability, complete and stated:
+
+| interpreter | outcome |
+|---|---|
+| `python` = 2.7 (Sherlock default) | SyntaxError at the first `def`. **Unavoidable in-file.** Shebang + docs are the defence. |
+| `python3` = 3.6 (Sherlock default) | file parses; **guard fires** with the `ml python/3.12.1` instruction |
+| `python` after `ml python/3.12.1` = 3.12 | runs |
+
+**The pattern across 2026-08-25c/d/e, worth more than any of the three fixes.** Each round I
+fixed the reported symptom, asserted the fix in a comment or a test name, and shipped a version
+whose stated property the code still did not have — a transitive torch import defeating "runnable
+without CUDA", a `__future__` import defeating the guard, then a Python-3-only test defeating the
+claim of universal reachability. **The generalisable error is treating "I addressed the error
+message" as equivalent to "the property now holds".** Each was found by Brian running the tool,
+which is also the lesson: a tool whose whole purpose is to work outside the project environment
+was only ever exercised inside it.
+
+880 fast tests.

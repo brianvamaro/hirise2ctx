@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """Verify a downloaded map-output directory against its own sidecars. **Read-only.**
 
 R14 made every tile sidecar carry a `rasters[]` commit record  --  name, bytes, sha256, shape,
@@ -15,13 +15,21 @@ Checks, per directory:
     `n_significant` / `fraction_raw` and `fraction` = the gate quantity. Conflating them is a
     real trap, so this prints which schema each tile uses rather than averaging over both.
 
-Usage:
-    python scripts/verify_map_download.py reports/map_region_g2 reports/map_a1_g2
-    python scripts/verify_map_download.py --quick reports/map_a1_g2      # sizes only, no hashing
+Usage (needs python3 >= 3.10; on Sherlock `ml python/3.12.1` first, because
+its bare `python` is 2.7 and `python3` is 3.6):
+    python3 scripts/verify_map_download.py reports/map_region_g2 reports/map_a1_g2
+    python3 scripts/verify_map_download.py --quick reports/map_a1_g2      # sizes only, no hashing
 
 Exits non-zero if anything fails, so it can gate a promotion step.
 """
 import sys
+
+# NOTE ON THE GUARD BELOW, and what it cannot do. Python 2 cannot be caught this way at all:
+# function annotations and f-strings are Python-3-only SYNTAX, so under Sherlock's bare
+# `python` (2.7) this file fails to compile at the first `def`, and no runtime check can run.
+# Three rounds were lost to that class of mistake (DECISIONS 2026-08-25c/d/e). The guard covers
+# old Python **3** -- 3.6 on a Sherlock login node -- which is the reachable case. For 2.7 the
+# shebang above is the defence: `./scripts/<tool>.py` picks python3, never python2.
 
 # WARNING: everything above this block must parse under a VERY old interpreter, or the guard
 # can never run. Two rounds were lost to exactly that (DECISIONS 2026-08-25c/d):

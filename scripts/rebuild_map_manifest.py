@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """Rebuild a map-output manifest from the tile sidecars on disk.
 
 **Why this exists (2026-08-25).** Step 11 shipped 26/26 tiles on both arms with the *index*
@@ -24,11 +24,19 @@ size-floor digests and elapsed times. Runs already recorded are preserved; runs 
 before writing are simply gone, and `--note` lets you say so in the rebuilt file rather than
 leaving a silent hole.
 
-Usage:
-    python scripts/rebuild_map_manifest.py reports/map_region_g2 reports/map_a1_g2
-    python scripts/rebuild_map_manifest.py --dry-run reports/map_a1_g2
+Usage (needs python3 >= 3.10; on Sherlock `ml python/3.12.1` first, because
+its bare `python` is 2.7 and `python3` is 3.6):
+    python3 scripts/rebuild_map_manifest.py reports/map_region_g2 reports/map_a1_g2
+    python3 scripts/rebuild_map_manifest.py --dry-run reports/map_a1_g2
 """
 import sys
+
+# NOTE ON THE GUARD BELOW, and what it cannot do. Python 2 cannot be caught this way at all:
+# function annotations and f-strings are Python-3-only SYNTAX, so under Sherlock's bare
+# `python` (2.7) this file fails to compile at the first `def`, and no runtime check can run.
+# Three rounds were lost to that class of mistake (DECISIONS 2026-08-25c/d/e). The guard covers
+# old Python **3** -- 3.6 on a Sherlock login node -- which is the reachable case. For 2.7 the
+# shebang above is the defence: `./scripts/<tool>.py` picks python3, never python2.
 
 # WARNING: everything above this block must parse under a VERY old interpreter, or the guard
 # can never run. Two rounds were lost to exactly that (DECISIONS 2026-08-25c/d):

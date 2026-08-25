@@ -265,6 +265,13 @@ def test_the_guard_is_actually_REACHABLE_on_an_ancient_interpreter(name):
     So: the whole file must parse under an old grammar, carry no __future__ import, and put the
     guard ahead of every other import. `ast.feature_version` catches the walrus but NOT a
     __future__ import, so that one needs its own check.
+
+    WARNING -- WHAT THIS TEST CANNOT COVER, stated because implying otherwise cost a third
+    round. **Python 2 is out of reach entirely.** Function annotations and f-strings are
+    Python-3-only *syntax*, so under Sherlock's bare `python` (2.7) the file fails to compile at
+    the first `def` and no runtime check can fire. `ast.parse(feature_version=...)` only selects
+    among Python **3** grammars and says nothing about 2.x. The defence for 2.7 is the
+    `#!/usr/bin/env python3` shebang, asserted separately below -- not this guard.
     """
     import ast
 
@@ -313,3 +320,20 @@ def test_src_map_manifest_is_standard_library_only():
     """The whole point of the module. Keep it importable under any Python 3."""
     roots = _imported_roots(Path(__file__).parents[1] / "src" / "map_manifest.py")
     assert roots <= STDLIB_OK, f"src/map_manifest.py imports {roots - STDLIB_OK}"
+
+
+@pytest.mark.parametrize("name", TOOLS)
+def test_the_standalone_tools_shebang_python3_not_python(name):
+    """`#!/usr/bin/env python` resolves to 2.7 on a Sherlock login node, where annotations and
+    f-strings are a SyntaxError before any guard can run. The shebang is the only defence."""
+    first = (SRC / name).read_text(encoding="ascii").splitlines()[0]
+    assert first == "#!/usr/bin/env python3", f"{name} shebang is {first!r}"
+
+
+@pytest.mark.parametrize("name", TOOLS)
+def test_the_usage_block_states_the_interpreter_requirement(name):
+    """The docstring is what a hurried user reads. It must name the module load."""
+    src = (SRC / name).read_text(encoding="ascii")
+    usage = src[src.index("Usage"):src.index('"""', src.index("Usage"))]
+    assert "python3" in usage and "ml python/3.12.1" in usage
+    assert "    python scripts/" not in usage, "bare `python` invocation still advertised"
