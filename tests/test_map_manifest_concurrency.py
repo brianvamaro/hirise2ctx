@@ -253,6 +253,46 @@ def test_the_standalone_tools_import_no_third_party_module(name):
 
 
 @pytest.mark.parametrize("name", TOOLS)
+def test_the_guard_is_actually_REACHABLE_on_an_ancient_interpreter(name):
+    """The property both earlier attempts got wrong, twice, the same way.
+
+    A `sys.version_info` guard is worthless if anything above it fails to COMPILE. Round 1 was a
+    non-ASCII docstring (Sherlock's default `python` is 2.7); round 2 was
+    `from __future__ import annotations` (its `python3` is 3.6, and a __future__ import is a
+    compile-time construct, so no runtime check can precede it). Each time the user got a
+    SyntaxError naming an irrelevant rule.
+
+    So: the whole file must parse under an old grammar, carry no __future__ import, and put the
+    guard ahead of every other import. `ast.feature_version` catches the walrus but NOT a
+    __future__ import, so that one needs its own check.
+    """
+    import ast
+
+    raw = (SRC / name).read_bytes()
+    src = raw.decode("ascii")                    # raises if any byte is non-ASCII
+    tree = ast.parse(src, feature_version=(3, 6))
+    assert not [n for n in ast.walk(tree)
+                if isinstance(n, ast.ImportFrom) and n.module == "__future__"],         f"{name}: a __future__ import makes the guard unreachable"
+
+    assert "sys.version_info" in src, f"{name} lost its interpreter guard"
+    assert "ml python/3.12.1" in src, f"{name} does not say how to fix it"
+    i = src.index("sys.version_info")
+    for other in ("import argparse", "import json", "from pathlib", "from src."):
+        assert i < src.index(other), f"{name}: {other!r} precedes the guard"
+
+    # Nothing but the docstring and `import sys` may execute before the guard, or some other
+    # statement gets the chance to fail first and mask it.
+    guard_line = src[:i].count("\n") + 1
+    for node in tree.body:
+        if node.lineno >= guard_line:
+            break
+        is_docstring = isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+        is_import_sys = isinstance(node, ast.Import) and [a.name for a in node.names] == ["sys"]
+        assert is_docstring or is_import_sys, (
+            f"{name}: line {node.lineno} ({type(node).__name__}) runs before the guard")
+
+
+@pytest.mark.parametrize("name", TOOLS)
 def test_the_standalone_tools_are_ascii_and_say_so_under_python2(name):
     """A `sys.version_info` check is useless if the file will not parse.
 
@@ -263,7 +303,7 @@ def test_the_standalone_tools_are_ascii_and_say_so_under_python2(name):
     raw = (SRC / name).read_bytes()
     raw.decode("ascii")                      # raises if any byte is non-ASCII
     src = raw.decode("ascii")
-    assert "sys.version_info < (3, 8)" in src, f"{name} lost its interpreter guard"
+    assert "sys.version_info < (3, 10)" in src, f"{name} lost its guard"
     assert "ml python/3.12.1" in src, f"{name} does not say how to fix it"
     # the guard must precede every other import, or it cannot fire first
     assert src.index("sys.version_info") < src.index("\nimport argparse")

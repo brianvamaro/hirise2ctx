@@ -10268,3 +10268,47 @@ docstrings legitimately *mention* numpy while importing nothing.
 The duplicate is noted in its docstring. If the hashing ever changes, both must change.
 
 874 fast tests.
+
+### 2026-08-25d — the interpreter guard was unreachable, twice, the same way
+
+Second attempt to run the repair tool on a Sherlock login node:
+
+```
+File "scripts/rebuild_map_manifest.py", line 31
+    from __future__ import annotations
+SyntaxError: future feature annotations is not defined
+```
+
+`python3` there is **3.6**. And the guard added in 2026-08-25c never ran, because a `__future__`
+import is a **compile-time** construct: nothing at runtime can precede it. The 2026-08-25c fix
+made the file ASCII so a guard *could* run, and then placed the guard behind a statement that
+stops the file compiling. **Same defect class, second instance, and I introduced the second one
+while fixing the first.**
+
+The generalisation worth keeping: **a version guard is only worth what the code above it can
+compile under.** Both tools now have, above the guard, nothing but an ASCII docstring and
+`import sys` — no `__future__` import, no walrus, no PEP 604 annotation *evaluated* (the
+annotations further down parse fine on old grammars and are never reached, because `sys.exit()`
+runs first). Threshold raised to **3.10**, which is the real floor now that `str | None` is
+evaluated rather than stringified.
+
+Pinned by `test_the_guard_is_actually_REACHABLE_on_an_ancient_interpreter`, which does what
+neither previous attempt did — checks the *property* rather than the *symptom*:
+
+  * decodes the file as ASCII (catches round 1);
+  * `ast.parse(src, feature_version=(3, 6))` (catches walrus and other new grammar);
+  * walks the AST for any `__future__` import — **necessary because `feature_version` does NOT
+    reject one**, verified directly: `ast.parse("from __future__ import annotations", ...)`
+    succeeds at `feature_version=(3, 6)`;
+  * asserts every other import comes after the guard;
+  * asserts the only statements *above* the guard are the docstring and `import sys`, so no
+    other statement can fail first and mask it.
+
+⚠ **Two process notes, both mine.** (1) I twice shipped a fix whose stated purpose the code did
+not achieve, and the comment asserting it was the thing that made it look done — first "loading
+by spec keeps this runnable without CUDA" (defeated by a transitive import), then "the guard
+prints how to fix it" (defeated by a compile-time import). *A comment claiming a property is not
+a test of it.* (2) Both were found by Brian running the tool, not by me: a tool that only ever
+runs inside the project's own conda env is never tested against the environment it exists for.
+
+874 fast tests.

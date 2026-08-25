@@ -21,18 +21,27 @@ Usage:
 
 Exits non-zero if anything fails, so it can gate a promotion step.
 """
-from __future__ import annotations
-
 import sys
 
-if sys.version_info < (3, 8):                    # noqa: UP036 -- must run under py2 to print
+# WARNING: everything above this block must parse under a VERY old interpreter, or the guard
+# can never run. Two rounds were lost to exactly that (DECISIONS 2026-08-25c/d):
+#   * a non-ASCII docstring gave "SyntaxError: Non-ASCII character ... no encoding declared"
+#     under Sherlock's default `python`, which is 2.7;
+#   * a `__future__` import of `annotations` gave "SyntaxError: future feature annotations is
+#     not defined" under its `python3`, which is 3.6. A __future__ import is COMPILE-time, so
+#     no runtime check can be placed before it.
+# Hence: ASCII-only source, no __future__ import, no walrus, and this block before every other
+# import. The annotations further down use PEP 604/585 syntax, which merely *parses* on old
+# versions and is never evaluated, because sys.exit() runs first.
+if sys.version_info < (3, 10):
     sys.stderr.write(
-        "\nERROR: this needs Python 3, and it is running under %s.\n"
-        "This tool is deliberately standard-library only so it works when the full\n"
-        "environment does not -- but it still needs a python3 interpreter.\n"
-        "On a Sherlock login node the default `python` is 2.7; do:\n"
+        "\nERROR: this needs Python >= 3.10; it is running under %s (%s).\n"
+        "The tool is deliberately standard-library only so it works when the full project\n"
+        "environment does not -- but it still needs a modern interpreter.\n"
+        "On a Sherlock login node the default `python` is 2.7 and `python3` is 3.6; do:\n"
         "    ml python/3.12.1\n"
-        "    python %s ...\n\n" % (sys.version.split()[0], sys.argv[0]))
+        "    python %s --help\n\n"
+        % (sys.version.split()[0], sys.executable, sys.argv[0]))
     sys.exit(2)
 
 import argparse
