@@ -10419,3 +10419,43 @@ actively misleading — a `partials/<tile>/` beside a completed sidecar is the e
 assemble" signal fixed in the A1 driver on 2026-08-25. **Left in place pending Brian's call.**
 
 882 fast tests.
+
+### 2026-08-25g — STEP 11 CLOSED. Both arms 26/26, cell-for-cell comparable
+
+Deleted the 290 leftover local diagnostic partials (288 npz + 2 `_sweep.json`, 30 MB, `E0_N36`
+and `E0_N44`, Brian's call). Inventoried before removing: exactly the two complete sweeps, nothing
+else, and both tiles' rasters were already sha256-verified. Their evidentiary value was spent —
+the fp16 finding they supported is independently reproduced by the overlap instrument.
+
+Then re-confirmed everything from scratch:
+
+| check | result |
+|---|---|
+| files per arm | 105 = 26x4 + manifest, both |
+| rasters | 26 prob / 26 abundance / 26 prob_raw, both |
+| sha256 vs sidecar `rasters[]` | **156/156 verified** |
+| leftover `partials/` | none, either arm |
+| manifests | 26 tiles indexed each (9 and 1 run records) |
+| `grid_id`, both arms | one: `murray_v01_clon0_R3396190_ppd11855_S32_anchor_lonlat0` |
+| cell-for-cell co-registration | **26/26** |
+| size-floor basis digests | **1** across both arms |
+
+#### New: `scripts/verify_arm_parity.py`
+
+The last three rows above were checked by an ad-hoc script, and they are the ones step 12 depends
+on most — so they are now a tool rather than a one-off. **`verify_map_download.py` proves each arm
+is internally sound and says nothing about whether the two may be differenced**, which is exactly
+what section 5.1's one-common-footprint rule requires and what a comparison silently assumes.
+`verify_arm_parity.py` checks tile-set identity, one `grid_id` across both arms (R01), identical
+`(ti_min, tj_min)` / `raster_shape` / `tile_px` / `grid_cell_m` per tile, one size-floor basis
+(R84 — the rows are differenced, so they must count the same boulders), no leftover partials, and
+manifest completeness with the remedy named in the message.
+
+Every failure it catches leaves each individual raster perfect, which is why nothing else sees
+them: ten tests cover a second lattice, a one-cell origin offset, a shape mismatch, two
+size-floor bases, differing tile sets, a leftover partials dir and an under-indexed manifest. It
+follows the same portability contract as the other two tools (ASCII, stdlib-only, `python3`
+shebang, reachable guard), pinned by the same test.
+
+**913 tests pass (full suite, slow included).** Step 11 is closed; step 12 opens with eta^2, which
+has never been re-derived on the corrected basis and is the first real item there.
