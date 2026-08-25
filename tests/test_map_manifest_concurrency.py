@@ -337,3 +337,36 @@ def test_the_usage_block_states_the_interpreter_requirement(name):
     usage = src[src.index("Usage"):src.index('"""', src.index("Usage"))]
     assert "python3" in usage and "ml python/3.12.1" in usage
     assert "    python scripts/" not in usage, "bare `python` invocation still advertised"
+
+
+def test_the_repair_script_reads_both_manifest_tiles_SHAPES(tmp_path):
+    """`tiles` is a list of NAMES in one driver and a list of result DICTS in the other.
+
+    The clobbering A1 driver wrote `"tiles": results`, so the repair tool crashed with
+    `TypeError: cannot use 'dict' as a set element` on exactly the file it existed to fix.
+    """
+    rb = _rebuild_module()
+    assert rb.prev_tile_names({"tiles": ["A", "B"]}) == {"A", "B"}
+    assert rb.prev_tile_names(
+        {"tiles": [{"tile": "A", "status": "done"}, {"tile": "B"}]}) == {"A", "B"}
+    assert rb.prev_tile_names({"tiles": ["A", {"tile": "B"}, {"no_tile": 1}, 7]}) == {"A", "B"}
+    assert rb.prev_tile_names({}) == set()
+    assert rb.prev_tile_names({"tiles": None}) == set()
+
+
+def test_the_repair_script_survives_the_real_clobbered_a1_shape(tmp_path):
+    """End-to-end on the exact structure the A1 driver left behind: 1 dict, no runs key."""
+    rb = _rebuild_module()
+    for t in ("E4_N32", "E8_N44", "E0_N40"):
+        _sidecar(tmp_path, t)
+    m = tmp_path / "a1_manifest.json"
+    m.write_text(json.dumps({
+        "tiles": [{"tile": "E4_N32", "status": "done", "windows": 144,
+                   "cost_s": {"predict": 2616.4}}],
+        "head": "models/deployable_a1_g2/66ec8b755b9c0b20", "win_px": 4096,
+    }), encoding="utf-8")
+    before, after = rb.rebuild(tmp_path, dry_run=False, note="repaired")
+    assert (before, after) == (1, 3)
+    doc = json.loads(m.read_text())
+    assert doc["tiles"] == ["E0_N40", "E4_N32", "E8_N44"]
+    assert doc["runs"][-1]["rebuilt_from_sidecars"] is True

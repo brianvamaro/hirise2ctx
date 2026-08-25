@@ -10356,3 +10356,66 @@ which is also the lesson: a tool whose whole purpose is to work outside the proj
 was only ever exercised inside it.
 
 880 fast tests.
+
+### 2026-08-25f — download VERIFIED 156/156; manifests repaired; the race published the wrong task
+
+Both arms transferred as zips and **verified in place, before extraction** — each raster streamed
+out of the archive and hashed against the sha256 its own sidecar recorded at render time. This is
+the first use R14's `rasters[]` commit record has ever had.
+
+| arm | sidecars | prob | abundance | prob_raw | sha256 |
+|---|---|---|---|---|---|
+| `map_region_g2` (340 MiB) | 26 | 26 | 26 | 26 | **78/78** |
+| `map_a1_g2` (316 MiB) | 26 | 26 | 26 | 26 | **78/78** |
+
+Both on `murray_v01_clon0_R3396190_ppd11855_S32_anchor_lonlat0`, so the two rows are provably
+co-registered (R01). Extraction then reported **84 already byte-identical, 20 new, 1 changed** —
+the change being `region_manifest.json`, exactly as expected.
+
+**Sidecar schema generations independently reconstruct the render history**, which is a nice
+cross-check on a story otherwise held together by log archaeology: the A1 arm splits **7
+scalar-only + 19 pre-floor**, and those 7 are precisely the Pascal-rendered tiles — identified
+here by a *different signal* than the absent `device` field. The baseline splits 21 + 5 across
+its two jobs.
+
+#### ⚠ The `.tmp` race published the CRASHED task's data and credited the survivor
+
+The repaired index revealed which tile was actually lost, and it was not the one the exit codes
+implied. `region_manifest.json` contained **`E0_N36`** — task 0, which **crashed** — and was
+missing **`E0_N44`** — task 1, which exited **0**. The only interleaving that produces that:
+
+```
+task 1  writes region_manifest.json.tmp   (17 tiles + E0_N44)
+task 0  writes region_manifest.json.tmp   (17 tiles + E0_N36)   <- overwrites task 1's staging
+task 1  renames  .tmp -> manifest                               <- publishes TASK 0's bytes
+task 0  renames  .tmp -> manifest                               -> FileNotFoundError, exit 1
+```
+
+**With a shared staging file, whose write survives has no relationship to which process
+survives.** Task 1 exited 0 having published data it did not compute; task 0 exited 1 having had
+its data published. Any triage that had reasoned from exit status — including mine, which
+predicted `E0_N36` as the missing tile — would have concluded the exact opposite of the truth.
+A sharper form of this pipeline's standing rule: exit status is not evidence about *what landed*.
+
+#### A bug in the repair tool, on exactly the file it existed to repair
+
+`TypeError: cannot use 'dict' as a set element`. The clobbering A1 driver wrote
+`"tiles": results` — a list of result **dicts** — while the baseline wrote `sorted(by_tile)`, a
+list of **strings**. The tool assumed strings and crashed on the more damaged of the two
+manifests. Fixed with `prev_tile_names`, which accepts either, plus a test that runs the real
+repair end-to-end against the exact clobbered structure (one dict, no `runs` key).
+
+Repaired: baseline **21 -> 26** (recovering `E-12_N36`, `E-12_N44`, `E-4_N36`, `E-8_N44`,
+`E0_N44`; 8 run records preserved), A1 **1 -> 26**. Both carry a `rebuilt_from_sidecars` marker
+naming the causes, so the repair is visible rather than silent. Final
+`verify_map_download.py`: **ALL CLEAN, 2 directories, 26 tiles each, 156 rasters sha256-verified.**
+
+⚠ **`reports/map_region_g2/partials/` still holds 290 npz (30 MB) for `E0_N36` and `E0_N44`** —
+local leftovers from the 2026-08-24b diagnosis, not from this transfer (the zips contain no
+partials). They are now the *only* copy, Sherlock's having been cleaned on assembly. Their
+evidentiary value is spent: the fp16 finding they supported was independently reproduced by the
+overlap instrument (242 cells / 1 and 3 `prob` cells at 6.01e-3 and 6.42e-3). They are also
+actively misleading — a `partials/<tile>/` beside a completed sidecar is the exact false "did not
+assemble" signal fixed in the A1 driver on 2026-08-25. **Left in place pending Brian's call.**
+
+882 fast tests.

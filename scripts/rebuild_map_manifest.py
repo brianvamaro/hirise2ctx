@@ -74,6 +74,23 @@ if str(REPO_ROOT) not in sys.path:
 # tool must not share the heavy dependencies of the thing it recovers.
 from src.map_manifest import merge_manifest, tile_result_rows, tile_sidecars
 
+def prev_tile_names(prev):
+    """Tile NAMES from a previous manifest's `tiles`, whatever shape it is in.
+
+    The clobbering A1 driver wrote `"tiles": results` -- a list of result DICTS, not names --
+    while the baseline wrote `sorted(by_tile)`, a list of strings. Anything reading both must
+    handle both, or it crashes on exactly the file it was written to repair:
+    `TypeError: cannot use 'dict' as a set element`.
+    """
+    out = set()
+    for t in (prev.get("tiles") or []):
+        if isinstance(t, str):
+            out.add(t)
+        elif isinstance(t, dict) and isinstance(t.get("tile"), str):
+            out.add(t["tile"])
+    return out
+
+
 def manifest_path(d: Path) -> Path:
     """Which manifest a directory carries. Prefers one that already exists."""
     for name in ("region_manifest.json", "a1_manifest.json"):
@@ -92,7 +109,8 @@ def rebuild(d: Path, *, dry_run: bool, note: str | None) -> tuple[int, int]:
             prev = json.loads(path.read_text(encoding="utf-8"))
         except ValueError:
             print(f"  WARNING: {path.name} is not valid JSON  --  rebuilding from scratch")
-    before = len(prev.get("tiles") or [])
+    prev_names = prev_tile_names(prev)
+    before = len(prev_names)
     rows = tile_result_rows(d)
     grid_ids = set()
     for t in tile_sidecars(d).values():
@@ -107,7 +125,7 @@ def rebuild(d: Path, *, dry_run: bool, note: str | None) -> tuple[int, int]:
 
     print(f"=== {d} -> {path.name} ===")
     print(f"  tiles indexed: {before} -> {len(rows)}")
-    recovered = sorted({r["tile"] for r in rows} - set(prev.get("tiles") or []))
+    recovered = sorted({r["tile"] for r in rows} - prev_names)
     if recovered:
         print(f"  recovered {len(recovered)}: {recovered}")
     print(f"  runs preserved: {len(prev.get('runs') or [])}")
