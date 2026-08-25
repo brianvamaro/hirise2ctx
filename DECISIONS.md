@@ -10228,3 +10228,43 @@ commit record — re-hashing every raster against its own sidecar — which noth
 a transfer off Sherlock had been trusted on file count alone.
 
 868 fast + 21 slow tests.
+
+### 2026-08-25c — the repair tool needed torch to move JSON keys; `src/map_manifest.py`
+
+Running the new repair script on a Sherlock **login node** gave:
+
+```
+SyntaxError: Non-ASCII character '\xe2' in file scripts/rebuild_map_manifest.py on line 10,
+but no encoding declared
+```
+
+Two independent defects, and the second is the interesting one.
+
+**1. Sherlock's default `python` is 2.7.** Every sbatch does `ml python/3.12.1` and activates the
+venv first; run bare from a shell, nothing does. The error names an encoding rule and says nothing
+about the actual problem. ⚠ **A `sys.version_info` guard cannot help here — the file never parses.**
+So both standalone tools are now **ASCII-only source** (docstring content preserved, only the
+typography changed) with an interpreter guard placed *before every other import*, which prints the
+two lines needed to fix it. Pinned by a test that decodes the file as ASCII and checks the guard
+precedes `import argparse`.
+
+**2. A recovery tool must not share the heavy dependencies of the thing it recovers.**
+`rebuild_map_manifest.py` loaded `map_region.py` by spec, and `map_region.py` does
+`import src.modeling` — the torch/OpenMP bootstrap. So **repairing a JSON index required
+CUDA-capable torch.** I had written the by-spec load *specifically* to keep the tool runnable
+without CUDA and left a comment saying so; the comment was wrong, because the transitive import
+defeated it. `verify_map_download.py` had the same needless bootstrap: it touches numpy and hashlib
+and nothing else.
+
+Fixed by extracting `write_json_atomic`, `tile_sidecars`, `tile_result_rows`, `merge_manifest` and
+`file_sha256` into **`src/map_manifest.py` — standard library only**. `map_region.py` re-exports
+them, so every existing caller is unaffected. Both tools now import that module and nothing else,
+so they run under any Python 3 with no numpy, rasterio or torch. Three tests hold the line, and
+they check the **AST's import nodes** rather than substrings — the first version failed because the
+docstrings legitimately *mention* numpy while importing nothing.
+
+⚠ **`src.mapping.file_sha256` is now duplicated in `src/map_manifest.py`** (five lines of
+`hashlib`), deliberately: importing `src.mapping` would pull numpy back in and defeat the point.
+The duplicate is noted in its docstring. If the hashing ever changes, both must change.
+
+874 fast tests.

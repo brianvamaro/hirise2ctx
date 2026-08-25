@@ -6,16 +6,16 @@ damaged: `region_manifest.json` listed **21 of 26** and `a1_manifest.json` **1 o
 distinct causes, none of which touched a raster:
 
   * a task killed mid-stride (wall clock, or the dead GPU on `sh03-12n13`) never reached its
-    manifest write at all — worth 4 tiles;
+    manifest write at all  --  worth 4 tiles;
   * `write_json_atomic` staged to a **fixed** `<path>.tmp`, so two tasks finishing in the same
-    second collided and the loser died renaming a file the winner had already moved — worth
+    second collided and the loser died renaming a file the winner had already moved  --  worth
     `E0_N36`, and the crash came *after* the tile was committed;
   * `striping_a1_map.py` did not merge at all, it clobbered with a bare `write_text`, so the
     manifest recorded whichever single tile finished last.
 
 The drivers now derive `results` from the sidecars at every write, so the index is self-healing
-and any later run repairs it. This script does the same repair **without running a driver** —
-no GPU, no re-render — which is what you want for an already-shipped generation.
+and any later run repairs it. This script does the same repair **without running a driver**  -- 
+no GPU, no re-render  --  which is what you want for an already-shipped generation.
 
 The sidecar is the authority for how a tile was made (R14 writes it last, as the completion
 marker, and it carries the full `run` block including `win_px`), so everything needed is on disk.
@@ -30,28 +30,32 @@ Usage:
 """
 from __future__ import annotations
 
-import argparse
-import importlib.util
-import json
 import sys
+
+if sys.version_info < (3, 8):                    # noqa: UP036 -- must run under py2 to print
+    sys.stderr.write(
+        "\nERROR: this needs Python 3, and it is running under %s.\n"
+        "This tool is deliberately standard-library only so it works when the full\n"
+        "environment does not -- but it still needs a python3 interpreter.\n"
+        "On a Sherlock login node the default `python` is 2.7; do:\n"
+        "    ml python/3.12.1\n"
+        "    python %s ...\n\n" % (sys.version.split()[0], sys.argv[0]))
+    sys.exit(2)
+
+import argparse
+import json
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import src.modeling  # noqa: F401  -- OpenMP/DLL bootstrap; must precede numpy
-
-# `scripts.map_region` pulls in torch at import; loading it by spec keeps this runnable on a
-# machine with no CUDA, which is the point of a repair tool.
-_spec = importlib.util.spec_from_file_location(
-    "_map_region_for_rebuild", Path(__file__).with_name("map_region.py"))
-_mr = importlib.util.module_from_spec(_spec)
-sys.modules["_map_region_for_rebuild"] = _mr
-_spec.loader.exec_module(_mr)
-
-MANIFEST_FOR = {"map_a1": "a1_manifest.json"}      # default is region_manifest.json
-
+# STANDARD LIBRARY ONLY, deliberately. This used to load `map_region.py`, which does
+# `import src.modeling` (the torch/OpenMP bootstrap) -- so repairing a JSON index required
+# CUDA-capable torch, and on a Sherlock login node without the module loaded it did not even
+# get that far: the system `python` is 2.7 and it died on a non-ASCII SyntaxError. A recovery
+# tool must not share the heavy dependencies of the thing it recovers.
+from src.map_manifest import merge_manifest, tile_result_rows, tile_sidecars
 
 def manifest_path(d: Path) -> Path:
     """Which manifest a directory carries. Prefers one that already exists."""
@@ -70,17 +74,17 @@ def rebuild(d: Path, *, dry_run: bool, note: str | None) -> tuple[int, int]:
         try:
             prev = json.loads(path.read_text(encoding="utf-8"))
         except ValueError:
-            print(f"  ⚠ {path.name} is not valid JSON — rebuilding from scratch")
+            print(f"  WARNING: {path.name} is not valid JSON  --  rebuilding from scratch")
     before = len(prev.get("tiles") or [])
-    rows = _mr.tile_result_rows(d)
+    rows = tile_result_rows(d)
     grid_ids = set()
-    for t in _mr.tile_sidecars(d).values():
+    for t in tile_sidecars(d).values():
         try:
             grid_ids.add(json.loads(t.read_text(encoding="utf-8")).get("grid_id"))
         except ValueError:
             pass
     if len(grid_ids) > 1:
-        raise SystemExit(f"{d}: sidecars span {len(grid_ids)} grid_ids {grid_ids} — R01 says "
+        raise SystemExit(f"{d}: sidecars span {len(grid_ids)} grid_ids {grid_ids}  --  R01 says "
                          f"products on two lattices must never be indexed as one product")
     grid_id = grid_ids.pop() if grid_ids else prev.get("grid_id")
 
@@ -100,9 +104,9 @@ def rebuild(d: Path, *, dry_run: bool, note: str | None) -> tuple[int, int]:
         # that `runs[]` never implies a rendering pass that did not happen.
         run_record = {"rebuilt_from_sidecars": True, "note": note,
                       "tiles": [r["tile"] for r in rows]}
-    doc = _mr.merge_manifest(path, out_dir=d, grid_id=grid_id, run_record=run_record,
-                             results=None)
-    print(f"  wrote {path} — {len(doc['tiles'])} tiles, {len(doc['runs'])} run record(s)")
+    doc = merge_manifest(path, out_dir=d, grid_id=grid_id,
+                         run_record=run_record)
+    print(f"  wrote {path}  --  {len(doc['tiles'])} tiles, {len(doc['runs'])} run record(s)")
     return before, len(rows)
 
 

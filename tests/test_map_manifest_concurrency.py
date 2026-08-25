@@ -26,11 +26,17 @@ SRC = Path(__file__).parents[1] / "scripts"
 
 def test_the_staging_name_is_per_process():
     """A shared `<path>.tmp` is what let one writer delete another's staging file."""
-    src = (SRC / "map_region.py").read_text(encoding="utf-8")
+    src = (Path(__file__).parents[1] / "src" / "map_manifest.py").read_text(encoding="utf-8")
     i = src.index("def write_json_atomic")
     body = src[i:src.index("\ndef ", i + 10)]
     assert "os.getpid()" in body, "the staging name is not per-process any more"
     assert 'path.name + ".tmp"' not in body, "the fixed staging name is back"
+
+
+def test_map_region_still_re_exports_the_moved_helpers():
+    """They moved to a stdlib-only module; every existing caller must keep working."""
+    for name in ("write_json_atomic", "merge_manifest", "tile_result_rows", "tile_sidecars"):
+        assert callable(getattr(mr, name)), f"map_region no longer exposes {name}"
 
 
 def test_two_writers_do_not_destroy_each_others_staging_file(tmp_path):
@@ -198,3 +204,72 @@ def test_the_repair_script_picks_the_right_manifest_name(tmp_path):
     # an existing file wins over the name guess
     (a1 / "region_manifest.json").write_text("{}", encoding="utf-8")
     assert rb.manifest_path(a1).name == "region_manifest.json"
+
+
+# ---------------------------------------------------------------- the tools must stay portable
+
+TOOLS = ("rebuild_map_manifest.py", "verify_map_download.py")
+
+
+def _imported_roots(path: Path) -> set[str]:
+    """Top-level module names this file imports, from the AST -- comments and docstrings are
+    allowed to *mention* numpy; what matters is whether it imports it."""
+    import ast
+
+    roots = set()
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            roots |= {a.name.split(".")[0] for a in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            roots.add(node.module.split(".")[0])
+    return roots
+
+
+STDLIB_OK = {"__future__", "argparse", "ast", "hashlib", "importlib", "json", "os",
+             "pathlib", "sys", "typing"}
+
+
+@pytest.mark.parametrize("name", TOOLS)
+def test_the_standalone_tools_import_no_third_party_module(name):
+    """A repair tool must not share the heavy dependencies of the thing it repairs.
+
+    `rebuild_map_manifest.py` used to load `map_region.py`, which does `import src.modeling` --
+    the torch/OpenMP bootstrap -- so moving a few JSON keys around required CUDA-capable torch,
+    and on a Sherlock login node it never even got that far.
+    """
+    roots = _imported_roots(SRC / name)
+    assert roots <= STDLIB_OK | {"src"}, f"{name} imports {roots - STDLIB_OK - {'src'}}"
+    src = (SRC / name).read_text(encoding="utf-8")
+    assert "from src.map_manifest import" in src
+    # `src.*` is only allowed to be the stdlib-only module, never the torch bootstrap
+    import ast as _ast
+    for node in _ast.walk(_ast.parse(src)):
+        mod = getattr(node, "module", None) or ""
+        if isinstance(node, _ast.ImportFrom) and mod.startswith("src"):
+            assert mod == "src.map_manifest", f"{name} imports from {mod}"
+        if isinstance(node, _ast.Import):
+            for a in node.names:
+                assert not a.name.startswith("src."), f"{name} imports {a.name}"
+
+
+@pytest.mark.parametrize("name", TOOLS)
+def test_the_standalone_tools_are_ascii_and_say_so_under_python2(name):
+    """A `sys.version_info` check is useless if the file will not parse.
+
+    Run bare on a Sherlock login node the default `python` is 2.7, and a non-ASCII docstring
+    gave `SyntaxError: Non-ASCII character '\xe2' ... no encoding declared` -- which says
+    nothing about the actual problem. ASCII-only source lets the guard below actually run.
+    """
+    raw = (SRC / name).read_bytes()
+    raw.decode("ascii")                      # raises if any byte is non-ASCII
+    src = raw.decode("ascii")
+    assert "sys.version_info < (3, 8)" in src, f"{name} lost its interpreter guard"
+    assert "ml python/3.12.1" in src, f"{name} does not say how to fix it"
+    # the guard must precede every other import, or it cannot fire first
+    assert src.index("sys.version_info") < src.index("\nimport argparse")
+
+
+def test_src_map_manifest_is_standard_library_only():
+    """The whole point of the module. Keep it importable under any Python 3."""
+    roots = _imported_roots(Path(__file__).parents[1] / "src" / "map_manifest.py")
+    assert roots <= STDLIB_OK, f"src/map_manifest.py imports {roots - STDLIB_OK}"

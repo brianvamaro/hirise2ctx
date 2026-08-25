@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 """Verify a downloaded map-output directory against its own sidecars. **Read-only.**
 
-R14 made every tile sidecar carry a `rasters[]` commit record — name, bytes, sha256, shape,
-n_finite — precisely so that content can be checked without re-deriving it. Nothing used that
+R14 made every tile sidecar carry a `rasters[]` commit record  --  name, bytes, sha256, shape,
+n_finite  --  precisely so that content can be checked without re-deriving it. Nothing used that
 until now, which meant a transfer off Sherlock was trusted on file count alone. A truncated or
 silently-corrupted GeoTIFF has the right name and very nearly the right size.
 
@@ -23,18 +23,29 @@ Exits non-zero if anything fails, so it can gate a promotion step.
 """
 from __future__ import annotations
 
+import sys
+
+if sys.version_info < (3, 8):                    # noqa: UP036 -- must run under py2 to print
+    sys.stderr.write(
+        "\nERROR: this needs Python 3, and it is running under %s.\n"
+        "This tool is deliberately standard-library only so it works when the full\n"
+        "environment does not -- but it still needs a python3 interpreter.\n"
+        "On a Sherlock login node the default `python` is 2.7; do:\n"
+        "    ml python/3.12.1\n"
+        "    python %s ...\n\n" % (sys.version.split()[0], sys.argv[0]))
+    sys.exit(2)
+
 import argparse
 import json
-import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import src.modeling  # noqa: F401  -- OpenMP/DLL bootstrap; must precede numpy
-
-from src.mapping import file_sha256
+# No `import src.modeling` here on purpose: this script does not touch torch, and a verifier
+# that needs the training environment cannot check a transfer on a bare login node.
+from src.map_manifest import file_sha256, tile_sidecars
 
 # scripts.map_region imports torch via DeployableHead; the tile list is all we need, and this
 # script must stay runnable on a machine with no CUDA, so it is duplicated deliberately. Kept
@@ -74,8 +85,7 @@ def verify_dir(d: Path, *, expect: list[str], quick: bool) -> list[str]:
     if not d.is_dir():
         return [f"{d}: not a directory"]
 
-    sidecars = {p.stem: p for p in sorted(d.glob("*.json"))
-                if p.stem not in ("region_manifest", "a1_manifest")}
+    sidecars = tile_sidecars(d)          # excludes MANIFEST_NAMES
     missing = [t for t in expect if t not in sidecars]
     extra = [t for t in sidecars if t not in expect]
     print(f"sidecars: {len(sidecars)}/{len(expect)}")
