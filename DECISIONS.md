@@ -10095,3 +10095,53 @@ thing. Every logged number is preserved in the table above and in
 `logs/h2c-rebuild-{a1,base}-*.out`.
 
 843 fast tests (was 839).
+
+### 2026-08-25 — step 11 CLOSED, 26/26 both arms; one cleanup asymmetry fixed
+
+**Both arms complete: 26 sidecars + 26 × {prob, abundance, prob_raw} + manifest on each.**
+`map_region_g2` 342 MB, `map_a1_g2` 317 MB.
+
+`E4_N32` — the tile lost to the dead GPU on `sh03-12n13` — re-rendered cleanly on an excluded-node
+resubmit: **2,978 s** (`stats 191 · read 43 · a1 313 · predict 2,616 · write 2`), overlap
+**6/63,135 = 0.0095 %** with max |Δ| 5.09e-06. Every component sits inside the 18-tile band, so the
+dead card left no trace in the product.
+
+#### `--clean-partials` was asymmetric between the drivers
+
+`ls -d map_a1_g2/partials/*/ | wc -l` returned **26** on a fully-complete arm. Cause: the A1 driver
+deleted the partial *files* and the `_sweep.json` but never removed the **directory**, while
+`map_region.py` has done so since R14 — its comment says exactly why ("else an orphan
+`partials/<tile>/` survives"). The optimisation-applied-to-one-path-and-not-its-sibling pattern
+again, the same shape as R06's missing bbox prefilter.
+
+Empty directories are harmless in themselves. What is *not* harmless is that the natural
+"did every tile assemble?" probe reads them as **26 tiles that never finished**, and that probe is
+what you consult before clearing scratch. A cosmetic defect in a completion marker is not cosmetic.
+Fixed, plus two tests: one drives the real `map_one_tile` and asserts the directory is gone, one is
+a source-level check that **both** drivers do `grid_path.unlink` *and* `partial_dir.rmdir` — the
+asymmetry is what allowed this, so the test compares the two rather than checking one.
+
+⚠ **The 26 already-emptied A1 directories predate the fix and are still on disk.** They contain
+nothing (`map_a1_g2` is *smaller* than `map_region_g2` despite identical raster counts), so
+`find map_a1_g2/partials -type f | wc -l` should read 0 and they can simply be `rmdir`-ed.
+
+#### `scripts/verify_map_download.py` (2026-08-25)
+
+R14 put `rasters[]` — name, bytes, sha256, shape, n_finite — in every sidecar so content could be
+checked without re-deriving it, and **nothing had ever consumed it**: a transfer off Sherlock was
+trusted on file count alone, and a truncated or silently-corrupted GeoTIFF has the right name and
+very nearly the right size. The new script re-hashes every raster against its own sidecar, checks
+tile coverage both ways, and refuses a directory whose tiles span two `grid_id`s (R01). Read-only,
+non-zero exit, so it can gate promotion. Verified against the existing local 21-tile download: 63
+rasters, 0.27 GiB, all sha256 clean, and it named the 5 then-missing tiles correctly.
+
+It also reports the overlap record **labelled by schema generation** instead of averaging over
+them, because there are now **three** and conflating them is a live trap:
+
+| generation | fields | `fraction` means |
+|---|---|---|
+| pre-2026-08-24d (21 baseline tiles) | `overlap_disagreements` scalar only | — |
+| 2026-08-24d–e | `overlap{n_dup, n_disagree, fraction, max_abs}` | the **raw** fraction |
+| 2026-08-24f onward | adds `n_significant`, `fraction_raw`, `significant_abs` | the **gate** quantity |
+
+855 fast tests.

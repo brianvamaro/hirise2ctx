@@ -403,7 +403,16 @@ def process_tile(tile: str, embedder, head, calibrator, args) -> dict:
     if args.clean_partials:
         for p in present:
             p.unlink()
-        grid_path.unlink(missing_ok=True)
+        grid_path.unlink(missing_ok=True)   # R14: else an orphan partials/<tile>/ survives
+        # 2026-08-25: this `rmdir` was in `map_region.py` and NOT here, so a completed A1 arm
+        # left 26 empty `partials/<tile>/` directories behind -- harmless in itself, but they
+        # make `ls -d partials/*/ | wc -l` read as "26 tiles did not finish assembling", which
+        # is the one signal you want trustworthy when deciding whether scratch is safe to
+        # clear. Cosmetic asymmetries in a completion marker are not cosmetic.
+        try:
+            partial_dir.rmdir()
+        except OSError:                     # not empty -- leave it and let the count show it
+            pass
     elapsed = time.monotonic() - t_tile
     print(f"[{tile}] DONE in {elapsed:.0f}s  |  "
           + "  ".join(f"{k} {v:.0f}s" for k, v in cost.items())

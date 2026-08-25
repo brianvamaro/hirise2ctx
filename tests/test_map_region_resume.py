@@ -573,3 +573,30 @@ def test_the_gate_quantity_is_the_significant_fraction():
     assert rec["prob_raw"]["n_significant"] == 0
     assert rec["prob_raw"]["n_disagree"] == 5_000
     assert rec["prob_raw"]["significant_abs"] == mr.OVERLAP_SIGNIFICANT_ABS
+
+
+def test_both_drivers_remove_the_partial_dir_after_cleaning(tmp_path, monkeypatch):
+    """`--clean-partials` must leave no `partials/<tile>/` behind, in EITHER arm.
+
+    The A1 driver deleted the files but not the directory, so a completed 26-tile A1 arm left 26
+    empty dirs and `ls -d partials/*/ | wc -l` read as "26 tiles never assembled" -- the one
+    signal you want trustworthy when deciding whether scratch is safe to clear.
+    """
+    mr, tile, args = _drive(monkeypatch, tmp_path, clean_partials=True)
+    assert mr.map_one_tile(tile, _StubEmbedder(), _StubHead(), None,
+                           args=args)["status"] == "done"
+    pdir = tmp_path / "partials" / tile
+    assert not pdir.exists(), f"{pdir} survived --clean-partials"
+
+
+def test_the_a1_driver_also_removes_its_partial_dir():
+    """Source-level check: the two drivers must agree on the cleanup, which they did not."""
+    import re
+
+    root = Path(__file__).parents[1]
+    for name in ("scripts/map_region.py", "scripts/striping_a1_map.py"):
+        src = (root / name).read_text(encoding="utf-8")
+        i = src.index("if args.clean_partials:")
+        block = src[i:i + 800]
+        assert "grid_path.unlink" in block, f"{name}: sweep file not removed"
+        assert re.search(r"partial_dir\.rmdir\(\)", block), f"{name}: partial dir not removed"
