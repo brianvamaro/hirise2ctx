@@ -85,8 +85,13 @@ pointers**. The full original build spec is preserved verbatim in
 - **Methods writeups (for non-coders):** [docs/methods.md](docs/methods.md), [docs/index.md](docs/index.md)
 - **Current code-review/fixing handoff:**
   [docs/CODE_REVIEW_AUDIT_2026-08-06.md](docs/CODE_REVIEW_AUDIT_2026-08-06.md)
-- **The rebuild execution plan:** [PLAN_Rebuild.md](PLAN_Rebuild.md) — drafted 2026-08-19, awaiting
-  approval. Read it before running any producer; it, not `docs/PENDING_REBUILD.md`, is the runbook.
+- **The rebuild execution plan:** [PLAN_Rebuild.md](PLAN_Rebuild.md) — **steps 1–11 EXECUTED
+  and verified (2026-08-20 → 25); step 12 is next.** Read it before running any producer; it,
+  not `docs/PENDING_REBUILD.md`, is the runbook. Both map arms are rendered, downloaded and
+  gated — re-check any time with `scripts/verify_map_download.py` (sha256 vs each sidecar's own
+  `rasters[]`) and `scripts/verify_arm_parity.py` (one lattice, cell-for-cell co-registration,
+  one size-floor basis). `scripts/rebuild_map_manifest.py` repairs a damaged manifest index from
+  the sidecars, with no GPU and no re-render.
 - **Live session state:** the `project_state_*` memory notes (not the stale `HANDOFF_NEXT_SESSION.md`)
 
 When reality diverges from a doc, update DECISIONS (and the relevant PLAN/ROADMAP) in the same change —

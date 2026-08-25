@@ -1,6 +1,15 @@
 # PLAN_Rebuild.md — the batched v2 rebuild (a WAYPOINT, not a destination)
 
-> **Status 2026-08-20: §0 gates all closed; steps 1 → 5 EXECUTED and verified** (`7362d97`).
+> **Status 2026-08-25: §0 gates all closed; steps 1 → 11 EXECUTED and verified.** Step 11
+> shipped both map arms at **26/26 tiles**, 156/156 rasters sha256-verified against their own
+> sidecars, **26/26 cell-for-cell co-registered**, one `grid_id` and one size-floor basis
+> across both arms (`1c1cb55`). **Step 12 is next, and §6's η² is its first item.**
+>
+> Step 11's own history is worth reading before step 12 quotes anything from it — the A1
+> array's 10 h timeout was the **GPU allocation** (RTX 2080 Ti 17.6 s/window vs TITAN Xp
+> ~202), not the arm; R14's overlap guard rested on a false premise and is now a fraction
+> gate on `prob_raw` with a 1e-6 per-cell floor; and the manifest *index* was damaged three
+> ways while every raster stayed perfect. DECISIONS 2026-08-24d → 2026-08-25g.
 > Done: 1, 2, 3, 4, 4b, 4c, 5 — all in place into `dataset_v2`, ~50 min of compute.
 > **Next: step 6 (embeddings, both arms).** Headline so far: rich prevalence **0.373272**
 > (predicted 0.3733), pool 161,005 → **164,644**, CRS gate 194.7 m median.
