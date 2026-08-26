@@ -16,7 +16,8 @@
 >
 > ⚠ **But η² measured RELATIVE to its own rotation null did not improve at all** (median ratio
 > 1.599 → 1.639; A1 better on only 106 of 234 windows). A1 renormalises per frame and so
-> compresses the whole field, lowering the geological floor along with the artifact. **The raw
+> narrows the *bulk* of the field — `prob_raw` IQR ratio 0.85, while its sd **rises** 3%, so it is
+> **not** a uniform compression — which lowers the geological floor along with the artifact. **The raw
 > reduction is real and is the quantity the banked pair measured, but it is not evidence that the
 > artifact shrank relative to geology.** A1 remains a *partial* mitigation shipping as a documented
 > caveat — see §6.

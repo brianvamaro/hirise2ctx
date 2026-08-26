@@ -197,7 +197,7 @@ def figure(win_df: pd.DataFrame, tile_df: pd.DataFrame, pilot_df: pd.DataFrame,
         ax[1].text(0.03, 0.97,
                    f"median η²/null_p95:  {arms[0]} {rb:.2f}  →  {arms[1]} {ra:.2f}\n"
                    f"A1 moves toward the ORIGIN, not the diagonal:\n"
-                   f"it compresses the field, so the floor drops too.",
+                   f"it narrows the field's bulk, so the floor drops too.",
                    transform=ax[1].transAxes, va="top", ha="left", fontsize=7,
                    bbox=dict(boxstyle="round", fc="#fff6e0", ec="0.6", lw=0.6))
 
@@ -378,7 +378,7 @@ def main() -> int:
         print(f"  {k:26s} {v['baseline']:.4f} -> {v['a1']:.4f}   "
               f"Δ {v['delta']:+.4f} ({v['relative']:+.1%})")
 
-    print("\n=== ⚠ PAIRED sign census — A1 compresses the field, so it lowers the NULL too ===")
+    print("\n=== ⚠ PAIRED sign census — A1 narrows the field's bulk, so it lowers the NULL too ===")
     for name, p in paired.items():
         n = p["n"]
         print(f"  {name} scale (n={n}):")
@@ -394,9 +394,10 @@ def main() -> int:
               f"{p['null_p95_median_a1']:.4f} (A1 lowers the geological floor as well)")
     print("  READ THIS WITH THE HEADLINE: A1's raw-η² reduction is real and is the quantity the\n"
           "  banked 0.196/0.141 pair measured, but η² RELATIVE TO ITS OWN ROTATION NULL barely\n"
-          "  moves — so A1 works substantially by compressing the whole field, not only by\n"
-          "  removing frame structure. It is a PARTIAL mitigation, and this is the measurement\n"
-          "  that says so quantitatively.")
+          "  moves — so A1 works substantially by narrowing the BULK of the field, not only by\n"
+          "  removing frame structure. ⚠ Not a uniform compression: on prob_raw the IQR falls\n"
+          "  ~15% while the sd RISES ~3%, i.e. the tails widen slightly (notebook 29 §2b).\n"
+          "  It is a PARTIAL mitigation, and this is the measurement that says so quantitatively.")
     print(f"\n⚠ NOT comparable to the banked pre-rebuild pair "
           f"(baseline {BANKED['baseline']} / A1 {BANKED['a1']}), whose basis was: "
           f"{BANKED['basis']}. The `pilot_crop_eta2` row is the closest successor -- same world "

@@ -175,3 +175,111 @@ def test_difference_stats_with_no_overlap_returns_no_stats():
     b = np.array([[np.nan, 2.0]])
     d = map_qa.difference_stats(a, b)
     assert d["n_common"] == 0 and "mean" not in d
+
+
+# ------------------------------------------------------- cross-generation comparison
+def _smooth_field(h=240, w=240, seed=0):
+    """A smooth spatially-correlated field, like an abundance map at coarse scale."""
+    from scipy.ndimage import gaussian_filter
+
+    rng = np.random.default_rng(seed)
+    f = gaussian_filter(rng.normal(0, 1, (h, w)), 6.0)
+    return f / f.std()
+
+
+def test_difference_character_separates_a_shift_from_a_level_change():
+    """The discriminator notebook 29 §1d rests on: a translation is high-frequency and
+    gradient-following; a regional re-levelling is neither."""
+    f = _smooth_field()
+    shifted = np.roll(f, 3, axis=1) - f                 # pure displacement
+    # a broad regional offset: half the map raised by a constant
+    level = np.zeros_like(f)
+    level[:, : f.shape[1] // 2] = 0.3
+
+    d_shift = map_qa.difference_character(shifted, f, smooth_px=30)
+    d_level = map_qa.difference_character(level, f, smooth_px=30)
+
+    # a shift errs where the field is steep; a flat regional offset does not
+    assert d_shift["gradient_rho"] > 0.5
+    assert d_level["gradient_rho"] < d_shift["gradient_rho"]
+    # and a shift loses its variance under smoothing while a regional offset keeps it
+    assert d_shift["smooth_variance_share"] < 0.2
+    assert d_level["smooth_variance_share"] > 0.8
+
+
+def test_difference_character_reports_its_smoothing_scale_and_sample_size():
+    f = _smooth_field(80, 80)
+    got = map_qa.difference_character(np.roll(f, 2, 0) - f, f, smooth_px=10)
+    assert got["smooth_px"] == 10
+    assert got["n"] == f.size
+    assert got["sd_total"] > 0 and got["sd_smoothed"] >= 0
+
+
+def test_difference_character_declines_to_answer_on_a_tiny_sample():
+    """Better to return n than a spearman rho over nine cells."""
+    got = map_qa.difference_character(np.ones((3, 3)), np.ones((3, 3)))
+    assert got == {"n": 9}
+
+
+def test_quantile_table_reports_zero_fraction_and_the_full_range():
+    a = np.array([0.0, 0.0, 1.0, 2.0, 3.0, np.nan])
+    got = map_qa.quantile_table({"x": a})["x"]
+    assert got["n"] == 5                      # the NaN is excluded
+    assert got["zero_fraction"] == pytest.approx(0.4)
+    assert got["p0"] == 0.0 and got["p100"] == 3.0
+    assert got["mean"] == pytest.approx(1.2)
+
+
+def test_quantile_table_handles_an_all_nan_array_without_raising():
+    got = map_qa.quantile_table({"empty": np.full(4, np.nan)})["empty"]
+    assert got == {"n": 0}
+
+
+def test_displacement_sensitivity_of_a_flat_field_is_zero(tmp_path):
+    """A shift can only create a difference where the field varies -- so on a constant field
+    the geometry bound must be exactly zero, not merely small."""
+    import rasterio
+    from rasterio.transform import from_origin
+
+    from src.mapping import write_geotiff
+
+    p = tmp_path / "flat.tif"
+    write_geotiff(p, np.full((64, 64), 0.25, dtype=np.float32),
+                  from_origin(0.0, 10_000.0, 160.0, 160.0), "")
+    got = map_qa.displacement_sensitivity(p, -160.0, 0.0)
+    assert got["max_abs"] == pytest.approx(0.0, abs=1e-6)
+    assert got["dx_m"] == -160.0 and got["dy_m"] == 0.0
+
+
+def test_displacement_sensitivity_grows_with_the_offset(tmp_path):
+    from rasterio.transform import from_origin
+
+    from src.mapping import write_geotiff
+
+    p = tmp_path / "ramp.tif"
+    # a linear ramp: |delta| under a shift is proportional to the shift
+    ramp = np.tile(np.linspace(0, 1, 128, dtype=np.float32), (128, 1))
+    write_geotiff(p, ramp, from_origin(0.0, 20_000.0, 160.0, 160.0), "")
+    small = map_qa.displacement_sensitivity(p, -160.0, 0.0)
+    large = map_qa.displacement_sensitivity(p, -480.0, 0.0)
+    assert large["sd"] > small["sd"]
+
+
+def test_raster_onto_lands_a_raster_on_another_grid(tmp_path):
+    """The old product is not co-registered with the new one, so this warp is the only honest
+    comparison path -- it must return the REFERENCE grid's shape, not the source's."""
+    import rasterio
+    from rasterio.transform import from_origin
+
+    from src.mapping import write_geotiff
+
+    src = tmp_path / "src.tif"
+    ref = tmp_path / "ref.tif"
+    write_geotiff(src, np.full((40, 40), 0.5, dtype=np.float32),
+                  from_origin(0.0, 6_400.0, 160.0, 160.0), "")
+    write_geotiff(ref, np.zeros((20, 30), dtype=np.float32),
+                  from_origin(160.0, 6_240.0, 160.0, 160.0), "")
+    got = map_qa.raster_onto(src, ref)
+    assert got.shape == (20, 30)
+    inner = got[np.isfinite(got)]
+    assert inner.size and np.allclose(inner, 0.5, atol=1e-5)

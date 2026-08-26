@@ -104,9 +104,17 @@ pointers**. The full original build spec is preserved verbatim in
   - ⚠ **A1's η², re-derived 2026-08-25:** raw η² fell (window median 0.1444 → 0.1145; like-for-like
     pilot crop 0.2327 → 0.1298, −44%) at a **−0.0024** skill cost and no THEMIS-ρ cost — **but η²
     relative to its own rotation null did not improve at all** (median ratio 1.599 → 1.639, better
-    on only 106/234 windows). A1 compresses the whole field, lowering the geological floor with the
-    artifact. **Quote the raw reduction only alongside the ratio.** The banked 0.196→0.141 / −0.024
-    pair is superseded and not comparable.
+    on only 106/234 windows), and **9 of 26 tiles get worse** on raw η². A1 narrows the *bulk* of
+    the field (`prob_raw` IQR ratio 0.85 — but its sd *rises* 3%, so it is **not** a uniform
+    compression: the tails widen), which lowers the geological floor along with the artifact.
+    **Quote the raw reduction only alongside the ratio.** The banked 0.196→0.141 / −0.024 pair is
+    superseded and not comparable.
+  - **Comparing the shipped maps:** [notebooks/29_map_comparison.ipynb](notebooks/29_map_comparison.ipynb)
+    — old vs new and baseline vs A1. ⚠ The archived `map_region_g1` is **not co-registered** with the
+    promoted product, so it can only be compared by world coordinates or by distribution, never by
+    array index. Old→new turns out to be *the same field, moved*: 95% of the difference is
+    high-frequency with the gradient signature of a pure translation, over a small (4.9%-of-variance)
+    genuine re-levelling. A1's effect is **33.7%** regional by contrast.
 - **Live session state:** the `project_state_*` memory notes (not the stale `HANDOFF_NEXT_SESSION.md`)
 
 When reality diverges from a doc, update DECISIONS (and the relevant PLAN/ROADMAP) in the same change —

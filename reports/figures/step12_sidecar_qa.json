@@ -72,7 +72,7 @@
       "detail": "[1.0]"
     },
     {
-      "gate": "A1 fallback statistic covers < 0% of pixels on every tile (frames below a1_min_frame_px fall back by design, R08 -- the count is reported, the pixel share is gated)",
+      "gate": "A1 fallback statistic covers < 0.1% of pixels on every tile (frames below a1_min_frame_px fall back by design, R08 -- the count is reported, the pixel share is gated)",
       "verdict": "PASS",
       "detail": "max fallback pixel fraction 1.599e-04, median 9.242e-05; 9 of 1371 frames fell back on 7 tile(s); frames/tile 31-81; max clip fraction 0.000867"
     }

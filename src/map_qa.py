@@ -198,6 +198,177 @@ def seam_widths(arr: np.ndarray, *, max_width: int = 8) -> dict:
     return out
 
 
+# --------------------------------------------------------- cross-generation comparison
+def _crs_wkt(ds) -> str:
+    """WKT of an open dataset's CRS, or "" if it has none (a pure-resample case)."""
+    return ds.crs.to_wkt() if ds.crs is not None else ""
+
+
+# `rasterio.warp.reproject` refuses a missing CRS outright ("Missing src_crs"), but a pair of
+# rasters that BOTH lack one is, by definition, already in a common coordinate system -- the
+# operation wanted is a pure resample onto a different grid. Handing both sides the same
+# placeholder makes reproject do exactly that, and since src_crs == dst_crs no datum maths runs,
+# so the placeholder's identity cannot affect the result. Only used when both CRSs are absent.
+_SAME_CRS_PLACEHOLDER = ('PROJCS["unnamed",GEOGCS["unnamed",DATUM["unnamed",'
+                         'SPHEROID["unnamed",3396190,0]],PRIMEM["Reference_Meridian",0],'
+                         'UNIT["degree",0.0174532925199433]],PROJECTION["Equirectangular"],'
+                         'PARAMETER["standard_parallel_1",0],PARAMETER["central_meridian",0],'
+                         'UNIT["metre",1]]')
+
+
+def _resolve_crs_pair(src: str, dst: str) -> tuple[str, str]:
+    """Fill in a missing CRS from the other side; if both are missing, share a placeholder."""
+    if src and dst:
+        return src, dst
+    if src or dst:
+        one = src or dst
+        return one, one
+    return _SAME_CRS_PLACEHOLDER, _SAME_CRS_PLACEHOLDER
+
+
+def raster_onto(src_path: str | Path, ref_path: str | Path, *,
+                resampling: str = "bilinear") -> np.ndarray:
+    """Read the raster at ``src_path`` warped onto the exact grid of ``ref_path``.
+
+    Needed because the **archived pre-R01 product and the promoted one are on different
+    lattices**, so they cannot be compared by array index — ``assert_coregistered`` exists to
+    refuse exactly that. Warping by world coordinates is the only honest comparison, and it
+    costs one resample of the *older* product (never of the shipped one).
+    """
+    import rasterio
+
+    from . import validation_retrieve as vr
+
+    with rasterio.open(src_path) as src:
+        arr = src.read(1).astype(np.float32)
+        src_tf, src_crs, src_nd = src.transform, _crs_wkt(src), src.nodata
+    with rasterio.open(ref_path) as ref:
+        dst_tf, dst_shape, dst_crs = ref.transform, (ref.height, ref.width), _crs_wkt(ref)
+    # A raster with no CRS is a pure-resample case, not an error. Crashing on `crs=None` would
+    # make this unusable on any raster written without one.
+    src_crs, dst_crs = _resolve_crs_pair(src_crs, dst_crs)
+    return vr.reproject_to_grid(arr, src_tf, src_crs, dst_crs_wkt=dst_crs,
+                                dst_transform=dst_tf, dst_shape=dst_shape,
+                                resampling=resampling,
+                                src_nodata=src_nd if src_nd is not None else None)
+
+
+def displacement_sensitivity(path: str | Path, dx_m: float, dy_m: float, *,
+                             resampling: str = "bilinear") -> dict:
+    """How much does *this* field change if you merely move it ``(dx_m, dy_m)``?
+
+    **This is what makes an old-vs-new map comparison interpretable.** The archived product
+    differs from the promoted one for three reasons at once — the R01 re-anchoring (pure
+    geometry), the R74+R29 label basis, and a re-fit head and calibrator — and the artifacts
+    cannot separate them (the archived sidecars record no head at all). But the *geometry*
+    term can be **bounded** without any re-render: displace the promoted map by the known
+    offset and difference it against itself. Whatever that produces is the magnitude a pure
+    ~140 m shift is worth on this field, so anything the real old-vs-new difference shows
+    beyond it is content, not placement.
+
+    Returns the same keys as :func:`difference_stats` plus the offset used.
+    """
+    import rasterio
+    from rasterio.transform import Affine
+
+    from . import validation_retrieve as vr
+
+    with rasterio.open(path) as ds:
+        arr = ds.read(1).astype(np.float32)
+        tf, crs, nd = ds.transform, _crs_wkt(ds), ds.nodata
+        crs, _ = _resolve_crs_pair(crs, crs)
+        shape = (ds.height, ds.width)
+    if nd is not None and np.isfinite(nd):
+        arr = np.where(arr == nd, np.nan, arr)
+    # sample the SAME field on a grid whose origin is offset, then compare index-for-index:
+    # cell (i, j) of `moved` holds the value that sat (dx_m, dy_m) away in the original
+    moved_tf = Affine(tf.a, tf.b, tf.c + dx_m, tf.d, tf.e, tf.f + dy_m)
+    moved = vr.reproject_to_grid(arr, moved_tf, crs, dst_crs_wkt=crs, dst_transform=tf,
+                                 dst_shape=shape, resampling=resampling)
+    out = difference_stats(arr.astype(np.float64), moved.astype(np.float64))
+    out["dx_m"] = dx_m
+    out["dy_m"] = dy_m
+    out["interpretation"] = ("difference attributable to PLACEMENT ALONE on this field; the "
+                            "real old-vs-new difference must exceed this to be about content")
+    return out
+
+
+def difference_character(diff: np.ndarray, field: np.ndarray, *, smooth_px: int = 60,
+                         sample: int = 400_000, seed: int = 0) -> dict:
+    """Is a difference field a **displacement** signature or a **level** signature?
+
+    Two diagnostics, and they answer different halves of the question:
+
+    ``gradient_rho``
+        Spearman ρ between ``|diff|`` and the local gradient magnitude of ``field``. A pure
+        translation puts its error exactly where the field is steep, so a displacement scores
+        high. Calibrate it by running this on a *synthetic* shift of the same field
+        (:func:`displacement_sensitivity` builds one), which is displacement by construction.
+    ``smooth_variance_share``
+        The share of the difference's variance that survives a ``smooth_px`` box filter. A
+        translation is high-frequency and loses almost all of it; a genuine re-levelling of
+        whole regions keeps it. This is the diagnostic that separates "the same map, moved"
+        from "a different map".
+
+    Measured on the shipped products (2026-08-25, ``smooth_px=60`` ≈ 9.6 km): a synthetic 140 m
+    shift scores ρ 0.788 / share 0.049-equivalent; the real old→new difference scores ρ 0.764 /
+    share **0.049** — i.e. indistinguishable from a displacement; while A1 − baseline scores
+    ρ 0.718 / share **0.337**, nearly 7× as much regional structure. So old→new is the same
+    field moved, and A1 is a real regional change.
+    """
+    from scipy.ndimage import sobel, uniform_filter
+    from scipy.stats import spearmanr
+
+    d = np.asarray(diff, dtype=np.float64)
+    f = np.asarray(field, dtype=np.float64)
+    m = np.isfinite(d) & np.isfinite(f)
+    n = int(m.sum())
+    if n < 100:
+        return {"n": n}
+    filled = np.nan_to_num(f, nan=0.0)
+    grad = np.hypot(sobel(filled, 0), sobel(filled, 1))
+    ad, g = np.abs(d[m]), grad[m]
+    if sample and n > sample:
+        idx = np.random.default_rng(seed).choice(n, size=sample, replace=False)
+        ad_s, g_s = ad[idx], g[idx]
+    else:
+        ad_s, g_s = ad, g
+    thr = np.percentile(g_s, 90)
+    smooth = uniform_filter(np.nan_to_num(d, nan=0.0), smooth_px)
+    sd_tot = float(d[m].std())
+    sd_smooth = float(smooth[m].std())
+    return {
+        "n": n,
+        "gradient_rho": float(spearmanr(ad_s, g_s).statistic),
+        "top_decile_gradient_share": float(ad_s[g_s >= thr].sum() / ad_s.sum()),
+        "sd_total": sd_tot,
+        "sd_smoothed": sd_smooth,
+        "smooth_variance_share": float((sd_smooth / sd_tot) ** 2) if sd_tot > 0 else float("nan"),
+        "smooth_px": smooth_px,
+    }
+
+
+def quantile_table(arrays: dict, qs=(0, 1, 5, 25, 50, 75, 90, 95, 99, 99.9, 100)) -> dict:
+    """Pooled distribution of each named array over its finite cells.
+
+    Distributional comparison is the one cross-generation read that needs **no** resampling
+    and therefore carries no co-registration caveat at all — two maps of the same region can
+    be compared as populations even when they are not comparable cell-for-cell.
+    """
+    out = {}
+    for name, a in arrays.items():
+        v = np.asarray(a, dtype=np.float64)
+        v = v[np.isfinite(v)]
+        if not v.size:
+            out[name] = {"n": 0}
+            continue
+        rec = {"n": int(v.size), "mean": float(v.mean()), "sd": float(v.std(ddof=1)),
+               "zero_fraction": float((v <= 0).mean())}
+        rec.update({f"p{q:g}": float(np.percentile(v, q)) for q in qs})
+        out[name] = rec
+    return out
+
+
 def difference_stats(a: np.ndarray, b: np.ndarray) -> dict:
     """``b - a`` (A1 minus baseline) on the cells both arms cover.
 

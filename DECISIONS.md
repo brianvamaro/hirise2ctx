@@ -10711,3 +10711,113 @@ coexist with zero images in band**.
   instrument should compute what it needs to be honest, not leave it to a reader's luck.
 - Two smaller ones: a `relative_to(REPO)` on a relative `--map-dir` (crashed on the first THEMIS
   attempt), and `{1e-3:.0%}` printing a gate threshold as "0 %".
+
+### 2026-08-25i — notebook 29: the three shipped maps compared, and old-vs-new turns out to be the same field moved
+
+Brian asked for a comparison of old vs new and baseline vs A1. Neither existed: step 12 had produced
+an A1-minus-baseline difference mosaic and the η² tables, but no visual or distributional
+comparison, and **nothing at all** compared the archived pre-R01 product to the promoted one.
+`notebooks/29_map_comparison.ipynb` (source `notebooks/_build_29.py`) is that comparison. It reads
+only artifacts already on disk — no inference, no GPU.
+
+The two halves do **not** have the same standing, and that is the notebook's organising point:
+
+- **baseline vs A1 is exact** — one lattice, cell-for-cell, one size-floor basis, verified 26/26.
+- **old vs new is not a controlled comparison at all.** The products differ by the R01
+  re-anchoring, the R74+R29 label basis *and* a re-fit head and calibrator, simultaneously, and
+  they are **not co-registered**, so `assert_coregistered` refuses an index comparison outright.
+
+#### The archived product cannot be audited, which is its most durable difference
+
+Its sidecars are a **10-key stub** and its rasters carry **one** tag (`AREA_OR_POINT`): no
+`grid_id`, no `head`, no `calibration_digest`, no per-raster SHA-256, no `nodata_gate`, no
+`SIZE_FLOOR_*` basis. **We cannot read off which head produced the old map** — that is known from
+DECISIONS, not from the artifact. Against the promoted sidecars' 30 keys and 13 tags, this is the
+comparison that would matter most if the old product were ever quoted again.
+
+#### Old vs new: bound the geometry term instead of waving at it
+
+The three causes cannot be separated without a ~23 GPU-h re-render, but the **geometry** term can be
+bounded for free: displace the *promoted* map against itself by the known offset and see what pure
+placement is worth on this field (`src.map_qa.displacement_sensitivity`).
+
+| | sd(Δ) |
+|---|---|
+| synthetic 140 m shift of the new map (the median tile displacement R01 corrected) | 0.004122 |
+| **real old → new** | **0.004375** |
+| synthetic 160 m shift — one whole cell | 0.004712 |
+
+**The real difference sits between a 140 m and a 160 m displacement of the same field** (ratio
+1.06), and its median is exactly 0.
+
+Then a second diagnostic to say *what kind* of difference it is (`map_qa.difference_character`):
+ρ between |Δ| and the field's local gradient — a translation errs where the field is steep — and
+the share of variance surviving a ~9.6 km box filter.
+
+| difference | ρ(\|Δ\|, \|∇field\|) | variance surviving 9.6 km |
+|---|---|---|
+| synthetic pure 140 m shift (calibration) | +0.788 | **0.0003** |
+| **real old → new** | **+0.764** | **0.049** |
+| A1 − baseline (contrast) | +0.718 | **0.337** |
+
+So old → new has essentially a translation's gradient signature and **95 % of its variance is
+high-frequency**. The dominant term is unambiguously *the same field, moved*.
+
+**But the regional share is 0.049, not the 0.0003 a pure shift gives — ~160× more.** That residual
+is not noise: it is exactly the level change the distributions show, so the two readings agree.
+
+| pooled, abundance | old g1 | new baseline | new A1 |
+|---|---|---|---|
+| zero fraction | 0.3097 | **0.2059** | 0.3516 |
+| median | 0.000898 | **0.001484** | 0.000703 |
+| max | **0.293242** | **0.151043** | 0.293242 |
+
+A third fewer cells pinned at zero (the corrected labels' higher rich prevalence, made visible),
+the median up 65 %, and **the new baseline never reaches the calibrator's ceiling** — 0.293242 is
+the pool max `fractional_area` the Tier-2 qmatch maps onto (R84's invariant), and the new baseline
+tops out at 0.151 across the whole region.
+
+**The answer to "how different is the new map?"** — a small genuine regional re-levelling sitting
+under a much larger displacement. Level and dynamic range changed; the spatial pattern is largely
+the same field, moved. Neither half of that sentence is safe alone.
+
+#### A1: two findings beyond step 12's numbers
+
+**1. "A1 compresses the whole field" was too loose, and §2b measures the right thing.** Per layer:
+
+| layer | sd ratio A1/base | IQR ratio A1/base |
+|---|---|---|
+| `prob_raw` | **1.033** | **0.851** |
+| `prob` | 1.021 | 0.582 |
+| `abundance` | 1.237 | 0.864 |
+
+A1 **narrows the bulk while slightly widening the extremes** — it is *not* a uniform compression,
+and the tails are exactly where the boulder-rich science lives. The load-bearing part of the step-12
+finding is untouched (A1 lowers the rotation null along with the between-frame term, so raw η² falls
+while η²/null does not), but the mechanism gloss was wrong in the tails. Corrected in CLAUDE.md,
+PLAN_Rebuild, ROADMAP and the `map_arm_eta2.py` output.
+
+**2. A1's failure mode is itself frame-shaped — it can MANUFACTURE the artifact.** §2c renders the
+tiles A1 helps and hurts most, chosen from the η² table rather than by eye. On `E-12_N32` (A1's
+worst, η² 0.2075 → 0.3711) the baseline is nearly uniformly dark low-abundance terrain and **A1
+introduces a bright, straight-edged rectangular patch that was not there before** — a source frame.
+Credible mechanism: A1 rescales each frame by its own robust median/IQR, and on low-contrast terrain
+that statistic is unstable, so an unrepresentative frame gets stretched into the model's sensitive
+range. Same population R08 flagged, now visible at map scale.
+
+That is a sharper statement than "9 of 26 tiles get worse": **A1 is not "the artifact, reduced
+everywhere" but "the artifact reduced on most tiles and manufactured on a few."** If a future arm is
+judged against A1, that asymmetry is the thing to beat.
+
+#### New code + tests
+
+`src.map_qa` gains `raster_onto`, `displacement_sensitivity`, `difference_character`,
+`quantile_table` and the `_resolve_crs_pair` helper. The CRS helper exists because the first two
+crashed on a raster with `crs=None` — `rasterio.warp.reproject` refuses a missing CRS, but a pair
+that *both* lack one is by definition already in a common system, so they now share a placeholder
+and the call becomes the pure resample that was wanted. Found by a test, not in production.
+
+**930 fast tests** (was 922): 8 new in `tests/test_map_qa.py`, including that a translation and a
+regional offset are separable by both diagnostics, that `displacement_sensitivity` is **exactly**
+zero on a constant field (a shift can only bite where the field varies), and that `raster_onto`
+returns the *reference* grid's shape.
