@@ -8,7 +8,8 @@ pointers**. The full original build spec is preserved verbatim in
 > on BoulderNet HiRISE detections, to map abundance across the CTX mosaic where HiRISE is absent.
 > The Weeks-1–2 data pipeline (in build_spec) is **built**. Work has since progressed: modeling →
 > foundation-model recipe (frozen `mlp_ens3` on Fang-ViT embeddings) → deployable head + calibration
-> → regional circum-Chryse map → the CTX **source-frame striping artifact** + A1 mitigation. For
+> → regional circum-Chryse map → the CTX **source-frame striping artifact**, whose cause is solved
+> and for which **no mitigation survives** (A1 demoted 2026-08-25; the artifact ships as a caveat). For
 > **current phase + plan index see [ROADMAP.md](ROADMAP.md)**; running log = [DECISIONS.md](DECISIONS.md);
 > live session state = the `project_state_*` memory notes.
 
@@ -101,6 +102,15 @@ pointers**. The full original build spec is preserved verbatim in
     of 52 tiles are `unknown_on_gate_layer`. (2) A missing `device` field means "predates the
     field", and what hardware that implies is **arm-conditional** (baseline = 2080 Ti, A1 = Pascal),
     known from the run logs, not from the sidecar.
+  - ⚠⚠ **A1 IS NOT THE PRODUCT (ruled 2026-08-25, DECISIONS 2026-08-25k).** `reports/map_region`
+    (baseline) is the deliverable; `reports/map_a1` is a **sensitivity arm** kept for differencing.
+    A1 was demoted because it wins only on *raw* η² while its ratio to its own rotation null does
+    not improve, it **fails** the Tier-1 ECE gate the baseline passes (0.0523 vs 0.0204,
+    force-banked), it is no better thermally, and it **manufactures** frame-shaped blocks on 9/26
+    tiles — predictably from its own per-frame gain `A1_REF_IQR/frame_IQR` (ρ +0.490, p 1.4e-4).
+    The source-frame artifact therefore **ships unmitigated**, as a documented caveat: treat any
+    abundance reading in low-contrast terrain as carrying frame structure. A **gain-capped** A1 is
+    the one untried lever, logged as v3.
   - ⚠ **A1's η², re-derived 2026-08-25:** raw η² fell (window median 0.1444 → 0.1145; like-for-like
     pilot crop 0.2327 → 0.1298, −44%) at a **−0.0024** skill cost and no THEMIS-ρ cost — **but η²
     relative to its own rotation null did not improve at all** (median ratio 1.599 → 1.639, better

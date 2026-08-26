@@ -233,8 +233,12 @@ Output: `docs/regional_validation.md` + `reports/figures/regional_*` (committed 
   HiRISE footprints. *(UPDATE 2026-07-02: cause **SOLVED** — CTX **source-frame radiometry**
   (per-frame contrast stretch in the Murray mosaic × no per-frame norm in the embedder), DECISIONS
   2026-06-18d. Mitigation is its own program → [PLAN_StripingArtifact.md](PLAN_StripingArtifact.md):
-  A1 partial, decision = F vs E, F de-risk in progress. **The remaining thermal legs (1–2 quantitative)
-  should run on the final post-mitigation map**, not this one.)*
+  A1 partial, decision = F vs E, F de-risk in progress.)* ⚠ **RESOLVED 2026-08-25: there IS no
+  post-mitigation map.** F was hard-aborted and **A1 was demoted to a sensitivity arm** (DECISIONS
+  2026-08-25k), so the artifact ships unmitigated as a documented caveat. **The remaining thermal
+  legs run on the promoted baseline, `reports/map_region`** — re-rendered on the corrected global
+  lattice, with THEMIS re-fetched to match it exactly (`assert_coregistered` dx=dy=0). The "wait for
+  the final map" condition is met.
 
 ---
 

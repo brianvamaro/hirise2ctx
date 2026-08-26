@@ -389,8 +389,16 @@ like-for-like successor — same world extent, corrected lattice, `A1_ARM =
 a1_native_perframe_tilesupport_v2` — and on that basis A1's raw-η² reduction is **larger** than
 banked (−44% vs −28%) at **a tenth of the skill cost**.
 
-⚠⚠ **But the raw-η² headline overstates what A1 does, and step 12 measured by how much.** A1
-renormalises per source frame, which compresses the **whole** field — so it lowers the rotation
+⚠⚠⚠ **AND ON 2026-08-25 BRIAN RULED THAT IS STILL NOT GOOD ENOUGH: A1 IS DEMOTED** from shipped
+mitigation to *sensitivity arm* (DECISIONS 2026-08-25k). The **baseline is the product** and the
+source-frame artifact **ships unmitigated**. The three views below are the main reason; the rest are
+A1's Tier-1 ECE **0.0523, failing the 0.05 gate the baseline passes at 0.0204** (force-banked), no
+thermal gain (better on 10/26 tiles), and its **manufacture** of frame-shaped blocks on 9/26 tiles,
+predictable from its own per-frame gain (ρ +0.490, p 1.4e-4). **Do not read the −44% row as a reason
+to prefer A1.**
+
+⚠⚠ **The raw-η² headline overstates what A1 does, and step 12 measured by how much.** A1
+renormalises per source frame, which narrows the *bulk* of the field — so it lowers the rotation
 null as well as the between-frame term (window-scale null p95 median 0.0771 → 0.0622). Three
 paired, per-unit views of the same 234 windows:
 
@@ -402,10 +410,11 @@ paired, per-unit views of the same 234 windows:
 
 **On the null-relative metric A1 is a coin flip and very slightly worse.** Per-window raw Δη²
 spans −0.41 to **+0.44**, and 9 of 26 tiles get *worse* on raw η² (worst: `E-12_N32` 0.207 →
-0.371). So A1 works substantially **by compressing the field, not only by removing frame
+0.371). So A1 works substantially **by narrowing the field's bulk, not only by removing frame
 structure**. Neither arm reaches the 0.05 F-reopening bar — that bar belonged to the aborted F
-build — and this is the quantitative statement of why A1 is a **partial** mitigation shipping as a
-documented caveat. Quote the raw reduction only alongside the ratio.
+build — and this is the measurement that got A1 demoted. **It is the BASELINE's residual that now
+ships as a documented caveat: window-median η² 0.1444 at ratio 1.599 over its own rotation null.**
+Quote the raw reduction only alongside the ratio.
 
 Report on the project's standard metrics only — `meaningful_auc` / `pr_auc@1e-2` / `precision@5%` +
 Spearman ρ + per-bin RMSE at the `fa > 1e-2` rich/poor threshold. **Never presence AUC.**

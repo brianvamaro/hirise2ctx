@@ -21,9 +21,19 @@ for session state. The arc since the v1-reportable wrap:
 - **Regional map** ([PLAN_RegionalMap.md](PLAN_RegionalMap.md)): 26-tile circum-Chryse abundance
   map on Sherlock GPUs (`scripts/map_region.py`), validated vs MOLA shoreline + THEMIS/TES thermal
   (legs in progress). Notebook 24.
-- **Striping artifact SOLVED + mitigation in Phase 2** ([PLAN_StripingArtifact.md](PLAN_StripingArtifact.md)):
-  the regional-map rectangular blocks are **CTX source-frame radiometry** (notebook 25). A1
-  (per-frame normalization) = partial (28% eta² ↓ at −0.024 skill). The **F campaign** (inference on
+- **Striping artifact SOLVED — and NO mitigation survives** ([PLAN_StripingArtifact.md](PLAN_StripingArtifact.md)):
+  the regional-map rectangular blocks are **CTX source-frame radiometry** × the embedder's fixed
+  `/255` (notebook 25). ⚠ **A1 was demoted from shipped mitigation to sensitivity arm on 2026-08-25**
+  (DECISIONS 2026-08-25k): the **baseline** map is the product and the artifact **ships unmitigated**,
+  as a documented caveat (residual window-median eta² **0.1444**, ratio **1.599** over its own
+  rotation null). A1 reduces *raw* eta² (−21 % regional, −44 % on the pilot crop) but **not relative
+  to geology** (ratio +2.5 % / +9.3 %), fails the Tier-1 ECE gate the baseline passes (0.0523 vs
+  0.0204), and **manufactures** frame-shaped blocks on 9 of 26 tiles — predictably from its own
+  per-frame gain. A gain-capped A1 is untried and logged as v3. See
+  [notebook 29](notebooks/29_map_comparison.ipynb) for all three shipped maps compared.
+  *Historical, superseded:* A1 (per-frame normalization) = partial (28% eta² ↓ at −0.024 skill) — both
+  figures came from a different lattice, a pre-R07 A1 definition and a different prevalence, and are
+  **not comparable** to anything current. The **F campaign** (inference on
   ISIS-calibrated source frames, notebooks 26–28) closed the input-mapping leg (skill PASS, eta² FAIL)
   → the Brian-approved **Phase-2 docket H1–H6**: **H1** per-frame log-median centering **PASS**
   (eta² 0.179 → 0.081, embedder amplification killed), **H2** linear nuisance-subspace removal
@@ -98,7 +108,7 @@ gates + §5.1 built** 2026-07-29. The only thing between here and the F-build ve
 transfer plus ~30 min of laptop compute — see **SHERLOCK_RUN Part J** for the exact order. The gates'
 mosaic baseline is already banked; the F rows are what the run adds, and the §5.1 A1 column needs two
 GPU steps (`striping_a1_map.py`, then the A1 LOIO re-run on the 36). If the gates fail → fall back to
-shipping the A1 map + caveat + H6 provenance. Then the parked validation legs resume on the final map
+shipping the A1 map + caveat + H6 provenance. ⚠ **RESOLVED: the gates failed, F was hard-aborted 2026-07-30 — and the A1 fallback was itself DEMOTED 2026-08-25 (DECISIONS 2026-08-25k). The BASELINE map ships, with the artifact as a documented caveat.** Then the parked validation legs resume on the final map
 ([PLAN_RegionalMap.md](PLAN_RegionalMap.md), 2026-07-13 refresh note). Parked: Stage-7 Tier 3,
 Path A model bank. (Live session state = the `project_state_*` memory notes;
 `HANDOFF_NEXT_SESSION.md` is stale.)

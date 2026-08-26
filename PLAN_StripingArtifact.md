@@ -14,9 +14,31 @@ embedder with no per-frame normalization** maps each frame's radiometry to a dif
 **Evidence:** frames explain eta² 0.011 vs 0.002 null (89% tiles > null-95p); frame-mean choropleth
 reproduces the blocks after geology removed; effect is texture/contrast-driven (per-frame mean-DN
 Spearman only +0.14). **Why invisible before:** training windows ≈8 km inside one ~28 km frame + LOIO
-scores per-image=per-frame. **Mitigation status (updated 2026-07-05):** a long campaign followed —
+scores per-image=per-frame. **⚠ MITIGATION STATUS — FINAL (2026-08-25): the cause is solved and NO mitigation survives.**
+**A1 was demoted from shipped mitigation to sensitivity arm** (Brian, DECISIONS 2026-08-25k),
+reversing the 2026-07-30 ruling. The **baseline** map (`reports/map_region`) is the product and the
+source-frame artifact **ships unmitigated**, as a documented caveat — residual window-median
+η² **0.1444** at ratio **1.599** over its own rotation null, nowhere near the 0.05 bar.
+
+Why every lever failed, in the order tried: **A1** reduces raw η² (−21 % regional, −44 % on the
+pilot crop) but *not relative to geology* (ratio +2.5 % regional, **+9.3 % on the pilot crop**),
+fails the Tier-1 ECE gate the baseline passes (0.0523 vs 0.0204, force-banked), is no better
+thermally, and **manufactures** frame-shaped blocks on 9 of 26 tiles — predictably from its own
+per-frame gain (Spearman(gain, mean Δ) = +0.490, p 1.4e-4). **H2** (linear nuisance subspace) and
+**H3** (consistency-regularised head) were refuted. **H1+H4** cleared the pilot bar but only inside
+the **F build, hard-aborted 2026-07-30** on between-place level coherence. A **gain-capped A1** —
+clamp `A1_REF_IQR / frame_IQR` so a frame can never be amplified — is the one untried lever, logged
+as **v3** material (needs a re-embed + an A1 re-render, ~19 GPU-h).
+
+This is a clean **negative result on a real failure mode**, and more publishable as one than as a
+half-claimed fix. Evidence: notebook 29 (all three shipped maps compared), `scripts/map_arm_eta2.py`,
+DECISIONS 2026-08-25h → 2026-08-25k.
+
+*Superseded, retained for method history —* **Mitigation status (updated 2026-07-05):** a long campaign followed —
 A1 partial (28% ↓ / −0.024), F tested end-to-end and its input-mapping leg closed (skill PASS, η²
-FAIL), verdict review-amended → the live work plan is the **🟢 PHASE 2 docket** below. (Thermal ρ
+FAIL), verdict review-amended → the live work plan is the **🟢 PHASE 2 docket** below. ⚠ Those two
+A1 figures are **superseded and non-comparable** (different lattice, pre-R07 A1 definition, different
+prevalence, and A1 had never been rendered as a map). (Thermal ρ
 was RETIRED as mitigation adjudicator 2026-06-22 — LOIO skill + η² are the gates.) Full record:
 DECISIONS 2026-06-18d → 2026-07-05d,
 notebook 25 (rewritten), notebook 24 §2d, `src/striping.py`, `scripts/striping_frame_blocks.py`,
@@ -91,7 +113,7 @@ THEMIS/TES thermal ρ ideally up** (external check). "Looks cleaner" alone is in
   differences offset+gain can't capture + the frozen-ViT ceiling).
 - **NET: A1 = partial 28% reduction for −0.024 LOIO — real but not decisive. NO DECISION TAKEN.** Full
   option space + pros/cons below. *(Subsequent history: Brian chose "de-risk F first" 2026-07-02 →
-  F campaign 2026-07-02→05 → PHASE 2 docket. A1 remains the measured fallback throughout.)*
+  F campaign 2026-07-02→05 → PHASE 2 docket. A1 was the measured fallback throughout — ⚠ **until it was DEMOTED 2026-08-25; see the FINAL VERDICT at the head of this file.**)*
 - Note: m0/s0 measured on the *region* frames (deploy side); same constant used train+deploy so it
   doesn't bias the A/B — minor refinement = recompute over train∪region if A1 is adopted.
 

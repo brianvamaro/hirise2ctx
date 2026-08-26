@@ -47,7 +47,7 @@ Three regional rock-abundance maps now exist over the same 26 Murray tiles of ci
 |---|---|---|
 | **old** | `reports/map_region_g1` | the pre-R01 product, **archived** by PLAN_Rebuild step 12 |
 | **new baseline** | `reports/map_region` | the promoted product: corrected lattice, corrected labels |
-| **new A1** | `reports/map_a1` | the same, with the A1 per-source-frame CTX renormalisation |
+| **new A1** | `reports/map_a1` | the same, with the A1 per-source-frame CTX renormalisation. ⚠ **Demoted to a SENSITIVITY ARM on 2026-08-25 on the strength of §2 below** — it is not the product (§3) |
 
 This notebook answers two questions Brian asked directly: **how different is the new map from the
 old one, and how different is A1 from the baseline?**
@@ -64,7 +64,7 @@ wrong:
   still be concluded, and bounds the geometry term rather than waving at it.
 
 *(Companion notebooks: [24](24_regional_map.ipynb) is the regional-map home,
-[25](25_striping_artifact.ipynb) diagnosed the source-frame artifact A1 mitigates.)*
+[25](25_striping_artifact.ipynb) diagnosed the source-frame artifact A1 was built to mitigate.)*
 """, "intro"))
 
 cells.append(code(
@@ -812,7 +812,33 @@ The cost side is now small: **Δ median per-image AUC −0.0024** (banked: −0.
 
 # ---------------------------------------------------------------- §3
 cells.append(md(
-    """## §3 — What to quote
+    """## §3 — The ruling this notebook produced, and what to quote
+
+> ### ⚠ A1 IS NOT THE PRODUCT (Brian, 2026-08-25 — DECISIONS 2026-08-25k)
+>
+> On the strength of §2, **A1 was demoted from shipped mitigation to *sensitivity arm***, reversing
+> the 2026-07-30 ruling. **`reports/map_region` (baseline) is the deliverable**; `reports/map_a1`
+> stays on disk as the thing you difference the product against. The source-frame artifact therefore
+> **ships unmitigated**, as a documented caveat.
+>
+> The ledger: A1 wins only on *raw* η² (−21 % regional, −44 % on the pilot crop) and the
+> **null-relative** version of that same metric does not improve (ratio +2.5 % regional, **+9.3 % on
+> the pilot crop**). Against that, A1's Tier-1 ECE is **0.0523 — failing the 0.05 gate the baseline
+> passes at 0.0204**, and it is in the product only because it was `--force`d; it is no better
+> thermally (better on 10/26 tiles); it is marginally worse on R54 per-image level (7/38 vs 8/38);
+> and it **manufactures** frame-shaped blocks on 9/26 tiles, predictably from its own per-frame gain
+> (§2d(ii)). Median per-image AUC −0.0024, pooled PR-AUC +0.0082 — skill is a wash either way.
+>
+> **What this does not say.** Not that per-frame normalisation is a dead end — a **gain-capped** A1
+> (clamp `A1_REF_IQR / frame_IQR` so a frame can never be amplified) is untried and logged as **v3**.
+> Not that the artifact is gone: the residual is now the baseline's own, window-median η² **0.1444**
+> at ratio **1.599**, nowhere near the 0.05 bar. Treat any abundance reading in low-contrast terrain
+> as carrying source-frame structure.
+>
+> This also discharges review finding **R06** — *"'A1 is the shipped mitigation' is not backed by any
+> artifact."* The artifact now exists, and it does not back it.
+
+### What to quote
 
 **Old vs new.** *"Per pixel the two maps differ barely more than the same field displaced by one
 160 m cell (sd 0.00438 vs 0.00471), and 95 % of that difference is high-frequency with the

@@ -10892,3 +10892,89 @@ already in the sidecar I had open** (`a1_n_frames_too_small: 0`). Same shape as 
 asserted the absence of a phenomenon instead of measuring its magnitude: ⚠ **I reached for a
 mechanism that sounded right instead of the one measurement that would decide it.** The measurement
 cost one cached-tile stream, ~3 minutes.
+
+### 2026-08-25k — ⚠ RULING REVERSED: **A1 is demoted from shipped mitigation to sensitivity arm.** The baseline map is the product
+
+Brian, reading the step-12 + notebook-29 measurements: *"I feel like A1 is kinda just worse than the
+baseline or at most the same. Seems like a more complicated system that manufactures artifacts is
+not good."* Ruling: **demote A1.** The baseline (`reports/map_region`) is THE regional product; A1
+(`reports/map_a1`) stays on disk as a **documented sensitivity arm** and is no longer described as
+the mitigation.
+
+**This reverses the 2026-07-30 ruling** ("PHASE 2 CONCLUDED: A1 stands as the mitigation"). That
+ruling rested on **η² 0.196 → 0.141 at a −0.024 AUC cost**, and step 12 superseded *both* halves —
+different lattice, different A1 definition (pre-R07), different prevalence, and A1 had never been
+rendered as a map at all. This is a reopening on new evidence, not a relitigation. It also
+discharges review finding **R06**, which said in as many words that *"A1 is the shipped mitigation"
+was not backed by any artifact*; the artifact now exists and does not back it.
+
+#### The ledger the ruling rests on
+
+| axis | baseline | A1 | |
+|---|---|---|---|
+| raw η², window median (234 windows) | 0.1444 | **0.1145** (−21 %) | A1 |
+| raw η², E8_N44 pilot crop | 0.2327 | **0.1298** (−44 %) | A1 |
+| excess (η² − own null mean) | 0.0887 | **0.0690** (−22 %) | A1, but only **15/26** tiles |
+| **η² ÷ own rotation-null p95** | **1.599** | 1.639 (**+2.5 %**) | **baseline**; A1 better on 12/26 tiles, 106/234 windows |
+| median per-image AUC (LOIO, same script both arms) | **0.783499** | 0.781057 | baseline, −0.0024 (immaterial) |
+| pooled PR-AUC | 0.775446 | **0.783631** | A1, +0.0082 |
+| **Tier-1 ECE (LOIO)** | **0.020405 — PASS** | **0.052263 — FAIL, `--force`d** | **baseline, 2.6×** |
+| R54 per-image level, within ±20 % | **8/38** | 7/38 | baseline |
+| THEMIS ρ, per-tile median | 0.0653 | 0.0654 | wash — A1 better on only **10/26** tiles |
+| robustness | — | **manufactures** frame-shaped blocks on **9/26** tiles, predictably | **baseline** |
+| cost | — | SeamMaps + per-frame native streaming (~1.2 h embed), extra failure modes | **baseline** |
+
+**A1 wins on one metric family, and the null-relative version of that same family says the win is
+not a de-striping.** The decisive number is on the **pilot crop** — the original basis for "A1
+works": raw **−44.2 %**, excess **−42.0 %**, but ratio to its own null **+9.3 %**. Even on its home
+turf, re-derived correctly, A1 does not reduce the artifact *relative to geology*; it shrinks the
+field and the artifact together.
+
+#### Two costs that had been under-weighted, and are now on the record
+
+1. **Calibration.** A1's Tier-1 ECE is **0.052263 against a 0.05 gate — it FAILS the gate the
+   baseline passes at 0.020405**, and it is in the product only because it was `--force`d
+   (`gates_passed=False, forced=True` in its own meta). Demoting A1 removes a force-banked
+   calibrator from the shipped path. That is a provenance improvement independent of any η² argument.
+2. **It manufactures the artifact it was built to remove.** Notebook 29 §2d: on `E-12_N32` the block
+   A1 invents is bounded by exactly one SeamMap polygon, and η² of the *A1 − baseline delta* by
+   source frame is 2.07–2.50× its own rotation null — A1's changes are frame-organised. §2d(ii)
+   measures the lever: **Spearman(per-frame gain `A1_REF_IQR/frame_IQR`, mean Δ) = +0.490,
+   p = 1.4e-4**. Narrow-IQR frames get stretched upward. The failures are not noise; they are
+   predictable from a quantity A1 already computes.
+
+#### What this does NOT say
+
+- **Not** "per-frame normalisation is a dead end." It says *A1 as configured* fails. The obvious
+  guard — clamp `A1_REF_IQR / frame_IQR` so a frame can never be amplified — is a one-line change
+  nobody has tried. Brian was offered that probe and chose the demotion instead, on cost: it needs
+  a re-embed (~1.3 h) plus a re-render of the A1 arm (~19 GPU-h). **Logged as v3 material.**
+- **Not** "the artifact is gone." It ships **unmitigated** now, as a documented caveat. The residual
+  is the baseline's own: window-median η² **0.1444** at ratio **1.599** over its rotation null,
+  nowhere near the 0.05 F-reopening bar. Every abundance reading in a boulder-poor, low-contrast
+  region should be treated as carrying source-frame structure.
+- **Not** a reason to delete anything. A1's 26 tiles, three layers, mosaics and sidecars stay on
+  disk; `scripts/verify_arm_parity.py`, `scripts/map_arm_eta2.py` and notebook 29 all keep working
+  on both arms. It is a *sensitivity arm* — the thing you difference the product against — which is
+  a real role and the one the artifact actually supports.
+
+#### The striping programme's honest end-state
+
+The cause is **solved** (CTX source-frame radiometry × the embedder's fixed `/255`, DECISIONS
+2026-06-18d) and **no mitigation survives**: F was hard-aborted 2026-07-30 on between-place level
+coherence, H2 and H3 were refuted, H1+H4 cleared the pilot bar only inside the aborted F build, and
+A1 is demoted here. That is a clean negative result on a real failure mode, and it is more
+publishable as one than as a half-claimed fix.
+
+#### Docs swept
+
+`ROADMAP.md` (both the StripingArtifact and RegionalMap rows), `PLAN_StripingArtifact.md`,
+`PLAN_RegionalMap.md`, `PLAN_Rebuild.md` §6, `README.md`, `CLAUDE.md`, `docs/index.md`,
+notebook 29 §3, and the `regional_map_rectangular_artifact` memory note. **Not** touched, by design:
+`docs/CODE_REVIEW_2026-07-31.md`, `docs/CODE_REVIEW_AUDIT_2026-08-06.md` and
+`docs/review_2026-07-31/**` — those are point-in-time records, and R06's original wording is
+evidence, not drift.
+
+**One knock-on for PLAN_RegionalMap:** its remaining thermal legs were parked "until the final
+post-mitigation map". There is no post-mitigation map; the condition is met by the promoted baseline,
+and those legs should run on **`reports/map_region`**.
