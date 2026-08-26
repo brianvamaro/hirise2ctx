@@ -10821,3 +10821,74 @@ and the call becomes the pure resample that was wanted. Found by a test, not in 
 regional offset are separable by both diagnostics, that `displacement_sensitivity` is **exactly**
 zero on a constant field (a shift can only bite where the field varies), and that `raster_onto`
 returns the *reference* grid's shape.
+
+### 2026-08-25j — notebook 29 §2d: the SeamMap overlay, and A1's failure mechanism MEASURED (amends 2026-08-25i)
+
+Brian asked for the §2c striping figure with the SeamMap overlaid. Added as **§2d**
+(`reports/figures/29_a1_striping_seams.png`), plus two cells that turn the overlay from an
+illustration into a test. *(Aside worth noting: Brian said "2b" for what the source calls §2c. The
+notebook puts each interpretation markdown **after** the figure it explains, so every figure renders
+under the previous section's heading. §2 now carries a short heading cell before each figure.)*
+
+#### The overlay settles §2c's eyeball argument
+
+The Murray SeamMap is a partition — one source frame owns each pixel — so its polygons dissolved by
+`PRODUCT_ID` are the actual source-frame footprints. Drawn over raw P(rich) they turn "looks
+rectangular" into "is, or is not, this frame". **On `E-12_N32` the bright patch A1 invented is
+bounded by exactly one polygon**, `G04_019690_2176_XN_37N011W`, mean Δ **+0.4759** over **36,873
+coarse cells**. Not a blur, not a smear: one source frame re-levelled into the model's sensitive
+range.
+
+Quantified without the picture, using the same rotation-null instrument as the artifact itself —
+η² of the **A1 − baseline delta** by source frame:
+
+| tile | η² of the delta | null p95 | ratio |
+|---|---|---|---|
+| `E0_N44` (A1 helps most, η² 0.3138 → 0.2013) | 0.1456 | 0.0705 | **2.07** |
+| `E-12_N32` (A1 hurts most, η² 0.2075 → 0.3711) | 0.3949 | 0.1576 | **2.50** |
+
+**What A1 changes is organised by source frame on both tiles**, which is what a per-frame operator
+should do and is exactly why it can create a block as easily as remove one.
+
+#### ⚠ AMENDS 2026-08-25i: the mechanism is the IQR denominator, NOT small frames
+
+2026-08-25i said the failure was "per-frame robust median/IQR unstable on low-contrast terrain…
+the same population R08 flagged (small or low-contrast frames with unstable IQRs)". **The
+small-frame half of that was wrong, and the artifact says so:** `a1_n_frames_too_small = 0` on both
+tiles, so R08's small-frame *fallback path never fired*, and the offending frame spans 36,873 coarse
+cells (~944 km²) — the opposite of a sliver.
+
+Measured properly instead. A1 maps each frame's native (median, IQR) onto a fixed reference
+(`A1_REF_MEDIAN = 125.0`, `A1_REF_IQR = 27.7`), so the multiplicative gain it applies is
+`A1_REF_IQR / frame_IQR` — a frame with a **narrow** native DN spread gets gain > 1 and is stretched.
+On `E-12_N36` (the one *worsened* tile whose Murray zip is cached), 55 frames ≥ 500 coarse cells,
+native IQR 13–85 ⇒ gain 0.33×–2.13×:
+
+**Spearman(gain, mean Δ) = +0.490, p = 1.4e-4.**
+
+The five highest-gain frames (IQR 13–23) move **up** +0.078 to +0.508 in raw P(rich); the four
+lowest-gain (IQR 58–85) move +0.017, +0.028, −0.063, +0.005. So the lever is the **IQR in the
+denominator**. `src/striping.py:603` already said as much in a comment — "`worst_frames` is what
+surfaces the low-IQR frames where the clip actually bites" — which I should have read before
+writing a mechanism.
+
+**Two limits stated in the notebook rather than glossed.** (i) It is measured on `E-12_N36`, not on
+`E-12_N32`, whose zip is not cached — so the offending frame's own IQR is *unmeasured*; the
+mechanism is consistent with §2d, not proven on it. (ii) High-gain frames here are also small
+(622–1,555 cells vs 3,886–232,524 for low-gain), so gain and frame size are correlated in this
+sample and this does **not** cleanly separate them. What it does rule out is the fallback path.
+
+**Net statement, and it is stronger than "9 of 26 tiles get worse":** A1 is a per-frame gain, and a
+per-frame gain keyed on a narrow-IQR estimate is a per-frame *artifact generator* on low-contrast
+terrain. The tiles that get worse are not noise — they are the gain firing where there is little
+spread to estimate from, and it is **predictable from a quantity A1 already computes**. If a future
+arm is judged against A1, that is the asymmetry to beat, and the obvious cheap guard is a cap on
+`A1_REF_IQR / frame_IQR` (not implemented — v3 material, not a step-12 change).
+
+#### My error, again the same shape
+
+2026-08-25i's mechanism sentence was **plausible, undermeasured, and partly contradicted by a field
+already in the sidecar I had open** (`a1_n_frames_too_small: 0`). Same shape as the two gates that
+asserted the absence of a phenomenon instead of measuring its magnitude: ⚠ **I reached for a
+mechanism that sounded right instead of the one measurement that would decide it.** The measurement
+cost one cached-tile stream, ~3 minutes.

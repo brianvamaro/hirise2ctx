@@ -12,7 +12,10 @@ Head-to-head comparison of the regional maps this project has shipped:
 Reads only artifacts already on disk (the six mosaics from `scripts/map_mosaics.py`, the per-tile
 rasters, and the step-12 CSVs from `scripts/map_arm_eta2.py`). No inference, no GPU.
 
-Figures: reports/figures/29_{oldnew_distributions,oldnew_spatial,a1_regional,a1_striping,a1_eta2}.png
+Figures: reports/figures/29_{oldnew_distributions,oldnew_spatial,a1_regional,a1_striping,
+         a1_striping_seams,a1_eta2}.png
+⚠ §2d(ii) streams one Murray tile (~3 min) to measure A1's per-frame gain; it skips if the zip
+   is not cached.
 To regenerate: `python notebooks/_build_29.py` then nbconvert --execute --inplace.
 """
 from __future__ import annotations
@@ -420,7 +423,7 @@ below is a cell-for-cell comparison with no resampling anywhere.
 radiometry propagates into the embedding and whole source frames read systematically rich or poor —
 the rectangular-block artifact diagnosed in [notebook 25](25_striping_artifact.ipynb). A1
 renormalises each source frame's DN (per-frame robust median/IQR, computed natively at 5 m/px:
-`A1_ARM = a1_native_perframe_tilesupport_v2`) before embedding. §2c is whether that works.
+`A1_ARM = a1_native_perframe_tilesupport_v2`) before embedding. §2c-§2e are whether that works.
 """, "s2_md"))
 
 cells.append(code(
@@ -480,7 +483,7 @@ On `prob_raw`, the layer the artifact metric is computed on, A1's **inter-quarti
 smaller** while its **standard deviation is 3 % larger**, and its 99th percentile rises. On the
 calibrated `prob` the bulk narrows much harder (IQR ratio 0.58).
 
-This is the mechanism behind §2d's headline, and it is worth stating precisely: A1 reduces the
+This is the mechanism behind §2e's headline, and it is worth stating precisely: A1 reduces the
 *local, bulk* variance of the field — which is what both the between-frame term **and the rotation
 null** are built from — while leaving, or slightly increasing, the extreme tail. A loose summary
 like "A1 compresses the field" would be wrong in the tails, which is exactly where the
@@ -527,15 +530,215 @@ introduces a bright rectangular patch that was not there before**, upper left, w
 unmistakable straight-edged shape of a CTX source frame. So on this tile per-frame renormalisation
 *created* a source-frame artifact rather than removing one.
 
-That is a sharper statement than "9 of 26 tiles get worse", and the mechanism is credible: A1
-rescales each frame by its own robust median/IQR, and on low-contrast terrain that statistic is
-unstable — a frame whose DN distribution is unrepresentative gets stretched into the model's
-sensitive range. It is the same population R08 flagged (small or low-contrast frames with unstable
-IQRs) showing up at map scale.
+That is a sharper statement than "9 of 26 tiles get worse". §2d overlays the SeamMap to test whether
+the patch really is a frame, and §2d(ii) measures *why* — it is the per-frame **gain**
+(`A1_REF_IQR / frame_IQR`) firing on a narrow-IQR frame, not the small-frame fallback (which never
+fired: `a1_n_frames_too_small = 0` on both tiles).
 
 **Both outcomes are in the shipped product.** A comparison that showed only the top row would be
 choosing its answer.
 """, "s2c_read"))
+
+cells.append(md(
+    """### §2d The same two tiles with the SeamMap overlaid — do the blocks *coincide* with frames?
+
+§2c is an eyeball argument: the patches *look* rectangular. This is the test. The Murray Lab
+SeamMap is a **partition** — one source CTX frame owns each pixel — and its polygons, dissolved by
+`PRODUCT_ID`, are the actual source-frame footprints. Drawing them on top turns "looks like a
+frame" into "is, or is not, this frame".
+
+The frame outlined in **cyan** on each panel is the one with the largest mean \\|Δ(A1 − baseline)\\|
+on that tile (frames under 500 coarse cells excluded — a sliver's mean is meaningless). If A1's
+damage on `E-12_N32` is really a per-frame renormalisation failure, that outline should sit exactly
+on the patch A1 invented.
+""", "s2d_md"))
+
+cells.append(code(
+    """from src import fcompose as fc
+from src.striping import load_frames
+
+MIN_FRAME_CELLS = 500      # below this a frame's mean Δ is a sliver artefact, not a measurement
+
+fig, ax = plt.subplots(2, 2, figsize=(12.5, 11.4))
+worst_frames = {}
+for r, tile in enumerate((best, worst)):
+    grid = fc.tile_grid_from_raster(ARMS["new_base"] / f"{tile}_prob_raw.tif", tile)
+    frames = load_frames(tile)
+    lut = sorted(frames["PRODUCT_ID"].astype(str))
+    labels = fc.frame_labels_on_grid(grid, frames, lut)
+
+    arrs = {}
+    for arm in ("new_base", "new_a1"):
+        with rasterio.open(ARMS[arm] / f"{tile}_prob_raw.tif") as ds:
+            arrs[arm] = ds.read(1).astype(np.float64)
+            bounds = ds.bounds
+    d = arrs["new_a1"] - arrs["new_base"]
+
+    # which source frame did A1 move most?
+    rows = []
+    for i, pid in enumerate(lut):
+        sel = labels == i
+        n = int(sel.sum())
+        if n >= MIN_FRAME_CELLS:
+            rows.append({"PRODUCT_ID": pid, "n_cells": n, "mean_delta": float(np.nanmean(d[sel]))})
+    pf = pd.DataFrame(rows)
+    pf["abs_mean_delta"] = pf.mean_delta.abs()
+    top = pf.sort_values("abs_mean_delta", ascending=False).iloc[0]
+    worst_frames[tile] = (top, pf)
+    print(f"{tile}: {len(pf)} frames >= {MIN_FRAME_CELLS} cells; largest mean Δ = "
+          f"{top.PRODUCT_ID} at {top.mean_delta:+.4f} over {int(top.n_cells):,} cells")
+
+    ext = (bounds.left, bounds.right, bounds.bottom, bounds.top)
+    for c, arm in enumerate(("new_base", "new_a1")):
+        a = ax[r, c]
+        im = a.imshow(arrs[arm], vmin=0, vmax=1, cmap="magma", extent=ext, origin="upper")
+        frames.boundary.plot(ax=a, color="white", lw=0.45, alpha=0.65)
+        frames[frames["PRODUCT_ID"].astype(str) == top.PRODUCT_ID].boundary.plot(
+            ax=a, color="cyan", lw=2.0)
+        a.set_xlim(ext[0], ext[1]); a.set_ylim(ext[2], ext[3])
+        a.set_xticks([]); a.set_yticks([])
+        e = p[{"new_base": "baseline", "new_a1": "a1"}[arm]][tile]
+        a.set_title(f"{tile} — {'baseline' if c == 0 else 'A1'}   tile η² = {e:.4f}\\n"
+                    f"white = SeamMap source frames · cyan = largest mean Δ "
+                    f"({top.mean_delta:+.3f})", fontsize=8)
+        plt.colorbar(im, ax=a, fraction=0.046, label="P(rich), raw")
+fig.suptitle("29 §2d — the striping test with the CTX SeamMap partition overlaid")
+fig.tight_layout()
+fig.savefig(FIG / "29_a1_striping_seams.png", dpi=115)
+plt.show()
+""", "s2d_fig"))
+
+cells.append(code(
+    """# Does A1's effect actually organise BY FRAME, or is it just spatially smooth?
+# Compare the between-frame variance of the per-cell delta against a rotation null, the same
+# instrument the artifact itself is measured with.
+from src.striping import eta2, eta2_rotation_null
+
+for tile in (best, worst):
+    grid = fc.tile_grid_from_raster(ARMS["new_base"] / f"{tile}_prob_raw.tif", tile)
+    frames = load_frames(tile)
+    lut = sorted(frames["PRODUCT_ID"].astype(str))
+    labels = fc.frame_labels_on_grid(grid, frames, lut)
+    with rasterio.open(ARMS["new_base"] / f"{tile}_prob_raw.tif") as ds:
+        b = ds.read(1).astype(np.float64)
+    with rasterio.open(ARMS["new_a1"] / f"{tile}_prob_raw.tif") as ds:
+        a = ds.read(1).astype(np.float64)
+    d = a - b
+    fin = np.isfinite(d) & (labels >= 0)
+    e = eta2(d, labels, fin)
+    nm, n95 = eta2_rotation_null(d, labels, fin, n=20, seed=0)
+    print(f"{tile}: η² OF THE A1−baseline DELTA by source frame = {e:.4f}   "
+          f"(rotation null mean {nm:.4f}, p95 {n95:.4f})  ->  ratio {e / n95:.2f}")
+print()
+print("η² here is computed on the DELTA, not on either map: it asks whether what A1 CHANGED")
+print("is organised by source frame. A ratio well above 1 means A1's effect is frame-shaped.")
+""", "s2d_eta"))
+
+cells.append(code(
+    """# WHY does A1 push some frames up? The lever is the per-frame gain it applies:
+#     gain = A1_REF_IQR / frame_native_IQR
+# A frame whose native DN spread is narrow gets gain > 1, i.e. stretched. If that is the
+# mechanism, gain should predict how far A1 moved each frame. Needs the tile's Murray zip,
+# so this runs on the one WORSENED tile whose zip is cached locally.
+from scipy.stats import spearmanr
+
+from src.striping import A1_REF_IQR, A1_REF_MEDIAN, a1_stats_native_tile
+
+MECH_TILE = "E-12_N36"          # Δη² +0.0113, and cache_v2/ctx_tiles/E-12_N36.zip is present
+zip_path = REPO / "cache_v2" / "ctx_tiles" / f"{MECH_TILE}.zip"
+if not zip_path.exists():
+    print(f"skipped: {zip_path.relative_to(REPO)} not cached (a ~1.6 GB fetch)")
+else:
+    frames = load_frames(MECH_TILE)
+    pids = [str(x) for x in frames["PRODUCT_ID"]]
+    stats, fallback, _ = a1_stats_native_tile(MECH_TILE, frames)
+    grid = fc.tile_grid_from_raster(ARMS["new_base"] / f"{MECH_TILE}_prob_raw.tif", MECH_TILE)
+    labels = fc.frame_labels_on_grid(grid, frames, sorted(pids))
+    with rasterio.open(ARMS["new_base"] / f"{MECH_TILE}_prob_raw.tif") as ds:
+        b = ds.read(1).astype(np.float64)
+    with rasterio.open(ARMS["new_a1"] / f"{MECH_TILE}_prob_raw.tif") as ds:
+        a = ds.read(1).astype(np.float64)
+    d = a - b
+
+    rows = []
+    for i, (med, iqr) in stats.items():
+        sel = labels == i
+        if int(sel.sum()) < MIN_FRAME_CELLS:
+            continue
+        rows.append({"pid": pids[i], "n_cells": int(sel.sum()), "native_median": med,
+                     "native_iqr": iqr, "gain": A1_REF_IQR / iqr,
+                     "mean_base": float(np.nanmean(b[sel])),
+                     "mean_delta": float(np.nanmean(d[sel]))})
+    mech = pd.DataFrame(rows)
+    r = spearmanr(mech.gain, mech.mean_delta)
+    print(f"{MECH_TILE}: {len(mech)} frames >= {MIN_FRAME_CELLS} cells "
+          f"(A1 reference median {A1_REF_MEDIAN}, IQR {A1_REF_IQR}; "
+          f"tile fallback {fallback})")
+    print(f"  native IQR spans {mech.native_iqr.min():.0f}-{mech.native_iqr.max():.0f} "
+          f"=> gain {mech.gain.min():.2f}x-{mech.gain.max():.2f}x")
+    print(f"  Spearman(gain, mean Δ) = {r.statistic:+.3f}   p = {r.pvalue:.2g}")
+    print("\\n  highest-gain frames (narrow native DN spread -> stretched):")
+    print(mech.sort_values("gain", ascending=False).head(5)
+          .to_string(index=False, float_format=lambda v: f"{v:.3f}"))
+    print("\\n  lowest-gain frames (wide native spread -> compressed):")
+    print(mech.sort_values("gain").head(4)
+          .to_string(index=False, float_format=lambda v: f"{v:.3f}"))
+""", "s2d_mech"))
+
+cells.append(md(
+    """### §2d read — the blocks *are* frames, and so is the damage
+
+The overlay confirms both halves of §2c on the same footing:
+
+* on the tile A1 helps, the softened bands sit inside frame outlines;
+* on `E-12_N32`, the bright patch A1 invented is bounded by **one** SeamMap polygon — the cyan
+  outline traces it. A1 did not blur or smear the tile; it re-levelled a single source frame into
+  the model's sensitive range.
+
+The second cell makes that quantitative without relying on the picture: η² of the **A1 − baseline
+delta** by source frame, against the same rotation null used for the artifact itself.
+
+| tile | η² of the delta by frame | null p95 | ratio |
+|---|---|---|---|
+| `E0_N44` (A1 helps most) | 0.1456 | 0.0705 | **2.07** |
+| `E-12_N32` (A1 hurts most) | 0.3949 | 0.1576 | **2.50** |
+
+**What A1 changes is organised by source frame on both tiles** — which is what a per-frame operator
+should do, and is exactly why it can create a block as easily as remove one.
+
+### §2d(ii) The lever, measured: a narrow native DN spread gets stretched
+
+The third cell asks *why* particular frames move. A1 maps each frame's native (median, IQR) onto a
+fixed reference (`A1_REF_MEDIAN = 125.0`, `A1_REF_IQR = 27.7`), so the multiplicative gain it
+applies is `A1_REF_IQR / frame_IQR`. A frame whose native DN spread is **narrow** gets gain > 1 and
+is stretched into the embedder's sensitive range.
+
+On `E-12_N36` — the one *worsened* tile whose Murray zip is cached locally — across 55 frames of
+≥500 coarse cells, native IQR spans 13–85 (gain 0.33×–2.13×), and:
+
+**Spearman(gain, mean Δ) = +0.490, p = 1.4e-4.**
+
+The five highest-gain frames (IQR 13–23) all move **up** by +0.08 to +0.51 in raw P(rich); the
+lowest-gain frames (IQR 58–85) barely move or move down. So the mechanism is the **IQR in the
+denominator**, and it is measured, not inferred.
+
+⚠ **Two honest limits on that.** (i) It is measured on `E-12_N36`, not on `E-12_N32` — that tile's
+zip is not cached, so the offending frame's own IQR is unmeasured here; the mechanism is
+*consistent with* §2d, not proven on it. (ii) High-gain frames in this sample are also *small*
+(622–1,555 cells vs 3,886–232,524 for low-gain), so gain and frame size are correlated and this
+does not cleanly separate them. What it **does** rule out is R08's small-frame *fallback*: that
+path never fired here (`a1_n_frames_too_small = 0` on both tiles), so the effect is the per-frame
+statistic being applied, not the fallback replacing it.
+
+**This is the cleanest statement of A1's mechanism available from the shipped product:** A1 is a
+per-frame gain, and a per-frame gain keyed on a narrow-IQR estimate is a per-frame *artifact
+generator* on low-contrast terrain. The 9-of-26 tiles that get worse are not noise; they are the
+gain firing where there is little spread to estimate from.
+""", "s2d_read"))
+
+cells.append(md(
+    """### §2e A1's effect on the artifact, three views of the same 234 windows
+""", "s2e_md"))
 
 cells.append(code(
     """# The full per-tile and per-window picture, from the step-12 tables.
@@ -572,14 +775,14 @@ ax[2].set_title(f"RELATIVE to geology: A1 better on only "
                 f"{census['window']['a1_better_ratio']}/{census['window']['n']}\\n"
                 f"median ratio {census['window']['ratio_median_baseline']:.3f} -> "
                 f"{census['window']['ratio_median_a1']:.3f}", fontsize=9)
-fig.suptitle("29 §2d — A1's effect on the source-frame artifact, three views of the same 234 windows")
+fig.suptitle("29 §2e — A1's effect on the source-frame artifact, three views of the same 234 windows")
 fig.tight_layout()
 fig.savefig(FIG / "29_a1_eta2.png", dpi=110)
 plt.show()
-""", "s2d_fig"))
+""", "s2e_fig"))
 
 cells.append(md(
-    """### §2d A1 on the artifact: real on the raw metric, absent relative to geology
+    """### §2e read — A1 on the artifact: real on the raw metric, absent relative to geology
 
 | view | asks | baseline → A1 | A1 better on |
 |---|---|---|---|
@@ -605,7 +808,7 @@ Neither arm approaches the 0.05 F-reopening bar (that bar belonged to the
 
 The cost side is now small: **Δ median per-image AUC −0.0024** (banked: −0.024), Δ pooled PR-AUC
 **+0.0082**, and no THEMIS-ρ cost (per-tile median ρ 0.0653 → 0.0654).
-""", "s2d_read"))
+""", "s2e_read"))
 
 # ---------------------------------------------------------------- §3
 cells.append(md(
@@ -626,10 +829,12 @@ worse. A1 narrows the bulk of the field, which lowers the geological floor along
 artifact."* Quote the raw reduction only alongside the ratio.
 
 ⚠ **And add the failure mode, because it is not symmetric with the successes.** On low-contrast
-terrain A1 can *introduce* a source-frame-shaped block that the baseline did not have (§2c, bottom
-row) — per-frame robust statistics are unstable where there is little contrast to estimate them
-from. So A1 is not "the artifact, reduced everywhere"; it is "the artifact reduced on most tiles
-and manufactured on a few". If a future arm is judged against A1, that asymmetry is the thing to
+terrain A1 can *introduce* a source-frame-shaped block the baseline did not have — §2d shows the
+patch bounded by exactly one SeamMap polygon, and §2d(ii) measures the lever:
+Spearman(per-frame gain `A1_REF_IQR/frame_IQR`, mean Δ) = **+0.490, p 1.4e-4**, so narrow-IQR
+frames get stretched upward. So A1 is not "the artifact, reduced everywhere"; it is "the artifact
+reduced on most tiles and manufactured on a few", and the manufacture is predictable from a
+quantity A1 already computes. If a future arm is judged against A1, that asymmetry is the thing to
 beat, and `scripts/map_arm_eta2.py`'s paired sign census is the instrument that shows it.
 
 **Never** quote the archived `reports/map_region_g1` product as a current result, and never pair
