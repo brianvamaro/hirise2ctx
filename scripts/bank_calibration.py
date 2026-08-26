@@ -32,7 +32,8 @@ import numpy as np
 import pandas as pd
 
 from src.calibration import (CalibrationLayer, IsotonicCalibrator, quantile_match,
-                             loio_calibrate, expected_calibration_error, compression_metrics)
+                             loio_calibrate, expected_calibration_error, compression_metrics,
+                             per_image_level)
 
 DEFAULT_RECIPE = "fw_emb_mlp_ens3_gem96_S32_fa_gt_1e-2"
 DEFAULT_PREDS = REPO / "models/fang_probe" / DEFAULT_RECIPE / "predictions.parquet"
@@ -94,6 +95,13 @@ def main(argv=None) -> int:
     ap.add_argument("--recipe", default=DEFAULT_RECIPE, help="recipe id recorded in the layer meta")
     ap.add_argument("--force", action="store_true",
                     help="write the layer even if a promotion gate fails (records it in meta)")
+    ap.add_argument("--report-only", action="store_true",
+                    help="compute and print the gates and R54's per-image level instrument, then "
+                         "WRITE NOTHING. This is the only way to measure an ALREADY-BANKED layer's "
+                         "arm without re-fitting it -- a re-fit would rewrite calibration.npz and "
+                         "break the calibration_digest that 52 shipped map sidecars bind to.")
+    ap.add_argument("--level-csv", type=Path, default=None,
+                    help="write R54's per-image mean(pred)/mean(true) table here")
     args = ap.parse_args(argv)
 
     t1 = pd.read_parquet(args.predictions).rename(
@@ -125,6 +133,29 @@ def main(argv=None) -> int:
           f"marginal_L1 {m_loio['marginal_l1']:.4f}  spearman {m_loio['spearman']:.3f}  "
           f"(gate top in {list(TOP_RATIO_RANGE)}: {'PASS' if top_pass else 'FAIL'})", flush=True)
 
+    # ---- R54's instrument, emitted BESIDE the pooled result, not instead of it. ----
+    # PLAN_Rebuild §3 step 9 and the audit both require this; it was never emitted, so the
+    # numbers in DECISIONS 2026-08-23c had to be computed by hand. On the LOIO abundance,
+    # because that is the deployment-honest quantity the map inherits.
+    level_df, level = per_image_level(df.obs_id.to_numpy(), fa, ab_loio)
+    print(f"  [LOIO bound] R54 level: pooled mean(pred)/mean(true) "
+          f"{level['pooled_ratio']:.4f}  BUT per-image median {level['per_image_median']:.3f} "
+          f"(IQR {level['per_image_q25']:.3f}-{level['per_image_q75']:.3f}, range "
+          f"{level['per_image_min']:.3f}-{level['per_image_max']:.3f}), only "
+          f"{level['n_within_band']}/{level['n_images']} "
+          f"({level['frac_within_band']:.0%}) within {level['band']}", flush=True)
+    print("               ⚠ the pooled ratio is NOT evidence of per-place level accuracy; "
+          "per-image within-band share is what governs promotion (R54)", flush=True)
+    if args.level_csv:
+        args.level_csv.parent.mkdir(parents=True, exist_ok=True)
+        level_df.to_csv(args.level_csv, index=False)
+        print(f"               per-image table -> {args.level_csv}", flush=True)
+
+    if args.report_only:
+        print("\n--report-only: nothing written. The banked layer at "
+              f"{args.out} is untouched.", flush=True)
+        return 0
+
     if not (ece_pass and top_pass) and not args.force:
         print(
             "\nGATE FAILURE — nothing written. The previously banked calibration at "
@@ -142,6 +173,10 @@ def main(argv=None) -> int:
                   "labels_dir": str(args.labels_dir),
                   "loio_ece": float(ece_loio),
                   "loio_top_ratio": float(m_loio["top_ratio"]),
+                  "loio_level_pooled_ratio": float(level["pooled_ratio"]),
+                  "loio_level_per_image_median": float(level["per_image_median"]),
+                  "loio_level_frac_within_band": float(level["frac_within_band"]),
+                  "loio_level_n_within_band": int(level["n_within_band"]),
                   "gates_passed": bool(ece_pass and top_pass),
                   "forced": bool(args.force and not (ece_pass and top_pass))})
     args.out.parent.mkdir(parents=True, exist_ok=True)

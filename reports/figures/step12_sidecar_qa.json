@@ -1,0 +1,80 @@
+{
+  "generations": {
+    "g1_scalar_only": {
+      "a1": 7,
+      "baseline": 21
+    },
+    "g2_raw_fraction": {
+      "a1": 19,
+      "baseline": 5
+    }
+  },
+  "devices": {
+    "a1|NVIDIA GeForce RTX 2080 Ti|inferred=False": 19,
+    "a1|Pascal (P100 / TITAN Xp)|inferred=True": 7,
+    "baseline|NVIDIA GeForce RTX 2080 Ti|inferred=False": 5,
+    "baseline|RTX 2080 Ti|inferred=True": 21
+  },
+  "gates": [
+    {
+      "gate": "one grid_id across both arms",
+      "verdict": "PASS",
+      "detail": "1 distinct: ['murray_v01_clon0_R3396190_ppd11855_S32_anchor_lonlat0']"
+    },
+    {
+      "gate": "every tile carries all 3 layers with a sha256",
+      "verdict": "PASS",
+      "detail": "n_layers min 3, all sha256 present True"
+    },
+    {
+      "gate": "exactly one head per arm, and the two arms DIFFER (R07: norm_arm is in the recipe hash, so a shared digest means the fix is not in effect)",
+      "verdict": "PASS",
+      "detail": "digests per arm {'a1': 1, 'baseline': 1}; a1=da0e423f32dd\u2026, baseline=29e833be74e5\u2026"
+    },
+    {
+      "gate": "exactly one calibration layer per arm",
+      "verdict": "PASS",
+      "detail": "distinct per arm {'a1': 1, 'baseline': 1}"
+    },
+    {
+      "gate": "no tile FAILS the overlap-agreement gate (unknown is reported, never counted as pass)",
+      "verdict": "PASS",
+      "detail": "24 pass / 28 unknown_on_gate_layer / 0 fail, of 52"
+    },
+    {
+      "gate": "one raster shape across every tile",
+      "verdict": "PASS",
+      "detail": "['1479x1479']"
+    },
+    {
+      "gate": "both arms carry the same 26 tiles",
+      "verdict": "PASS",
+      "detail": "{'a1': 26, 'baseline': 26}"
+    },
+    {
+      "gate": "nodata accounting reconciles per tile (n_masked_nodata + n_masked_context_nodata == raster NaN count)",
+      "verdict": "PASS",
+      "detail": "52/52 reconcile; 12 row(s) mask any cell at all, 15880 cells total across both arms (max 2781 on one tile)"
+    },
+    {
+      "gate": "where the sidecar records n_unique_cells, it matches the raster's finite count (A1 sidecars do not carry the key, so this covers the baseline arm only)",
+      "verdict": "PASS",
+      "detail": "26/26 checked"
+    },
+    {
+      "gate": "every A1 tile records the versioned arm 'a1_native_perframe_tilesupport_v2' (a literal 'a1' here is what killed all six tasks of the first step-11 array)",
+      "verdict": "PASS",
+      "detail": "['a1_native_perframe_tilesupport_v2']"
+    },
+    {
+      "gate": "every A1 tile records R38's clip floor A1_VALID_FLOOR=1 (so DN 0 means nodata only)",
+      "verdict": "PASS",
+      "detail": "[1.0]"
+    },
+    {
+      "gate": "A1 fallback statistic covers < 0% of pixels on every tile (frames below a1_min_frame_px fall back by design, R08 -- the count is reported, the pixel share is gated)",
+      "verdict": "PASS",
+      "detail": "max fallback pixel fraction 1.599e-04, median 9.242e-05; 9 of 1371 frames fell back on 7 tile(s); frames/tile 31-81; max clip fraction 0.000867"
+    }
+  ]
+}

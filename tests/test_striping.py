@@ -162,7 +162,15 @@ def test_frame_labels_on_prefilter_preserves_overlap_precedence():
 
 
 def test_frame_labels_on_prefilter_is_faster():
-    """Guards the actual point of the change; generous factor so it is not flaky on CI."""
+    """Guards the actual point of the change (measured 3.4x on a real SeamMap window).
+
+    **Timed on BEST-of-N, not sum-of-N, and with a margin.** The original summed three
+    repeats per side and asserted a bare `t_new < t_old`, which has no headroom at all: it
+    failed once during step 12 purely because another job was using the machine, then passed
+    3/3 in isolation. A wall-clock assertion that flips under unrelated load is noise, not a
+    guard. Best-of takes the least-interrupted sample on each side, which is the standard way
+    to measure a speedup this large without measuring the scheduler.
+    """
     import time
 
     from rasterio.transform import from_origin
@@ -173,17 +181,18 @@ def test_frame_labels_on_prefilter_is_faster():
     bounds = st.frame_bounds(frames)
     assert len(st.frames_hitting(bounds, tr, shape)) < 80
 
-    st.frame_labels_on(tr, shape, frames, bounds=bounds)     # warm
-    _unfiltered_labels(tr, shape, frames)
-    t0 = time.perf_counter()
-    for _ in range(3):
-        st.frame_labels_on(tr, shape, frames, bounds=bounds)
-    t_new = time.perf_counter() - t0
-    t0 = time.perf_counter()
-    for _ in range(3):
-        _unfiltered_labels(tr, shape, frames)
-    t_old = time.perf_counter() - t0
-    assert t_new < t_old, f"prefilter not faster: {t_new:.3f}s vs {t_old:.3f}s"
+    def best_of(fn, n=3):
+        fn()                                        # warm
+        return min(_timed(fn) for _ in range(n))
+
+    def _timed(fn):
+        t0 = time.perf_counter()
+        fn()
+        return time.perf_counter() - t0
+
+    t_new = best_of(lambda: st.frame_labels_on(tr, shape, frames, bounds=bounds))
+    t_old = best_of(lambda: _unfiltered_labels(tr, shape, frames))
+    assert t_new < 0.9 * t_old, f"prefilter not faster: {t_new:.4f}s vs {t_old:.4f}s"
 
 
 def test_frame_bounds_matches_geometry_order():

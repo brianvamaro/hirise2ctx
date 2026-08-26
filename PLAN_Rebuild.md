@@ -1,18 +1,31 @@
 # PLAN_Rebuild.md — the batched v2 rebuild (a WAYPOINT, not a destination)
 
-> **Status 2026-08-25: §0 gates all closed; steps 1 → 11 EXECUTED and verified.** Step 11
-> shipped both map arms at **26/26 tiles**, 156/156 rasters sha256-verified against their own
-> sidecars, **26/26 cell-for-cell co-registered**, one `grid_id` and one size-floor basis
-> across both arms (`1c1cb55`). **Step 12 is next, and §6's η² is its first item.**
+> **Status 2026-08-25: THE REBUILD IS COMPLETE. §0 gates closed; steps 1 → 12 EXECUTED and
+> verified.** Step 11 shipped both map arms at **26/26 tiles**, 156/156 rasters sha256-verified
+> against their own sidecars, **26/26 cell-for-cell co-registered**, one `grid_id` and one
+> size-floor basis (`1c1cb55`). **Step 12 promoted them to `reports/map_region` /
+> `reports/map_a1`** (the pre-R01 product is archived at `reports/map_region_g1`), built the six
+> regional mosaics on a footprint that closes exactly, re-derived every §6 number, and passed
+> 12/12 sidecar gates.
 >
-> Step 11's own history is worth reading before step 12 quotes anything from it — the A1
+> **Headline: rich prevalence 0.373272** (predicted 0.3733), pool 161,005 → **164,644**, CRS gate
+> 194.7 m median, and **the frozen recipe transfers to the corrected label basis unchanged**
+> (median per-image AUC −0.0087, inside one SE). **A1's skill cost collapsed to −0.0024** (banked
+> −0.024) with no THEMIS-ρ cost, and its raw artifact η² on the like-for-like pilot crop fell
+> **0.2327 → 0.1298 (−44%**, vs the banked −28%).
+>
+> ⚠ **But η² measured RELATIVE to its own rotation null did not improve at all** (median ratio
+> 1.599 → 1.639; A1 better on only 106 of 234 windows). A1 renormalises per frame and so
+> compresses the whole field, lowering the geological floor along with the artifact. **The raw
+> reduction is real and is the quantity the banked pair measured, but it is not evidence that the
+> artifact shrank relative to geology.** A1 remains a *partial* mitigation shipping as a documented
+> caveat — see §6.
+>
+> Step 11's own history is worth reading before quoting anything from it — the A1
 > array's 10 h timeout was the **GPU allocation** (RTX 2080 Ti 17.6 s/window vs TITAN Xp
 > ~202), not the arm; R14's overlap guard rested on a false premise and is now a fraction
 > gate on `prob_raw` with a 1e-6 per-cell floor; and the manifest *index* was damaged three
-> ways while every raster stayed perfect. DECISIONS 2026-08-24d → 2026-08-25g.
-> Done: 1, 2, 3, 4, 4b, 4c, 5 — all in place into `dataset_v2`, ~50 min of compute.
-> **Next: step 6 (embeddings, both arms).** Headline so far: rich prevalence **0.373272**
-> (predicted 0.3733), pool 161,005 → **164,644**, CRS gate 194.7 m median.
+> ways while every raster stayed perfect. DECISIONS 2026-08-24d → 2026-08-25h.
 > Supersedes nothing; it *executes* the "Complete v2 rebuild DAG" in
 > [docs/CODE_REVIEW_AUDIT_2026-08-06.md](docs/CODE_REVIEW_AUDIT_2026-08-06.md) §"Complete v2 rebuild
 > DAG" (12 steps). [docs/PENDING_REBUILD.md](docs/PENDING_REBUILD.md) lists *what* is stale; the audit
@@ -110,7 +123,7 @@ Timings are **reconstructed from the original v2 build's artifact mtimes on this
 | 9 | Fit the **calibration layer**, per arm | ✅ **DONE 2026-08-23** (baseline gates PASS; A1 forced, ECE 0.0523 vs 0.05) | `python -u scripts/bank_calibration.py --predictions <arm preds.parquet> --labels-dir dataset_v2/labels --out <arm>/calibration.npz --scale-px 32` | Completeness + anti-join assertions must pass (recovered/missing keys cannot vanish silently). Emit pooled results **and** R54's per-image `mean(pred)/mean(true)` distribution + count, and record which aggregation level governs promotion. Must **fail before write** on rejection. |
 | 10 | Materialize the versioned globally anchored regional grid | Sherlock | — (`COARSE_GRID_ID = murray_v01_clon0_R3396190_ppd11855_S32_anchor_lonlat0`) | ⚠ **The DAG text here is STALE**: "render baseline tiles first" no longer applies — R07 removed A1's dependency on the baseline raster, so **either order works**. Both drivers must consume the one grid spec; `assert_shared_lattice` and `assert_murray_sphere` are the runtime tripwires. |
 | 11 | Render **26 tiles × 2 arms** to new generation paths | 🟡 **IN PROGRESS** — baseline **21/26** (2 partial at 144/144 windows, 3 not started); A1 array running. Sherlock allocated **RTX 2080 Ti**, not L40S, so the 8 h/10 h `--time` limits bite; resubmit resumes | `sbatch run_region_array.sbatch` (baseline) then the A1 equivalent via `scripts/striping_a1_map.py`. Match the parity reference exactly with `BATCH=96`. | **Any missing input or output is a failure, not a reduced footprint.** Do not resume from an existing final TIFF unless complete upstream provenance matches — `tile_is_reusable` + the sweep manifest enforce this, and the A1 path now builds its own `a1_sweep_manifest` (incl. `a1_seammap_digest` over every shapefile sibling, `.prj` included). R06 closes here: **A1 has never actually been generated.** |
-| 12 | Mosaics, QA, promotion, docs | local **~1–2 h** | `mosaic_geotiffs` + `verify_geotiff`; then the doc sweep in §6 | Numerical-parity, footprint, nodata and scientific QA all pass before promotion. Then **empty the PENDING_REBUILD table** (except rows 2–3, per decision 4) and say so in DECISIONS. |
+| 12 | Mosaics, QA, promotion, docs | ✅ **DONE 2026-08-25** | `scripts/map_mosaics.py` · `scripts/map_arm_eta2.py` · `scripts/map_sidecar_qa.py` · `bank_calibration.py --report-only` · doc sweep | ✅ **Promotion:** old `reports/map_region` archived to `map_region_g1`; `map_region_g2` → **`map_region`**, `map_a1_g2` → **`map_a1`**; both step-11 gates re-run clean *after* the rename, so zero code churn (`src.striping.MAP_DIR` etc. now read the corrected product). ✅ **6 mosaics** (3 layers × 2 arms) at **5925×11852**, `require_shared_lattice=True` — which *is* the R01 gate and fails by design on the archived pre-R01 arm. **Footprint CLOSES exactly**: 56,865,526 finite = 26×1479² − 7,940 intra-tile nodata on 6 tiles; both arms identical (`only_a = only_b = 0`), so the arms are differenceable and the A1−baseline mosaic is written. ✅ **Sidecar QA 12/12 gates PASS** (`step12_sidecar_qa.csv`), generation-aware. ✅ **THEMIS re-fetched** onto the corrected grid, `assert_coregistered` dx=dy=**0.000 m** (the archived one is confirmed −100/+80 m out). ✅ **§6 all re-derived.** ✅ PENDING_REBUILD emptied except rows 2–3. |
 
 ### §3a — Where these timings come from, and the total
 
@@ -346,27 +359,64 @@ on); larger `--win-px` (**worse** — 8192 gives ~5.3% duplication vs 4096's 4.5
   stride redundancy, and distillation are all v3.
 - **No `dataset/` v1.**
 
-## §6 — Numbers that must be re-derived afterwards
+## §6 — Numbers that must be re-derived afterwards ✅ ALL RE-DERIVED (step 12, 2026-08-25)
 
-Every one of these is prevalence-conditioned, and R74+R29 move rich prevalence 0.3598 → ≈0.3733
-(~6% of the pool changes status). **They are stale the moment step 4 completes.**
+Every one of these is prevalence-conditioned, and R74+R29 moved rich prevalence 0.3598 →
+**0.373272** (~6% of the pool changed status). **They were stale the moment step 4 completed;
+the right-hand column is the rebuilt value and is what may now be quoted.**
 
-| Quantity | Banked value | Where it is quoted |
-|---|---|---|
-| pooled PR-AUC @ `fa > 1e-2` | 0.7832 | memory `project_state_2026-06-12-freeze`, docs/modeling_results.md, docs/index.md |
-| median per-image AUC | 0.7865 | same |
-| precision@5% | 0.948 | same |
-| rich prevalence | 0.3598 | PENDING_REBUILD, DATA_DICTIONARY |
-| A1's η² and ΔAUC | η² 0.196→0.141, −0.024 AUC | **already non-comparable** — the two came from different A1 definitions; re-derive end to end |
-| calibration `t2_y` max / pool max `fa` | 0.293242 | R84 |
-| size-floor mixture | 78.39 / 21.61% of 161,005 tiles; 27 floors; mean 3.3687 m² | R84 |
+| Quantity | Banked value | **Rebuilt value** | Source |
+|---|---|---|---|
+| pooled PR-AUC @ `fa > 1e-2` | 0.7832 | **0.7826** (−0.0006) | DECISIONS 2026-08-21 |
+| median per-image AUC | 0.7865 | **0.7778** (−0.0087, inside 1 SE ≈ 0.0144) | same |
+| precision@5% | 0.948 | **0.9638** (+0.0158, partly mechanical — prevalence rose) | same |
+| `meaningful_auc` | — | **0.8342** | same |
+| Spearman(pred, `fractional_area`) | — | **0.6050** | same |
+| rich prevalence | 0.3598 | **0.373272** | DECISIONS 2026-08-20d |
+| **A1's η² (raw)** | 0.196 → 0.141 (−28%) | **regional window median 0.1444 → 0.1145 (−20.7%)**; tile scale 0.2105 → 0.1817 (−13.7%); **like-for-like on the E8_N44 pilot crop 0.2327 → 0.1298 (−44.2%)** | `scripts/map_arm_eta2.py`, DECISIONS 2026-08-25h |
+| **A1's η² RELATIVE to its own rotation null** | never measured | **1.599 → 1.639 (+2.5%) — NO improvement**, better on only 106/234 windows. Read this beside the raw row, never instead of it | same |
+| A1's ΔAUC | −0.024 | **−0.0024** (Δ pooled PR-AUC **+0.0082**) | DECISIONS 2026-08-23 |
+| A1's THEMIS ρ cost | — | **none**: per-tile median ρ 0.0653 → 0.0654 | `scripts/map_arm_eta2.py` |
+| calibration `t2_y` max / pool max `fa` | 0.293242 | **0.293242 — unchanged**, and that is the R84 invariant holding, not a stale copy | DECISIONS 2026-08-23c |
+| size-floor mixture | 78.39 / 21.61% of 161,005 tiles; 27 floors; mean 3.3687 m² | **78.73 / 21.27% of 164,644 tiles; 20 floors; mean 3.3914 m²** (range 1.5626–5.5719, 38 images) | `SIZE_FLOOR_*` tags on every shipped raster |
+| R54 per-image level | not emitted | **pooled 1.0220 / 1.0278 (baseline / A1) but only 8/38 and 7/38 images within ±20%**, range 0.013–6.5× | now emitted by `bank_calibration.py`; DECISIONS 2026-08-23c |
+
+⚠ **The η² rows are the only ones where banked and rebuilt are not on one basis.** The banked pair
+came from a single **pilot crop** on the **pre-R01 lattice** under a **pre-R07 A1 definition**, and
+A1 had never been rendered as a map at all (R06). The `pilot_crop` figure is the closest
+like-for-like successor — same world extent, corrected lattice, `A1_ARM =
+a1_native_perframe_tilesupport_v2` — and on that basis A1's raw-η² reduction is **larger** than
+banked (−44% vs −28%) at **a tenth of the skill cost**.
+
+⚠⚠ **But the raw-η² headline overstates what A1 does, and step 12 measured by how much.** A1
+renormalises per source frame, which compresses the **whole** field — so it lowers the rotation
+null as well as the between-frame term (window-scale null p95 median 0.0771 → 0.0622). Three
+paired, per-unit views of the same 234 windows:
+
+| view | what it asks | baseline → A1 | A1 better on |
+|---|---|---|---|
+| raw η² | the banked quantity | 0.1444 → 0.1145 (**−21%**) | 144/234 (62%) |
+| excess (η² − own null mean) | artifact above this window's own geology | 0.0887 → 0.0690 (**−22%**) | 134/234 (57%) |
+| **ratio (η² ÷ own null p95)** | **artifact RELATIVE to geology** | **1.599 → 1.639 (+2.5%)** | **106/234 (45%)** |
+
+**On the null-relative metric A1 is a coin flip and very slightly worse.** Per-window raw Δη²
+spans −0.41 to **+0.44**, and 9 of 26 tiles get *worse* on raw η² (worst: `E-12_N32` 0.207 →
+0.371). So A1 works substantially **by compressing the field, not only by removing frame
+structure**. Neither arm reaches the 0.05 F-reopening bar — that bar belonged to the aborted F
+build — and this is the quantitative statement of why A1 is a **partial** mitigation shipping as a
+documented caveat. Quote the raw reduction only alongside the ratio.
 
 Report on the project's standard metrics only — `meaningful_auc` / `pr_auc@1e-2` / `precision@5%` +
 Spearman ρ + per-bin RMSE at the `fa > 1e-2` rich/poor threshold. **Never presence AUC.**
 
-Docs to sweep: `README.md`, `ROADMAP.md`, `docs/index.md`, `docs/methods.md`, `docs/modeling.md`,
-`docs/modeling_results.md`, `docs/model_evidence.md`, `dataset/DATA_DICTIONARY.md`,
-`SHERLOCK_RUN.md`, and this file's §6 table.
+**Docs swept (step 12):** `PLAN_Rebuild.md` §6 (this table), `ROADMAP.md`,
+`docs/model_evidence.md`, `docs/PENDING_REBUILD.md`, `DECISIONS.md`. Checked and found to carry
+**none** of these quantities, so untouched: `README.md`, `docs/index.md`, `docs/methods.md`,
+`dataset/DATA_DICTIONARY.md`, `SHERLOCK_RUN.md`. `docs/modeling.md` and
+`docs/modeling_results.md` carry only **GBM-path** numbers, which decision 4 deliberately does
+not re-derive — PENDING_REBUILD rows 2–3 stay open for exactly that. ⚠ §6's original claim that
+`docs/modeling_results.md` and `docs/index.md` quote the headline FM numbers was **wrong**; they
+never did. This is the fifth §-level gate row this rebuild has found overstated.
 
 ## §7 — Open, and NOT to be pre-decided by execution
 

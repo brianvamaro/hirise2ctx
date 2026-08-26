@@ -60,8 +60,9 @@ pointers**. The full original build spec is preserved verbatim in
   regenerate with `python notebooks/_build_NN.py` then `nbconvert --execute --inplace`. **Never run
   two notebooks (or two CTX-heavy jobs) at once** (memory: `feedback_collaboration`).
 - **Logic lives in importable `src/` modules**; notebooks and tests *call* it (nothing important
-  lives only in a notebook). Loop: `pytest -m "not slow"` (560 passed / 21 deselected, 2026-08-06).
-  The **full suite is now verified non-mutating**: `pytest` → 581 passed with an 11,218-file
+  lives only in a notebook). Loop: `pytest -m "not slow"` (**922 passed / 21 deselected,
+  2026-08-25**); full suite **943 passed**. The **full suite was verified non-mutating** at the
+  2026-08-06 audit: `pytest` → 581 passed then, with an 11,218-file
   path/size/mtime manifest over all six artifact roots bit-identical before and after. **`slow` is not
   the safety control** (20 non-slow tests call a producer); the guard and the static scan are.
 - For repeat visual analyses, **download JP2s** rather than `/vsicurl/` each time.
@@ -85,13 +86,27 @@ pointers**. The full original build spec is preserved verbatim in
 - **Methods writeups (for non-coders):** [docs/methods.md](docs/methods.md), [docs/index.md](docs/index.md)
 - **Current code-review/fixing handoff:**
   [docs/CODE_REVIEW_AUDIT_2026-08-06.md](docs/CODE_REVIEW_AUDIT_2026-08-06.md)
-- **The rebuild execution plan:** [PLAN_Rebuild.md](PLAN_Rebuild.md) — **steps 1–11 EXECUTED
-  and verified (2026-08-20 → 25); step 12 is next.** Read it before running any producer; it,
-  not `docs/PENDING_REBUILD.md`, is the runbook. Both map arms are rendered, downloaded and
-  gated — re-check any time with `scripts/verify_map_download.py` (sha256 vs each sidecar's own
-  `rasters[]`) and `scripts/verify_arm_parity.py` (one lattice, cell-for-cell co-registration,
-  one size-floor basis). `scripts/rebuild_map_manifest.py` repairs a damaged manifest index from
+- **The rebuild:** [PLAN_Rebuild.md](PLAN_Rebuild.md) — ✅ **COMPLETE. All 12 steps executed and
+  verified (2026-08-20 → 25).** `docs/PENDING_REBUILD.md` is now a *record*, not a plan: row 1
+  discharged, rows 2–3 open by ruling (FM-path only). **The canonical maps are
+  `reports/map_region` (baseline) and `reports/map_a1` (A1)**; the displaced pre-R01 product is
+  archived at `reports/map_region_g1` and **must not be quoted** — it has 26 distinct sub-cell
+  lattice phases. Re-check the shipped product any time with `scripts/verify_map_download.py`
+  (sha256 vs each sidecar's own `rasters[]`), `scripts/verify_arm_parity.py` (one lattice,
+  cell-for-cell co-registration, one size-floor basis) and `scripts/map_sidecar_qa.py` (12 gates
+  over all 52 sidecars). `scripts/rebuild_map_manifest.py` repairs a damaged manifest index from
   the sidecars, with no GPU and no re-render.
+  - ⚠ **Two reporting traps the QA tooling exists to prevent.** (1) The sidecars come in **three
+    schema generations**; a missing `overlap` key is an *absence of measurement*, not a zero — 28
+    of 52 tiles are `unknown_on_gate_layer`. (2) A missing `device` field means "predates the
+    field", and what hardware that implies is **arm-conditional** (baseline = 2080 Ti, A1 = Pascal),
+    known from the run logs, not from the sidecar.
+  - ⚠ **A1's η², re-derived 2026-08-25:** raw η² fell (window median 0.1444 → 0.1145; like-for-like
+    pilot crop 0.2327 → 0.1298, −44%) at a **−0.0024** skill cost and no THEMIS-ρ cost — **but η²
+    relative to its own rotation null did not improve at all** (median ratio 1.599 → 1.639, better
+    on only 106/234 windows). A1 compresses the whole field, lowering the geological floor with the
+    artifact. **Quote the raw reduction only alongside the ratio.** The banked 0.196→0.141 / −0.024
+    pair is superseded and not comparable.
 - **Live session state:** the `project_state_*` memory notes (not the stale `HANDOFF_NEXT_SESSION.md`)
 
 When reality diverges from a doc, update DECISIONS (and the relevant PLAN/ROADMAP) in the same change —

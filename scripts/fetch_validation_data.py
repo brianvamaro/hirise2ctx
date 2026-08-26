@@ -32,13 +32,14 @@ REPO = Path(__file__).resolve().parents[1]
 MAP_DIR = REPO / "reports" / "map_region"
 
 
-def _ctx_crs_wkt() -> str:
+def _ctx_crs_wkt(map_dir: Path) -> str:
     """The CTX clon_0 CRS, read from a regional abundance GeoTIFF (the inference output)."""
-    tifs = sorted(MAP_DIR.glob("*_abundance.tif"))
+    tifs = sorted(p for p in map_dir.glob("*_abundance.tif")
+                  if not p.name.startswith("regional_"))
     if not tifs:
         raise SystemExit(
-            f"no abundance GeoTIFFs under {MAP_DIR} to read the CTX CRS from; "
-            "run scripts/map_region.py first (or point --ctx-crs-from at one)."
+            f"no abundance GeoTIFFs under {map_dir} to read the CTX CRS from; "
+            "run scripts/map_region.py first (or point --map-dir at a rendered arm)."
         )
     with rasterio.open(tifs[0]) as src:
         return src.crs.to_wkt()
@@ -54,6 +55,11 @@ def main() -> None:
                     help="target pixel size (m); default = product native_res_m")
     ap.add_argument("--match-mosaic", action="store_true",
                     help="land on the regional_abundance_mosaic grid (exact co-registration)")
+    ap.add_argument("--map-dir", default=str(MAP_DIR),
+                    help="map arm supplying the CTX CRS and (with --match-mosaic) the target "
+                         "grid. Was hardcoded; a validation raster built --match-mosaic is only "
+                         "index-comparable to the generation of map it was matched against, so "
+                         "which arm this points at is part of the product (PLAN_Rebuild step 12).")
     ap.add_argument("--overwrite", action="store_true")
     args = ap.parse_args()
 
@@ -73,24 +79,33 @@ def main() -> None:
     if unknown:
         raise SystemExit(f"unknown product(s) {unknown}; configured: {sorted(products)}")
 
-    ctx_crs = _ctx_crs_wkt()
+    # resolve() so a relative --map-dir still prints and compares as a repo path
+    map_dir = Path(args.map_dir).resolve()
+    ctx_crs = _ctx_crs_wkt(map_dir)
     grid_kwargs = {}
     if args.match_mosaic:
-        ref = MAP_DIR / "regional_abundance_mosaic.tif"
+        ref = map_dir / "regional_abundance_mosaic.tif"
         if not ref.exists():
-            raise SystemExit(f"--match-mosaic needs {ref}; run notebook 24 §2 to write it first")
+            raise SystemExit(f"--match-mosaic needs {ref}; run scripts/map_mosaics.py first")
         _, transform, shape = vr.reference_grid(ref)
         grid_kwargs = {"dst_transform": transform, "dst_shape": shape}
+        print(f"    matching grid of {ref.relative_to(REPO)}: shape {shape}, "
+              f"origin ({transform.c:.3f}, {transform.f:.3f})", flush=True)
 
     for name in names:
         p = products[name]
         res_m = args.res_m or float(p["native_res_m"])
         out_path = out_dir / f"{name}_region.tif"
+        # `url` is the citable source; `url_direct`, when the config carries one, is the redirect
+        # target the bytes actually come from (see the config comment on themis_night_ir).
+        url = p.get("url_direct") or p["url"]
         print(f"[{name}] -> {out_path.relative_to(REPO)}  "
               f"({'mosaic grid' if args.match_mosaic else f'{res_m:g} m/px'})", flush=True)
+        if url != p["url"]:
+            print(f"    reading from url_direct (canonical: {p['url']})", flush=True)
         prov = vr.fetch_region_raster(
             name,
-            source_url=p["url"],
+            source_url=url,
             bounds_lonlat=bounds,
             dst_crs_wkt=ctx_crs,
             out_path=out_path,

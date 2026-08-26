@@ -54,6 +54,12 @@ validation_rasters:
       native_res_m: 463
     themis_night_ir:
       url: "https://planetarymaps.usgs.gov/mosaic/Mars_MO_THEMIS-IR-Night_mosaic_60N60S_100m_v14.tif"
+      # 2026-08-25: the canonical USGS URL now 302s to S3 behind Cloudflare, which serves the
+      # header range request and then 403s the bulk ones -- so `open_source` succeeds and
+      # `windowed_read` dies partway (measured: ~10 min in). `url_direct` is that redirect's own
+      # target, which serves 206 range responses cleanly. `url` stays as the CITABLE source;
+      # `url_direct` is what the bytes actually come from, and both go in the provenance sidecar.
+      url_direct: "https://asc-pds-services.s3.us-west-2.amazonaws.com/mosaic/Mars_MO_THEMIS-IR-Night_mosaic_60N60S_100m_v14.tif"
       lon_domain: "360"        # central_meridian 180; region crosses seam(lon 0) -> auto two-read split
       resampling: bilinear     # 8-bit brightness temperature proxy
       native_res_m: 100

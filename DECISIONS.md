@@ -10459,3 +10459,255 @@ shebang, reachable guard), pinned by the same test.
 
 **913 tests pass (full suite, slow included).** Step 11 is closed; step 12 opens with eta^2, which
 has never been re-derived on the corrected basis and is the first real item there.
+
+### 2026-08-25h — STEP 12 COMPLETE. **THE v2 REBUILD IS DONE.** η² re-derived, and it says less than the headline
+
+All twelve DAG steps are executed and verified. Step 12 did four things: promoted the two shipped
+arms, assembled and QA'd the regional mosaics, re-derived every §6 number, and swept the docs.
+
+Brian ruled three open calls before any work started: **archive-and-rename** for promotion,
+**re-fetch** for THEMIS, and the **§6 set + sidecar QA** for scope (no notebook re-execution).
+
+#### Promotion: archive and rename, so nothing downstream had to change
+
+```
+reports/map_region     -> reports/map_region_g1      (the pre-R01 product, archived)
+reports/map_region_g2  -> reports/map_region          (canonical baseline arm)
+reports/map_a1_g2      -> reports/map_a1              (canonical A1 arm; the name was free —
+                                                       no A1 map had ever existed on disk)
+```
+
+All three are gitignored (`reports/map_region*/`, `reports/map_a1*/`), so this is a pure filesystem
+operation with **zero code churn**: `src.striping.MAP_DIR`, `scripts/fetch_validation_data.MAP_DIR`,
+notebooks 24/25 and `f_map_compare.py` all keep working and now read the corrected product instead
+of the displaced one. Both step-11 gates were re-run **before and after** the rename and both pass
+either way (`ALL CLEAN, 26 tiles each` / `ARM PARITY: PASS`).
+
+The alternative — repointing every consumer at a `_g2` suffix — would have touched more code and
+left `_g2` in the vocabulary permanently. The alternative of doing nothing would have left
+`reports/map_region` as the default that every legacy consumer reads, silently serving pre-R01
+numbers to the next person who ran notebook 24.
+
+#### Mosaics: six of them, and the footprint CLOSES
+
+`scripts/map_mosaics.py` (new) + `src/map_qa.py` (new). Three layers × two arms at
+**5925×11852**, exactly the shape PENDING_REBUILD predicted, plus an A1-minus-baseline difference
+mosaic for `abundance`.
+
+**`mosaic_geotiffs(require_shared_lattice=True)` is itself the R01 gate** — it refuses rasters that
+are not on the one global lattice, and it fails by design on the now-archived pre-R01 arm. Measured
+directly: the archived arm has **26 distinct lattice phases** (every tile on its own sub-cell
+phase); both promoted arms have one lattice. A clean merge is positive evidence that step 11
+rendered on `COARSE_GRID_ID`.
+
+The QA that mattered was **not** the finite fraction. It came out 80.9784 %, identical across all
+six mosaics — a number that looks fine and proves nothing. The seam census then showed interior NaN
+runs up to **102 cells wide**, which tile geometry alone cannot explain. Chasing it produced a
+closed account instead of a plausible percentage:
+
+| term | value | why |
+|---|---|---|
+| tile area | 26 × 1479² = 56,873,466 | |
+| intra-tile nodata | **− 7,940** on 6 tiles | genuine CTX no-coverage; 102–2,781 cells each |
+| = mosaic finite cells | **56,865,526** | matches the measured count exactly |
+
+So `n_finite == n_tiles × 1479² − Σ(per-tile nodata)` is now an **assertion in the driver**, not a
+narrative. The seam widths also resolve exactly: the tile *pitch* on the global lattice is 1482
+cells (1481 once, at the clon_0 crossing) while each raster is 1479, giving one 2-wide seam and the
+rest 3-wide per row — 5,916 = 4 bands × 1479 rows carry exactly one 2-wide seam, as predicted.
+
+Two facts fell out that are worth keeping:
+
+- **The 6 tiles with intra-tile nodata mask the identical cells in both arms.** The nodata gate is
+  arm-independent (it keys on CTX coverage, not on the normalisation), so this is a real
+  consistency check, and it is why the difference mosaic has `only_a = only_b = 0`.
+- **The nodata accounting reconciles per tile**: `n_masked_nodata + n_masked_context_nodata`
+  equals the raster's NaN count on 52/52 rows, and equals `1479² − n_unique_cells` on the 26
+  baseline rows that carry that key. My first version of this gate asserted "no tile masked any
+  cell", which **failed** — correctly, because 6 tiles do mask cells. The wrong assertion was mine,
+  not a defect in the product.
+
+#### Sidecar QA: 12/12 gates, and two traps deliberately not fallen into
+
+`scripts/map_sidecar_qa.py` (new). One row per (arm, tile), 52 rows, `step12_sidecar_qa.csv`.
+
+**Trap 1 — a missing `overlap` key is not a zero.** 21 baseline + 7 A1 tiles predate the key and
+carry only the legacy scalar `overlap_disagreements: 0`, counted on the **calibrated** layer where
+isotonic collapses raw fp16 disagreements onto shared knots. That 0 is an absence of measurement.
+`src.map_qa.overlap_status` returns an explicit **`unknown_on_gate_layer`** for them, and the
+aggregate reports `24 pass / 28 unknown / 0 fail of 52` with its own denominator rather than
+averaging 28 zeros in. No shipped tile is the post-floor generation (the 1e-6 floor landed after the
+last render), so every measured row is labelled an **upper bound** on the gate quantity.
+
+**Trap 2 — a missing `device` field does not identify the hardware.** The handoff note said the 7
+Pascal-rendered A1 tiles "are identified exactly by the absence of the `device` field". Measured:
+the field is absent on the 7 oldest A1 tiles **and on 21 of 26 baseline tiles**, which ran on a
+2080 Ti. So absence identifies *"predates the field"*, and what hardware that implies is
+**arm-conditional and comes from the run logs, not from the sidecar**. Every inferred row is
+flagged `device_inferred=True` with its evidence named. ⚠ **Correction to the 2026-08-25g handoff.**
+
+The other gates: one `grid_id`; 3 layers + sha256 on every tile; **exactly one head per arm and the
+two differ** (`29e833be…` vs `da0e423f…` — R07's `norm_arm`-in-the-recipe-hash fix confirmed in
+effect on the shipped product); one calibration layer per arm; one raster shape; same 26 tiles both
+arms; every A1 tile records `A1_ARM = a1_native_perframe_tilesupport_v2` (a literal `a1` here is
+what killed all six tasks of the first step-11 array) and R38's `A1_VALID_FLOOR = 1`.
+
+**One gate found a real property and had to be rewritten to measure the right thing.** "No A1 tile
+dropped a source frame for being too small" **fails**: 9 of 1,371 frames across 7 tiles fall below
+`a1_min_frame_px = 50` and fall back to the tile-level median/IQR. That is R08's population by
+design — the robust IQR is unstable on tiny frames. The honest gate is the share of **pixels**
+carrying the fallback statistic, which also covers pixels no SeamMap frame owns: **max 1.6e-4,
+median 9.2e-5**, i.e. at most 0.016 % of any tile. Gate set at 1e-3.
+
+#### THEMIS: re-fetched, and the "15 GB source" framing was wrong
+
+PENDING_REBUILD row 6 called this "the one genuine network item" because "the 15 GB source is not
+cached". The sidecar records `read_mode: vsicurl` — the original was a **windowed range-request
+read**, never a 15 GB download. So re-fetching was minutes of network, and strictly better than
+reprojecting an already-bilinear 160 m product a second time onto a leg whose signal is |ρ| ≈ 0.07.
+
+Two things had to be fixed to do it:
+
+- **`fetch_validation_data.py` hardcoded `MAP_DIR`**, so it could only ever match the old mosaic.
+  It now takes `--map-dir`. A validation raster built `--match-mosaic` is only index-comparable to
+  the generation of map it was matched against, so *which arm* it points at is part of the product.
+- **The canonical USGS URL now 302s to S3 behind Cloudflare, which serves the header range request
+  and then 403s the bulk ones.** So `open_source` succeeded and `windowed_read` died ~10 minutes in
+  — a failure mode that looks like a corrupt source and is actually bot management. Config now
+  carries `url_direct` (the redirect's own target, which serves 206s cleanly) beside the citable
+  `url`; both go in the provenance sidecar.
+
+Result: shape (5925, 11852), origin (−711036.372, 2844945.482), `valid_frac` 0.998, and
+`assert_coregistered` against the promoted mosaic gives **dx = dy = 0.000 m**. The pre-R01 raster is
+archived as `themis_night_ir_region_g1.tif` and is confirmed **−100.0 / +80.0 m** out — exactly the
+figure on record, so notebook 24's leg 1 had been index-comparing displaced cells.
+
+#### R54's instrument now EXISTS, and it reproduces the hand computation exactly
+
+The audit required the per-image `mean(pred)/mean(true)` distribution to be emitted beside the
+pooled result; `bank_calibration.py` emitted nothing, which is why DECISIONS 2026-08-23c had to
+compute it by hand. It is now `src.calibration.per_image_level`, called from `bank_calibration.py`
+and recorded in the layer meta.
+
+Measuring the **already-banked** layers needed a way to run the computation without re-fitting —
+a re-fit would rewrite `calibration.npz` and break the `calibration_digest` that 52 shipped map
+sidecars bind to. Hence **`--report-only`**, which computes the gates and the instrument and writes
+nothing. It gives `bank_calibration.py` the dry-run mode §1.1 notes the producers lack.
+
+| arm | pooled | per-image median | IQR | within ±20 % | range |
+|---|---|---|---|---|---|
+| baseline | 1.0220 | 1.106 | 0.568–1.628 | **8/38 (21 %)** | 0.013–6.546 |
+| A1 | 1.0278 | 1.077 | 0.552–1.583 | **7/38 (18 %)** | 0.000–5.973 |
+
+Identical to the hand-computed table, to every digit — which validates both. ECE and top_ratio also
+reproduce the banked meta exactly (0.020405 / 0.8620 and 0.052263 / 0.8736), confirming
+`--report-only` runs the same computation as the fit path. **R54 stands: do not quote the pooled
+1.02 as per-place level accuracy.**
+
+### η²: the first real item of step 12, and the answer is two-sided
+
+`scripts/map_arm_eta2.py` (new). Raw P(rich) (`prob_raw`), SeamMap partition, **26 tiles × both
+arms**, one common finite mask per tile, 20 rotation-null draws, seed 0. It needs no network and no
+CTX zips — all 26 tiles have a cached `_frames_{tile}.gpkg`. Independent check en route: the frame
+vocabulary pooled from the geometry came to **907 PRODUCT_IDs**, exactly matching
+`region_frame_list.csv`.
+
+Three scales, because the banked pair was measured at only one of them:
+
+| | baseline | A1 | Δ |
+|---|---|---|---|
+| window median (469 px ≈ 75 km, 234 windows) | 0.1444 | **0.1145** | −0.0299 (**−20.7 %**) |
+| tile median | 0.2105 | **0.1817** | −0.0288 (−13.7 %) |
+| **E8_N44 pilot crop** (the banked extent) | 0.2327 | **0.1298** | −0.1029 (**−44.2 %**) |
+| THEMIS ρ, per-tile median | 0.0653 | 0.0654 | +0.0001 (**no cost**) |
+
+The pilot-crop row is the only like-for-like successor to the banked 0.196 → 0.141, and it is
+derived from the crop's **world coordinates**, not its remembered pixel offsets — the lattice moved,
+so re-using `row_off/col_off` would have scored a different patch of ground under the same name.
+
+**On the raw quantity the banked pair measured, A1 does better than banked (−44 % vs −28 %) at a
+tenth of the skill cost (−0.0024 vs −0.024) and no thermal cost.** That is the good news, and it is
+real.
+
+#### ⚠ But the raw headline overstates what A1 does, and the paired census says by how much
+
+A1 renormalises per source frame, which compresses the **whole** field — so it lowers the rotation
+null along with the between-frame term (window null p95 median 0.0771 → 0.0622). Paired per-unit
+over the same 234 windows:
+
+| view | asks | baseline → A1 | A1 better on |
+|---|---|---|---|
+| raw η² | the banked quantity | 0.1444 → 0.1145 (−21 %) | 144/234 (62 %) |
+| excess (η² − own null mean) | artifact above this window's own geology | 0.0887 → 0.0690 (−22 %) | 134/234 (57 %) |
+| **ratio (η² ÷ own null p95)** | **artifact RELATIVE to geology** | **1.599 → 1.639 (+2.5 %)** | **106/234 (45 %)** |
+
+**On the null-relative metric A1 is a coin flip and marginally worse.** Per-window raw Δη² spans
+−0.41 to **+0.44**; **9 of 26 tiles get worse on raw η²**, worst `E-12_N32` 0.207 → 0.371 — a
+degradation seven times the median improvement. Tile scale tells the same story (raw better on
+17/26, ratio better on 12/26, median ratio 1.628 → 1.699).
+
+So **A1 works substantially by compressing the field, not only by removing frame structure.** The
+median hides a distribution that changes sign. This is the quantitative content of the word
+"partial" in "A1 is a partial mitigation", and it is why the census is now printed by the script
+rather than being something a reader has to notice in the per-tile CSV. Neither arm approaches the
+0.05 F-reopening bar (frac of windows below bar: 0.171 baseline / 0.205 A1) — that bar belonged to
+the aborted F build, and nothing here reopens it.
+
+**Quote the raw reduction only alongside the ratio.** PLAN_Rebuild §6 and ROADMAP now carry both.
+
+### Doc sweep — and a fifth overstated gate row
+
+§6's own "where it is quoted" column was **wrong**. It said the headline FM numbers are quoted in
+`docs/modeling_results.md` and `docs/index.md`; grep says they were never in either. The actual
+blast radius was **`docs/model_evidence.md`** (four places) plus §6's table itself. `README.md`,
+`docs/index.md`, `docs/methods.md`, `dataset/DATA_DICTIONARY.md` and `SHERLOCK_RUN.md` carry none
+of these quantities. `docs/modeling.md` / `docs/modeling_results.md` carry only **GBM-path**
+numbers, which decision 4 deliberately does not re-derive. **That is the fifth gate/plan row this
+rebuild has found overstated**, after existence-only resume, LOIO tile keys, R09's metrics and
+R54's instrument.
+
+`docs/model_evidence.md` now reads 0.7826 / 0.9638 / 0.7778 against a 0.3733 base rate, with the
+prevalence arithmetic spelled out: chance PR-AUC *is* the prevalence, so skill above chance went
+0.6614 → **0.6530** and precision@5 % rising is partly mechanical. The prevalence-insensitive read
+is median per-image AUC, −0.0087, **inside one SE (≈0.0144)**. The defensible claim is that the
+frozen recipe **transfers to the corrected basis unchanged**.
+
+`docs/PENDING_REBUILD.md` is now a record, not a plan: row 1 (R74) **discharged in full**, rows 2–3
+annotated *"features regenerated; downstream tabular numbers not re-derived"* per decision 4.
+
+### New code
+
+| file | what |
+|---|---|
+| `src/map_qa.py` | generation-aware sidecar reading, mosaic footprint/seam census, arm differencing |
+| `scripts/map_mosaics.py` | the six mosaics + difference, with the closed-account footprint gate |
+| `scripts/map_arm_eta2.py` | η² at three scales, both arms, with the paired sign census |
+| `scripts/map_sidecar_qa.py` | the 52-row table and 12 aggregate gates |
+| `src/calibration.py::per_image_level` | R54's instrument (+ `LEVEL_BAND`) |
+| `bank_calibration.py --report-only` / `--level-csv` | measure a banked layer without re-fitting it |
+| `fetch_validation_data.py --map-dir` | which arm a `--match-mosaic` product is matched to |
+| `config_v2.yaml` `url_direct` | the Cloudflare-bypassing THEMIS source |
+
+**41 new tests** (`tests/test_map_qa.py` 17, `tests/test_per_image_level.py` 7 — the rest existing
+suites re-run). The two new suites pin the things that would otherwise rot silently: that a g1
+scalar 0 is `unknown` and never `pass`, that the absolute floor rescues a noisy fraction on few
+duplicated cells, that absent `device` is arm-conditional and always flagged inferred, that a wide
+NaN run lands in `gt_max` rather than hiding in the seam histogram, that mismatched arm shapes
+refuse to be differenced, and — the R54 one that matters — that **a perfect pooled ratio can
+coexist with zero images in band**.
+
+### My errors this session
+
+- **I wrote a gate asserting "no tile masked any cell on the nodata gate", and it failed.** Six
+  tiles legitimately mask cells. I had the mosaic evidence for that *before* I wrote the gate and
+  still wrote the assertion the wrong way round. Rewritten as a reconciliation.
+- **Same shape a second time**, in the same file: "no A1 tile dropped a source frame for being too
+  small" — also a real by-design behaviour asserted as a defect. Two instances of the same mistake
+  in one script: **asserting the absence of a phenomenon instead of measuring its magnitude.**
+- **I nearly shipped the −44 % η² headline without the null-relative census.** I noticed A1's η²
+  was *higher* than baseline on `E-12_N32` only because I read a stray CSV row, and only then
+  worked out that A1 lowers the null too. The paired census existed nowhere until that accident.
+  ⚠ **A median improvement is not an improvement until the sign census is checked** — and the
+  instrument should compute what it needs to be honest, not leave it to a reader's luck.
+- Two smaller ones: a `relative_to(REPO)` on a relative `--map-dir` (crashed on the first THEMIS
+  attempt), and `{1e-3:.0%}` printing a gate threshold as "0 %".

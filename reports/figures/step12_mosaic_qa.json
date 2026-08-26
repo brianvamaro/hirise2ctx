@@ -1,0 +1,326 @@
+{
+  "grid_id": "murray_v01_clon0_R3396190_ppd11855_S32_anchor_lonlat0",
+  "mosaics": [
+    {
+      "arm": "baseline",
+      "layer": "abundance",
+      "path": "reports\\map_region\\regional_abundance_mosaic.tif",
+      "n_tiles": 26,
+      "sphere_radius_m": 3396190.0,
+      "transform": [
+        159.99918352980168,
+        0.0,
+        -711036.3716064387,
+        0.0,
+        -159.99918352980168,
+        2844945.4823434036
+      ],
+      "seconds": 7.7,
+      "tile_cells_total": 56873466,
+      "intra_tile_nodata": {
+        "E-4_N36": 1186,
+        "E-4_N44": 685,
+        "E-8_N32": 1582,
+        "E0_N32": 102,
+        "E4_N32": 1604,
+        "E4_N36": 2781
+      },
+      "intra_tile_nodata_total": 7940,
+      "footprint_closes": true,
+      "shape": [
+        5925,
+        11852
+      ],
+      "n_cells": 70223100,
+      "n_finite": 56865526,
+      "finite_fraction": 0.8097837606143847,
+      "n_nodata": 13357574,
+      "rows_all_nodata": 9,
+      "cols_all_nodata": 20,
+      "value_min": 0.0,
+      "value_max": 0.15104280412197113,
+      "value_mean": 0.005113177001476288,
+      "interior_nan_runs_by_width": {
+        "2": 5916,
+        "3": 27113,
+        "4": 167,
+        "5": 49,
+        "6": 26,
+        "7": 12,
+        "8": 13,
+        "gt_max": 192,
+        "widest": 102
+      }
+    },
+    {
+      "arm": "baseline",
+      "layer": "prob",
+      "path": "reports\\map_region\\regional_prob_mosaic.tif",
+      "n_tiles": 26,
+      "sphere_radius_m": 3396190.0,
+      "transform": [
+        159.99918352980168,
+        0.0,
+        -711036.3716064387,
+        0.0,
+        -159.99918352980168,
+        2844945.4823434036
+      ],
+      "seconds": 8.2,
+      "tile_cells_total": 56873466,
+      "intra_tile_nodata": {
+        "E-4_N36": 1186,
+        "E-4_N44": 685,
+        "E-8_N32": 1582,
+        "E0_N32": 102,
+        "E4_N32": 1604,
+        "E4_N36": 2781
+      },
+      "intra_tile_nodata_total": 7940,
+      "footprint_closes": true,
+      "shape": [
+        5925,
+        11852
+      ],
+      "n_cells": 70223100,
+      "n_finite": 56865526,
+      "finite_fraction": 0.8097837606143847,
+      "n_nodata": 13357574,
+      "rows_all_nodata": 9,
+      "cols_all_nodata": 20,
+      "value_min": 0.03883495181798935,
+      "value_max": 0.9958158731460571,
+      "value_mean": 0.23660482466220856,
+      "interior_nan_runs_by_width": {
+        "2": 5916,
+        "3": 27113,
+        "4": 167,
+        "5": 49,
+        "6": 26,
+        "7": 12,
+        "8": 13,
+        "gt_max": 192,
+        "widest": 102
+      }
+    },
+    {
+      "arm": "baseline",
+      "layer": "prob_raw",
+      "path": "reports\\map_region\\regional_prob_raw_mosaic.tif",
+      "n_tiles": 26,
+      "sphere_radius_m": 3396190.0,
+      "transform": [
+        159.99918352980168,
+        0.0,
+        -711036.3716064387,
+        0.0,
+        -159.99918352980168,
+        2844945.4823434036
+      ],
+      "seconds": 5.9,
+      "tile_cells_total": 56873466,
+      "intra_tile_nodata": {
+        "E-4_N36": 1186,
+        "E-4_N44": 685,
+        "E-8_N32": 1582,
+        "E0_N32": 102,
+        "E4_N32": 1604,
+        "E4_N36": 2781
+      },
+      "intra_tile_nodata_total": 7940,
+      "footprint_closes": true,
+      "shape": [
+        5925,
+        11852
+      ],
+      "n_cells": 70223100,
+      "n_finite": 56865526,
+      "finite_fraction": 0.8097837606143847,
+      "n_nodata": 13357574,
+      "rows_all_nodata": 9,
+      "cols_all_nodata": 20,
+      "value_min": 1.3808061339659616e-05,
+      "value_max": 0.9998071193695068,
+      "value_mean": 0.20527322590351105,
+      "interior_nan_runs_by_width": {
+        "2": 5916,
+        "3": 27113,
+        "4": 167,
+        "5": 49,
+        "6": 26,
+        "7": 12,
+        "8": 13,
+        "gt_max": 192,
+        "widest": 102
+      }
+    },
+    {
+      "arm": "a1",
+      "layer": "abundance",
+      "path": "reports\\map_a1\\regional_abundance_mosaic.tif",
+      "n_tiles": 26,
+      "sphere_radius_m": 3396190.0,
+      "transform": [
+        159.99918352980168,
+        0.0,
+        -711036.3716064387,
+        0.0,
+        -159.99918352980168,
+        2844945.4823434036
+      ],
+      "seconds": 7.0,
+      "tile_cells_total": 56873466,
+      "intra_tile_nodata": {
+        "E-4_N36": 1186,
+        "E-4_N44": 685,
+        "E-8_N32": 1582,
+        "E0_N32": 102,
+        "E4_N32": 1604,
+        "E4_N36": 2781
+      },
+      "intra_tile_nodata_total": 7940,
+      "footprint_closes": true,
+      "shape": [
+        5925,
+        11852
+      ],
+      "n_cells": 70223100,
+      "n_finite": 56865526,
+      "finite_fraction": 0.8097837606143847,
+      "n_nodata": 13357574,
+      "rows_all_nodata": 9,
+      "cols_all_nodata": 20,
+      "value_min": 0.0,
+      "value_max": 0.2932421863079071,
+      "value_mean": 0.004850408993661404,
+      "interior_nan_runs_by_width": {
+        "2": 5916,
+        "3": 27113,
+        "4": 167,
+        "5": 49,
+        "6": 26,
+        "7": 12,
+        "8": 13,
+        "gt_max": 192,
+        "widest": 102
+      }
+    },
+    {
+      "arm": "a1",
+      "layer": "prob",
+      "path": "reports\\map_a1\\regional_prob_mosaic.tif",
+      "n_tiles": 26,
+      "sphere_radius_m": 3396190.0,
+      "transform": [
+        159.99918352980168,
+        0.0,
+        -711036.3716064387,
+        0.0,
+        -159.99918352980168,
+        2844945.4823434036
+      ],
+      "seconds": 6.0,
+      "tile_cells_total": 56873466,
+      "intra_tile_nodata": {
+        "E-4_N36": 1186,
+        "E-4_N44": 685,
+        "E-8_N32": 1582,
+        "E0_N32": 102,
+        "E4_N32": 1604,
+        "E4_N36": 2781
+      },
+      "intra_tile_nodata_total": 7940,
+      "footprint_closes": true,
+      "shape": [
+        5925,
+        11852
+      ],
+      "n_cells": 70223100,
+      "n_finite": 56865526,
+      "finite_fraction": 0.8097837606143847,
+      "n_nodata": 13357574,
+      "rows_all_nodata": 9,
+      "cols_all_nodata": 20,
+      "value_min": 0.0,
+      "value_max": 1.0,
+      "value_mean": 0.21819965541362762,
+      "interior_nan_runs_by_width": {
+        "2": 5916,
+        "3": 27113,
+        "4": 167,
+        "5": 49,
+        "6": 26,
+        "7": 12,
+        "8": 13,
+        "gt_max": 192,
+        "widest": 102
+      }
+    },
+    {
+      "arm": "a1",
+      "layer": "prob_raw",
+      "path": "reports\\map_a1\\regional_prob_raw_mosaic.tif",
+      "n_tiles": 26,
+      "sphere_radius_m": 3396190.0,
+      "transform": [
+        159.99918352980168,
+        0.0,
+        -711036.3716064387,
+        0.0,
+        -159.99918352980168,
+        2844945.4823434036
+      ],
+      "seconds": 5.6,
+      "tile_cells_total": 56873466,
+      "intra_tile_nodata": {
+        "E-4_N36": 1186,
+        "E-4_N44": 685,
+        "E-8_N32": 1582,
+        "E0_N32": 102,
+        "E4_N32": 1604,
+        "E4_N36": 2781
+      },
+      "intra_tile_nodata_total": 7940,
+      "footprint_closes": true,
+      "shape": [
+        5925,
+        11852
+      ],
+      "n_cells": 70223100,
+      "n_finite": 56865526,
+      "finite_fraction": 0.8097837606143847,
+      "n_nodata": 13357574,
+      "rows_all_nodata": 9,
+      "cols_all_nodata": 20,
+      "value_min": 1.002712934905503e-07,
+      "value_max": 0.9999966025352478,
+      "value_mean": 0.1779835969209671,
+      "interior_nan_runs_by_width": {
+        "2": 5916,
+        "3": 27113,
+        "4": 167,
+        "5": 49,
+        "6": 26,
+        "7": 12,
+        "8": 13,
+        "gt_max": 192,
+        "widest": 102
+      }
+    }
+  ],
+  "difference": {
+    "layer": "abundance",
+    "n_common": 56865526,
+    "only_a": 0,
+    "only_b": 0,
+    "mean": -0.0002627680194523549,
+    "sd": 0.007075396810111054,
+    "median": -0.00023437499476131052,
+    "p01": -0.018918413610663265,
+    "p99": 0.027359276777133346,
+    "min": -0.07942769303917885,
+    "max": 0.2832593381172046,
+    "max_abs": 0.2832593381172046,
+    "frac_nonzero": 0.8206676572375327
+  }
+}

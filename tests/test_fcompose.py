@@ -205,15 +205,32 @@ def test_windows_over_grid_drops_slivers():
 
 
 # --------------------------------------------------------------------------- against the real map
-REAL_KJ_KI = {"E-12_N32": (-4444, 13335), "E0_N44": (1, 17781), "E8_N44": (2965, 17781),
-              "E16_N44": (5929, 17781)}
+# TWO generations of shipped map now exist on disk, and they sit on different lattices, so the
+# pin has to name which one it is measuring (step 12, 2026-08-25):
+#
+#   reports/map_region      the PROMOTED product, rendered on COARSE_GRID_ID. One lattice: the
+#                           per-tile origins share a single sub-cell phase.
+#   reports/map_region_g1   the ARCHIVED pre-R01 product. **26 distinct sub-cell phases** — every
+#                           tile on its own — which is the R01 defect itself.
+#
+# Keeping both pinned is the point: the archived row is the historical record the 2026-07-28
+# measurement was made against, and the promoted row is what any consumer reads today. A single
+# unlabelled pin would have silently become a claim about whichever directory happened to exist.
+REAL_KJ_KI = {
+    "map_region": {"E-12_N32": (-4443, 13334), "E0_N44": (1, 17780), "E8_N44": (2965, 17780),
+                   "E16_N44": (5929, 17780)},
+    "map_region_g1": {"E-12_N32": (-4444, 13335), "E0_N44": (1, 17781), "E8_N44": (2965, 17781),
+                      "E16_N44": (5929, 17781)},
+}
 
 
-@pytest.mark.parametrize("tile,expect", sorted(REAL_KJ_KI.items()))
-def test_real_map_tiles_have_the_measured_lattice_shift(repo_root, tile, expect):
-    """Regression-pins the measured 2026-07-28 global-lattice shifts (reports/map_region is
-    gitignored, so this skips on a fresh clone)."""
-    ref = repo_root / "reports" / "map_region" / f"{tile}_prob_raw.tif"
+@pytest.mark.parametrize("generation,tile,expect",
+                         [(gen, t, e) for gen, d in sorted(REAL_KJ_KI.items())
+                          for t, e in sorted(d.items())])
+def test_real_map_tiles_have_the_measured_lattice_shift(repo_root, generation, tile, expect):
+    """Regression-pins the measured global-lattice shifts per shipped generation (both map dirs
+    are gitignored, so this skips on a fresh clone)."""
+    ref = repo_root / "reports" / generation / f"{tile}_prob_raw.tif"
     if not ref.exists():
         pytest.skip(f"{ref} not on disk")
     g = fc.tile_grid_from_raster(ref, tile)
@@ -222,9 +239,46 @@ def test_real_map_tiles_have_the_measured_lattice_shift(repo_root, tile, expect)
     assert g.dx_m <= lv.TILE_M / 2 + 1e-6 and g.dy_m <= lv.TILE_M / 2 + 1e-6
 
 
+def test_the_promoted_arms_share_one_lattice_and_the_archived_one_does_not(repo_root):
+    """The R01 defect, stated as a property of the products rather than of one tile's indices.
+
+    `rasterio.merge` floors each tile's fractional destination offset, so a per-tile sub-cell
+    phase becomes a whole-cell displacement. The promoted arms must therefore present ONE phase
+    and the archived product many — this is what `mosaic_geotiffs(require_shared_lattice=True)`
+    enforces at build time, checked here against what is actually on disk.
+    """
+    import rasterio
+
+    def phases(d):
+        out = set()
+        for p in (repo_root / "reports" / d).glob("*_prob_raw.tif"):
+            if p.name.startswith("regional_"):
+                continue
+            with rasterio.open(p) as ds:
+                t = ds.transform
+            out.add((round(t.c % t.a, 3), round(t.f % abs(t.e), 3)))
+        return out
+
+    if not (repo_root / "reports" / "map_region").is_dir():
+        pytest.skip("no map arms on disk")
+    for arm in ("map_region", "map_a1"):
+        # a phase of ~0 or ~cell-size are the same lattice (float modulo lands either side)
+        got = {tuple(0.0 if (v < 1e-3 or abs(v - 160.0) < 1.0) else v for v in ph)
+               for ph in phases(arm)}
+        assert got == {(0.0, 0.0)}, f"{arm} is not on one lattice: {sorted(phases(arm))}"
+    archived = repo_root / "reports" / "map_region_g1"
+    if archived.is_dir():
+        assert len(phases("map_region_g1")) > 1, (
+            "the archived pre-R01 product should show many sub-cell phases — that defect is "
+            "the whole reason the rebuild re-rendered these tiles")
+
+
 def test_the_e0_column_is_flagged_as_a_rounding_tie(repo_root):
     """E0's map pixel centres sit ~80 m (a half cell) from the global node they map to, i.e. right on
-    the cell boundary — an irreducible <=80 m placement ambiguity that must stay visible."""
+    the cell boundary — an irreducible <=80 m placement ambiguity that must stay visible.
+
+    Survives the step-12 promotion unchanged: the tie is a property of E0's longitude relative to
+    the clon_0 origin, not of which generation rendered it."""
     ref = repo_root / "reports" / "map_region" / "E0_N44_prob_raw.tif"
     if not ref.exists():
         pytest.skip(f"{ref} not on disk")

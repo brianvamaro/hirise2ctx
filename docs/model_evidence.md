@@ -19,13 +19,13 @@ A frozen, Mars-pretrained vision foundation model turns 5 m/px CTX texture into 
 boulder-rich / boulder-poor call at 160 m, near-globally — **substantially better
 than the handcrafted-feature detector of Part 1, at four times finer resolution**.
 On 38 HiRISE-labelled images held out one at a time, it recovers boulder-rich tiles
-with a pooled precision–recall AUC of 0.78 against a 0.36 base rate, and its
-top-scoring 5 % of map tiles are ~95 % correct. The same frozen embedding also
+with a pooled precision–recall AUC of 0.78 against a 0.37 base rate, and its
+top-scoring 5 % of map tiles are ~96 % correct. The same frozen embedding also
 yields a calibrated abundance estimate (§8) for free.
 
 | recipe (held-out LOIO) | resolution | pooled PR-AUC | prec@5% | med per-image AUC |
 |---|---|---|---|---|
-| **FM recipe (this work)** | 160 m (S=32) | **0.7832** | **0.948** | **0.7865** |
+| **FM recipe (this work)** | 160 m (S=32) | **0.7826** | **0.9638** | **0.7778** |
 | Tier-1 handcrafted (Part 1) | 320 m (S=64) | 0.5651 | 0.771 | 0.681 |
 | held-out confirmation | — | `[held-out: pending]` | `[pending]` | `[pending]` |
 
@@ -104,19 +104,27 @@ Only the metrics the project uses appear here, each with its operational meaning
 (Presence AUC — "did the model find *any* boulder" — is deliberately not reported;
 it is saturated by the base rate and uninformative at the rich/poor question.)
 
-- **Pooled PR-AUC = 0.7832, against a base rate of 0.36.** The no-skill line for
-  PR-AUC is the positive base rate itself (36 % of tiles are boulder-rich here), so
+- **Pooled PR-AUC = 0.7826, against a base rate of 0.3733.** The no-skill line for
+  PR-AUC is the positive base rate itself (37.3 % of tiles are boulder-rich here), so
   0.78 means the model is far above chance at separating rich from poor across the
   whole pooled cohort, not just on easy images.
-- **Precision@5% = 0.948.** Rank every tile by score and take the top 5 %: ~**95 %
+- **Precision@5% = 0.9638.** Rank every tile by score and take the top 5 %: ~**96 %
   are truly boulder-rich**. This is the "where do I look first" guarantee — for
   landing-site screening or targeting follow-up HiRISE, the model's most-confident
   tiles are almost all real.
-- **Median per-image AUC = 0.7865, with ±0.1–0.2 fold-ripple error bars.** AUC
+- **Median per-image AUC = 0.7778, with ±0.1–0.2 fold-ripple error bars.** AUC
   computed *within* each image, summarised by the median across the 38 — the honest
   view, because a user runs the map one region at a time. The error bars are real:
   an image with few positive tiles has a noisy AUC, so the **median across images**
-  is the summary, not any single value.
+  is the summary, not any single value (sd 0.0886 over 38 images ⇒ SE ≈ 0.0144).
+- **⚠ These numbers moved slightly at the 2026-08-25 rebuild, and the comparison needs
+  care.** The corrected label basis (R74 + R29) raised rich prevalence 0.3598 → 0.3733,
+  and *chance PR-AUC is the prevalence*, so a flat PR-AUC at a higher base rate is a
+  small **real** decline: skill above chance went (0.7832−0.3598)/(1−0.3598) = 0.6614
+  → (0.7826−0.3733)/(1−0.3733) = **0.6530**. Precision@5% rising is likewise partly
+  mechanical. The prevalence-insensitive read is median per-image AUC, **down 0.0087 —
+  inside one standard error**. The defensible statement is that the frozen recipe
+  **transfers to the corrected basis unchanged**, not that it improved or degraded.
 - **The rich/poor threshold (`fractional_area > 1e-2`)** is the scientifically
   meaningful cut, fixed before any of these numbers were computed.
 
@@ -176,7 +184,7 @@ the azimuth outlier ESP_076499_1160 (the cohort's single biggest win).*
 
 *Figure 5. Top-scoring tiles for the formerly-worst image as CTX chips with their
 true labels — the model's highest-confidence picks are almost all true
-boulder-rich, the visual form of prec@5% = 0.948.*
+boulder-rich, the visual form of prec@5% = 0.9638.*
 
 The two formerly-failing cases are the persuasive ones. **ESP_046328_2180** was an
 *anti-signal* image under Part 1 — its handcrafted predictions were systematically
@@ -356,7 +364,7 @@ the result.
 | slim 5-feature (shadow + roughness) | per-image AUC med ~0.57 | the minimal handcrafted floor |
 | Tier-1 handcrafted (52 features) | pooled 0.5651 / med 0.681 | the handcrafted ceiling |
 | CNN / conditional-leveler fusion (W2) | F1 0.5955 | learned CTX features ≈ handcrafted (the representation floor is real) |
-| **FM recipe** | **0.7832 / 0.7865** | the floor was a *feature-set* floor, not a sensor floor |
+| **FM recipe** | **0.7826 / 0.7778** | the floor was a *feature-set* floor, not a sensor floor |
 
 Three negative results carried the project to the foundation model (detail in
 DECISIONS.md):

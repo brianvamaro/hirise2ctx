@@ -276,6 +276,59 @@ def compression_metrics(y_true: np.ndarray, y_pred: np.ndarray,
     }
 
 
+LEVEL_BAND = (0.8, 1.2)     # PLAN_Calibration §6's ±20 % band, inherited by R54
+
+
+def per_image_level(obs_id, y_true: np.ndarray, y_pred: np.ndarray,
+                    *, band: tuple[float, float] = LEVEL_BAND) -> tuple[pd.DataFrame, dict]:
+    """**R54's instrument**: per-image ``mean(pred) / mean(true)`` beside the pooled ratio.
+
+    Returns ``(per_image_frame, summary)``. The summary deliberately carries **both** the pooled
+    ratio and the per-image distribution, because on this product they tell opposite stories:
+    measured on the rebuilt arms the pooled ratio is 1.02 while only 8/38 (baseline) and 7/38
+    (A1) images sit inside ±20 %, with per-image ratios spanning 0.013x to 6.5x. The pooled
+    figure averages away errors that partly cancel, so **it is not evidence of per-place level
+    accuracy** and must never be quoted as such.
+
+    This is why R54 exists. The audit required the distribution to be emitted *beside* the
+    pooled result with an explicit statement of which governs promotion; ``bank_calibration.py``
+    did not emit it at all (the fourth audit gate row this rebuild found overstated), and the
+    numbers had to be computed by hand for DECISIONS 2026-08-23c. Emitting it is a step-12 item.
+
+    An image whose true mean is 0 has no defined ratio -- it is reported as NaN and counted in
+    ``n_undefined`` rather than silently dropped or clipped to something finite.
+    """
+    obs = np.asarray(obs_id)
+    yt = np.asarray(y_true, dtype=np.float64)
+    yp = np.asarray(y_pred, dtype=np.float64)
+    rows = []
+    for o in pd.unique(obs):
+        sel = obs == o
+        mt, mp = float(yt[sel].mean()), float(yp[sel].mean())
+        rows.append({"obs_id": o, "n_tiles": int(sel.sum()), "mean_true": mt,
+                     "mean_pred": mp, "ratio": (mp / mt) if mt > 0 else np.nan})
+    per = pd.DataFrame(rows).sort_values("obs_id").reset_index(drop=True)
+    r = per.ratio.to_numpy()
+    ok = np.isfinite(r)
+    lo, hi = band
+    summary = {
+        "n_images": int(len(per)),
+        "n_undefined": int((~ok).sum()),
+        "pooled_ratio": float(yp.mean() / yt.mean()) if yt.mean() > 0 else float("nan"),
+        "per_image_median": float(np.median(r[ok])) if ok.any() else float("nan"),
+        "per_image_q25": float(np.percentile(r[ok], 25)) if ok.any() else float("nan"),
+        "per_image_q75": float(np.percentile(r[ok], 75)) if ok.any() else float("nan"),
+        "per_image_min": float(r[ok].min()) if ok.any() else float("nan"),
+        "per_image_max": float(r[ok].max()) if ok.any() else float("nan"),
+        "n_within_band": int(((r >= lo) & (r <= hi)).sum()),
+        "frac_within_band": float(((r >= lo) & (r <= hi)).sum() / len(per)) if len(per) else float("nan"),
+        "band": list(band),
+        "governs_promotion": "per_image_frac_within_band",
+        "warning": "the pooled ratio is NOT evidence of per-place level accuracy (R54)",
+    }
+    return per, summary
+
+
 # ============================================================================
 # LOIO-honest application
 # ============================================================================
