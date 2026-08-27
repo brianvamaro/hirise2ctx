@@ -10978,3 +10978,59 @@ evidence, not drift.
 **One knock-on for PLAN_RegionalMap:** its remaining thermal legs were parked "until the final
 post-mitigation map". There is no post-mitigation map; the condition is met by the promoted baseline,
 and those legs should run on **`reports/map_region`**.
+
+### 2026-08-27 — notebooks 24 and 25 were left showing the ARCHIVED map; bannered, and two open items recorded
+
+Found while answering "is this session wrapped up?" — and it is the failure the step-12 doc sweep
+was supposed to prevent, missed because I swept the `.md` files and never checked the notebooks.
+
+**Notebooks 24 and 25 were last executed 2026-06-19**, two months before step 12 promoted the maps.
+Their stored outputs (24 and 7 respectively) and the 13 `reports/figures/{24,25}_*.png` files on disk
+were all produced from the product now **archived** as `reports/map_region_g1` — pre-R01 lattice,
+pre-R74/R29 labels, older head and calibrator. Their *code*, meanwhile, reads `reports/map_region`,
+which is now the **promoted** product. **The code and the stored outputs described different maps**,
+and nothing said so. Anyone opening `24_regional_map.ipynb` — as Brian just did — saw pre-R01 figures
+presented as current.
+
+Mitigating fact, checked rather than assumed: **no stale numbers are hardcoded in either source**
+(grep for 0.196 / 0.141 / 0.3598 / 161,005 found nothing). The staleness is entirely in the executed
+outputs and the PNGs.
+
+**Brian ruled: banner it and stop** (the full rewire + re-execute is next-session work).
+
+#### What landed
+
+A prominent staleness banner as the **first markdown cell of each `.ipynb`**, plus the same text in
+each `_build_NN.py` docstring and as a `STALE_BANNER` cell so a regeneration keeps it.
+
+⚠ **The banner was injected directly into the `.ipynb`, deliberately, NOT by regenerating.**
+`_build_NN.py` writes every cell with `outputs: []`, so regenerating would have silently destroyed
+the historical outputs. Verified: 24 and 7 stored outputs survive, and both builders still round-trip
+(exit 0, banner text byte-identical to the live cell) — checked by running them in a scratch dir so
+`NB_PATH` could not touch the live notebooks.
+
+#### Two items now open, both recorded in the banners themselves
+
+1. **`_build_24.py` §2 is a duplicate mosaic producer and must be rewired before re-execution.**
+   Lines ~336/~393 call `mosaic_geotiffs(...)` writing `regional_{abundance,prob}_mosaic.tif` — the
+   exact files `scripts/map_mosaics.py` now produces **with** `SIZE_FLOOR_*`/`MOSAIC_*` provenance
+   tags and a closed-footprint gate. Re-executing as-is would overwrite the tagged mosaics with
+   untagged ones, and **notebooks are not covered by the test-side write guard**. Change §2 to
+   *read* them.
+2. **Re-executing is worth real science, not just cosmetics.** THEMIS is now re-fetched onto the
+   corrected lattice (`assert_coregistered` dx=dy=0), so notebook 24's **leg 1 — which
+   index-compares — would finally run co-registered**. That is the first of PLAN_RegionalMap's
+   unblocked thermal legs, and it is the natural next task.
+
+#### My error, and it is the same shape as 2026-08-25j
+
+I patched the banner into `_build_25.py` calling `md(STALE_BANNER, "stale-banner-25")` — but that
+file's `md()` is **nbformat-backed and takes one argument** (it assigns its own cell ids), unlike
+`_build_24.py`'s `md(text, cid)`. **I broke the builder outright** and would have shipped it, because
+I verified the banner *appeared* rather than that the *builder still ran*. Caught only because I
+round-tripped both builders afterwards. I also left a comment pointing at a scratchpad script that
+does not exist in the repo; replaced with a self-contained instruction.
+
+⚠ **Generalisable:** two files with the same role do not have the same API. "It looks right in the
+output" is not "the producer still works" — the same substitution of a weaker check for the real one
+as 2026-08-25d/e and 2026-08-25j.

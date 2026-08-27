@@ -1,5 +1,17 @@
 """Build notebooks/25_striping_artifact.ipynb from Python source.
 
+⚠⚠ STALE OUTPUTS — DO NOT QUOTE THIS NOTEBOOK'S FIGURES (flagged 2026-08-27).
+    Last executed 2026-06-19. Its stored outputs and the reports/figures/25_*.png files
+    come from the map now ARCHIVED as `reports/map_region_g1`, while the code reads the
+    PROMOTED `reports/map_region`. Same-map assumption no longer holds.
+
+⚠ The MITIGATION verdict this notebook predates has also reversed: **A1 was demoted from
+    shipped mitigation to a sensitivity arm on 2026-08-25** (DECISIONS 2026-08-25k). The
+    cause diagnosis below still stands in full; the "A1 fixes it" framing does not.
+    For the current, corrected comparison of all three shipped maps -- including the
+    SeamMap overlay showing A1 MANUFACTURING frame-shaped blocks -- see
+    notebooks/29_map_comparison.ipynb.
+
 The regional-map "rectangular artifact" = **CTX source-frame radiometry**. The Murray mosaic is a
 patchwork of ~dozens of CTX source images per 4deg tile (the SeamMap is a partition, one frame per
 pixel); each frame has its own radiometric character (contrast/gain/noise). The Fang embedder feeds
@@ -33,7 +45,18 @@ def code(t):
     return nbf.v4.new_code_cell(t)
 
 
+# The same banner is ALSO the first markdown cell of the .ipynb on disk, injected there
+# directly so the notebook's stored outputs survived (regenerating from this file writes
+# every cell with `outputs: []`, which would have destroyed the historical record).
+# Regenerating is therefore safe and keeps the banner -- but it DOES drop the outputs.
+# Delete this constant and its append() once the notebook is rewired and re-executed on
+# the promoted product; the banner in the module docstring says what rewiring means.
+STALE_BANNER = '<div style="border-left:6px solid #b00020;background:#fff2f2;padding:10px 14px">\n\n## ⚠⚠ STALE outputs, and the mitigation verdict below has REVERSED\n\n**Flagged 2026-08-27. This notebook was last executed 2026-06-19.**\n\nIts stored outputs and the `reports/figures/25_*.png` files come from the map now **archived** as\n`reports/map_region_g1`, while the code reads the **promoted** `reports/map_region`.\n\n**The cause diagnosis in this notebook still stands in full** — the rectangular blocks are CTX\nsource-frame radiometry × the embedder\'s fixed `/255`. That is unchanged and remains the finding.\n\n**What has reversed is the mitigation.** ⚠ **A1 was demoted from shipped mitigation to a\n*sensitivity arm* on 2026-08-25** (DECISIONS 2026-08-25k). The baseline map is the product and the\nartifact **ships unmitigated**, as a documented caveat. A1 reduces *raw* η² but not η² *relative to\nits own rotation null*, fails the Tier-1 ECE gate the baseline passes (0.0523 vs 0.0204), and\n**manufactures** frame-shaped blocks on 9 of 26 tiles — predictably from its own per-frame gain\n(ρ +0.490, p 1.4e-4).\n\nFor the current comparison — including the **SeamMap overlay showing A1 inventing a block bounded\nby exactly one source frame** — see **[notebook 29](29_map_comparison.ipynb) §2d**.\n\n</div>'
+
 cells = []
+
+cells.append(md(STALE_BANNER))   # md() here is nbformat-backed and takes ONE arg;
+#                                  it assigns its own cell id, so none is passed.
 
 cells.append(md(
     """# 25 — Regional-map rectangular artifact = CTX source-frame radiometry

@@ -1,5 +1,26 @@
 """Build notebooks/24_regional_map.ipynb from Python source.
 
+⚠⚠ STALE OUTPUTS — DO NOT QUOTE THIS NOTEBOOK'S FIGURES OR NUMBERS (flagged 2026-08-27).
+    Last executed 2026-06-19. Every stored output, and every reports/figures/24_*.png on
+    disk, was produced from the map that PLAN_Rebuild step 12 has since ARCHIVED as
+    `reports/map_region_g1` (pre-R01 lattice, pre-R74/R29 labels, an older head and
+    calibrator). The code below reads `reports/map_region`, which is now the PROMOTED
+    product -- so the code and the stored outputs describe DIFFERENT MAPS.
+    Nothing in the source hardcodes a stale number; the staleness is entirely in the
+    executed outputs and the PNGs.
+
+⚠ BEFORE RE-EXECUTING, REWIRE §2. Lines ~336 and ~393 call `mosaic_geotiffs(...)` writing
+    `MAP_DIR/regional_{abundance,prob}_mosaic.tif` -- the exact files
+    `scripts/map_mosaics.py` now produces WITH provenance tags (SIZE_FLOOR_*, MOSAIC_*)
+    and a closed-footprint gate. Re-executing as-is would silently overwrite the tagged
+    mosaics with untagged ones, and notebooks are NOT covered by the test-side write
+    guard (CLAUDE.md). Change §2 to READ those mosaics, then re-execute.
+
+    Re-executing is worth doing, and not only cosmetically: THEMIS has been re-fetched
+    onto the corrected lattice (`assert_coregistered` dx=dy=0), so leg 1 -- which
+    index-compares -- would finally run co-registered. That is the first of
+    PLAN_RegionalMap's unblocked thermal legs. See DECISIONS 2026-08-25k/2026-08-27.
+
 Documentation + analysis home for [PLAN_RegionalMap.md](../PLAN_RegionalMap.md): the
 regional rock-abundance map over the circum-Chryse highland-lowland boundary and its
 validation against Rodriguez et al. 2016 + THEMIS/TES thermal inertia.
@@ -31,7 +52,17 @@ def code(text, cid):
             "outputs": [], "source": text.splitlines(keepends=True)}
 
 
+# The same banner is ALSO the first markdown cell of the .ipynb on disk, injected there
+# directly so the notebook's stored outputs survived (regenerating from this file writes
+# every cell with `outputs: []`, which would have destroyed the historical record).
+# Regenerating is therefore safe and keeps the banner -- but it DOES drop the outputs.
+# Delete this constant and its append() once the notebook is rewired and re-executed on
+# the promoted product; the banner in the module docstring says what rewiring means.
+STALE_BANNER = '<div style="border-left:6px solid #b00020;background:#fff2f2;padding:10px 14px">\n\n## ⚠⚠ STALE — the figures and numbers below are from a map that has since been ARCHIVED\n\n**Flagged 2026-08-27. This notebook was last executed 2026-06-19.**\n\nEvery stored output here, and every `reports/figures/24_*.png` on disk, was produced from the\nregional map that PLAN_Rebuild **step 12 archived as `reports/map_region_g1`** — pre-R01 lattice\n(26 distinct sub-cell phases), pre-R74/R29 labels (rich prevalence 0.3598, not 0.373272), and an\nolder head and calibrator. Meanwhile the *code* in this notebook reads `reports/map_region`, which\nis now the **promoted** product. **The code and the stored outputs describe different maps.**\n\n*Nothing in the source hardcodes a stale number* — the staleness is entirely in the executed\noutputs and the PNGs.\n\n**Do not quote anything below.** For the current product, and for a like-for-like comparison of\nold vs new vs A1, see **[notebook 29](29_map_comparison.ipynb)**. Old→new turns out to be largely\n*the same field, moved* (95 % of the difference is high-frequency, with the gradient signature of\na pure translation) over a small genuine re-levelling — so the *patterns* below are not worthless,\nbut the *placement, level and dynamic range* are all superseded.\n\n**⚠ Before re-executing, §2 must be rewired.** It calls `mosaic_geotiffs(...)` writing\n`regional_{abundance,prob}_mosaic.tif` — the exact files `scripts/map_mosaics.py` now produces\n**with** provenance tags and a closed-footprint gate. Re-running as-is would silently overwrite\nthe tagged mosaics with untagged ones, and notebooks are **not** covered by the test-side write\nguard. Change §2 to *read* them first.\n\nRe-executing is worth doing on its merits: THEMIS has been re-fetched onto the corrected lattice\n(`assert_coregistered` dx=dy=0), so **leg 1 — which index-compares — would finally run\nco-registered.** That is the first of PLAN_RegionalMap\'s unblocked thermal legs.\n\n</div>'
+
 cells = []
+
+cells.append(md(STALE_BANNER, "stale-banner-24"))
 
 cells.append(md(
     """# 24 — Regional rock-abundance map (circum-Chryse)
