@@ -11325,3 +11325,55 @@ either fails to match or — worse — *writes a real newline into the middle of
 broke the notebook-24 banner, then `plan_map_extent.py`'s digest print block, then silently made
 a `map_mosaics.py` pattern unmatchable. The fix is to build backslashes as `chr(92)` or to edit
 by line number, never to write `\` inside a heredoc.
+
+---
+
+### 2026-08-28f — `reports/map_extended` is COMPLETE at 35 tiles, verified, stitched and display-ready
+
+The 27 rendered tiles came home as `map_extended.zip` (330 MB). Verified in a scratch directory
+**before** anything entered the product: 81 rasters, sha256 clean against each sidecar's own
+`rasters[]`, one `grid_id`, overlap disagreements at fp16-noise level (worst tile 0.86 %
+significant of 77,163 duplicated cells). Then moved in and re-verified as a whole: **ALL CLEAN,
+35 tiles, 105 rasters, 0.41 GiB.** `rebuild_map_manifest.py` re-indexed 27 → 35, recovering the
+8 adopted tiles.
+
+Mosaics: **10,370 × 7,407**, and the footprint **closes exactly** —
+`76,280,030 = 35 × 1479² − 280,405` intra-tile nodata on 10 tiles. (That nodata is 35× the
+26-tile map's 7,940: the new southern and western tiles sit over real CTX mosaic gaps.)
+
+#### The head pin held, and it is now measured rather than assumed
+
+The one thing that could have gone wrong invisibly is the 27 new tiles being rendered by a
+different head from the 8 adopted ones (2026-08-28c). A vertical seam test across meridians,
+lat 32–48 °N, 4 km strips either side, on the abundance mosaic:
+
+| meridian | kind | Δmean | Δ/sd |
+|---|---|---|---|
+| **−12.0** | **ADOPTED \| NEW** (E-16 \| E-12) | −0.000220 | **−0.017** |
+| −8.0 | adopted \| adopted | −0.000283 | −0.040 |
+| −16.0 | new \| new | −0.000073 | −0.006 |
+| −20.0 | new \| new | +0.000242 | +0.022 |
+| −14.0 | mid-tile control (new) | +0.000465 | +0.031 |
+| −10.0 | mid-tile control (adopted) | +0.000282 | +0.033 |
+
+The step where the two rendering runs meet is **smaller than every within-arm control**. No
+detectable discontinuity: the two runs produced one field.
+
+#### Display packaging — and a wrong first attempt worth recording
+
+`scripts/make_display_geotiff.py` builds **external** `.ovr` overviews (`gdaladdo -ro`) and a
+`.aux.xml` statistics sidecar, asserting by sha256 that the GeoTIFF itself is untouched.
+Abundance: 6 overview levels, 70 MB `.ovr`; suggested stretch **0 → 0.0446** (p98 of the
+non-zero cells — 42.4 % of valid cells are exactly 0, so a min/max stretch renders a near-black
+rectangle).
+
+⚠ **My first version made a re-encoded "display copy" instead, and it was strictly worse.** The
+archival mosaic is *already* tiled 256² with DEFLATE, so there was nothing to gain — and
+`predictor=3` compressed the float band *worse*, producing a 235 MB duplicate of a 103 MB
+product. A duplicate that is larger than the original, sitting beside it under a similar name,
+is a citation hazard for no benefit. **Check what the packaging already is before "improving"
+it.** Sidecars duplicate nothing and can be deleted with `--clean`.
+
+Preview: `reports/figures/map_extended_preview.png`. The abundance band along the
+highland–lowland boundary at 40–46 °N is strong and dies off south of ~38 °N; the unmitigated
+source-frame striping is plainly visible as vertical structure, as documented.
