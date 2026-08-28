@@ -61,6 +61,11 @@ reports/map_a1*/
 # directory's CONTENTS lets git descend and honour the negation.
 reports/map_extended*/*
 !reports/map_extended/plan.json
+# ArcGIS file geodatabase: a WORKING DIRECTORY, not a product. It carries live `.sr.lock`
+# session locks that appear and vanish as ArcGIS Pro opens and closes it, so it churns
+# `git status` and can never be committed cleanly. The .gpkg beside it IS the portable
+# deliverable and stays tracked, as does its producer scripts/export_context_gpkg.py.
+reports/context/*.gdb/
 # Per-tile LOIO prediction dump (18 MB; regenerable via scripts/striping_a1_loio.py;
 # the small striping_a1_loio_summary.csv IS tracked)
 reports/figures/striping_a1_loio_preds.csv
