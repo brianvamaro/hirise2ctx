@@ -658,6 +658,55 @@ def mosaic_geotiffs(paths, out_path: str | Path | None = None, *,
     return arr, transform, crs_wkt
 
 
+def load_regional_mosaic(map_dir: str | Path, layer: str = "abundance", *,
+                         allow_build: bool = True, tile_px: int = 32,
+                         dtype: str = "float64"):
+    """Read the arm's `regional_{layer}_mosaic.tif`; only merge in memory as a fallback.
+
+    **Read-first, and never write.** `scripts/map_mosaics.py` is the sole producer of these
+    mosaics: it copies each tile's `SIZE_FLOOR_*` basis forward, stamps `MOSAIC_*` provenance,
+    and gates the footprint to a closed account. A consumer that re-merges the tiles and writes
+    to the same filename replaces that product with an untagged look-alike — silently, since
+    the test-side write guard covers neither notebooks nor scripts. So consumers call this.
+
+    Returns `(arr, transform, crs_wkt, meta)`. `meta["source"]` is `"prebuilt"` when the tagged
+    mosaic was read (with `meta["tags"]` and `meta["path"]`), or `"merged_in_memory"` when it
+    was absent and `allow_build` let the tiles be merged — that path yields **no** tags, so a
+    caller that reports units or provenance must check the source. Raises `FileNotFoundError`
+    when neither the mosaic nor any tile exists.
+
+    The rasters are float32 on disk and 5925x11852, so a float64 read is 562 MB per layer;
+    pass `dtype="float32"` when the array is only going to be plotted.
+    """
+    import rasterio
+
+    map_dir = Path(map_dir)
+    path = map_dir / f"regional_{layer}_mosaic.tif"
+    if path.exists():
+        with rasterio.open(path) as ds:
+            arr = ds.read(1).astype(dtype)
+            transform = ds.transform
+            crs_wkt = ds.crs.to_wkt() if ds.crs else ""
+            nodata = ds.nodata
+            tags = dict(ds.tags())
+        if nodata is not None and np.isfinite(nodata):
+            arr[arr == nodata] = np.nan
+        return arr, transform, crs_wkt, {
+            "source": "prebuilt", "path": path, "tags": tags,
+            "n_tiles": int(tags.get("MOSAIC_N_TILES", 0) or 0)}
+    tiles = sorted(p for p in map_dir.glob(f"*_{layer}.tif")
+                   if not p.name.startswith("regional_"))
+    if not tiles:
+        raise FileNotFoundError(f"neither {path.name} nor any *_{layer}.tif under {map_dir}")
+    if not allow_build:
+        raise FileNotFoundError(
+            f"{path} is missing; build it with `python scripts/map_mosaics.py` "
+            "(this loader will not write it)")
+    arr, transform, crs_wkt = mosaic_geotiffs(tiles, None, tile_px=tile_px)
+    return arr.astype(dtype), transform, crs_wkt, {
+        "source": "merged_in_memory", "path": None, "tags": {}, "n_tiles": len(tiles)}
+
+
 def file_sha256(path: str | Path, *, chunk: int = 1 << 20) -> str:
     """SHA-256 of a file, streamed."""
     import hashlib

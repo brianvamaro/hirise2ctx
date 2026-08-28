@@ -1,20 +1,21 @@
 """Build notebooks/24_regional_map.ipynb from Python source.
 
-⚠⚠ STALE OUTPUTS — DO NOT QUOTE THIS NOTEBOOK'S FIGURES OR NUMBERS (flagged 2026-08-27).
-    Last executed 2026-06-19. Every stored output, and every reports/figures/24_*.png on
-    disk, was produced from the map that PLAN_Rebuild step 12 has since ARCHIVED as
-    `reports/map_region_g1` (pre-R01 lattice, pre-R74/R29 labels, an older head and
-    calibrator). The code below reads `reports/map_region`, which is now the PROMOTED
-    product -- so the code and the stored outputs describe DIFFERENT MAPS.
-    Nothing in the source hardcodes a stale number; the staleness is entirely in the
-    executed outputs and the PNGs.
+RE-EXECUTED 2026-08-28 on the PROMOTED baseline map (`reports/map_region`), discharging
+    the 2026-08-27 staleness flag. The previous execution (2026-06-19) came from the map
+    step 12 archived as `reports/map_region_g1`, so every stored output and every
+    reports/figures/24_*.png has been replaced. Read the notebook's first cell for what the
+    outputs now describe -- in particular that the striping artifact SHIPS UNMITIGATED
+    (A1 demoted 2026-08-25).
 
-⚠ BEFORE RE-EXECUTING, REWIRE §2. Lines ~336 and ~393 call `mosaic_geotiffs(...)` writing
-    `MAP_DIR/regional_{abundance,prob}_mosaic.tif` -- the exact files
-    `scripts/map_mosaics.py` now produces WITH provenance tags (SIZE_FLOOR_*, MOSAIC_*)
-    and a closed-footprint gate. Re-executing as-is would silently overwrite the tagged
-    mosaics with untagged ones, and notebooks are NOT covered by the test-side write
-    guard (CLAUDE.md). Change §2 to READ those mosaics, then re-execute.
+§2 IS NOW READ-ONLY ON THE MOSAICS (rewired 2026-08-28). It used to call
+    `mosaic_geotiffs(..., out_path=MAP_DIR/"regional_{abundance,prob}_mosaic.tif")` -- the
+    exact files `scripts/map_mosaics.py` produces WITH provenance tags (SIZE_FLOOR_*,
+    MOSAIC_*) and a closed-footprint gate, so executing this notebook would have silently
+    replaced the tagged product with an untagged look-alike (notebooks are NOT covered by
+    the test-side write guard, CLAUDE.md). It now calls
+    `src.mapping.load_regional_mosaic`, which reads the tagged mosaic and only merges in
+    memory -- never writing -- if the file is genuinely absent. Keep it that way:
+    `scripts/map_mosaics.py` is the sole producer.
 
     Re-executing is worth doing, and not only cosmetically: THEMIS has been re-fetched
     onto the corrected lattice (`assert_coregistered` dx=dy=0), so leg 1 -- which
@@ -52,17 +53,16 @@ def code(text, cid):
             "outputs": [], "source": text.splitlines(keepends=True)}
 
 
-# The same banner is ALSO the first markdown cell of the .ipynb on disk, injected there
-# directly so the notebook's stored outputs survived (regenerating from this file writes
-# every cell with `outputs: []`, which would have destroyed the historical record).
-# Regenerating is therefore safe and keeps the banner -- but it DOES drop the outputs.
-# Delete this constant and its append() once the notebook is rewired and re-executed on
-# the promoted product; the banner in the module docstring says what rewiring means.
-STALE_BANNER = '<div style="border-left:6px solid #b00020;background:#fff2f2;padding:10px 14px">\n\n## ⚠⚠ STALE — the figures and numbers below are from a map that has since been ARCHIVED\n\n**Flagged 2026-08-27. This notebook was last executed 2026-06-19.**\n\nEvery stored output here, and every `reports/figures/24_*.png` on disk, was produced from the\nregional map that PLAN_Rebuild **step 12 archived as `reports/map_region_g1`** — pre-R01 lattice\n(26 distinct sub-cell phases), pre-R74/R29 labels (rich prevalence 0.3598, not 0.373272), and an\nolder head and calibrator. Meanwhile the *code* in this notebook reads `reports/map_region`, which\nis now the **promoted** product. **The code and the stored outputs describe different maps.**\n\n*Nothing in the source hardcodes a stale number* — the staleness is entirely in the executed\noutputs and the PNGs.\n\n**Do not quote anything below.** For the current product, and for a like-for-like comparison of\nold vs new vs A1, see **[notebook 29](29_map_comparison.ipynb)**. Old→new turns out to be largely\n*the same field, moved* (95 % of the difference is high-frequency, with the gradient signature of\na pure translation) over a small genuine re-levelling — so the *patterns* below are not worthless,\nbut the *placement, level and dynamic range* are all superseded.\n\n**⚠ Before re-executing, §2 must be rewired.** It calls `mosaic_geotiffs(...)` writing\n`regional_{abundance,prob}_mosaic.tif` — the exact files `scripts/map_mosaics.py` now produces\n**with** provenance tags and a closed-footprint gate. Re-running as-is would silently overwrite\nthe tagged mosaics with untagged ones, and notebooks are **not** covered by the test-side write\nguard. Change §2 to *read* them first.\n\nRe-executing is worth doing on its merits: THEMIS has been re-fetched onto the corrected lattice\n(`assert_coregistered` dx=dy=0), so **leg 1 — which index-compares — would finally run\nco-registered.** That is the first of PLAN_RegionalMap\'s unblocked thermal legs.\n\n</div>'
+# Provenance banner. Its predecessor was a STALE warning: the notebook had last executed
+# 2026-06-19 against the map now archived as `reports/map_region_g1`, while its code read the
+# promoted `reports/map_region`. Both halves are now discharged -- §2 reads the step-12 mosaics
+# instead of rebuilding them, and the notebook has been re-executed on the promoted product --
+# so this states what the outputs ARE rather than warning about what they were.
+BANNER = '<div style="border-left:6px solid #2e7d32;background:#f2fbf3;padding:10px 14px">\n\n## Provenance — re-executed 2026-08-28 on the PROMOTED baseline map\n\nEvery figure and number below was produced from **`reports/map_region`**, the deliverable regional product promoted by PLAN_Rebuild step 12 (R01 global lattice, v2 labels at rich prevalence 0.373272, the frozen `mlp_ens3` head, the banked calibrator). It supersedes this notebook\'s previous execution (2026-06-19), which came from the map now **archived** as `reports/map_region_g1` — a different lattice, different labels, an older head. Old-vs-new is largely *the same field, moved*, over a small genuine re-levelling; the like-for-like accounting is in **[notebook 29](29_map_comparison.ipynb)**.\n\n**Two things to carry into every read below.**\n\n1. **The CTX source-frame striping artifact ships UNMITIGATED** (ruled 2026-08-25, DECISIONS 2026-08-25k). A1 was demoted from shipped mitigation to a *sensitivity arm*, so the map here carries frame-shaped structure — window-median η² **0.1444**, ratio **1.599** over its own rotation null. Treat any abundance reading in low-contrast terrain accordingly. §2d is the qualitative view of it; notebook 25 is the diagnosis.\n2. **§2 reads the mosaics, it does not build them.** `scripts/map_mosaics.py` is the sole producer of `regional_{layer}_mosaic.tif` and the only thing that stamps their `SIZE_FLOOR_*` / `MOSAIC_*` provenance and gates the footprint. Notebooks are **not** covered by the test-side write guard, so a cell that re-merged and wrote here would silently replace the shipped product with an untagged look-alike.\n\n**Leg 1 is now co-registered.** THEMIS was re-fetched onto the corrected lattice (`assert_coregistered` dx=dy=0), so the §3.1 index-comparison finally correlates the same ground rather than displaced cells — the first of PLAN_RegionalMap\'s unblocked thermal legs.\n\n</div>'
 
 cells = []
 
-cells.append(md(STALE_BANNER, "stale-banner-24"))
+cells.append(md(BANNER, "provenance-banner-24"))
 
 cells.append(md(
     """# 24 — Regional rock-abundance map (circum-Chryse)
@@ -347,24 +347,40 @@ cells.append(md(
 
 `scripts/map_region.py --all` writes per Murray tile `<tile>_{prob,abundance,prob_raw}.tif`
 (160 m/px) to `reports/map_region/`. All 26 share the Murray `clon_0` equirectangular CRS, so
-`src.mapping.mosaic_geotiffs` merges them into **one** georeferenced raster — no reprojection;
-the map is the lon[-12,12] box plus a NE tab (`E12/E16_N44`), so the SE corner of the bounding
-rectangle (lon 12–20, lat 32–44) is nodata. Below is the calibrated `fractional_area` abundance
-with the cohort footprints overlaid: high-abundance terrain should track the boulder-rich cohort
-sites along the highland–lowland boundary (the qualitative form of validation leg 4, ahead of
-the quantitative legs in §3).
+they merge into **one** georeferenced raster with no reprojection; the map is the lon[-12,12]
+box plus a NE tab (`E12/E16_N44`), so the SE corner of the bounding rectangle (lon 12–20,
+lat 32–44) is nodata.
+
+⚠ **This section READS the mosaic; it does not build it.** `scripts/map_mosaics.py`
+(PLAN_Rebuild step 12) is the sole producer of `regional_{layer}_mosaic.tif`: it carries each
+tile's `SIZE_FLOOR_*` basis forward, stamps `MOSAIC_*` provenance, and gates the footprint to a
+closed account (`n_finite == 26×1479² − 7,940` intra-tile nodata). An earlier version of this
+cell called `mosaic_geotiffs(..., out_path=MAP_DIR/"regional_abundance_mosaic.tif")`, which would
+overwrite that tagged product with an untagged look-alike — and notebooks are **not** covered by
+the test-side write guard. `src.mapping.load_regional_mosaic` reads it instead, and merges in
+memory (no write, no tags) only if the file is genuinely absent.
+
+Below is the calibrated `fractional_area` abundance with the cohort footprints overlaid:
+high-abundance terrain should track the boulder-rich cohort sites along the highland–lowland
+boundary (the qualitative form of validation leg 4, ahead of the quantitative legs in §3).
 """, "ab_md"))
 
 cells.append(code(
     """import math
-from src.mapping import mosaic_geotiffs
+from src.mapping import load_regional_mosaic
 MAP_DIR = REPO / "reports" / "map_region"
-ab_tifs = sorted(MAP_DIR.glob("*_abundance.tif")) if MAP_DIR.exists() else []
+ab_tifs = sorted(p for p in MAP_DIR.glob("*_abundance.tif")
+                 if not p.name.startswith("regional_")) if MAP_DIR.exists() else []
 if not ab_tifs:
     print("No abundance GeoTIFFs yet under reports/map_region/.")
     print("Run on Sherlock:  python scripts/map_region.py --all  -> download *.tif into reports/map_region/.")
 else:
-    arr, transform, _ = mosaic_geotiffs(ab_tifs, MAP_DIR / "regional_abundance_mosaic.tif")
+    # READ the step-12 mosaic (see the note above); never re-write it from this notebook.
+    arr, transform, _, mmeta = load_regional_mosaic(MAP_DIR, "abundance", dtype="float32")
+    print(f"mosaic source: {mmeta['source']}  tiles={mmeta['n_tiles']}  "
+          f"built_by={mmeta['tags'].get('MOSAIC_BUILT_BY', '(untagged)')}")
+    print("  size-floor basis:", {k: v for k, v in mmeta["tags"].items()
+                                  if k.startswith("SIZE_FLOOR_")} or "(none — untagged merge)")
     R = 3396190.0; dpm = 180.0 / (math.pi * R)   # clon_0 equirectangular metres -> degrees
     h, w = arr.shape
     left, top = transform.c, transform.f
@@ -405,7 +421,7 @@ else:
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.10), ncol=4, fontsize=8, frameon=False)
     fig.tight_layout()
     out = FIG / "24_region_mosaic.png"; fig.savefig(out, dpi=150, bbox_inches="tight")
-    print("wrote", out.relative_to(REPO), "+", (MAP_DIR / "regional_abundance_mosaic.tif").relative_to(REPO))
+    print("wrote", out.relative_to(REPO), "(read, did not write, the abundance mosaic)")
     plt.show()""",
     "fig_ab"))
 
@@ -420,8 +436,7 @@ probability (the classifier) carry the same spatial structure; the binary panel 
 
 cells.append(code(
     """if ab_tifs:
-    prob_arr, _, _ = mosaic_geotiffs(sorted(MAP_DIR.glob("*_prob.tif")),
-                                     MAP_DIR / "regional_prob_mosaic.tif")
+    prob_arr, _, _, _ = load_regional_mosaic(MAP_DIR, "prob", dtype="float32")
     binary = np.where(np.isfinite(prob_arr), (prob_arr >= 0.5).astype(float), np.nan)
     rich = in_block[in_block.BoulderLabel == "Boulder rich"]
 
@@ -641,17 +656,30 @@ else:
     "fig_leg1"))
 
 cells.append(md(
-    """**Leg-1 read (honest).** The independent thermal proxy co-locates with predicted abundance in
-the **right direction but weakly**: Spearman ρ ≈ **+0.06 (pixel)** rising only to **≈ +0.07 at the
-5–10 km band scale** — highly significant (n is huge) but a small effect. So this corroborates rather
-than confirms. Several reasons it's weak, none fatal: (i) THEMIS **night-IR brightness is a crude
-8-bit relative proxy**, not calibrated thermal inertia, and responds to *all* rocky/bedrock/dust/slope
-variation, not specifically meter-boulders — **leg 2's physical THEMIS TI (Fergason 2006) is the
-cleaner test**; (ii) the abundance map carries the CTX-mosaic stitching noise we flagged (the
-rectangular-artifact open item, DECISIONS 2026-06-18); (iii) ~200 m co-registration slack +
-THEMIS's own. The
-visual band-to-bright correspondence along the boundary is the qualitative form of the claim; the
-quantitative weight should rest on leg 2 + the cohort truth-anchor (leg 4).
+    """**Leg-1 read (honest), now on co-registered layers.** The independent thermal proxy
+co-locates with predicted abundance in the **right direction but weakly**: Spearman ρ =
+**+0.052 at the pixel** (n = 56.7 M), rising to **+0.066 at ~1.3 km** and flattening to
+**+0.063–0.064** at 5–10 km — highly significant (n is huge) but a small effect. So this
+corroborates rather than confirms.
+
+⚠ **Misregistration was not what was holding leg 1 down.** This run is the first where the
+comparison is genuinely cell-for-cell: the map is on the R01 global lattice and THEMIS was
+re-fetched onto it (`assert_coregistered` dx = dy = 0), whereas the 2026-06-19 execution
+correlated the pre-R01 map — 26 distinct sub-cell phases, median 140 m displacement — against a
+THEMIS crop matched to *that* transform. It read ρ ≈ +0.06 pixel / ≈ +0.07 at band scale. The
+corrected comparison is **marginally lower, not higher**. Two honest consequences: the June
+number was not inflated by the error in any way that mattered, and the +0.0741 → +0.0821 lift
+R01 measured *per tile* does not carry to the pooled mosaic. Leg 1 is a genuinely weak
+corroboration, and it is now weak for reasons other than geometry.
+
+Several reasons it's weak, none fatal: (i) THEMIS **night-IR brightness is a crude 8-bit relative
+proxy**, not calibrated thermal inertia, and responds to *all* rocky/bedrock/dust/slope variation,
+not specifically meter-boulders — **leg 2's physical THEMIS TI (Fergason 2006) is the cleaner
+test**; (ii) the abundance map carries **unmitigated CTX source-frame structure** (A1 demoted
+2026-08-25; window-median η² 0.1444 at ratio 1.599 over its own rotation null), which is variance
+THEMIS cannot possibly track; (iii) ~200 m co-registration slack in the *labels* plus THEMIS's own
+100 m posting. The visual band-to-bright correspondence along the boundary is the qualitative form
+of the claim; the quantitative weight should rest on leg 2 + the cohort truth-anchor (leg 4).
 """, "leg1_read"))
 
 nb = {"cells": cells,

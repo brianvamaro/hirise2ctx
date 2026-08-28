@@ -311,3 +311,115 @@ def test_predict_window_legacy_path_is_untouched():
     a = predict_window(_window(), _FakeEmbedder(), _FakeHead(), tile_px=8)
     b = predict_window(_window(), _FakeEmbedder(), _FakeHead(), tile_px=8, global_grid=None)
     assert a.transform == b.transform and np.array_equal(a.ti, b.ti)
+
+
+# ---------------------------------------------------------------------------
+# load_regional_mosaic — the read-first consumer seam
+# ---------------------------------------------------------------------------
+#
+# `scripts/map_mosaics.py` is the sole producer of `regional_{layer}_mosaic.tif`, and the
+# tags it stamps (SIZE_FLOOR_* + MOSAIC_*) are the only record of the product's units and
+# provenance. Notebook 24 used to rebuild those files with `mosaic_geotiffs(out_path=...)`,
+# which replaces the tagged product with an untagged look-alike — and notebooks are not
+# covered by the test-side write guard. These tests pin the three properties that matter:
+# it reads the tagged file when present, it never writes, and the fallback is visibly
+# distinguishable from the real thing.
+
+def _write_tile(path, arr, transform, *, tags=None):
+    from src.mapping import MURRAY_RADIUS_M, write_geotiff
+    wkt = (f'PROJCS["m",GEOGCS["g",DATUM["d",SPHEROID["s",{MURRAY_RADIUS_M},0]],'
+           'PRIMEM["Reference_Meridian",0],UNIT["degree",0.0174532925199433]],'
+           'PROJECTION["Equirectangular"],UNIT["metre",1]]')
+    write_geotiff(path, arr, transform, wkt, tags=tags)
+
+
+def _two_adjacent_tiles(tmp_path, layer="abundance", n=8):
+    """Two side-by-side rasters on the one global coarse lattice, plus their merged truth."""
+    from src.mapping import global_cell_transform
+    a = np.arange(n * n, dtype=np.float32).reshape(n, n)
+    b = a + 1000.0
+    _write_tile(tmp_path / f"E0_N0_{layer}.tif", a, global_cell_transform(0, 0))
+    _write_tile(tmp_path / f"E4_N0_{layer}.tif", b, global_cell_transform(0, n))
+    return np.hstack([a, b])
+
+
+def test_load_regional_mosaic_prefers_the_tagged_file_over_re_merging(tmp_path):
+    """A prebuilt mosaic wins even when it disagrees with the tiles — it is the product."""
+    from src.mapping import global_cell_transform, load_regional_mosaic
+
+    _two_adjacent_tiles(tmp_path)
+    sentinel = np.full((8, 16), -7.0, dtype=np.float32)
+    _write_tile(tmp_path / "regional_abundance_mosaic.tif", sentinel,
+                global_cell_transform(0, 0),
+                tags={"SIZE_FLOOR_M": "1.5", "MOSAIC_N_TILES": "2",
+                      "MOSAIC_BUILT_BY": "scripts/map_mosaics.py"})
+
+    arr, _, _, meta = load_regional_mosaic(tmp_path, "abundance")
+    assert meta["source"] == "prebuilt"
+    assert meta["n_tiles"] == 2
+    assert meta["tags"]["SIZE_FLOOR_M"] == "1.5"
+    assert np.all(arr == -7.0), "re-merged the tiles instead of reading the shipped mosaic"
+
+
+def test_load_regional_mosaic_never_writes_the_mosaic(tmp_path):
+    """The whole point: reading must not create or touch `regional_*_mosaic.tif`."""
+    from src.mapping import load_regional_mosaic
+
+    truth = _two_adjacent_tiles(tmp_path)
+    before = {p.name: (p.stat().st_size, p.stat().st_mtime_ns)
+              for p in sorted(tmp_path.iterdir())}
+    arr, _, _, meta = load_regional_mosaic(tmp_path, "abundance")
+    after = {p.name: (p.stat().st_size, p.stat().st_mtime_ns)
+             for p in sorted(tmp_path.iterdir())}
+
+    assert after == before, f"the loader wrote to disk: {set(after) ^ set(before) or 'mtime'}"
+    assert not (tmp_path / "regional_abundance_mosaic.tif").exists()
+    assert meta["source"] == "merged_in_memory"
+    np.testing.assert_array_equal(arr, truth)
+
+
+def test_load_regional_mosaic_fallback_reports_no_tags(tmp_path):
+    """An in-memory merge has no size-floor basis, and must not look like it does."""
+    from src.mapping import load_regional_mosaic
+
+    _two_adjacent_tiles(tmp_path)
+    _, _, _, meta = load_regional_mosaic(tmp_path, "abundance")
+    assert meta["tags"] == {} and meta["path"] is None
+    assert meta["n_tiles"] == 2
+
+
+def test_load_regional_mosaic_can_refuse_to_fall_back(tmp_path):
+    from src.mapping import load_regional_mosaic
+
+    _two_adjacent_tiles(tmp_path)
+    with pytest.raises(FileNotFoundError, match="map_mosaics"):
+        load_regional_mosaic(tmp_path, "abundance", allow_build=False)
+
+
+def test_load_regional_mosaic_raises_when_nothing_is_there(tmp_path):
+    from src.mapping import load_regional_mosaic
+
+    with pytest.raises(FileNotFoundError, match="prob_raw"):
+        load_regional_mosaic(tmp_path, "prob_raw")
+
+
+def test_load_regional_mosaic_ignores_the_mosaic_when_globbing_tiles(tmp_path):
+    """`*_abundance.tif` also matches a stray `regional_abundance.tif`-style sibling."""
+    from src.mapping import global_cell_transform, load_regional_mosaic
+
+    truth = _two_adjacent_tiles(tmp_path)
+    _write_tile(tmp_path / "regional_prob_abundance.tif",
+                np.zeros((8, 16), np.float32), global_cell_transform(0, 0))
+    arr, _, _, meta = load_regional_mosaic(tmp_path, "abundance")
+    assert meta["n_tiles"] == 2
+    np.testing.assert_array_equal(arr, truth)
+
+
+def test_load_regional_mosaic_dtype_is_selectable(tmp_path):
+    """562 MB per layer at float64; the plotting callers ask for float32."""
+    from src.mapping import global_cell_transform, load_regional_mosaic
+
+    _write_tile(tmp_path / "regional_abundance_mosaic.tif",
+                np.zeros((4, 4), np.float32), global_cell_transform(0, 0))
+    assert load_regional_mosaic(tmp_path, "abundance")[0].dtype == np.float64
+    assert load_regional_mosaic(tmp_path, "abundance", dtype="float32")[0].dtype == np.float32
