@@ -11230,3 +11230,50 @@ plus queueing**, not the ~3.3 h that 2026-08-28b quoted for a 6-way stride. `--t
 (~4× margin on one tile). The 11× spread across the partition is unchanged and is why both
 defences are on: TITAN Xp at ~202 s/window is 8.08 h for a single tile.
 
+
+---
+
+### 2026-08-28d — the head preflight SKIPPED ITSELF on the first real submission; the pin moves into the plan
+
+Job **41110268** (the 27-tile bridge) printed, on every task:
+
+```
+(no sidecars under reports/map_region to compare against -- skipping the match check)
+```
+
+On Sherlock `reports/map_region` is a **symlink to `$SCRATCH/hirise2ctx/map_region`**, which is
+empty — the products live on the laptop. So the gate added hours earlier in
+[2026-08-28c] to refuse a head mismatch found no basis and **skipped**, letting the job run
+ungated. ⚠ **This is the same failure the project already has a rule about: an absence of
+measurement reported as a pass** — and I wrote the skip branch myself, in the same session as
+writing that the gate "refuses to start unless the digests match".
+
+The run is fine on the facts: the log shows `head_digest 29e833be…` / `calibration_digest
+290a8661…` and `model=a5ffca2dcc536855`, i.e. the correct `deployable_g2` head. **Correct by
+luck, not by gate.**
+
+#### Two changes
+
+1. **The expectation lives in the PLAN now, not in a product directory.**
+   `plan_map_extent.expected_digests()` reads `head_digest` / `calibration_digest` off the
+   already-rendered tiles **at plan time, on the machine where those tiles exist**, and records
+   them as `plan["expect_digests"]` with the tile list it measured from. The plan travels with
+   the repo, so the reference cannot go missing on the cluster. It returns `{}` for a product
+   with no predecessor, and **refuses** a product that is already mixed.
+2. **A missing expectation is FATAL.** The preflight reads `$PLAN`; no `expect_digests` block ⇒
+   non-zero exit telling you to re-plan. `ALLOW_UNPINNED_HEAD=1` is the explicit escape for a
+   deliberately fresh product, and it *announces* that the run is not gated.
+
+Verified all three paths against the real artifacts:
+
+| | |
+|---|---|
+| `deployable_g2` + current plan | `PREFLIGHT OK: matches the 8 already-rendered tile(s)` |
+| `deployable` + current plan | FAIL, both expected and resolved digests printed |
+| `deployable_g2` + pre-change plan | FAIL, "has no `expect_digests` block" |
+
+Also dropped the now-unused `ADOPT_FROM`, and deduped `measured_from` — an adopted tile appears
+in **both** the source and destination product dirs, so 8 tiles were being reported as 16.
+
+**The running job is unaffected:** `to_render` is byte-identical and in the same order, so the
+per-task stride indices do not move, and Slurm spools the batch script at submit time.

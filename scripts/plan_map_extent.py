@@ -78,6 +78,44 @@ def tiles_in_box(lon0: int, lon1: int, lat0: int, lat1: int) -> list[str]:
             for lo in range(lon0, lon1, TILE_DEG)]
 
 
+def expected_digests(map_dirs, tiles) -> dict:
+    """The head + calibration digests the already-rendered tiles were made with.
+
+    Recorded INTO the plan, at plan time, on the machine where those tiles actually live. The
+    Sherlock job's preflight then compares against the plan rather than against a product
+    directory -- which on the cluster is a symlink to `$SCRATCH`, and was empty, so the check
+    found no basis and *skipped itself* on the first real submission. A gate that silently
+    becomes a no-op when its reference is absent is the "absence of measurement reported as a
+    pass" failure this project keeps paying for. The plan travels with the repo, so the
+    reference cannot go missing.
+
+    Returns `{}` when nothing is already rendered (a genuinely fresh product has nothing to
+    match), and raises when the existing tiles disagree with each other -- that is a mixed
+    product, and no single expectation would be honest.
+    """
+    from src.map_manifest import tile_sidecars
+
+    heads, calibs, seen = set(), set(), set()   # a set: an adopted tile appears in BOTH dirs
+    for d in map_dirs:
+        sides = tile_sidecars(Path(d))
+        for t in tiles:
+            if t not in sides:
+                continue
+            rec = json.loads(sides[t].read_text(encoding="utf-8"))
+            if "head_digest" in rec:
+                heads.add(rec["head_digest"])
+                calibs.add(rec.get("calibration_digest"))
+                seen.add(t)
+    if not heads:
+        return {}
+    if len(heads) != 1 or len(calibs) != 1:
+        raise SystemExit(f"the {len(seen)} already-rendered tiles are MIXED: {len(heads)} head "
+                         f"digest(s), {len(calibs)} calibration digest(s) -- no single "
+                         "expectation can be recorded")
+    return {"head_digest": heads.pop(), "calibration_digest": calibs.pop(),
+            "measured_from": sorted(seen)}
+
+
 def window_seconds(manifest_path: Path) -> dict:
     """Measured seconds-per-window from a shipped run's own manifest.
 
@@ -218,10 +256,22 @@ def main() -> int:
     print(f"\n    products: {len(todo)} x ~{PRODUCT_MB_PER_TILE:.1f} MB = "
           f"~{len(todo) * PRODUCT_MB_PER_TILE / 1000:.2f} GB to bring home")
 
+    exp = expected_digests(args.map_dirs, tiles)
+    if exp:
+        print(f"\n    the new tiles MUST be rendered by this head "
+              f"({len(exp['measured_from'])} already-rendered tile(s) say so):")
+        print(f"      head_digest        {exp['head_digest']}")
+        print(f"      calibration_digest {exp['calibration_digest']}")
+        print("    recorded in the plan; the Sherlock job refuses to start without a match")
+    else:
+        print("\n    nothing already rendered -- the plan records NO head expectation, so the "
+              "job's preflight will have nothing to check")
+
     plan = {"requested": {"lon": [req[0], req[1]], "lat": [req[2], req[3]]},
             "snapped": {"lon": [lon0, lon1], "lat": [lat0, lat1]},
             "n_tiles": len(tiles), "tiles": tiles,
             "already_rendered": done, "to_render": todo,
+            "expect_digests": expected_digests(args.map_dirs, tiles),
             "ctx_cached_locally": cached, "ctx_to_fetch": to_fetch,
             "seconds_per_window": rates, "windows_per_tile": WINDOWS_PER_TILE}
 

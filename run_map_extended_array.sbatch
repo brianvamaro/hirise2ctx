@@ -7,19 +7,18 @@
 #     python scripts/plan_map_extent.py --lat .. --lon .. \
 #         --map-dirs reports/map_region reports/map_extended \
 #         --json reports/map_extended/plan.json
-#     sbatch --array=0-$(( $(python -c "import json;print(len(json.load(open('reports/map_extended/plan.json'))['to_render']))") - 1 )) run_map_extended_array.sbatch
+#     sbatch --array=0-<N-1> run_map_extended_array.sbatch
 #
 # Everything below that isn't the tile list is inherited from run_rebuild_map_array.sbatch,
 # which is the script that actually produced the 8 already-rendered tiles this product adopts.
 # Those settings are not defaults -- each was paid for:
 #
 #   * --model-parent models/deployable_g2 + explicit --calibration + --size-floor-basis.
-#     `resolve_model_dir` picks hits[-1] BY NAME, so with the legacy 86c51a5dca220f63 also on
-#     disk the default parent is a coin flip. Omitting --size-floor-basis emits NO SIZE_FLOOR_*
-#     tags, shipping rasters that cannot state which boulders they count (R84). Get either wrong
-#     and the 27 new tiles are a DIFFERENT PRODUCT from the 8 adopted ones, silently.
-#     The preflight below refuses to start unless the head and calibration digests match the
-#     ones recorded in the adopted tiles' sidecars.
+#     `resolve_model_dir` picks hits[-1] BY NAME, so the DEFAULT parent models/deployable
+#     resolves to the LEGACY head 86c51a5dca220f63 -- a different digest entirely. Rendering
+#     with it makes the new tiles a different product from the adopted ones, silently.
+#     Omitting --size-floor-basis emits NO SIZE_FLOOR_* tags, shipping rasters that cannot
+#     state which boulders they count (R84).
 #   * BATCH 96, not 256. 96 is the parity reference's batch, and the larger batch buys nothing:
 #     32/96/256/512 -> 766/723/730/731 img/s (DECISIONS 2026-08-18c).
 #   * ONE TILE PER TASK. A task that overran or raised used to take its remaining tiles with it;
@@ -64,7 +63,6 @@ OUT="${MAP_OUT:-$SCRATCH/hirise2ctx/map_extended}"
 BATCH="${BATCH:-96}"
 MODEL_PARENT="${MODEL_PARENT:-models/deployable_g2}"
 REQUIRE_DEVICE="${REQUIRE_DEVICE:-2080 Ti}"
-ADOPT_FROM="${ADOPT_FROM:-reports/map_region}"
 
 # ONE TILE PER TASK: this task's single tile out of the plan's to_render (or ONLY).
 if [[ -n "${ONLY:-}" ]]; then
@@ -94,41 +92,51 @@ nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 # produced the tiles this product already contains. A path is not enough -- a directory can be
 # overwritten in place, and the head dir name is a recipe hash of the training config, not of
 # the weights. Costs seconds; catches the one error that would silently split the product in two.
-python - "$MODEL_PARENT" "$ADOPT_FROM" <<'PY'
+#
+# ⚠ IT READS THE PLAN, NOT A PRODUCT DIRECTORY, AND A MISSING EXPECTATION IS FATAL.
+# The first real submission (job 41110268) compared against `reports/map_region`, which on
+# Sherlock is a symlink to an empty $SCRATCH dir. It found no basis, printed "skipping the match
+# check", and let the job run ungated -- a gate that becomes a no-op exactly when its reference
+# is missing. The plan is written where the rendered tiles live and travels with the repo.
+python - "$MODEL_PARENT" "$PLAN" "${ALLOW_UNPINNED_HEAD:-0}" <<'PY'
 import json, sys
 from pathlib import Path
 sys.path.insert(0, ".")
 from src.mapping import artifact_digest          # numpy only; no torch, no GPU
 
-parent, adopted_dir = Path(sys.argv[1]), Path(sys.argv[2])
+parent, plan_path, allow_unpinned = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3] == "1"
 hits = sorted(p for p in parent.glob("*") if (p / "recipe.json").exists())
 if not hits:
     raise SystemExit(f"PREFLIGHT FAIL: no deployable head under {parent}")
 head, calib = hits[-1], parent / "calibration.npz"
-got = {"head": artifact_digest(head), "calibration": artifact_digest(calib)}
+got = {"head_digest": artifact_digest(head), "calibration_digest": artifact_digest(calib)}
 print(f"  resolved head: {head}")
-print(f"    head_digest        {got['head']}")
-print(f"    calibration_digest {got['calibration']}")
+for k, v in got.items():
+    print(f"    {k:19s}{v}")
 
-from src.map_manifest import tile_sidecars      # stdlib only; the shared "what is a tile" rule
-
-recs = [json.loads(q.read_text()) for q in tile_sidecars(adopted_dir).values()]
-want = {r["head_digest"] for r in recs if "head_digest" in r}
-wantc = {r["calibration_digest"] for r in recs if "calibration_digest" in r}
-if not want:
-    print(f"  (no sidecars under {adopted_dir} to compare against -- skipping the match check)")
-    raise SystemExit(0)
-if len(want) != 1 or len(wantc) != 1:
-    raise SystemExit(f"PREFLIGHT FAIL: {adopted_dir} is already mixed: {len(want)} head "
-                     f"digest(s), {len(wantc)} calibration digest(s)")
-w, wc = want.pop(), wantc.pop()
-if got["head"] != w or got["calibration"] != wc:
+exp = json.loads(plan_path.read_text()).get("expect_digests")
+if exp is None:
+    if allow_unpinned:
+        print("  PREFLIGHT SKIPPED by ALLOW_UNPINNED_HEAD=1 -- this run is NOT gated")
+        raise SystemExit(0)
     raise SystemExit(
-        "PREFLIGHT FAIL: this head/calibration is NOT the one that made the existing tiles.\n"
-        f"  existing head_digest        {w}\n  resolved head_digest        {got['head']}\n"
-        f"  existing calibration_digest {wc}\n  resolved calibration_digest {got['calibration']}\n"
-        f"Set MODEL_PARENT to the right parent, or render into a fresh --out-dir.")
-print("  PREFLIGHT OK: head + calibration match the tiles this product already holds")
+        f"PREFLIGHT FAIL: {plan_path} has no `expect_digests` block, so there is nothing to\n"
+        "check this head against. Re-generate the plan with a current plan_map_extent.py on\n"
+        "the machine that holds the already-rendered tiles. To render a product that\n"
+        "deliberately has no predecessor, set ALLOW_UNPINNED_HEAD=1.")
+if not exp:
+    print("  PREFLIGHT: the plan records no predecessor (fresh product) -- nothing to match")
+    raise SystemExit(0)
+bad = {k: (exp[k], got[k]) for k in ("head_digest", "calibration_digest") if exp[k] != got[k]}
+if bad:
+    lines = "".join(f"  {k}\n    plan expects {w}\n    resolved     {g}\n"
+                    for k, (w, g) in bad.items())
+    raise SystemExit(
+        "PREFLIGHT FAIL: this head/calibration is NOT the one that made the tiles this product\n"
+        f"already holds ({len(exp['measured_from'])} tile(s), e.g. "
+        f"{', '.join(exp['measured_from'][:4])}).\n" + lines +
+        "Set MODEL_PARENT to the right parent, or render into a fresh --out-dir.")
+print(f"  PREFLIGHT OK: matches the {len(exp['measured_from'])} already-rendered tile(s)")
 PY
 
 mkdir -p "$OUT"

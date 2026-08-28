@@ -116,3 +116,82 @@ def test_the_padded_url_form_is_what_the_region_actually_needs():
     assert _padded_manifest_form("E-8_N20") == "E-008_N20"
     for t in tiles_in_box(*snap_box(-25, -5, 20, 35)):
         assert _padded_manifest_form(t) is not None, f"{t} has no padded form to fall back to"
+
+
+# ---------------------------------------------------------------------------
+# expect_digests — the head pin, recorded where the rendered tiles actually live
+# ---------------------------------------------------------------------------
+#
+# The Sherlock job's preflight compares the head it resolved against this block. It used to
+# read a product directory instead, and on the cluster `reports/map_region` is a symlink to an
+# empty $SCRATCH dir — so on the first real submission (job 41110268) it found no basis, printed
+# "skipping the match check", and let the job run ungated. The plan travels with the repo.
+
+def _sidecar(d, tile, *, head="H", calib="C"):
+    import json
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{tile}.json").write_text(
+        json.dumps({"murray_tile": tile, "head_digest": head, "calibration_digest": calib}),
+        encoding="utf-8")
+
+
+def test_expected_digests_reads_the_pin_from_the_rendered_tiles(tmp_path):
+    from plan_map_extent import expected_digests
+
+    _sidecar(tmp_path / "prod", "E-12_N32")
+    _sidecar(tmp_path / "prod", "E-8_N32")
+    exp = expected_digests([tmp_path / "prod"], ["E-12_N32", "E-8_N32", "E-24_N20"])
+    assert exp["head_digest"] == "H" and exp["calibration_digest"] == "C"
+    assert exp["measured_from"] == ["E-12_N32", "E-8_N32"]
+
+
+def test_expected_digests_does_not_double_count_an_adopted_tile(tmp_path):
+    """An adopted tile is in BOTH the source and the destination product."""
+    from plan_map_extent import expected_digests
+
+    for sub in ("map_region", "map_extended"):
+        _sidecar(tmp_path / sub, "E-12_N32")
+    exp = expected_digests([tmp_path / "map_region", tmp_path / "map_extended"], ["E-12_N32"])
+    assert exp["measured_from"] == ["E-12_N32"]
+
+
+def test_expected_digests_is_empty_for_a_product_with_no_predecessor(tmp_path):
+    """A genuinely fresh product has nothing to match, and must say so rather than invent one."""
+    from plan_map_extent import expected_digests
+
+    assert expected_digests([tmp_path], ["E-24_N20"]) == {}
+
+
+def test_expected_digests_refuses_a_mixed_product(tmp_path):
+    """Two heads already in the product: no single expectation would be honest."""
+    from plan_map_extent import expected_digests
+
+    _sidecar(tmp_path / "prod", "E-12_N32", head="H1")
+    _sidecar(tmp_path / "prod", "E-8_N32", head="H2")
+    with pytest.raises(SystemExit, match="MIXED"):
+        expected_digests([tmp_path / "prod"], ["E-12_N32", "E-8_N32"])
+
+
+def test_expected_digests_ignores_the_plan_file_itself(tmp_path):
+    """`plan.json` lives in the product dir; it is not a tile (MANIFEST_NAMES)."""
+    from plan_map_extent import expected_digests
+
+    _sidecar(tmp_path / "prod", "E-12_N32")
+    (tmp_path / "prod" / "plan.json").write_text('{"tiles": []}', encoding="utf-8")
+    assert expected_digests([tmp_path / "prod"], ["E-12_N32"])["head_digest"] == "H"
+
+
+def test_the_shipped_plan_pins_the_rebuild_head():
+    """The real plan must carry the g2 digests, not the legacy head's."""
+    import json
+
+    plan_path = REPO / "reports" / "map_extended" / "plan.json"
+    if not plan_path.exists():
+        pytest.skip("no extension plan in this checkout")
+    exp = json.loads(plan_path.read_text(encoding="utf-8")).get("expect_digests")
+    assert exp, "the plan carries no head pin -- the Sherlock preflight would refuse to start"
+    assert exp["head_digest"] == (
+        "29e833be74e5cc151d1382caa9b5d7d7e2abf8d62597f648c6de5da71a34db2e")
+    assert exp["calibration_digest"] == (
+        "290a86614f190ced416606689e33533ec55e32a9d349484c51626313c897a61d")
+    assert len(exp["measured_from"]) == 8
