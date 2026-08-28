@@ -156,9 +156,19 @@ def main() -> int:
                     help="check sizes only, skip hashing (fast, much weaker)")
     ap.add_argument("--tiles", nargs="*", default=None,
                     help="expected tile list; default is the 26 circum-Chryse BLOCK_TILES")
+    ap.add_argument("--plan", default=None,
+                    help="a scripts/plan_map_extent.py --json file; its `tiles` become the "
+                         "expected list, so a grown map is verified against its own footprint "
+                         "instead of against the 26-tile circum-Chryse block")
     args = ap.parse_args()
 
-    expect = args.tiles if args.tiles else BLOCK_TILES
+    if args.plan:
+        with open(args.plan, encoding="utf-8") as fh:
+            expect = json.load(fh)["tiles"]
+    elif args.tiles:
+        expect = args.tiles
+    else:
+        expect = BLOCK_TILES
     problems: list[str] = []
     for d in args.dirs:
         problems += verify_dir(d, expect=expect, quick=args.quick)

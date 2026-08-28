@@ -320,14 +320,93 @@ rsync -av <sunet>@dtn.sherlock.stanford.edu:hirise2ctx/reports/map_region/ \
 > `--batch` — fp16 GEMM kernel choice can shift outputs by ~tol across batch sizes. `BATCH=96`
 > keeps the existing reference exactly valid.
 
-When all 26 tiles' GeoTIFFs are back on the laptop in `reports/map_region/`, notebook 24 §2
-stitches them automatically (it globs `*_abundance.tif`).
+When all 26 tiles' GeoTIFFs are back on the laptop in `reports/map_region/`, run
+`python scripts/map_mosaics.py` to stitch them (notebook 24 §2 **reads** those mosaics; it no
+longer builds them — see the rewire note in `notebooks/_build_24.py`).
 *(OnDemand also shows running jobs under **Jobs → Active Jobs**, and you can `tail` the log
 file in the **Files** editor.)*
 
 When done you'll have, per tile, `<tile>_prob.tif` (calibrated P(rich)),
 `<tile>_abundance.tif` (fractional_area), `<tile>_prob_raw.tif` (QA) — single-band float32,
 160 m/px, `NaN` = nodata.
+
+### C5. Growing the map to a NEW region — plan-driven (the general path)
+
+C4 hardcodes its 19 tiles in a bash array. Anything beyond the circum-Chryse block uses this
+path instead, where the tile list is **data**, so extending the map never edits an sbatch file
+or this document.
+
+**Step 1 — plan it, on the laptop.** The box is snapped out to whole 4° Murray tiles, tiles
+already rendered in any existing product are excluded, and every remaining tile's URL is
+checked at the Murray Lab mosaic (it is not a complete planetary grid, and western tiles only
+resolve under the zero-padded name `E-024_N28`, never the bare `E-24_N28`):
+
+```bash
+python scripts/plan_map_extent.py --lat 20 48 --lon -24 -4     --map-dirs reports/map_region reports/map_extended     --verify-urls --json reports/map_extended/plan.json
+```
+
+It prints the delivered footprint, the GPU-hours from `region_manifest.json`'s **own measured**
+17–22 s/window, and the download budget. The current plan — the Xanthe/Chryse bridge,
+lon[–24,–4] lat[20,48] — is **35 tiles: 8 adopted from `map_region`, 27 to render, ~19.8 GPU-h
+(median) ≈ 3.3 h on 6 GPUs, 49.0 GB of CTX zips**.
+
+**Step 2 — adopt the overlap, on the laptop.** The 8 tiles the new box shares with the shipped
+map were rendered by the same head on the same lattice; re-rendering them would cost ~6 GPU-h
+to reproduce bytes we already have, and (because fp16 GEMM kernel choice varies with `--batch`)
+might not reproduce them exactly. Copy instead, verified both ends against each sidecar's own
+`rasters[]` record:
+
+```bash
+python scripts/adopt_map_tiles.py --from reports/map_region --to reports/map_extended     --plan reports/map_extended/plan.json
+python3 scripts/verify_map_download.py reports/map_extended --plan reports/map_extended/plan.json
+```
+
+**Step 3 — fetch the CTX zips, on a Sherlock login node** (internet; the GPU job does no
+downloads). Resumable and per-tile fault-tolerant — a transient failure does not lose the rest:
+
+```bash
+export HIRISE2CTX_INSECURE_TLS=1        # Murray Lab serves an incomplete cert chain
+ml python/3.12.1
+source /home/groups/mlapotre/bamaro/envs/hirise2ctx/bin/activate
+cd $HOME/hirise2ctx
+python scripts/fetch_ctx_tiles.py --plan reports/map_extended/plan.json --dry-run   # budget
+python scripts/fetch_ctx_tiles.py --plan reports/map_extended/plan.json
+```
+
+**Step 4 — submit.** `run_map_extended_array.sbatch` reads `to_render` out of the plan and
+strides it across the array, so nothing in the sbatch changes when the box does:
+
+```bash
+mkdir -p logs
+sbatch run_map_extended_array.sbatch
+# PLAN=reports/map_other/plan.json sbatch run_map_extended_array.sbatch
+# BATCH=96 ...     # to keep the existing parity reference exactly valid
+```
+
+⚠ **Wall-clock is GPU-conditional, and this is the failure that has actually bitten.** 27 tiles
+× 144 windows is ~3.3 h on 6 GPUs **at the 2080 Ti's 17–22 s/window**. The A1 arm drew Pascal
+cards (TITAN Xp) at ~202 s/window and timed out at 6 h having finished 7 of 26 tiles. `--time`
+is 8 h here; check the `nvidia-smi` line the job prints first, and if it is a Pascal card expect
+to re-submit and resume (finished tiles skip, a partial tile resumes at its last window) or add
+a `--constraint` for a newer card.
+
+**Step 5 — bring it home and stitch**, exactly as Part D but into `reports/map_extended/`, then:
+
+```bash
+python3 scripts/verify_map_download.py reports/map_extended --plan reports/map_extended/plan.json
+python scripts/map_mosaics.py --baseline reports/map_extended --layers abundance prob prob_raw
+```
+
+⚠ **`reports/map_region` and `reports/map_a1` stay frozen at 26 tiles.** Their footprint gate
+(`n_finite == 26 × 1479² − 7,940`), their sidecar QA and their cell-for-cell arm parity are all
+written against exactly those 26 tiles, and the A1 arm is not being extended (A1 was demoted to
+a sensitivity arm on 2026-08-25). `map_extended` is a separate, growable product on the **same**
+global R01 lattice, so the two can be compared or merged later by construction.
+
+⚠ **Truth coverage thins fast outside circum-Chryse.** Of the 39-image cohort, 23 fall inside
+the shipped 26-tile map but only **1** falls inside the new lon[–24,–4] lat[20,36] block
+(`ESP_042964_2160`). South of ~32°N the map is extrapolation beyond where LOIO validation
+exists — and it still carries the unmitigated source-frame artifact. Say so in any caption.
 
 ---
 

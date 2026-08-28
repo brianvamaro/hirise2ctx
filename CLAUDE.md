@@ -57,6 +57,10 @@ pointers**. The full original build spec is preserved verbatim in
 - **SSL:** stdlib `urllib` fails `CERTIFICATE_VERIFY_FAILED` here; `truststore.inject_into_ssl()` is
   the project-wide fix (already installed; memory: `conda_windows_ssl`). For GDAL `/vsicurl/` use it
   too (or `GDAL_HTTP_UNSAFESSL=YES`).
+- **Notebooks must not re-produce a shipped artifact.** `scripts/map_mosaics.py` is the sole
+  producer of `regional_{layer}_mosaic.tif` (it alone carries the `SIZE_FLOOR_*`/`MOSAIC_*` tags and
+  the closed-footprint gate); consumers call `src.mapping.load_regional_mosaic`, which reads and
+  never writes. Notebook 24 §2 used to rebuild them over the top — rewired 2026-08-28.
 - **Notebooks are generated:** edit the source-of-truth `notebooks/_build_NN.py`, not the `.ipynb`;
   regenerate with `python notebooks/_build_NN.py` then `nbconvert --execute --inplace`. **Never run
   two notebooks (or two CTX-heavy jobs) at once** (memory: `feedback_collaboration`).
@@ -119,6 +123,25 @@ pointers**. The full original build spec is preserved verbatim in
     compression: the tails widen), which lowers the geological floor along with the artifact.
     **Quote the raw reduction only alongside the ratio.** The banked 0.196→0.141 / −0.024 pair is
     superseded and not comparable.
+- **Growing the map beyond circum-Chryse** (opened 2026-08-28, DECISIONS 2026-08-28b, runbook
+  [SHERLOCK_RUN.md](SHERLOCK_RUN.md) §C5). The extension goes to a **separate, growable product
+  `reports/map_extended`** — `map_region`/`map_a1` stay frozen at 26 tiles so their footprint gate,
+  12-gate sidecar QA and cell-for-cell arm parity keep passing. Same global R01 lattice, so the two
+  are mergeable by construction. The kit is **plan-driven**, so a new box edits no code:
+  `scripts/plan_map_extent.py` (box → tiles + measured GPU-h + verified download GB → `plan.json`),
+  then `scripts/adopt_map_tiles.py` (copy already-rendered overlap, verified both ends),
+  `scripts/fetch_ctx_tiles.py`, `run_map_extended_array.sbatch`, `verify_map_download.py --plan`.
+  - ⚠ **Murray URLs are zero-padded** (`E-024_N28`), not the bare tile id (`E-24_N28`) — every
+    western tile 404s on the bare form. Anything that talks to the mosaic must try both, as
+    `ensure_tile_cached` does.
+  - ⚠ **Map wall-clock is GPU-conditional**: 17–22 s/window on a 2080 Ti, ~202 s/window on Pascal
+    (which is what timed out in rebuild step 11). Read the job's own `nvidia-smi` line first.
+  - ⚠ **Truth coverage thins fast outside circum-Chryse** — 23 of the 39-image cohort sit inside the
+    shipped 26-tile map; only 1 inside the new southern block. Say so in captions.
+  - ⚠ **Anything new written into a map-output directory must join `MANIFEST_NAMES`.**
+    `src.map_manifest.tile_sidecars` is a denylist *on purpose* — `tile_result_rows` has to index
+    whatever footprint is on disk, so a tile-name pattern would reintroduce the
+    hardcoded-tile-list assumption. An unlisted JSON reads as a corrupt tile on a second lattice.
   - **Comparing the shipped maps:** [notebooks/29_map_comparison.ipynb](notebooks/29_map_comparison.ipynb)
     — old vs new and baseline vs A1. ⚠ The archived `map_region_g1` is **not co-registered** with the
     promoted product, so it can only be compared by world coordinates or by distribution, never by

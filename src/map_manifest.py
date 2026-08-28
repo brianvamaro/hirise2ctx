@@ -20,8 +20,11 @@ import json
 import os
 from pathlib import Path
 
-#: Files in a map-output directory that are the index, not a tile.
-MANIFEST_NAMES = ("region_manifest", "a1_manifest")
+#: JSON files this project writes into a map-output directory that are NOT tile sidecars: the
+#: manifest index, and `plan.json` from `scripts/plan_map_extent.py` (which lives beside the
+#: product it defines). Anything else in `*.json` is treated as a tile, deliberately -- see
+#: `tile_sidecars`.
+MANIFEST_NAMES = ("region_manifest", "a1_manifest", "plan")
 
 
 def file_sha256(path: str | Path, *, chunk: int = 1 << 20) -> str:
@@ -68,7 +71,19 @@ def write_json_atomic(path: Path, obj) -> Path:
 
 
 def tile_sidecars(out_dir: Path) -> dict[str, Path]:
-    """Every per-tile sidecar in a map-output directory, keyed by tile. Excludes manifests."""
+    r"""Every per-tile sidecar in a map-output directory, keyed by tile. Excludes MANIFEST_NAMES.
+
+    **Deliberately a denylist, not a name pattern.** Matching `E-?\d+_N-?\d+` would be tighter,
+    but `tile_result_rows` must index *whatever footprint is on disk* -- that is what makes the
+    manifest self-healing after a task dies mid-stride -- and a naming rule reintroduces exactly
+    the hardcoded-tile-list assumption the driver is built to avoid. So the rule stays "a JSON
+    here is a tile unless it is one of the files we ourselves write that isn't".
+
+    ⚠ **Anything new written into a product directory must be added to MANIFEST_NAMES.**
+    `plan.json` was not, and `verify_map_download.py` duly reported it as an unexpected tile with
+    no `rasters` record and -- worse -- as a *second grid_id*, firing the R01 "two lattices in one
+    product" alarm on a product entirely on one lattice.
+    """
     return {p.stem: p for p in sorted(Path(out_dir).glob("*.json"))
             if p.stem not in MANIFEST_NAMES}
 

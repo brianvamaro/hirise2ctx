@@ -316,28 +316,36 @@ additionally keys placement on the Murray-tile id.
 
 ### Regional map (PLAN_RegionalMap) + striping artifact (PLAN_StripingArtifact)
 
-> **R01 (2026-08-09) — every product under `reports/map_region/` and `reports/map_a1/` is stale.**
-> Both drivers now render onto one globally anchored coarse lattice
-> (`src.mapping.COARSE_GRID_ID`) instead of each Murray tile's own pixel origin, so the shipped
-> rasters are on the old grid and must be re-rendered; `mosaic_geotiffs` refuses to merge them.
-> **Order is binding: the 26-tile baseline first, then A1** (A1 reads its per-frame normalisation off
-> the baseline's grid, and aborts if that raster is off-lattice). Then re-fetch or reproject
-> `cache_v2/validation/themis_night_ir_region.tif`, which was matched to the old mosaic transform —
-> after the rebuild it is the *same shape* as the corrected mosaic but 0.625 of a cell out, so
-> notebook 24 leg 1 now checks co-registration and refuses rather than correlating by index.
->
-> **Use `--force`, or a fresh `--out-dir`.** Every pre-R01 tile is present on disk, so a plain
-> `--all` would otherwise have skipped all 26 and written a manifest stamped with the new
-> `grid_id` — a rebuild that rendered nothing and then certified itself. The driver now refuses to
-> skip an off-lattice product, but `--force` (or an empty output directory) is what actually
-> re-renders it. Cost and full blast radius: [docs/PENDING_REBUILD.md](docs/PENDING_REBUILD.md) row 6.
+> **R01 is DISCHARGED (2026-08-25).** The rebuild re-rendered both arms onto the one globally
+> anchored coarse lattice (`src.mapping.COARSE_GRID_ID`), and PLAN_Rebuild step 12 promoted them:
+> **`reports/map_region` (baseline) is the deliverable and `reports/map_a1` is a sensitivity arm**
+> — A1 was demoted 2026-08-25, so the source-frame striping artifact **ships unmitigated** as a
+> documented caveat. The displaced pre-R01 product is archived at `reports/map_region_g1` and
+> **must not be quoted**; it has 26 distinct sub-cell lattice phases and cannot be compared to the
+> promoted product by array index. THEMIS was re-fetched onto the corrected lattice
+> (`assert_coregistered` dx=dy=0). Re-check any of this cheaply with
+> `scripts/verify_map_download.py`, `scripts/verify_arm_parity.py`, `scripts/map_sidecar_qa.py`.
 
 ```powershell
 # Regional map: sweep whole Murray tiles -> per-tile {prob,abundance,prob_raw}.tif (160 m).
 # Resumable at (tile, read-window) granularity; built for the Sherlock job array (SHERLOCK_RUN.md).
 & $conda run -n geospatial python scripts/map_region.py --tiles E8_N44   # one tile
 & $conda run -n geospatial python scripts/map_region.py --all            # the 26-tile block
-# Notebook 24 stitches the mosaic + validation legs (MOLA / THEMIS); notebook 25 = striping analysis.
+# scripts/map_mosaics.py is the SOLE producer of regional_{layer}_mosaic.tif (it carries the
+# SIZE_FLOOR_*/MOSAIC_* tags and the closed-footprint gate). Notebook 24 READS those mosaics and
+# runs the validation legs (MOLA / THEMIS); notebook 25 = striping analysis.
+& $conda run -n geospatial python scripts/map_mosaics.py
+
+# GROWING THE MAP to a new box (DECISIONS 2026-08-28b; runbook SHERLOCK_RUN.md C5). Plan-driven:
+# the tile list is data, so a new region edits no code. Output goes to reports/map_extended, NOT
+# into map_region/map_a1 -- those stay frozen at 26 tiles so their QA gates keep passing.
+& $conda run -n geospatial python scripts/plan_map_extent.py --lat 20 48 --lon -24 -4 `
+    --map-dirs reports/map_region reports/map_extended `
+    --verify-urls --json reports/map_extended/plan.json
+& $conda run -n geospatial python scripts/adopt_map_tiles.py --from reports/map_region `
+    --to reports/map_extended --plan reports/map_extended/plan.json   # copy the overlap, verified
+& $conda run -n geospatial python scripts/fetch_ctx_tiles.py --plan reports/map_extended/plan.json
+#   then on Sherlock:  sbatch run_map_extended_array.sbatch
 
 # Striping artifact = CTX SOURCE-FRAME radiometry (the rectangular blocks). Analysis (no inference):
 & $conda run -n geospatial python scripts/striping_frame_blocks.py       # eta^2 + choropleth proof

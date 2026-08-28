@@ -11034,3 +11034,146 @@ does not exist in the repo; replaced with a self-contained instruction.
 ⚠ **Generalisable:** two files with the same role do not have the same API. "It looks right in the
 output" is not "the producer still works" — the same substitution of a weaker check for the real one
 as 2026-08-25d/e and 2026-08-25j.
+
+---
+
+### 2026-08-28a — notebook 24 §2 rewired to READ the mosaics, re-executed on the promoted map; leg 1 finally co-registered
+
+Discharges open item 1 of the 2026-08-27 entry.
+
+#### The rewire
+
+`_build_24.py` §2 called `mosaic_geotiffs(..., out_path=MAP_DIR/"regional_{abundance,prob}_mosaic.tif")`
+— the exact filenames `scripts/map_mosaics.py` produces **with** `SIZE_FLOOR_*`/`MOSAIC_*` provenance
+tags and a closed-footprint gate. Executing the notebook would have replaced the shipped product with
+an untagged look-alike, and notebooks are not covered by the test-side write guard.
+
+New seam, in `src/mapping.py` so it is importable and tested rather than living in a notebook:
+**`load_regional_mosaic(map_dir, layer, *, allow_build=True, dtype="float64")`**. It reads
+`regional_{layer}_mosaic.tif` and returns `(arr, transform, crs_wkt, meta)` where `meta["source"]` is
+`"prebuilt"` (with `tags`) or `"merged_in_memory"` (no tags, **never written**). §2 now prints the
+source and the size-floor basis it read, so the provenance is visible in the executed output rather
+than assumed. 7 tests in `tests/test_mapping.py`, including one that snapshots every file's
+size+mtime across a load and asserts nothing changed.
+
+VERIFIED: after two full executions, `reports/map_region/regional_*_mosaic.tif` still carry their
+2026-08-25 16:04–16:05 mtimes. The notebook read them and wrote none.
+
+#### Leg 1, co-registered for the first time — and it did **not** improve
+
+THEMIS was re-fetched onto the corrected lattice in step 12 (`assert_coregistered` dx=dy=0), so §3.1's
+index comparison is finally cell-for-cell. Measured on the promoted baseline, n = 56,696,412 pixels:
+
+| scale | Spearman rho | previous (2026-06-19, displaced) |
+|---|---|---|
+| pixel (160 m) | **+0.052** | ~ +0.06 |
+| ×8 (~1.3 km, n=888,283) | **+0.066** | — |
+| ×32 (~5.1 km, n=55,680) | **+0.064** | ~ +0.07 |
+| ×64 (~10.2 km, n=13,883) | **+0.063** | ~ +0.07 |
+
+⚠ **The corrected comparison is marginally LOWER, not higher.** Two consequences, both worth stating
+because the opposite was the working expectation: the June number was not inflated by the
+misregistration in any way that mattered, and **the +0.0741 → +0.0821 lift R01 measured *per tile*
+does not carry to the pooled mosaic**. Leg 1 remains a weak corroboration, and it is now weak for
+reasons other than geometry — chiefly that THEMIS night-IR DN is a crude 8-bit proxy, and that the
+map carries **unmitigated** source-frame structure (A1 demoted 2026-08-25) that THEMIS cannot track.
+The notebook's leg-1 prose, which had hardcoded "~ +0.06 / ~ +0.07", now carries the measured values
+and this reading; the notebook was re-executed a second time after that edit.
+
+The banner is now a **provenance** banner, not a staleness warning: it states that the outputs are
+from `reports/map_region`, that §2 is read-only on the mosaics, and that the striping artifact ships
+unmitigated.
+
+#### Still open
+
+Notebook 25's refresh. Its figures read `reports/figures/striping_frameblocks_{perframe,summary}.csv`,
+both dated 2026-06-19 and therefore derived from the archived map. Re-executing it honestly requires
+re-running `scripts/striping_frame_blocks.py` on the promoted product first. Its banner stands and is
+still accurate (the cause diagnosis holds; only the A1 framing reversed).
+
+---
+
+### 2026-08-28b — extending the map: the Xanthe/Chryse bridge, plan-driven, on a separate growable product
+
+Brian asked for inference over roughly **20–35 °N, 25–5 °W** and chose the **bridge** footprint:
+**lon[−24, −4] lat[20, 48]**, which is the requested block *plus* the rows that connect it to the
+shipped circum-Chryse map, giving one contiguous 20° × 28° product.
+
+#### What was measured before anything was submitted
+
+`scripts/plan_map_extent.py` (new) does the arithmetic from artifacts, not from memory:
+
+* **Footprint** — 5 × 7 = **35 Murray tiles**. Murray names a tile by its **lower-left** corner, so
+  the box's top row is `lat1 − 4`; getting that wrong yields a valid-looking list covering the wrong
+  ground, and it is tested.
+* **Already rendered** — **8** (`E-12_N{32,36,40,44}`, `E-8_N{32,36,40,44}`) in `reports/map_region`.
+  **27 to render.**
+* **Timing** — from `region_manifest.json`'s own `runs[].elapsed_s / (n_tiles × 144)`: **17.1–22.0
+  s/window, median 18.4** (41–53 min/tile). 27 tiles = **18.5–23.7 GPU-h, median 19.8** → **~3.3 h
+  wall-clock on 6 GPUs**. ⚠ GPU-conditional: the A1 arm's Pascal cards ran ~202 s/window and timed
+  out; `--time` is 8 h and the job prints `nvidia-smi` first.
+* **Download** — all 27 tiles **verified published** by a ranged GET, true total **49.0 GB** (mean
+  1.82 GB), not the 1.81 GB assumption.
+
+⚠ **The first URL check reported all 22 tiles of an earlier variant as 404 — a bug in the checker,
+not a gap in the mosaic.** Murray Lab's live filenames are signed-prefix **zero-padded**
+(`E-024_N28`); the bare id this project uses (`E-24_N28`) 404s on every western tile.
+`ensure_tile_cached` has always tried both; my checker tried one. Had I trusted it, a fully published
+region would have been written off. It now uses `_padded_manifest_form`, and a test pins that every
+tile in the new box has a padded fallback.
+
+#### Where it goes, and why not into `reports/map_region`
+
+A **new, growable product `reports/map_extended`** (Brian: "the new map may be grown more").
+`reports/map_region` and `reports/map_a1` stay frozen at 26 tiles: their footprint gate
+(`n_finite == 26 × 1479² − 7,940`), their 12-gate sidecar QA and their cell-for-cell arm parity are
+all written against exactly those 26 tiles, and A1 is not being extended (demoted 2026-08-25).
+Both products are on the same global R01 lattice, so they remain mergeable by construction.
+
+The 8 overlapping tiles were **adopted, not re-rendered** — same head, same calibrator, same lattice,
+same CTX source, so re-rendering would spend ~6 GPU-h reproducing bytes we have, and might not
+reproduce them exactly (fp16 GEMM kernel choice varies with `--batch`). `scripts/adopt_map_tiles.py`
+copies them, verifying bytes+sha256 against each sidecar's own `rasters[]` record at **both** ends,
+refusing to cross `grid_id`s and refusing to overwrite. Done and verified: 24 rasters, 0.10 GiB,
+`verify_map_download.py` ALL CLEAN.
+
+#### A shipped QA tool was tripped by a new file — and the tighter fix was the wrong one
+
+Dropping `plan.json` into the product directory made `verify_map_download.py` report an unexpected
+tile with no `rasters` record **and a second `grid_id`** — firing the R01 "two lattices in one
+product" alarm on a product entirely on one lattice. `src.map_manifest.tile_sidecars` identifies
+sidecars by *excluding* `MANIFEST_NAMES`, so any new JSON reads as a corrupt tile.
+
+My first fix replaced the denylist with a name pattern (`^E-?\d+_N-?\d+$`) — tighter, and it
+cannot grow stale the way an exclusion list does. **The full suite refused it**, and correctly:
+`test_tiles_is_a_filter_not_the_source_of_truth` asserts that `tile_result_rows` indexes *whatever
+footprint is on disk* (it builds its case with a tile literally named `WEIRD_TILE`). That is what
+makes the manifest self-healing after a task dies mid-stride, and it is the same
+don't-hardcode-the-tile-list invariant the driver is built on. A naming rule quietly reintroduces
+the assumption. ⚠ **The tighter predicate was tighter in the wrong dimension** — and it broke 8
+tests across two files, which is what surfaced it.
+
+What landed instead: `"plan"` joins `MANIFEST_NAMES`, the docstring records that **anything new
+written into a product directory must join it too**, and `adopt_map_tiles.destination_grid_id` now
+calls `tile_sidecars` rather than keeping its own private skip list, so the two tools cannot
+disagree about what is in a product directory.
+
+#### The kit, all plan-driven so growing the map edits no code
+
+| | |
+|---|---|
+| `scripts/plan_map_extent.py` | box → tiles, GPU-h, GB; `--verify-urls`; writes `plan.json` |
+| `scripts/adopt_map_tiles.py` | copy already-rendered tiles between products, verified |
+| `scripts/fetch_ctx_tiles.py` | fetch the zips from a plan; resumable, per-tile fault-tolerant |
+| `run_map_extended_array.sbatch` | reads `to_render` from the plan and strides it; no tile list inside |
+| `verify_map_download.py --plan` | verify a grown product against its own footprint |
+| `src.mapping.load_regional_mosaic` | read-first mosaic loader; the notebook-24 rewire above |
+| SHERLOCK_RUN.md **C5** | the five steps end to end |
+
+New tests: `tests/test_plan_map_extent.py` (12), `tests/test_adopt_map_tiles.py` (11), plus the
+`load_regional_mosaic` set in `tests/test_mapping.py` (7).
+
+⚠ **Truth coverage thins fast outside circum-Chryse, and this must reach any caption.** Of the
+39-image cohort, **23** fall inside the shipped 26-tile map; only **1** (`ESP_042964_2160`) falls
+inside the new lon[−24,−4] lat[20,36] block. South of ~32 °N the map is extrapolation beyond where
+LOIO validation exists — and it still carries the unmitigated source-frame artifact.

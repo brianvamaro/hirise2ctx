@@ -53,6 +53,14 @@ reports/map_region/
 reports/map_region_g2/
 reports/map_region*/
 reports/map_a1*/
+# The growable extension product (DECISIONS 2026-08-28b). Same rule -- rasters and per-tile
+# checkpoints stay out -- with ONE exception: `plan.json` is the footprint definition AND the
+# input `run_map_extended_array.sbatch` reads on Sherlock, so it has to travel with the code.
+# NOTE the trailing `/*`, not `/`: git will not re-include a file inside an EXCLUDED DIRECTORY,
+# so `reports/map_extended*/` plus a `!` line silently keeps plan.json out. Excluding the
+# directory's CONTENTS lets git descend and honour the negation.
+reports/map_extended*/*
+!reports/map_extended/plan.json
 # Per-tile LOIO prediction dump (18 MB; regenerable via scripts/striping_a1_loio.py;
 # the small striping_a1_loio_summary.csv IS tracked)
 reports/figures/striping_a1_loio_preds.csv
