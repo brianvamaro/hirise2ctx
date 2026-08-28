@@ -373,27 +373,61 @@ python scripts/fetch_ctx_tiles.py --plan reports/map_extended/plan.json --dry-ru
 python scripts/fetch_ctx_tiles.py --plan reports/map_extended/plan.json
 ```
 
-**Step 4 — submit.** `run_map_extended_array.sbatch` reads `to_render` out of the plan and
-strides it across the array, so nothing in the sbatch changes when the box does:
+**Step 4 — submit.** `run_map_extended_array.sbatch` reads `to_render` out of the plan, **one
+tile per array task**, so nothing in the sbatch changes when the box does:
 
 ```bash
 mkdir -p logs
-sbatch run_map_extended_array.sbatch
-# PLAN=reports/map_other/plan.json sbatch run_map_extended_array.sbatch
-# BATCH=96 ...     # to keep the existing parity reference exactly valid
+sbatch --array=0-26 run_map_extended_array.sbatch      # 27 tiles -> 0-26
+# resubmit only what is left:
+#   ONLY="E-24_N44 E-20_N44" sbatch --array=0-1 run_map_extended_array.sbatch
+# a different plan:
+#   PLAN=reports/map_other/plan.json sbatch --array=0-N run_map_extended_array.sbatch
 ```
 
-⚠ **Wall-clock is GPU-conditional, and this is the failure that has actually bitten.** 27 tiles
-× 144 windows is ~3.3 h on 6 GPUs **at the 2080 Ti's 17–22 s/window**. The A1 arm drew Pascal
-cards (TITAN Xp) at ~202 s/window and timed out at 6 h having finished 7 of 26 tiles. `--time`
-is 8 h here; check the `nvidia-smi` line the job prints first, and if it is a Pascal card expect
-to re-submit and resume (finished tiles skip, a partial tile resumes at its last window) or add
-a `--constraint` for a newer card.
+It **inherits every hard-won setting from `run_rebuild_map_array.sbatch`**, which is the script
+that actually produced the 8 tiles this product adopted. None of these are defaults:
 
-**Step 5 — bring it home and stitch**, exactly as Part D but into `reports/map_extended/`, then:
+* `--model-parent models/deployable_g2` + explicit `--calibration` + `--size-floor-basis`.
+  `resolve_model_dir` picks `hits[-1]` **by name**, and the default parent `models/deployable`
+  resolves to the **legacy** head `86c51a5dca220f63` — a completely different digest. Rendering
+  with it would have made the 27 new tiles a different product from the 8 adopted ones,
+  silently. Omitting `--size-floor-basis` also emits **no `SIZE_FLOOR_*` tags** (R84).
+* A **preflight** that hashes the resolved head + calibration and refuses to start unless they
+  match the digests recorded in the adopted tiles' sidecars (`29e833be…` / `290a8661…`). It
+  costs seconds and is the only thing that catches this class of error before the GPU time.
+* `--batch 96`, the parity reference's batch (256 buys nothing: 723 vs 730 img/s).
+* **One tile per task.** In step 11 a task that overran took its remaining tiles down with it,
+  losing 3 never-attempted tiles. One tile per task makes the blast radius one tile.
+* `--constraint GPU_SKU:RTX_2080Ti` **and** `--require-device "2080 Ti"`.
+
+⚠ **Pinning the GPU is the single biggest cost lever, and it is why `--time` can be 3 h.**
+Per-window cost varies **11×** across the `gpu` partition: 2080 Ti **17.9 s/win = 0.72 h/tile**,
+P100 91.7, TITAN Xp ~202 = **8.08 h/tile** — one TITAN Xp tile alone would exceed the wall, which
+is exactly how the A1 array died. The Slurm constraint is the first defence; `--require-device`
+is the second, because a feature name that is wrong or renamed fails *silently*. So: **~19.4
+GPU-h total**, and wall-clock ≈ one tile (~45 min) plus queueing if the array runs wide (there
+are 64 such cards). To accept a slower card, widen `REQUIRE_DEVICE` and raise `--time` together:
 
 ```bash
-python3 scripts/verify_map_download.py reports/map_extended --plan reports/map_extended/plan.json
+REQUIRE_DEVICE="P100" sbatch --array=0-26 --time=05:00:00 run_map_extended_array.sbatch
+```
+
+⚠ **`exit 0` means nothing on its own in this pipeline** — a failing tile no longer kills its
+task. Read the `N/M tiles complete` tally in each log.
+
+**Step 5 — bring it home and stitch.** Output lives at `$SCRATCH/hirise2ctx/map_extended`.
+⚠ **Do not symlink `reports/map_extended` onto `$SCRATCH`** the way step 2 does for
+`map_region`: that directory is tracked in git for `plan.json`, and the symlink would hide it
+from the job. Verify on the cluster against the scratch path, then rsync into the repo dir on
+the laptop:
+
+```bash
+# on Sherlock
+python3 scripts/verify_map_download.py $SCRATCH/hirise2ctx/map_extended     --plan reports/map_extended/plan.json          # 8 "NO sidecar" until the adopted tiles arrive
+# on the LAPTOP (plan.json and the 8 adopted tiles are already there)
+rsync -avP <SUNetID>@dtn.sherlock.stanford.edu:'$SCRATCH/hirise2ctx/map_extended/*'     ~/Documents/PhD/HiRiseToCTXBoulders/hirise2ctx/reports/map_extended/
+python scripts/verify_map_download.py reports/map_extended --plan reports/map_extended/plan.json
 python scripts/map_mosaics.py --baseline reports/map_extended --layers abundance prob prob_raw
 ```
 

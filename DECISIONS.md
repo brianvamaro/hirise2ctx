@@ -11177,3 +11177,56 @@ New tests: `tests/test_plan_map_extent.py` (12), `tests/test_adopt_map_tiles.py`
 39-image cohort, **23** fall inside the shipped 26-tile map; only **1** (`ESP_042964_2160`) falls
 inside the new lon[−24,−4] lat[20,36] block. South of ~32 °N the map is extrapolation beyond where
 LOIO validation exists — and it still carries the unmitigated source-frame artifact.
+
+---
+
+### 2026-08-28c — the extension sbatch was rendering with the WRONG HEAD; caught before submission
+
+Amends [2026-08-28b]. Writing out the copy-paste command list for Brian forced a read of what
+`run_map_extended_array.sbatch` actually invokes against what produced the tiles it adopts. It
+did not match, in four ways, and the first is disqualifying.
+
+**`scripts/map_region.py` defaults to `--model-parent models/deployable`, and
+`resolve_model_dir` picks `hits[-1]` BY NAME.** On this repo that resolves to the **legacy**
+head `86c51a5dca220f63`:
+
+| | head_digest | calibration_digest |
+|---|---|---|
+| the 8 adopted tiles | `29e833be…` | `290a8661…` |
+| `models/deployable_g2` (correct) | `29e833be…` ✓ | `290a8661…` ✓ |
+| `models/deployable` (my default) | `205c5595…` ✗ | `00f655f9…` ✗ |
+
+So the 27 new tiles would have been produced by a different head **and** a different calibrator
+from the 8 they sit beside — one product, two models, nothing in the output saying so. The three
+other gaps: no `--size-floor-basis` (⇒ **no `SIZE_FLOOR_*` tags at all**, R84 — rasters that
+cannot state which boulders they count), `--batch 256` instead of the parity reference's 96
+(which measurement says buys nothing: 723 vs 730 img/s), and no GPU constraint at all.
+
+⚠ **I wrote a new sbatch by generalising `run_region_array.sbatch` — the record of the
+PRE-rebuild run — when the script I should have inherited from was `run_rebuild_map_array.sbatch`,
+which is the one that made the artifacts I am extending.** Its header documents all four of these
+as deliberate corrections, in a numbered list, and I read past it. **The right ancestor for a new
+job script is the one that produced the data it has to match, not the one with the closest name.**
+
+#### What landed
+
+`run_map_extended_array.sbatch` now mirrors the rebuild script: `--model-parent
+models/deployable_g2` with explicit `--calibration` and `--size-floor-basis`, `BATCH` default
+**96**, **one tile per array task** (blast radius one tile — step 11 lost 3 never-attempted tiles
+to a task that took its stride down with it), `--constraint GPU_SKU:RTX_2080Ti` **and**
+`--require-device "2080 Ti"`.
+
+Plus a **preflight** the rebuild script does not have: before any GPU work, it hashes the
+resolved head and calibration with `src.mapping.artifact_digest` and refuses to start unless they
+equal the digests recorded in the adopted tiles' own sidecars. Verified both ways on the real
+artifacts — `models/deployable_g2` PASSES, `models/deployable` FAILS with both digests printed.
+A `--model-parent` typo can no longer cost 19 GPU-h and a silently-inconsistent product.
+
+#### Timing restated
+
+Pinned to the 2080 Ti: **17.9 s/window → 0.72 h/tile → ~19.4 GPU-h** for 27 tiles. With one tile
+per task on a 27-way array and 64 such cards on the cluster, **wall-clock ≈ one tile (~45 min)
+plus queueing**, not the ~3.3 h that 2026-08-28b quoted for a 6-way stride. `--time` is 3 h
+(~4× margin on one tile). The 11× spread across the partition is unchanged and is why both
+defences are on: TITAN Xp at ~202 s/window is 8.08 h for a single tile.
+
