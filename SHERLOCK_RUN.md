@@ -428,7 +428,7 @@ python3 scripts/verify_map_download.py $SCRATCH/hirise2ctx/map_extended     --pl
 # on the LAPTOP (plan.json and the 8 adopted tiles are already there)
 rsync -avP <SUNetID>@dtn.sherlock.stanford.edu:'$SCRATCH/hirise2ctx/map_extended/*'     ~/Documents/PhD/HiRiseToCTXBoulders/hirise2ctx/reports/map_extended/
 python scripts/verify_map_download.py reports/map_extended --plan reports/map_extended/plan.json
-python scripts/map_mosaics.py --baseline reports/map_extended --layers abundance prob prob_raw
+python scripts/map_mosaics.py --baseline reports/map_extended --a1 none
 ```
 
 ⚠ **`reports/map_region` and `reports/map_a1` stay frozen at 26 tiles.** Their footprint gate

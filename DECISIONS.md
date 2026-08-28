@@ -11277,3 +11277,51 @@ in **both** the source and destination product dirs, so 8 tiles were being repor
 
 **The running job is unaffected:** `to_render` is byte-identical and in the same order, so the
 per-task stride indices do not move, and Slurm spools the batch script at submit time.
+
+---
+
+### 2026-08-28e — all 27 bridge tiles rendered; and `map_mosaics.py --baseline map_extended` would have rewritten the shipped A1 arm
+
+**The run succeeded.** Job 41110268, 27 array tasks, 27 × `1/1 tiles complete`, no `PREFLIGHT
+FAIL`, no traceback. Per-tile 2453–3952 s (**0.68–1.10 h**, median ~0.74) on the pinned 2080 Ti
+— the 0.72 h/tile projection held. Products are in `$SCRATCH/hirise2ctx/map_extended`, awaiting
+transfer.
+
+#### Two defects in the instructions I gave, both mine
+
+1. **`python3 scripts/verify_map_download.py` on a login node.** `python3` there is 3.6; the
+   tool's own version guard caught it and printed the fix (`ml python/3.12.1`). No harm — and
+   the guard existing at all is why this was a 10-second detour rather than a syntax error in a
+   tool written specifically for degraded environments. ⚠ The cluster-side verify is also
+   **redundant**: the sidecar `rasters[]` hashes are computed at render time, so verifying on
+   the laptop *after* rsync checks the render **and** the transfer in one pass. Brian's call to
+   skip it and just download was right.
+
+2. ⚠ **`scripts/map_mosaics.py --baseline reports/map_extended` — as written in §C5 step 5 and
+   in this log — would have REWRITTEN `reports/map_a1`'s shipped mosaics.** The script was built
+   for the two-arm 26-tile rebuild, where both arms always existed: `--a1` has a default, and
+   `main()` loops over `{"baseline": ..., "a1": ...}` unconditionally, then differences them.
+   Pointing `--baseline` at the single-arm extension therefore (a) rebuilt all three
+   `reports/map_a1/regional_*_mosaic.tif` as a side effect nobody asked for, on a product that
+   is supposed to be **frozen**, and (b) then died differencing a 35-tile mosaic against a
+   26-tile one. I wrote that command into the runbook without running it.
+
+   Fixed: `--a1 none` makes the second arm optional and skips the difference; a single-arm run
+   writes `reports/figures/mosaic_qa_<name>.json` and returns. Verified on scratch copies of 4
+   real tiles — footprint closes (`8,748,182 = 4×2,187,441 − 1,582`), and
+   `reports/map_a1/regional_*.tif` still carry their 2026-08-25 16:05 mtimes.
+
+   Also fixed the same latent `relative_to(REPO)` crash the planner had: any out-of-repo
+   `--baseline` raised, which is precisely the explicit-scratch-root invocation CLAUDE.md asks
+   for when a script must not touch a live artifact. `_rel()` now falls back to the absolute
+   path. **That is twice in two days** that a repo-relative display path has been the thing
+   stopping a tool from running against a scratch root.
+
+#### An environment gotcha that caused three separate bugs today
+
+⚠ **Heredoc content passed through this shell collapses `\` to `\`.** A Python patch script
+written as `s.replace('print("\n...")', ...)` therefore arrives as `print("<newline>...")` and
+either fails to match or — worse — *writes a real newline into the middle of an f-string*. It
+broke the notebook-24 banner, then `plan_map_extent.py`'s digest print block, then silently made
+a `map_mosaics.py` pattern unmatchable. The fix is to build backslashes as `chr(92)` or to edit
+by line number, never to write `\` inside a heredoc.

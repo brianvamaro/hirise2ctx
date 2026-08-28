@@ -45,6 +45,19 @@ ARMS = {"baseline": REPO / "reports" / "map_region",
 FIG = REPO / "reports" / "figures"
 
 
+def _rel(path: Path) -> str:
+    """Repo-relative when it can be, absolute otherwise.
+
+    A bare ``relative_to(REPO)`` raises on any out-of-repo ``--baseline``, which is
+    exactly the explicit-scratch-root invocation CLAUDE.md asks scripts to be run with
+    when they must not touch a live artifact.
+    """
+    try:
+        return str(path.relative_to(REPO))
+    except ValueError:
+        return str(path)
+
+
 def arm_tiles(map_dir: Path, layer: str) -> list[str]:
     return sorted(p.name[: -len(f"_{layer}.tif")]
                   for p in map_dir.glob(f"*_{layer}.tif"))
@@ -114,7 +127,7 @@ def build(map_dir: Path, arm: str, layer: str, *, seams: bool) -> dict:
             f"{len(tiles)} tiles supply {tile_cells} minus {sum(per_tile_nodata.values())} "
             f"intra-tile nodata = {expected} (residual {n_finite - expected}). Either tiles "
             "overlap on the lattice or a cell was lost in the merge.")
-    rec = {"arm": arm, "layer": layer, "path": str(out.relative_to(REPO)),
+    rec = {"arm": arm, "layer": layer, "path": _rel(out),
            "n_tiles": len(tiles), "sphere_radius_m": radius,
            "transform": list(transform)[:6], "seconds": round(time.monotonic() - t0, 1),
            "tile_cells_total": tile_cells, "intra_tile_nodata": per_tile_nodata,
@@ -138,7 +151,10 @@ def build(map_dir: Path, arm: str, layer: str, *, seams: bool) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--baseline", default=str(ARMS["baseline"]))
-    ap.add_argument("--a1", default=str(ARMS["a1"]))
+    ap.add_argument("--a1", default=str(ARMS["a1"]),
+                    help="the A1 sensitivity arm; pass 'none' for a SINGLE-ARM product "
+                         "(e.g. reports/map_extended), which also skips the difference "
+                         "mosaic")
     ap.add_argument("--layers", nargs="*", default=list(map_qa.LAYERS))
     ap.add_argument("--diff-layer", default="abundance",
                     help="layer for the A1-minus-baseline difference mosaic")
@@ -146,12 +162,29 @@ def main() -> int:
                     help="skip the per-row interior NaN run census (the slow part)")
     args = ap.parse_args()
 
-    dirs = {"baseline": Path(args.baseline), "a1": Path(args.a1)}
+    # A1 is OPTIONAL. This script was written for the two-arm 26-tile rebuild, where both
+    # arms always existed. Pointing --baseline at a single-arm product (map_extended) left
+    # --a1 at its default, which would have (1) REWRITTEN the shipped reports/map_a1 mosaics
+    # as a side effect and (2) then died differencing a 35-tile mosaic against a 26-tile one.
+    # Neither is anything the caller asked for, so "no second arm" is now a first-class case.
+    dirs = {"baseline": Path(args.baseline)}
+    if args.a1 and args.a1.lower() != "none":
+        dirs["a1"] = Path(args.a1)
     print("=== regional mosaics ===", flush=True)
     records = []
     for arm, d in dirs.items():
         for layer in args.layers:
             records.append(build(d, arm, layer, seams=not args.no_seams))
+
+    if "a1" not in dirs:
+        FIG.mkdir(parents=True, exist_ok=True)
+        out = FIG / f"mosaic_qa_{Path(args.baseline).name}.json"
+        out.write_text(json.dumps({"grid_id": COARSE_GRID_ID, "mosaics": records,
+                                   "difference": None}, indent=2), encoding="utf-8")
+        print(f"\nsingle arm ({Path(args.baseline).name}) -- no difference mosaic",
+              flush=True)
+        print(f"wrote {_rel(out)}", flush=True)
+        return 0
 
     print("\n=== A1 - baseline difference mosaic ===", flush=True)
     lay = args.diff_layer
@@ -171,7 +204,7 @@ def main() -> int:
                         "MOSAIC_NOTE": "A1 minus baseline; legitimate only because "
                                        "verify_arm_parity.py established cell-for-cell "
                                        "co-registration on one lattice"})
-    print(f"  wrote {dpath.relative_to(REPO)}", flush=True)
+    print(f"  wrote {_rel(dpath)}", flush=True)
     for k, v in diff.items():
         print(f"    {k:14s} {v}", flush=True)
 
@@ -180,7 +213,7 @@ def main() -> int:
     out.write_text(json.dumps({"grid_id": COARSE_GRID_ID, "mosaics": records,
                                "difference": {"layer": lay, **diff}},
                               indent=2), encoding="utf-8")
-    print(f"\nwrote {out.relative_to(REPO)}", flush=True)
+    print(f"\nwrote {_rel(out)}", flush=True)
     return 0
 
 

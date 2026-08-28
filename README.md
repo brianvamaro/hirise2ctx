@@ -345,7 +345,10 @@ additionally keys placement on the Murray-tile id.
 & $conda run -n geospatial python scripts/adopt_map_tiles.py --from reports/map_region `
     --to reports/map_extended --plan reports/map_extended/plan.json   # copy the overlap, verified
 & $conda run -n geospatial python scripts/fetch_ctx_tiles.py --plan reports/map_extended/plan.json
-#   then on Sherlock:  sbatch run_map_extended_array.sbatch
+#   then on Sherlock:  sbatch --array=0-<N-1> run_map_extended_array.sbatch
+# ...and after rsyncing the tiles back, stitch the single-arm product (--a1 none, or it
+# rebuilds and then fails to difference against the 26-tile A1 arm):
+& $conda run -n geospatial python scripts/map_mosaics.py --baseline reports/map_extended --a1 none
 
 # Striping artifact = CTX SOURCE-FRAME radiometry (the rectangular blocks). Analysis (no inference):
 & $conda run -n geospatial python scripts/striping_frame_blocks.py       # eta^2 + choropleth proof
