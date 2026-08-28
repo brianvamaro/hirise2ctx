@@ -11377,3 +11377,31 @@ it.** Sidecars duplicate nothing and can be deleted with `--clean`.
 Preview: `reports/figures/map_extended_preview.png`. The abundance band along the
 highland–lowland boundary at 40–46 °N is strong and dies off south of ~38 °N; the unmitigated
 source-frame striping is plainly visible as vertical structure, as documented.
+
+---
+
+### 2026-08-28g — round 2 planned: lon[−56, −4] lat[16, 48], 69 new tiles, and it moves TOWARD the training data
+
+Brian asked to extend "to the east about 56W and to the south 16N". ⚠ **56 °W is *west* of the
+current 24 °W edge, so the direction as written was contradictory** — surfaced rather than
+guessed, on a ~50 GPU-h job. Ruling: **west to 56 °W and south to 16 °N, as one rectangle**,
+`lon[−56, −4] lat[16, 48]`, keeping the 48 °N top edge.
+
+| | |
+|---|---|
+| footprint | 13 × 8 = **104 tiles**; 35 already rendered; **69 to render** |
+| timing | 47.3–60.6 GPU-h, median **50.7**; one tile per task on a 69-way array |
+| download | all 69 **verified published**; true total **128.4 GB** (mean 1.86 GB — the 1.81 GB nominal undershoots) |
+| head pin | recorded from all **35** existing tiles: `29e833be…` / `290a8661…` |
+
+#### The scientifically important part: this reverses the extrapolation caveat
+
+Round 1's southern block held **1** cohort image, and I flagged it as extrapolation beyond LOIO
+validation. **The western block holds 14 of the 39 cohort images** (`ESP_045550_2180`,
+`ESP_047976_2020`, `ESP_053989_2260`, `ESP_054397_2105`, `ESP_055690_2200`, `ESP_069763_2235`
+and 8 more), against 2 in the whole of round 1. Extending west moves the map *onto* the terrain
+the head was trained on, not away from it — so round 2's standing is materially better than
+round 1's, and the two halves of the product should not carry the same caveat.
+
+⚠ The 5-tile southern strip `lon[−24,−4] lat[16,20]` still holds **zero** cohort images; that
+part remains extrapolation.

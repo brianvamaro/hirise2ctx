@@ -1,61 +1,130 @@
 {
   "requested": {
     "lon": [
-      -24.0,
+      -56.0,
       -4.0
     ],
     "lat": [
-      20.0,
+      16.0,
       48.0
     ]
   },
   "snapped": {
     "lon": [
-      -24,
+      -56,
       -4
     ],
     "lat": [
-      20,
+      16,
       48
     ]
   },
-  "n_tiles": 35,
+  "n_tiles": 104,
   "tiles": [
+    "E-56_N44",
+    "E-52_N44",
+    "E-48_N44",
+    "E-44_N44",
+    "E-40_N44",
+    "E-36_N44",
+    "E-32_N44",
+    "E-28_N44",
     "E-24_N44",
     "E-20_N44",
     "E-16_N44",
     "E-12_N44",
     "E-8_N44",
+    "E-56_N40",
+    "E-52_N40",
+    "E-48_N40",
+    "E-44_N40",
+    "E-40_N40",
+    "E-36_N40",
+    "E-32_N40",
+    "E-28_N40",
     "E-24_N40",
     "E-20_N40",
     "E-16_N40",
     "E-12_N40",
     "E-8_N40",
+    "E-56_N36",
+    "E-52_N36",
+    "E-48_N36",
+    "E-44_N36",
+    "E-40_N36",
+    "E-36_N36",
+    "E-32_N36",
+    "E-28_N36",
     "E-24_N36",
     "E-20_N36",
     "E-16_N36",
     "E-12_N36",
     "E-8_N36",
+    "E-56_N32",
+    "E-52_N32",
+    "E-48_N32",
+    "E-44_N32",
+    "E-40_N32",
+    "E-36_N32",
+    "E-32_N32",
+    "E-28_N32",
     "E-24_N32",
     "E-20_N32",
     "E-16_N32",
     "E-12_N32",
     "E-8_N32",
+    "E-56_N28",
+    "E-52_N28",
+    "E-48_N28",
+    "E-44_N28",
+    "E-40_N28",
+    "E-36_N28",
+    "E-32_N28",
+    "E-28_N28",
     "E-24_N28",
     "E-20_N28",
     "E-16_N28",
     "E-12_N28",
     "E-8_N28",
+    "E-56_N24",
+    "E-52_N24",
+    "E-48_N24",
+    "E-44_N24",
+    "E-40_N24",
+    "E-36_N24",
+    "E-32_N24",
+    "E-28_N24",
     "E-24_N24",
     "E-20_N24",
     "E-16_N24",
     "E-12_N24",
     "E-8_N24",
+    "E-56_N20",
+    "E-52_N20",
+    "E-48_N20",
+    "E-44_N20",
+    "E-40_N20",
+    "E-36_N20",
+    "E-32_N20",
+    "E-28_N20",
     "E-24_N20",
     "E-20_N20",
     "E-16_N20",
     "E-12_N20",
-    "E-8_N20"
+    "E-8_N20",
+    "E-56_N16",
+    "E-52_N16",
+    "E-48_N16",
+    "E-44_N16",
+    "E-40_N16",
+    "E-36_N16",
+    "E-32_N16",
+    "E-28_N16",
+    "E-24_N16",
+    "E-20_N16",
+    "E-16_N16",
+    "E-12_N16",
+    "E-8_N16"
   ],
   "already_rendered": {
     "E-12_N44": [
@@ -89,45 +158,195 @@
     "E-8_N32": [
       "map_region",
       "map_extended"
+    ],
+    "E-24_N44": [
+      "map_extended"
+    ],
+    "E-20_N44": [
+      "map_extended"
+    ],
+    "E-16_N44": [
+      "map_extended"
+    ],
+    "E-24_N40": [
+      "map_extended"
+    ],
+    "E-20_N40": [
+      "map_extended"
+    ],
+    "E-16_N40": [
+      "map_extended"
+    ],
+    "E-24_N36": [
+      "map_extended"
+    ],
+    "E-20_N36": [
+      "map_extended"
+    ],
+    "E-16_N36": [
+      "map_extended"
+    ],
+    "E-24_N32": [
+      "map_extended"
+    ],
+    "E-20_N32": [
+      "map_extended"
+    ],
+    "E-16_N32": [
+      "map_extended"
+    ],
+    "E-24_N28": [
+      "map_extended"
+    ],
+    "E-20_N28": [
+      "map_extended"
+    ],
+    "E-16_N28": [
+      "map_extended"
+    ],
+    "E-12_N28": [
+      "map_extended"
+    ],
+    "E-8_N28": [
+      "map_extended"
+    ],
+    "E-24_N24": [
+      "map_extended"
+    ],
+    "E-20_N24": [
+      "map_extended"
+    ],
+    "E-16_N24": [
+      "map_extended"
+    ],
+    "E-12_N24": [
+      "map_extended"
+    ],
+    "E-8_N24": [
+      "map_extended"
+    ],
+    "E-24_N20": [
+      "map_extended"
+    ],
+    "E-20_N20": [
+      "map_extended"
+    ],
+    "E-16_N20": [
+      "map_extended"
+    ],
+    "E-12_N20": [
+      "map_extended"
+    ],
+    "E-8_N20": [
+      "map_extended"
     ]
   },
   "to_render": [
-    "E-24_N44",
-    "E-20_N44",
-    "E-16_N44",
-    "E-24_N40",
-    "E-20_N40",
-    "E-16_N40",
-    "E-24_N36",
-    "E-20_N36",
-    "E-16_N36",
-    "E-24_N32",
-    "E-20_N32",
-    "E-16_N32",
-    "E-24_N28",
-    "E-20_N28",
-    "E-16_N28",
-    "E-12_N28",
-    "E-8_N28",
-    "E-24_N24",
-    "E-20_N24",
-    "E-16_N24",
-    "E-12_N24",
-    "E-8_N24",
-    "E-24_N20",
-    "E-20_N20",
-    "E-16_N20",
-    "E-12_N20",
-    "E-8_N20"
+    "E-56_N44",
+    "E-52_N44",
+    "E-48_N44",
+    "E-44_N44",
+    "E-40_N44",
+    "E-36_N44",
+    "E-32_N44",
+    "E-28_N44",
+    "E-56_N40",
+    "E-52_N40",
+    "E-48_N40",
+    "E-44_N40",
+    "E-40_N40",
+    "E-36_N40",
+    "E-32_N40",
+    "E-28_N40",
+    "E-56_N36",
+    "E-52_N36",
+    "E-48_N36",
+    "E-44_N36",
+    "E-40_N36",
+    "E-36_N36",
+    "E-32_N36",
+    "E-28_N36",
+    "E-56_N32",
+    "E-52_N32",
+    "E-48_N32",
+    "E-44_N32",
+    "E-40_N32",
+    "E-36_N32",
+    "E-32_N32",
+    "E-28_N32",
+    "E-56_N28",
+    "E-52_N28",
+    "E-48_N28",
+    "E-44_N28",
+    "E-40_N28",
+    "E-36_N28",
+    "E-32_N28",
+    "E-28_N28",
+    "E-56_N24",
+    "E-52_N24",
+    "E-48_N24",
+    "E-44_N24",
+    "E-40_N24",
+    "E-36_N24",
+    "E-32_N24",
+    "E-28_N24",
+    "E-56_N20",
+    "E-52_N20",
+    "E-48_N20",
+    "E-44_N20",
+    "E-40_N20",
+    "E-36_N20",
+    "E-32_N20",
+    "E-28_N20",
+    "E-56_N16",
+    "E-52_N16",
+    "E-48_N16",
+    "E-44_N16",
+    "E-40_N16",
+    "E-36_N16",
+    "E-32_N16",
+    "E-28_N16",
+    "E-24_N16",
+    "E-20_N16",
+    "E-16_N16",
+    "E-12_N16",
+    "E-8_N16"
   ],
   "expect_digests": {
     "head_digest": "29e833be74e5cc151d1382caa9b5d7d7e2abf8d62597f648c6de5da71a34db2e",
     "calibration_digest": "290a86614f190ced416606689e33533ec55e32a9d349484c51626313c897a61d",
     "measured_from": [
+      "E-12_N20",
+      "E-12_N24",
+      "E-12_N28",
       "E-12_N32",
       "E-12_N36",
       "E-12_N40",
       "E-12_N44",
+      "E-16_N20",
+      "E-16_N24",
+      "E-16_N28",
+      "E-16_N32",
+      "E-16_N36",
+      "E-16_N40",
+      "E-16_N44",
+      "E-20_N20",
+      "E-20_N24",
+      "E-20_N28",
+      "E-20_N32",
+      "E-20_N36",
+      "E-20_N40",
+      "E-20_N44",
+      "E-24_N20",
+      "E-24_N24",
+      "E-24_N28",
+      "E-24_N32",
+      "E-24_N36",
+      "E-24_N40",
+      "E-24_N44",
+      "E-8_N20",
+      "E-8_N24",
+      "E-8_N28",
       "E-8_N32",
       "E-8_N36",
       "E-8_N40",
@@ -135,35 +354,77 @@
     ]
   },
   "ctx_cached_locally": [
-    "E-24_N28"
+    "E-48_N44",
+    "E-52_N40",
+    "E-48_N40",
+    "E-52_N36",
+    "E-44_N36",
+    "E-44_N28",
+    "E-40_N28",
+    "E-28_N28",
+    "E-32_N24",
+    "E-40_N20"
   ],
   "ctx_to_fetch": [
-    "E-24_N44",
-    "E-20_N44",
-    "E-16_N44",
-    "E-24_N40",
-    "E-20_N40",
-    "E-16_N40",
-    "E-24_N36",
-    "E-20_N36",
-    "E-16_N36",
-    "E-24_N32",
-    "E-20_N32",
-    "E-16_N32",
-    "E-20_N28",
-    "E-16_N28",
-    "E-12_N28",
-    "E-8_N28",
-    "E-24_N24",
-    "E-20_N24",
-    "E-16_N24",
-    "E-12_N24",
-    "E-8_N24",
-    "E-24_N20",
-    "E-20_N20",
-    "E-16_N20",
-    "E-12_N20",
-    "E-8_N20"
+    "E-56_N44",
+    "E-52_N44",
+    "E-44_N44",
+    "E-40_N44",
+    "E-36_N44",
+    "E-32_N44",
+    "E-28_N44",
+    "E-56_N40",
+    "E-44_N40",
+    "E-40_N40",
+    "E-36_N40",
+    "E-32_N40",
+    "E-28_N40",
+    "E-56_N36",
+    "E-48_N36",
+    "E-40_N36",
+    "E-36_N36",
+    "E-32_N36",
+    "E-28_N36",
+    "E-56_N32",
+    "E-52_N32",
+    "E-48_N32",
+    "E-44_N32",
+    "E-40_N32",
+    "E-36_N32",
+    "E-32_N32",
+    "E-28_N32",
+    "E-56_N28",
+    "E-52_N28",
+    "E-48_N28",
+    "E-36_N28",
+    "E-32_N28",
+    "E-56_N24",
+    "E-52_N24",
+    "E-48_N24",
+    "E-44_N24",
+    "E-40_N24",
+    "E-36_N24",
+    "E-28_N24",
+    "E-56_N20",
+    "E-52_N20",
+    "E-48_N20",
+    "E-44_N20",
+    "E-36_N20",
+    "E-32_N20",
+    "E-28_N20",
+    "E-56_N16",
+    "E-52_N16",
+    "E-48_N16",
+    "E-44_N16",
+    "E-40_N16",
+    "E-36_N16",
+    "E-32_N16",
+    "E-28_N16",
+    "E-24_N16",
+    "E-20_N16",
+    "E-16_N16",
+    "E-12_N16",
+    "E-8_N16"
   ],
   "seconds_per_window": {
     "source": "reports\\map_region\\region_manifest.json",
@@ -172,5 +433,491 @@
     "max": 21.961111111111112,
     "n_runs": 7
   },
-  "windows_per_tile": 144
+  "windows_per_tile": 144,
+  "url_check": {
+    "E-56_N44": {
+      "published": true,
+      "status": 206,
+      "bytes": 1770414450,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-056_N44.zip",
+      "resolved_tile_name": "E-056_N44"
+    },
+    "E-52_N44": {
+      "published": true,
+      "status": 206,
+      "bytes": 1798089670,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-052_N44.zip",
+      "resolved_tile_name": "E-052_N44"
+    },
+    "E-48_N44": {
+      "published": true,
+      "status": 206,
+      "bytes": 1842045771,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-048_N44.zip",
+      "resolved_tile_name": "E-048_N44"
+    },
+    "E-44_N44": {
+      "published": true,
+      "status": 206,
+      "bytes": 1839852769,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-044_N44.zip",
+      "resolved_tile_name": "E-044_N44"
+    },
+    "E-40_N44": {
+      "published": true,
+      "status": 206,
+      "bytes": 1853581172,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-040_N44.zip",
+      "resolved_tile_name": "E-040_N44"
+    },
+    "E-36_N44": {
+      "published": true,
+      "status": 206,
+      "bytes": 1706474321,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-036_N44.zip",
+      "resolved_tile_name": "E-036_N44"
+    },
+    "E-32_N44": {
+      "published": true,
+      "status": 206,
+      "bytes": 1849916716,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-032_N44.zip",
+      "resolved_tile_name": "E-032_N44"
+    },
+    "E-28_N44": {
+      "published": true,
+      "status": 206,
+      "bytes": 1760455941,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-028_N44.zip",
+      "resolved_tile_name": "E-028_N44"
+    },
+    "E-56_N40": {
+      "published": true,
+      "status": 206,
+      "bytes": 1732072588,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-056_N40.zip",
+      "resolved_tile_name": "E-056_N40"
+    },
+    "E-52_N40": {
+      "published": true,
+      "status": 206,
+      "bytes": 1874582956,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-052_N40.zip",
+      "resolved_tile_name": "E-052_N40"
+    },
+    "E-48_N40": {
+      "published": true,
+      "status": 206,
+      "bytes": 1891816445,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-048_N40.zip",
+      "resolved_tile_name": "E-048_N40"
+    },
+    "E-44_N40": {
+      "published": true,
+      "status": 206,
+      "bytes": 1858218808,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-044_N40.zip",
+      "resolved_tile_name": "E-044_N40"
+    },
+    "E-40_N40": {
+      "published": true,
+      "status": 206,
+      "bytes": 1899741189,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-040_N40.zip",
+      "resolved_tile_name": "E-040_N40"
+    },
+    "E-36_N40": {
+      "published": true,
+      "status": 206,
+      "bytes": 1812605255,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-036_N40.zip",
+      "resolved_tile_name": "E-036_N40"
+    },
+    "E-32_N40": {
+      "published": true,
+      "status": 206,
+      "bytes": 1820432559,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-032_N40.zip",
+      "resolved_tile_name": "E-032_N40"
+    },
+    "E-28_N40": {
+      "published": true,
+      "status": 206,
+      "bytes": 1878514809,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-028_N40.zip",
+      "resolved_tile_name": "E-028_N40"
+    },
+    "E-56_N36": {
+      "published": true,
+      "status": 206,
+      "bytes": 1759319258,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-056_N36.zip",
+      "resolved_tile_name": "E-056_N36"
+    },
+    "E-52_N36": {
+      "published": true,
+      "status": 206,
+      "bytes": 1891318521,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-052_N36.zip",
+      "resolved_tile_name": "E-052_N36"
+    },
+    "E-48_N36": {
+      "published": true,
+      "status": 206,
+      "bytes": 1910133196,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-048_N36.zip",
+      "resolved_tile_name": "E-048_N36"
+    },
+    "E-44_N36": {
+      "published": true,
+      "status": 206,
+      "bytes": 1883748015,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-044_N36.zip",
+      "resolved_tile_name": "E-044_N36"
+    },
+    "E-40_N36": {
+      "published": true,
+      "status": 206,
+      "bytes": 1881339405,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-040_N36.zip",
+      "resolved_tile_name": "E-040_N36"
+    },
+    "E-36_N36": {
+      "published": true,
+      "status": 206,
+      "bytes": 1853119578,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-036_N36.zip",
+      "resolved_tile_name": "E-036_N36"
+    },
+    "E-32_N36": {
+      "published": true,
+      "status": 206,
+      "bytes": 1863802097,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-032_N36.zip",
+      "resolved_tile_name": "E-032_N36"
+    },
+    "E-28_N36": {
+      "published": true,
+      "status": 206,
+      "bytes": 1894024722,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-028_N36.zip",
+      "resolved_tile_name": "E-028_N36"
+    },
+    "E-56_N32": {
+      "published": true,
+      "status": 206,
+      "bytes": 1725233701,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-056_N32.zip",
+      "resolved_tile_name": "E-056_N32"
+    },
+    "E-52_N32": {
+      "published": true,
+      "status": 206,
+      "bytes": 1894159448,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-052_N32.zip",
+      "resolved_tile_name": "E-052_N32"
+    },
+    "E-48_N32": {
+      "published": true,
+      "status": 206,
+      "bytes": 1912450102,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-048_N32.zip",
+      "resolved_tile_name": "E-048_N32"
+    },
+    "E-44_N32": {
+      "published": true,
+      "status": 206,
+      "bytes": 1933752730,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-044_N32.zip",
+      "resolved_tile_name": "E-044_N32"
+    },
+    "E-40_N32": {
+      "published": true,
+      "status": 206,
+      "bytes": 1949800936,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-040_N32.zip",
+      "resolved_tile_name": "E-040_N32"
+    },
+    "E-36_N32": {
+      "published": true,
+      "status": 206,
+      "bytes": 1906716918,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-036_N32.zip",
+      "resolved_tile_name": "E-036_N32"
+    },
+    "E-32_N32": {
+      "published": true,
+      "status": 206,
+      "bytes": 1891790983,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-032_N32.zip",
+      "resolved_tile_name": "E-032_N32"
+    },
+    "E-28_N32": {
+      "published": true,
+      "status": 206,
+      "bytes": 1888313541,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-028_N32.zip",
+      "resolved_tile_name": "E-028_N32"
+    },
+    "E-56_N28": {
+      "published": true,
+      "status": 206,
+      "bytes": 1824600373,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-056_N28.zip",
+      "resolved_tile_name": "E-056_N28"
+    },
+    "E-52_N28": {
+      "published": true,
+      "status": 206,
+      "bytes": 1861778028,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-052_N28.zip",
+      "resolved_tile_name": "E-052_N28"
+    },
+    "E-48_N28": {
+      "published": true,
+      "status": 206,
+      "bytes": 1940995088,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-048_N28.zip",
+      "resolved_tile_name": "E-048_N28"
+    },
+    "E-44_N28": {
+      "published": true,
+      "status": 206,
+      "bytes": 1952728974,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-044_N28.zip",
+      "resolved_tile_name": "E-044_N28"
+    },
+    "E-40_N28": {
+      "published": true,
+      "status": 206,
+      "bytes": 1935830742,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-040_N28.zip",
+      "resolved_tile_name": "E-040_N28"
+    },
+    "E-36_N28": {
+      "published": true,
+      "status": 206,
+      "bytes": 1899704606,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-036_N28.zip",
+      "resolved_tile_name": "E-036_N28"
+    },
+    "E-32_N28": {
+      "published": true,
+      "status": 206,
+      "bytes": 1953128741,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-032_N28.zip",
+      "resolved_tile_name": "E-032_N28"
+    },
+    "E-28_N28": {
+      "published": true,
+      "status": 206,
+      "bytes": 1781941828,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-028_N28.zip",
+      "resolved_tile_name": "E-028_N28"
+    },
+    "E-56_N24": {
+      "published": true,
+      "status": 206,
+      "bytes": 1773824151,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-056_N24.zip",
+      "resolved_tile_name": "E-056_N24"
+    },
+    "E-52_N24": {
+      "published": true,
+      "status": 206,
+      "bytes": 1907070723,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-052_N24.zip",
+      "resolved_tile_name": "E-052_N24"
+    },
+    "E-48_N24": {
+      "published": true,
+      "status": 206,
+      "bytes": 1897596602,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-048_N24.zip",
+      "resolved_tile_name": "E-048_N24"
+    },
+    "E-44_N24": {
+      "published": true,
+      "status": 206,
+      "bytes": 1978398440,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-044_N24.zip",
+      "resolved_tile_name": "E-044_N24"
+    },
+    "E-40_N24": {
+      "published": true,
+      "status": 206,
+      "bytes": 1941196155,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-040_N24.zip",
+      "resolved_tile_name": "E-040_N24"
+    },
+    "E-36_N24": {
+      "published": true,
+      "status": 206,
+      "bytes": 1913901690,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-036_N24.zip",
+      "resolved_tile_name": "E-036_N24"
+    },
+    "E-32_N24": {
+      "published": true,
+      "status": 206,
+      "bytes": 1957145898,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-032_N24.zip",
+      "resolved_tile_name": "E-032_N24"
+    },
+    "E-28_N24": {
+      "published": true,
+      "status": 206,
+      "bytes": 1856911705,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-028_N24.zip",
+      "resolved_tile_name": "E-028_N24"
+    },
+    "E-56_N20": {
+      "published": true,
+      "status": 206,
+      "bytes": 1773280871,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-056_N20.zip",
+      "resolved_tile_name": "E-056_N20"
+    },
+    "E-52_N20": {
+      "published": true,
+      "status": 206,
+      "bytes": 1909995846,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-052_N20.zip",
+      "resolved_tile_name": "E-052_N20"
+    },
+    "E-48_N20": {
+      "published": true,
+      "status": 206,
+      "bytes": 1885758191,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-048_N20.zip",
+      "resolved_tile_name": "E-048_N20"
+    },
+    "E-44_N20": {
+      "published": true,
+      "status": 206,
+      "bytes": 1953262932,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-044_N20.zip",
+      "resolved_tile_name": "E-044_N20"
+    },
+    "E-40_N20": {
+      "published": true,
+      "status": 206,
+      "bytes": 1924963597,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-040_N20.zip",
+      "resolved_tile_name": "E-040_N20"
+    },
+    "E-36_N20": {
+      "published": true,
+      "status": 206,
+      "bytes": 1941547241,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-036_N20.zip",
+      "resolved_tile_name": "E-036_N20"
+    },
+    "E-32_N20": {
+      "published": true,
+      "status": 206,
+      "bytes": 1914779272,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-032_N20.zip",
+      "resolved_tile_name": "E-032_N20"
+    },
+    "E-28_N20": {
+      "published": true,
+      "status": 206,
+      "bytes": 1904286358,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-028_N20.zip",
+      "resolved_tile_name": "E-028_N20"
+    },
+    "E-56_N16": {
+      "published": true,
+      "status": 206,
+      "bytes": 1875913917,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-056_N16.zip",
+      "resolved_tile_name": "E-056_N16"
+    },
+    "E-52_N16": {
+      "published": true,
+      "status": 206,
+      "bytes": 1879903590,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-052_N16.zip",
+      "resolved_tile_name": "E-052_N16"
+    },
+    "E-48_N16": {
+      "published": true,
+      "status": 206,
+      "bytes": 1811378467,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-048_N16.zip",
+      "resolved_tile_name": "E-048_N16"
+    },
+    "E-44_N16": {
+      "published": true,
+      "status": 206,
+      "bytes": 1887415026,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-044_N16.zip",
+      "resolved_tile_name": "E-044_N16"
+    },
+    "E-40_N16": {
+      "published": true,
+      "status": 206,
+      "bytes": 1846968240,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-040_N16.zip",
+      "resolved_tile_name": "E-040_N16"
+    },
+    "E-36_N16": {
+      "published": true,
+      "status": 206,
+      "bytes": 1824578813,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-036_N16.zip",
+      "resolved_tile_name": "E-036_N16"
+    },
+    "E-32_N16": {
+      "published": true,
+      "status": 206,
+      "bytes": 1822235853,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-032_N16.zip",
+      "resolved_tile_name": "E-032_N16"
+    },
+    "E-28_N16": {
+      "published": true,
+      "status": 206,
+      "bytes": 1796117157,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-028_N16.zip",
+      "resolved_tile_name": "E-028_N16"
+    },
+    "E-24_N16": {
+      "published": true,
+      "status": 206,
+      "bytes": 1795875417,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-024_N16.zip",
+      "resolved_tile_name": "E-024_N16"
+    },
+    "E-20_N16": {
+      "published": true,
+      "status": 206,
+      "bytes": 1748581836,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-020_N16.zip",
+      "resolved_tile_name": "E-020_N16"
+    },
+    "E-16_N16": {
+      "published": true,
+      "status": 206,
+      "bytes": 1757384271,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-016_N16.zip",
+      "resolved_tile_name": "E-016_N16"
+    },
+    "E-12_N16": {
+      "published": true,
+      "status": 206,
+      "bytes": 1797319518,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-012_N16.zip",
+      "resolved_tile_name": "E-012_N16"
+    },
+    "E-8_N16": {
+      "published": true,
+      "status": 206,
+      "bytes": 1785643314,
+      "url": "https://murray-lab.caltech.edu/CTX/V01/tiles/MurrayLab_GlobalCTXMosaic_V01_E-008_N16.zip",
+      "resolved_tile_name": "E-008_N16"
+    }
+  },
+  "n_not_published": 0
 }
