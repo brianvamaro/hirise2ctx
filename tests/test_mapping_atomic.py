@@ -124,3 +124,97 @@ def test_expect_finite_is_computed_on_the_float32_cast(tmp_path):
 
 def test_verify_reports_a_missing_file_rather_than_raising(tmp_path):
     assert verify_geotiff(tmp_path / "nope.tif") == "missing"
+
+
+# ---------------------------------------------------------------------------
+# _replace_with_retry — the Windows large-file lock (measured 2026-08-29)
+# ---------------------------------------------------------------------------
+#
+# `os.replace` failed with PermissionError REPRODUCIBLY on the ~914 MB 104-tile mosaic while
+# succeeding on the 300 MB one, and succeeded on the same destination seconds later from another
+# process. Nothing in write_geotiff leaks a handle; the window is an antivirus/indexer scan of a
+# large, just-closed file. The retry must be bounded, must leave the destination untouched on
+# total failure, and must not swallow a permanent permission problem.
+
+def test_replace_with_retry_succeeds_once_the_lock_clears(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from src.mapping import _replace_with_retry
+
+    src = tmp_path / "new.tif.tmp"
+    dst = tmp_path / "product.tif"
+    src.write_bytes(b"new")
+    dst.write_bytes(b"old")
+
+    calls = {"n": 0}
+    real = Path.replace
+
+    def flaky(self, target):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise PermissionError("[WinError 5] Access is denied")
+        return real(self, target)
+
+    monkeypatch.setattr(Path, "replace", flaky)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    _replace_with_retry(src, dst, first_delay=0.0)
+
+    assert calls["n"] == 3
+    assert dst.read_bytes() == b"new" and not src.exists()
+
+
+def test_replace_with_retry_gives_up_and_leaves_the_destination_intact(tmp_path, monkeypatch):
+    """A permanent lock must surface, and must not have damaged the shipped product."""
+    from pathlib import Path
+
+    import pytest
+
+    from src.mapping import _replace_with_retry
+
+    src = tmp_path / "new.tif.tmp"
+    dst = tmp_path / "product.tif"
+    src.write_bytes(b"new")
+    dst.write_bytes(b"old")
+
+    def always_locked(self, target):
+        raise PermissionError("[WinError 5] Access is denied")
+
+    monkeypatch.setattr(Path, "replace", always_locked)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    with pytest.raises(PermissionError, match="QGIS/ArcGIS"):
+        _replace_with_retry(src, dst, attempts=3, first_delay=0.0)
+
+    assert dst.read_bytes() == b"old", "the destination was damaged by a failed replace"
+
+
+def test_write_geotiff_retries_the_replace(tmp_path, monkeypatch):
+    """End to end: a transient lock on the real write path must not lose the raster."""
+    from pathlib import Path
+
+    import numpy as np
+
+    from src.mapping import MURRAY_RADIUS_M, global_cell_transform, write_geotiff
+
+    wkt = (f'PROJCS["m",GEOGCS["g",DATUM["d",SPHEROID["s",{MURRAY_RADIUS_M},0]],'
+           'PRIMEM["Reference_Meridian",0],UNIT["degree",0.0174532925199433]],'
+           'PROJECTION["Equirectangular"],UNIT["metre",1]]')
+    out = tmp_path / "regional_abundance_mosaic.tif"
+    arr = np.arange(16, dtype=np.float32).reshape(4, 4)
+
+    n = {"calls": 0}
+    real = Path.replace
+
+    def flaky(self, target):
+        n["calls"] += 1
+        if n["calls"] == 1:
+            raise PermissionError("[WinError 5] Access is denied")
+        return real(self, target)
+
+    monkeypatch.setattr(Path, "replace", flaky)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    write_geotiff(out, arr, global_cell_transform(0, 0), wkt)
+
+    import rasterio
+    with rasterio.open(out) as ds:
+        np.testing.assert_array_equal(ds.read(1), arr)
+    assert not out.with_name(out.name + ".tmp").exists(), "the .tmp was left behind"

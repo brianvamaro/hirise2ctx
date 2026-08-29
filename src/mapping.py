@@ -818,12 +818,52 @@ def write_geotiff(path: str | Path, raster: np.ndarray, transform, crs_wkt: str,
             if why is not None:
                 raise OSError(f"{path.name} failed post-write verification: {why}")
         if atomic:
-            Path(dest).replace(path)
+            _replace_with_retry(Path(dest), path)
     except BaseException:
         if atomic:
             Path(dest).unlink(missing_ok=True)
         raise
     return path
+
+
+def _replace_with_retry(src: Path, dst: Path, *, attempts: int = 8,
+                        first_delay: float = 0.5) -> None:
+    """`src.replace(dst)`, retrying the Windows "file is briefly locked" case.
+
+    **Measured 2026-08-29.** The 104-tile mosaic is ~914 MB, and on Windows
+    `os.replace` failed with `PermissionError: [WinError 5] Access is denied` *reproducibly*
+    on the 900 MB rasters while succeeding on the 300 MB ones -- and succeeding again on the
+    same destination seconds later from a separate process. Nothing in this module leaks a
+    handle (both the write and `verify_geotiff` use context managers); the window is an
+    antivirus / search-indexer scan of a large file that has just been closed and fully read.
+
+    On Windows `os.replace` needs BOTH operands free of handles opened without
+    `FILE_SHARE_DELETE`, so the scan of either the source or the destination is enough to
+    fail it. Retrying with backoff is the standard remedy, and it is safe here: the
+    destination is untouched until the replace succeeds, so a failure after the last attempt
+    leaves exactly the same state as a failure on the first.
+
+    Bounded on purpose -- a genuine permission problem (read-only file, another program
+    holding the product open for editing) must still surface rather than spin.
+    """
+    import time
+
+    delay = first_delay
+    for i in range(attempts):
+        try:
+            src.replace(dst)
+            return
+        except PermissionError:
+            if i == attempts - 1:
+                raise PermissionError(
+                    f"could not replace {dst.name} after {attempts} attempts over "
+                    f"~{first_delay * (2 ** attempts - 1):.0f}s. On Windows this is usually an "
+                    "antivirus/indexer scan of a large file, but it is also what you get if the "
+                    "raster is open in QGIS/ArcGIS -- close it and re-run. The destination has "
+                    "NOT been modified."
+                ) from None
+            time.sleep(delay)
+            delay *= 2
 
 
 # ============================================================================

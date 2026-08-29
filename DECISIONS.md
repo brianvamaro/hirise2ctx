@@ -11565,3 +11565,69 @@ Commit `60413f9` replaced `reports/map_extended/plan.json` with the round-2 plan
 masquerading as an invariant. It now asserts what must hold for *any* round: the pin is non-empty
 and every `measured_from` tile has a sidecar in the product. The head/calibration digest pins are
 unchanged and still hold.
+
+---
+
+### 2026-08-29 — round 2 landed: `map_extended` is 104 tiles, the union is 122, and a Windows lock broke the atomic write
+
+All **69** round-2 tiles rendered. The download held 96 tiles (the 69 new plus the 27 of round 1
+still in `$SCRATCH`); verified in a scratch directory first — **288 rasters sha256-clean, one
+`grid_id`** — then moved in and re-verified whole: **ALL CLEAN, 104 tiles, 312 rasters, 1.24 GiB**.
+
+**The head pin bound, checked independently of the preflight.** Across all 96 downloaded
+sidecars there is exactly **one** `head_digest` (`29e833be…`), **one** `calibration_digest`
+(`290a8661…`) and **one** device (`RTX 2080 Ti`) — 96/96 each, matching the plan's
+`expect_digests`. So the gate that skipped itself on the first submission (2026-08-28d) did its
+job on this one.
+
+| product | tiles | mosaic | footprint |
+|---|---|---|---|
+| `map_extended` | 104 | 11,852 × 19,262 | closes: `226,483,299 = 104×1479² − 1,010,565` on 37 tiles |
+| `map_union` | 122 | 11,852 × 28,153 | closes: `265,850,879 = 122×1479² − 1,016,923` on 42 tiles |
+
+**Seam census across the three rendering runs** (lat 20–48 °N, 4 km strips):
+
+| meridian | join | Δ/sd |
+|---|---|---|
+| −24.0 | **round-2 \| round-1** | **+0.024** |
+| −12.0 | round-1 \| adopted | −0.014 |
+| −28.0 / −36.0 / −48.0 | within round-2 | +0.022 / −0.054 / −0.050 |
+| −26.0 / −22.0 | mid-tile controls | +0.053 / +0.051 |
+
+Every *inter-run* join is smaller than the mid-tile controls. Three separate Slurm runs and one
+file copy produced one continuous field.
+
+#### `reports/map_union` was stale and has been rebuilt — 53 → 122 tiles
+
+A parallel session built the union (`add447c`, `6a30ff3`) when `map_extended` held 35 tiles, so
+it stood at 53. `map_extended` then grew in place to 104, which would have left notebooks 30–34
+analysing **53 of 122 tiles** while reporting on "the map". Re-running `scripts/map_union.py`
+with no arguments was the whole fix — the script's "growing the map edits no code" design held.
+8 shared tiles still sha256-identical, 130 rasters → 122 tiles, footprint closes.
+
+⚠ **A product derived from another product goes stale silently when its source grows.** Nothing
+in the union's manifest would have flagged that it was built against a 35-tile source.
+
+#### `os.replace` failed on the 914 MB mosaic — the atomic write now retries
+
+`write_geotiff`'s final `Path(dest).replace(path)` raised `PermissionError [WinError 5]`
+**reproducibly** on the 104-tile mosaic, having always worked on the ≤300 MB ones — and the same
+destination replaced fine seconds later from another process. Nothing in the module leaks a
+handle (the write and `verify_geotiff` both use context managers); the window is an
+antivirus/indexer scan of a large, just-closed, fully-read file, and on Windows `os.replace`
+needs *both* operands free of handles opened without `FILE_SHARE_DELETE`.
+
+`_replace_with_retry` now backs off up to 8 times (~2 min) and then raises with the other likely
+cause named — *the raster is open in QGIS/ArcGIS*. Bounded on purpose: a genuine permission
+problem must still surface. The destination is untouched until the replace succeeds, so a total
+failure leaves exactly the pre-run state — which is what saved the previous mosaic here. Three
+tests, including one on the real `write_geotiff` path.
+
+⚠ **My own diagnostic clobbered a product.** To test whether the destination was replaceable I
+ran `os.replace(1 KB probe, regional_abundance_mosaic.tif)` — it succeeded, and overwrote the
+102 MB mosaic with 1 KB. Regenerable, and being regenerated in the same breath, so no loss; but
+a read-only test (`open(dst, "r+b")`, which I had *already* run and which answered the same
+question) was available and I reached for the destructive one anyway.
+
+Display: external `.ovr`/`.aux.xml` on both products. **Union stretch 0 → 0.0496**;
+`map_extended` 0 → 0.0520. Previews: `reports/figures/map_{extended,union}_preview.png`.
