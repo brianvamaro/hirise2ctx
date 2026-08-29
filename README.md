@@ -372,7 +372,7 @@ additionally keys placement on the Murray-tile id.
 
 ### Validating the map against independent data (PLAN_MapValidation)
 
-`reports/map_region` (26 tiles) and `reports/map_extended` (35 tiles) **share 8 tiles**, so pooling
+`reports/map_region` (26 tiles) and `reports/map_extended` (104 tiles) **share 8 tiles**, so pooling
 the two per-arm mosaics double-counts 15% of the footprint. **`scripts/map_union.py` is the sole
 producer of the deduplicated read surface** `reports/map_union` — **122 tiles** (26 + 104 − 8
 shared, after round 2 rendered on 2026-08-29), one

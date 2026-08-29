@@ -140,8 +140,13 @@ pointers**. The full original build spec is preserved verbatim in
     `ensure_tile_cached` does.
   - ⚠ **Map wall-clock is GPU-conditional**: 17–22 s/window on a 2080 Ti, ~202 s/window on Pascal
     (which is what timed out in rebuild step 11). Read the job's own `nvidia-smi` line first.
-  - ⚠ **Truth coverage thins fast outside circum-Chryse** — 23 of the 39-image cohort sit inside the
-    shipped 26-tile map; only 1 inside the new southern block. Say so in captions.
+  - ⚠ **Where truth coverage actually thins — and where it does NOT.** 23 of the 39-image cohort
+    sit inside the shipped 26-tile map. Round 1's southern block held **1**, which is why the
+    original caveat said the extension was extrapolation; **round 2 reversed that** — the western
+    block holds **14**, so **16 of 39** now fall inside `map_extended` and the map has moved
+    *toward* the terrain the head was trained on. What remains genuine extrapolation is the
+    5-tile strip `lon[−24,−4] lat[16,20]`, which contains **zero** cohort images. Scope the
+    caption to that, not to the whole extension.
   - ⚠ **Anything new written into a map-output directory must join `MANIFEST_NAMES`.**
     `src.map_manifest.tile_sidecars` is a denylist *on purpose* — `tile_result_rows` has to index
     whatever footprint is on disk, so a tile-name pattern would reintroduce the

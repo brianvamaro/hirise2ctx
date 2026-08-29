@@ -40,8 +40,8 @@ treatment that is itself unsettled.
 
 ### 1.1 Why it must exist
 
-`reports/map_region` (26 tiles, lon −12→20, lat 32→48) and `reports/map_extended` (35 tiles,
-lon −24→−4, lat 20→48) **overlap in 8 tiles**:
+`reports/map_region` (26 tiles, lon −12→20, lat 32→48) and `reports/map_extended` (104 tiles,
+lon −56→−4, lat 16→48, both rounds shipped) **overlap in 8 tiles**:
 
 ```
 E-12_N32  E-12_N36  E-12_N40  E-12_N44  E-8_N32  E-8_N36  E-8_N40  E-8_N44
