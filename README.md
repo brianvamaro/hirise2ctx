@@ -370,6 +370,31 @@ additionally keys placement on the Murray-tile id.
 & $conda run -n geospatial python scripts/f_pilot_crop.py                # leg A: eta^2, 4 mappings (GPU)
 ```
 
+### Validating the map against independent data (PLAN_MapValidation)
+
+`reports/map_region` (26 tiles) and `reports/map_extended` (35 tiles) **share 8 tiles**, so pooling
+the two per-arm mosaics double-counts 15% of the footprint. **`scripts/map_union.py` is the sole
+producer of the deduplicated read surface** `reports/map_union` — **53 tiles** (26 + 35 − 8), one
+R01 lattice, one `v2_mixed_floor_2` size-floor basis, footprint closing exactly at 115,647,610
+finite cells. Dedup **asserts sha256-equality** on a shared tile and fails hard on a mismatch; it
+never picks a winner. The arms themselves stay frozen (`--out` may not be a `--source`).
+
+```powershell
+# Build / rebuild the union. A round-2 product joins by adding one --source: no code change.
+& $conda run -n geospatial python scripts/map_union.py
+& $conda run -n geospatial python scripts/map_union.py `
+    --source reports/map_region reports/map_extended reports/map_round2      # when it exists
+```
+
+Notebooks 30–34 never touch the arms: they call `src.map_validation` — `load_union` (which
+**refuses** a single-arm mosaic, since reading one silently halves the footprint), `three_targets`
+(`abundance` / `prob_raw` / rich at calibrated `prob ≥ 0.5`, on **one shared finite mask**),
+`zonal_cells`, `radial_annuli`, `frame_effective_n`, `cluster_bootstrap_ci` (n from **groups**, never
+from the pixel count) and `CAVEAT_MD`, the single standing-caveat string all five notebooks quote.
+
+⚠ **Every contrast these notebooks produce is an upper bound on the geologic signal**: the CTX
+source-frame striping artifact is present and, by ruling, **not controlled for** here.
+
 **The 907-frame F build (PLAN_FBuild).** Stages A (ISIS) and B (embed + infer) run on Sherlock
 (SHERLOCK_RUN.md Parts H–I) and leave one `{PRODUCT_ID}.npz` per frame — `{TI, TJ, prob}` on a global
 160 m tile grid — in `$SCRATCH/hirise2ctx/f_region_logits/`. **Stage C** (the H4 overlap solve) is a

@@ -21,10 +21,11 @@ import os
 from pathlib import Path
 
 #: JSON files this project writes into a map-output directory that are NOT tile sidecars: the
-#: manifest index, and `plan.json` from `scripts/plan_map_extent.py` (which lives beside the
-#: product it defines). Anything else in `*.json` is treated as a tile, deliberately -- see
-#: `tile_sidecars`.
-MANIFEST_NAMES = ("region_manifest", "a1_manifest", "plan")
+#: manifest index, `plan.json` from `scripts/plan_map_extent.py` (which lives beside the
+#: product it defines), and `union_manifest.json` from `scripts/map_union.py` (which lives in
+#: `reports/map_union`, a map-output directory with mosaics but no tile sidecars of its own).
+#: Anything else in `*.json` is treated as a tile, deliberately -- see `tile_sidecars`.
+MANIFEST_NAMES = ("region_manifest", "a1_manifest", "plan", "union_manifest")
 
 
 def file_sha256(path: str | Path, *, chunk: int = 1 << 20) -> str:

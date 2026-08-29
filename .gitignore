@@ -61,6 +61,14 @@ reports/map_a1*/
 # directory's CONTENTS lets git descend and honour the negation.
 reports/map_extended*/*
 !reports/map_extended/plan.json
+# The union read surface (PLAN_MapValidation step 1, DECISIONS 2026-08-29a): 663 MB of mosaics,
+# fully regenerable from the arms in ~40 s on the laptop, so they stay out. `union_manifest.json`
+# (14 KB) travels with the code: it is the tile->arm provenance, the per-layer footprint QA and
+# the record that the footprint closed, and it is what a reviewer needs without 663 MB.
+# Same trailing `/*` trick as map_extended -- a `!` cannot re-include a file inside an excluded
+# directory, so the CONTENTS are excluded and git is left free to descend.
+reports/map_union*/*
+!reports/map_union/union_manifest.json
 # ArcGIS file geodatabase: a WORKING DIRECTORY, not a product. It carries live `.sr.lock`
 # session locks that appear and vanish as ArcGIS Pro opens and closes it, so it churns
 # `git status` and can never be committed cleanly. The .gpkg beside it IS the portable

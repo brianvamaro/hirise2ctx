@@ -11490,3 +11490,78 @@ terrain is**, not validation of absolute values.
 **Nothing has been built yet** — this entry records the plan, the rulings and the verification. Build
 order: `map_union` + `src/map_validation.py` first (everything depends on it), then notebooks 30
 (geology) and 31 (craters), which need no network at all.
+
+## 2026-08-29a — PLAN_MapValidation step 1 BUILT: `reports/map_union` exists, and it is **53 tiles, not 54**
+
+**Step 1 of [PLAN_MapValidation](PLAN_MapValidation.md) is done** — the read surface every one of
+the five validation notebooks depends on. Built: `scripts/map_union.py` (sole producer),
+`src/map_validation.py` (the shared analysis module all five notebooks call), `union_manifest` added
+to `src.map_manifest.MANIFEST_NAMES`, and 46 new tests. **1010 fast tests pass.**
+
+### The correction: the union is **53** tiles
+
+The plan said 54. It is **53**, measured: `map_region` 26 + `map_extended` 35 − **8 shared** = 53.
+26 + 35 − 8 = 53 and the plan's arithmetic was simply wrong; the error was caught on the first run
+of `test_the_shipped_arms_really_do_share_8_byte_identical_tiles` against the real products.
+Corrected in PLAN_MapValidation, ROADMAP and the memory notes. Knock-on: **round 2 takes the union
+to 122**, not 123, and notebook 32 is **53** SeamMap fetches, not 54.
+
+### The union as built (verified, all three layers)
+
+| | |
+|---|---|
+| Tiles | **53** — 26 from `map_region`, 27 from `map_extended` (the 8 shared resolve to `map_region` by precedence) |
+| Shared tiles | **8**, sha256-identical on **all three layers** (24/24 raster pairs) — `map_extended` adopted them |
+| Raster | **10370 × 16298** = 169,010,260 cells, bbox lon −24→20 / lat 20→48 = 11 × 7 = **77 tile slots** for 53 tiles |
+| Finite | **115,647,610** cells = **68.4264%** — identical on all three layers, so the three targets describe the same cells |
+| Footprint | **closes exactly**: 115,647,610 = 53 × 2,187,441 − **286,763** intra-tile nodata on **15** tiles |
+| Size-floor basis | **one** basis across all 61 tile rasters: `v2_mixed_floor_2` off `models/deployable_g2` (verified, not assumed) |
+| Lattice | `mosaic_geotiffs(require_shared_lattice=True)` passed — one R01 lattice, no sub-cell phase baked in |
+| Headline | `abundance` median **0.000703**, mean **0.004384**, p99 **0.0454**; `prob_raw` median **0.0544**; **rich-cell fraction (calibrated `prob ≥ 0.5`) = 10.259%** |
+
+**~31.2% of the bbox is nodata** (measured, and the plan's "~30%" stands) — the union is an
+L/T-shaped block, so every notebook must handle NaN rather than assume a filled rectangle.
+
+### Design decisions taken while building (not pre-decided in the plan)
+
+- **Dedup asserts byte-equality; it never chooses.** A sha256 mismatch on a shared tile is a **hard
+  failure**, because it would mean two arms rendered the same ground with different bytes — a product
+  inconsistency to resolve, not an overlap to merge. Source precedence exists only so the choice is
+  deterministic and reportable.
+- **`load_union` refuses a non-union mosaic** (no `UNION_N_TILES` tag). Being handed an *arm* mosaic
+  instead of the union is a **silent 50%-coverage bug**: the arrays load, every statistic computes,
+  and the answer is about half the footprint. `require_union_tags=False` allows it deliberately.
+- **The layers must cover the same tiles.** A layer-dependent footprint is a defect, not a caveat —
+  ruling 3's three targets have to describe the *same* cells, so `map_union.py` and `three_targets`
+  both refuse a mismatch.
+- **`map_union.py` writes nothing outside `--out`.** `scripts/map_mosaics.py` also copies its QA
+  record into `reports/figures/`; that is fine for a script with no `--out`, and wrong for one that
+  has it — a caller who names a scratch root has said where output goes. The test-side write guard
+  duly caught the leak. `union_manifest.json` carries the full per-layer QA, so no second file.
+- **Seams default OFF** at union size. `map_qa.seam_widths` is a pure-Python per-row run census over
+  169M cells (~2.4× the 26-tile mosaic); the per-arm mosaics already passed it on the same rasters.
+  `--seams` opts in.
+- **Significance helpers take their n from groups, not cells** (ruling 5). `cluster_bootstrap_ci`
+  resamples polygons/craters/frames and reports `n_groups` **and** `n_cells`; with one group the CI
+  is explicitly **NaN**, because a zero-width interval would read as certainty.
+  `frame_effective_n` deduplicates `PRODUCT_ID` **across tiles** — CTX frames straddle Murray tile
+  boundaries, so summing per-tile counts overcounts (both numbers are returned).
+- **`CAVEAT_MD` is one string in `src/`,** quoted verbatim by all five notebooks, so the standing
+  caveats cannot drift apart or soften over time.
+
+### ⚠ Note for notebook 30/31 design, found in the smoke test
+
+The **median of a zero-inflated distribution over millions of cells is 0.0**, with a zero-width
+bootstrap CI — measured on a 10.5 M-cell quadrant. That is not a bug, it is the plan's own point
+about right-skewed targets arriving early: **a median is not the summary statistic for a pooled
+zonal read.** Use ECDFs / upper quantiles / mean-of-log1p, or the rich fraction, and set the
+minimum-cell rule (PLAN_MapValidation §9 open question 1) against the actual distributions.
+
+### One unrelated pre-existing test failure, fixed
+
+`test_the_shipped_plan_pins_the_rebuild_head` asserted `len(measured_from) == 8`, the round-1 count.
+Commit `60413f9` replaced `reports/map_extended/plan.json` with the round-2 plan (measured off the
+35 rendered tiles), so the assertion had been failing since then — a snapshot of one planning round
+masquerading as an invariant. It now asserts what must hold for *any* round: the pin is non-empty
+and every `measured_from` tile has a sidecar in the product. The head/calibration digest pins are
+unchanged and still hold.

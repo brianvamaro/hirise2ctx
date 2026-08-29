@@ -194,4 +194,13 @@ def test_the_shipped_plan_pins_the_rebuild_head():
         "29e833be74e5cc151d1382caa9b5d7d7e2abf8d62597f648c6de5da71a34db2e")
     assert exp["calibration_digest"] == (
         "290a86614f190ced416606689e33533ec55e32a9d349484c51626313c897a61d")
-    assert len(exp["measured_from"]) == 8
+    # `measured_from` names the already-rendered tiles the digests were read off. This used
+    # to assert `== 8`, the round-1 count, and went stale the moment round 2 was planned over
+    # a 35-tile product (60413f9) -- a snapshot of one planning round masquerading as an
+    # invariant. What must hold for any round is that the pin came from real rendered tiles.
+    measured = exp["measured_from"]
+    assert measured, "the digests were read off no tile -- the pin is unsourced"
+    prod = plan_path.parent
+    assert all((prod / f"{t}.json").exists() for t in measured), (
+        f"measured_from names tiles with no sidecar in {prod.name}: "
+        f"{[t for t in measured if not (prod / f'{t}.json').exists()]}")

@@ -58,15 +58,18 @@ pointers**. The full original build spec is preserved verbatim in
   the project-wide fix (already installed; memory: `conda_windows_ssl`). For GDAL `/vsicurl/` use it
   too (or `GDAL_HTTP_UNSAFESSL=YES`).
 - **Notebooks must not re-produce a shipped artifact.** `scripts/map_mosaics.py` is the sole
-  producer of `regional_{layer}_mosaic.tif` (it alone carries the `SIZE_FLOOR_*`/`MOSAIC_*` tags and
-  the closed-footprint gate); consumers call `src.mapping.load_regional_mosaic`, which reads and
-  never writes. Notebook 24 §2 used to rebuild them over the top — rewired 2026-08-28.
+  producer of `regional_{layer}_mosaic.tif` **in a per-arm product** (`map_region` / `map_a1` /
+  `map_extended`) — it alone carries the `SIZE_FLOOR_*`/`MOSAIC_*` tags and the closed-footprint
+  gate. `scripts/map_union.py` is the sole producer of the same filenames **in `reports/map_union`**
+  and nowhere else (it refuses an `--out` that is also a `--source`). Consumers call
+  `src.mapping.load_regional_mosaic` or `src.map_validation.load_union`, which read and never write.
+  Notebook 24 §2 used to rebuild them over the top — rewired 2026-08-28.
 - **Notebooks are generated:** edit the source-of-truth `notebooks/_build_NN.py`, not the `.ipynb`;
   regenerate with `python notebooks/_build_NN.py` then `nbconvert --execute --inplace`. **Never run
   two notebooks (or two CTX-heavy jobs) at once** (memory: `feedback_collaboration`).
 - **Logic lives in importable `src/` modules**; notebooks and tests *call* it (nothing important
-  lives only in a notebook). Loop: `pytest -m "not slow"` (**922 passed / 21 deselected,
-  2026-08-25**); full suite **943 passed**. The **full suite was verified non-mutating** at the
+  lives only in a notebook). Loop: `pytest -m "not slow"` (**1010 passed / 23 deselected,
+  2026-08-29**); full suite **1033 passed**. The **full suite was verified non-mutating** at the
   2026-08-06 audit: `pytest` → 581 passed then, with an 11,218-file
   path/size/mtime manifest over all six artifact roots bit-identical before and after. **`slow` is not
   the safety control** (20 non-slow tests call a producer); the guard and the static scan are.
@@ -148,6 +151,23 @@ pointers**. The full original build spec is preserved verbatim in
     array index. Old→new turns out to be *the same field, moved*: 95% of the difference is
     high-frequency with the gradient signature of a pure translation, over a small (4.9%-of-variance)
     genuine re-levelling. A1's effect is **33.7%** regional by contrast.
+- **Validating the map against independent data** (PLAN_MapValidation, opened 2026-08-28; step 1
+  built 2026-08-29, DECISIONS 2026-08-29a). Five notebooks 30–34 read **one** deduplicated surface:
+  `reports/map_union`, produced only by `scripts/map_union.py`. **The union is 53 tiles** — 26 + 35
+  − **8 shared** (the plan's "54" was an arithmetic slip); the 8 are sha256-identical on all three
+  layers, so dedup **asserts equality** and a mismatch is a hard failure, not a merge. Notebooks
+  call `src/map_validation.py`, never the arms.
+  - ⚠ **Reading an arm mosaic instead of the union is a silent 50%-coverage bug** — it loads, it
+    computes, and the answer is about half the footprint. `load_union` refuses a mosaic with no
+    `UNION_N_TILES` tag; override only deliberately.
+  - ⚠⚠ **The striping artifact is deliberately NOT controlled for in 30–34** (Brian's ruling: he is
+    not confident in how it has been done so far). **Every contrast is an upper bound on the
+    geologic signal**; notebook 32 is the entry point to that separate investigation.
+  - ⚠ **Significance never from the pixel count.** `cluster_bootstrap_ci` resamples polygons /
+    craters / CTX source frames and reports `n_groups` *and* `n_cells`. `frame_effective_n`
+    deduplicates `PRODUCT_ID` **across tiles** — frames straddle tile boundaries.
+  - ⚠ **A median is not the summary for a pooled zonal read**: `abundance` is so zero-inflated that
+    the median over a multi-million-cell region is exactly 0.0 with a zero-width CI (measured).
 - **Live session state:** the `project_state_*` memory notes (not the stale `HANDOFF_NEXT_SESSION.md`)
 
 When reality diverges from a doc, update DECISIONS (and the relevant PLAN/ROADMAP) in the same change —
