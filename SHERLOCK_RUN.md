@@ -346,9 +346,18 @@ python scripts/plan_map_extent.py --lat 20 48 --lon -24 -4     --map-dirs report
 ```
 
 It prints the delivered footprint, the GPU-hours from `region_manifest.json`'s **own measured**
-17–22 s/window, and the download budget. The current plan — the Xanthe/Chryse bridge,
-lon[–24,–4] lat[20,48] — is **35 tiles: 8 adopted from `map_region`, 27 to render, ~19.8 GPU-h
-(median) ≈ 3.3 h on 6 GPUs, 49.0 GB of CTX zips**.
+17–22 s/window, and the download budget.
+
+**What this path has actually delivered** (`reports/map_extended`, both rounds SHIPPED):
+
+| round | box | tiles | rendered | measured |
+|---|---|---|---|---|
+| 1, 2026-08-28 | lon[−24,−4] lat[20,48] | 35 | 27 (+8 adopted) | 0.68–1.10 h/tile, 49.0 GB |
+| 2, 2026-08-29 | lon[−56,−4] lat[16,48] | 104 | 69 | ~50 GPU-h, 128.4 GB |
+
+⚠ The nominal 1.81 GB/tile download figure **undershoots**: round 2's true total was 128.4 GB
+against a 107 GB estimate (real mean 1.86 GB). Use `--verify-urls`, which reads the true
+`Content-Length` per tile, before committing to a fetch window.
 
 **Step 2 — adopt the overlap, on the laptop.** The 8 tiles the new box shares with the shipped
 map were rendered by the same head on the same lattice; re-rendering them would cost ~6 GPU-h
@@ -358,7 +367,7 @@ might not reproduce them exactly. Copy instead, verified both ends against each 
 
 ```bash
 python scripts/adopt_map_tiles.py --from reports/map_region --to reports/map_extended     --plan reports/map_extended/plan.json
-python3 scripts/verify_map_download.py reports/map_extended --plan reports/map_extended/plan.json
+python scripts/verify_map_download.py reports/map_extended --plan reports/map_extended/plan.json
 ```
 
 **Step 3 — fetch the CTX zips, on a Sherlock login node** (internet; the GPU job does no
@@ -378,7 +387,10 @@ tile per array task**, so nothing in the sbatch changes when the box does:
 
 ```bash
 mkdir -p logs
-sbatch --array=0-26 run_map_extended_array.sbatch      # 27 tiles -> 0-26
+# ONE TILE PER TASK, so the array is 0..N-1 where N = len(plan["to_render"]).
+# Round 1 was 27 tiles (--array=0-26); round 2 was 69 (--array=0-68). Read it off the plan:
+python -c "import json;print(len(json.load(open('reports/map_extended/plan.json'))['to_render']))"
+sbatch --array=0-68 run_map_extended_array.sbatch      # <- N-1
 # resubmit only what is left:
 #   ONLY="E-24_N44 E-20_N44" sbatch --array=0-1 run_map_extended_array.sbatch
 # a different plan:
@@ -394,8 +406,13 @@ that actually produced the 8 tiles this product adopted. None of these are defau
   with it would have made the 27 new tiles a different product from the 8 adopted ones,
   silently. Omitting `--size-floor-basis` also emits **no `SIZE_FLOOR_*` tags** (R84).
 * A **preflight** that hashes the resolved head + calibration and refuses to start unless they
-  match the digests recorded in the adopted tiles' sidecars (`29e833be…` / `290a8661…`). It
-  costs seconds and is the only thing that catches this class of error before the GPU time.
+  match the plan's `expect_digests` (`29e833be…` / `290a8661…`). It costs seconds and is the
+  only thing that catches this class of error before the GPU time. ⚠ It reads the **plan**, not
+  a product directory — the first submission compared against `reports/map_region`, which on
+  Sherlock is a symlink to an empty `$SCRATCH` dir, found no basis and **skipped itself**. A
+  missing `expect_digests` is now fatal (`ALLOW_UNPINNED_HEAD=1` to override, loudly).
+  Round 2 confirmed it binds: all 96 downloaded sidecars carry one head, one calibration and
+  one GPU model.
 * `--batch 96`, the parity reference's batch (256 buys nothing: 723 vs 730 img/s).
 * **One tile per task.** In step 11 a task that overran took its remaining tiles down with it,
   losing 3 never-attempted tiles. One tile per task makes the blast radius one tile.
@@ -410,7 +427,7 @@ GPU-h total**, and wall-clock ≈ one tile (~45 min) plus queueing if the array 
 are 64 such cards). To accept a slower card, widen `REQUIRE_DEVICE` and raise `--time` together:
 
 ```bash
-REQUIRE_DEVICE="P100" sbatch --array=0-26 --time=05:00:00 run_map_extended_array.sbatch
+REQUIRE_DEVICE="P100" sbatch --array=0-68 --time=05:00:00 run_map_extended_array.sbatch
 ```
 
 ⚠ **`exit 0` means nothing on its own in this pipeline** — a failing tile no longer kills its
@@ -422,14 +439,43 @@ task. Read the `N/M tiles complete` tally in each log.
 from the job. Verify on the cluster against the scratch path, then rsync into the repo dir on
 the laptop:
 
+⚠ **The cluster-side verify is redundant — skip it.** The sidecar `rasters[]` hashes are
+computed at render time, so verifying on the *laptop after transfer* checks the render **and**
+the transfer in one pass. (If you do run it there, note that a login node's `python3` is 3.6
+and the tool needs ≥ 3.10: `ml python/3.12.1` first, then plain `python`.)
+
 ```bash
-# on Sherlock
-python3 scripts/verify_map_download.py $SCRATCH/hirise2ctx/map_extended     --plan reports/map_extended/plan.json          # 8 "NO sidecar" until the adopted tiles arrive
-# on the LAPTOP (plan.json and the 8 adopted tiles are already there)
+# on the LAPTOP (plan.json and the adopted tiles are already there)
 rsync -avP <SUNetID>@dtn.sherlock.stanford.edu:'$SCRATCH/hirise2ctx/map_extended/*'     ~/Documents/PhD/HiRiseToCTXBoulders/hirise2ctx/reports/map_extended/
 python scripts/verify_map_download.py reports/map_extended --plan reports/map_extended/plan.json
+python scripts/rebuild_map_manifest.py reports/map_extended --note "<what this round was>"
 python scripts/map_mosaics.py --baseline reports/map_extended --a1 none
 ```
+
+**Step 6 — rebuild the UNION, and do not skip it.** `reports/map_union` is what notebooks 30–34
+read, and it is **derived**: it goes stale silently the moment a source arm grows. It was built
+at 53 tiles when `map_extended` held 35; after round 2 it had to become 122. Nothing in its own
+manifest would have flagged the mismatch.
+
+```bash
+python scripts/map_union.py                 # no arguments: re-unions every source arm
+```
+
+**Step 7 — make it viewable.** External `.ovr` + `.aux.xml` sidecars; the GeoTIFFs are asserted
+unchanged by sha256. The script prints the stretch to use — a min/max stretch renders a
+near-black rectangle because ~36 % of valid cells are exactly 0.
+
+```bash
+python scripts/make_display_geotiff.py reports/map_union/regional_{abundance,prob}_mosaic.tif
+```
+
+⚠ **Re-run step 7 after every re-stitch** — an `.ovr` built for a smaller mosaic is stale and
+will misdraw. `--clean` removes them.
+
+⚠ On Windows, `os.replace` can fail with `PermissionError [WinError 5]` on the ~900 MB mosaics
+(antivirus/indexer scan of a large just-closed file). `write_geotiff` retries with backoff; if
+it still fails, **the raster is probably open in QGIS/ArcGIS**. The destination is never
+modified until the replace succeeds.
 
 ⚠ **`reports/map_region` and `reports/map_a1` stay frozen at 26 tiles.** Their footprint gate
 (`n_finite == 26 × 1479² − 7,940`), their sidecar QA and their cell-for-cell arm parity are all
