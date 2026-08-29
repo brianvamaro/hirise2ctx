@@ -11405,3 +11405,88 @@ round 1's, and the two halves of the product should not carry the same caveat.
 
 ⚠ The 5-tile southern strip `lon[−24,−4] lat[16,20]` still holds **zero** cohort images; that
 part remains extrapolation.
+
+## 2026-08-28g — PLAN_MapValidation opened: five independent validation experiments
+
+Brian asked for "experiments" that validate the regional boulder-abundance map against independent
+data, each as a notebook, explicitly covering **all** mapped areas and remaining correct as the map
+grows. Plan written to [PLAN_MapValidation.md](PLAN_MapValidation.md). Eleven design decisions were
+put to him via `AskUserQuestion` and ruled; the four load-bearing ones:
+
+- **`reports/map_union` is the new read surface.** `map_region` (26 tiles) and `map_extended`
+  (35 tiles) **overlap in 8 tiles**, so a naive pool double-counts 15% of the footprint. Union = **54
+  tiles** today, 123 after round 2. `scripts/map_union.py` (to build) dedupes and stamps provenance;
+  all five notebooks read only this, so growing the map edits no analysis.
+- **The striping artifact is NOT controlled for in these notebooks — caveat in text only** (reversing
+  the rotation-null design that was proposed). Brian: *"I'm not fully confident in how we have done it
+  so far"* — quantifying and correcting the artifact becomes a **separate investigation**, with
+  notebook 32 as its entry point. Contrasts in notebooks 30/31/33 are therefore **upper bounds** on
+  the geologic signal, and every notebook carries one identical caveat box saying so.
+- **Three targets everywhere:** `abundance` (calibrated), `prob_raw` (uncalibrated), and **rich-tile
+  fraction at calibrated `prob >= 0.5`** (notebook 24's existing binary convention).
+- **Analysis at the native 160 m cell, but significance never from pixel count.** Bootstrap over the
+  coarsest sensible unit (polygons / craters / CTX source frames). This is error-bar honesty and
+  stands independent of the artifact ruling.
+
+### Runtime verification done while planning (all 2026-08-28)
+
+- **The 8 overlapping tiles are byte-identical**, sha256 8/8 on `{tile}_abundance.tif` — `map_extended`
+  *adopted* them from `map_region`. So the union dedup needs **no merge policy**; a mismatch is a hard
+  failure, not a blend.
+- **SIM3292 (Tanaka et al. 2014) reads** from the Downloads zip via
+  `/vsizip/C:/Users/brian/Downloads/sim3292_database.zip/.../SIM3292_geodatabase.gdb`, layer
+  `SIM3292_Global_Geology` — **1311 polygons, 44 units**. ⚠ **`fiona` is NOT installed** in
+  `geospatial`; use **`pyogrio`**. ⚠ The `/vsizip/` path needs forward slashes and a **single** leading
+  slash (`/vsizip//C:/...` fails). ⚠ CRS is **`Robinson_clon0_Mars_2000_Sphere`**, not equirectangular
+  — must be reprojected, and areas must not be computed in it. ⚠ Raw geometries are invalid
+  (`RuntimeWarning: invalid value encountered in intersects`); repair before any predicate.
+  **Union bbox holds 67 polygons / 16 units** (round 2 → 81 / 19).
+- **Liu et al. 2024 is NOT obtainable.** [zenodo.org/records/10401940](https://zenodo.org/records/10401940)
+  is **published but Restricted**: the API returns `files: []` and `/files` gives **HTTP 403**. Needs
+  an access request. Ruled: build on Robbins now, Liu as a drop-in backend later.
+- **Robbins & Hynek 2012 is ALREADY ON DISK** — `cache_v2/craters/RobbinsCraters_20121016.tsv`, 58 MB,
+  **384,345 craters, 70 columns**, including an explicit **`DEGRADATION_STATE`**. ⚠ **The file is not
+  UTF-8** — `pd.read_csv` dies at byte 0xe0, position 54969; use **`encoding='latin-1'`**.
+- **The Robbins degradation sparsity worry is resolved by a size cut.** In the union bbox
+  `DEGRADATION_STATE` is populated for 17% of craters D≥1 km but **90% at D≥3 km** (2,497 of 2,785) —
+  the NaNs are overwhelmingly craters too small to resolve at 160 m anyway. **D ≥ 3 km** gives 9.4
+  cells across the radius and all four states (1: 1046, 2: 534, 3: 757, 4: 160). The crater
+  experiment is fully viable on Robbins alone.
+- **The illumination experiment is cheap, not expensive.** The Murray **SeamMap already carries
+  per-source `INCIDENCE`/`EMISSION`/`PHASE`/`SB_SLR_AZ`**, and `striping.load_frames` pulls it out of
+  the remote tile zip over **`/vsizip/vsicurl/` range requests** — **no 1.8 GB tile download**.
+  `ctx_source_illumination.rasterize_seam_map_window` already rasterizes those fields onto an
+  **arbitrary transform/shape**, i.e. straight onto the 160 m union grid. ⚠ Cached SeamMaps sit under
+  **`cache/ctx_tiles`** (v1) while `striping.SEAM_DIR` points at **`cache_v2/ctx_tiles`** — the
+  module's own comment flags this two-roots confusion.
+
+### Thermal products — all four verified reachable (notebook 33)
+
+| Product | Endpoint | Verified |
+|---|---|---|
+| **Fergason THEMIS quantitative TI** 100 m | `asc-astropedia.s3.us-west-2.amazonaws.com/Mars/Odyssey/THEMIS-Global-Thermal-Inertia-Mosaic/Quantitative-32-Bit/THEMIS_TI_Mosaic_Quant_{tile}_100mpp.cub` | **206** on all 4 tiles; **opened over `/vsicurl/`**: ISIS3, **float32**, 2.53 GB/tile, 17783×35565 |
+| **TES TI (Putzig 2007)** 20 ppd | `pds-geosciences.wustl.edu/mgs/mgs-m-tes-5-timap-v1/mgst_9001/data/global_ti_night_2007.{img,lbl}` | **206**, PDS3 label read, 7200×3600 MSB-16, 51.8 MB |
+| **IRTM rock abundance (Christensen 1986)** | WMS `ms-mars.mars.asu.edu/VI_blocks_numeric` → `FORMAT=image/vicar` | **200, real float raster** for the union bbox; values **0.98–25.1 %** |
+| THEMIS night IR 100 m | already in `config_v2.yaml` | in use |
+
+- **The Fergason CRS is the key find:** `SimpleCylindrical Mars, sphere 3396190, central_meridian 0` —
+  **the same equirectangular clon_0 sphere as the CTX mosaic**, so it drops into the existing
+  `fetch_region_raster` path unchanged. This finally unblocks PLAN_RegionalMap's **leg 2**, which was
+  never done.
+- ⚠ **Rejected:** `mars.asu.edu/data/tes_putzigti/nighttime2005/nmap2003.tif` is an **8-bit RGB image
+  with no geotransform** — a figure, not data.
+- ⚠ **IRTM rock abundance is quantised** — only **25 distinct values** over the union bbox, so it is a
+  stretched 8-bit derivative. **Spearman rank only**; not valid for slopes or RMSE.
+- ⚠ **`validation_rasters.region_bounds_lonlat` is hardcoded to `[-12, 32, 20, 48]`** and does **not
+  cover `map_extended`**. Ruled: derive bounds from the union footprint (`--bounds-from-union`), config
+  literal as fallback.
+
+⚠ **A quantity mismatch that must be stated in notebook 33, not discovered later:** our `abundance` is
+**size-floor-referenced** (boulders above ~1.4–2.7 m), while TES/IRTM rock abundance is areal fraction
+of TI ≥ 1250 material at ~1°. Different physical quantities at ~50× different resolution — a modest
+correlation is the *expected* result, and the comparison is framed as **rank agreement on where rocky
+terrain is**, not validation of absolute values.
+
+**Nothing has been built yet** — this entry records the plan, the rulings and the verification. Build
+order: `map_union` + `src/map_validation.py` first (everything depends on it), then notebooks 30
+(geology) and 31 (craters), which need no network at all.
