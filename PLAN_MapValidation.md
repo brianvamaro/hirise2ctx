@@ -47,9 +47,10 @@ lon −24→−4, lat 20→48) **overlap in 8 tiles**:
 E-12_N32  E-12_N36  E-12_N40  E-12_N44  E-8_N32  E-8_N36  E-8_N40  E-8_N44
 ```
 
-Union = **53 tiles** (26 + 35 - 8; this read **54** when the plan was written -- an
-arithmetic slip, corrected 2026-08-29 against the products on disk, DECISIONS 2026-08-29a).
-Round 2 (planned, 69 more) takes it to **122**. Any analysis that naively pools the
+Union = **122 tiles** as of 2026-08-29, when **round 2 rendered**: `map_region` 26 +
+`map_extended` 104 − **8 shared**. It was **53** on the first build (26 + 35 − 8) — and the plan
+as written said **54**, an arithmetic slip corrected against the products on disk (DECISIONS
+2026-08-29a). Both numbers are historical now; the notebooks read the count from the product. Any analysis that naively pools the
 two mosaics **double-counts 8 tiles = 15% of the current footprint** — silently, and worst of all
 *non-uniformly*, biasing every pooled statistic toward that block's terrain.
 
@@ -86,7 +87,8 @@ of the per-arm mosaics.
 reads as a corrupt tile on a second lattice (CLAUDE.md). `union_manifest.json` must be added there.
 
 **Expected geometry.** The union is an L/T-shaped block, not a rectangle: bbox lon −24→20,
-lat 20→48, i.e. 11 × 7 = 77 tile slots for 53 actual tiles. **31.2% of the bbox is nodata** (measured) and every
+lat 16→48 / lon −56→20 after round 2, i.e. 19 × 8 = 152 tile slots for 122 actual tiles.
+**20.3% of the bbox is nodata** (measured) and every
 notebook must handle NaN rather than assume a filled rectangle.
 
 ### 1.3 Shared analysis module — `src/map_validation.py`
@@ -285,7 +287,7 @@ decay-length summary — does ejecta boulder excess persist further from fresh c
 
 **Framing (ruling 10 / question 3): this notebook does not pretend to be independent validation.**
 It measures the shipped map against the *known physical cause* of its known artifact, at regional
-scale over all 53 tiles. Deliverable: **how much apparent abundance variation is attributable to CTX
+scale over all 122 tiles. Deliverable: **how much apparent abundance variation is attributable to CTX
 source-image illumination geometry** — i.e. an error bar to attach to the map, and the natural entry
 point for the separate artifact investigation Brian flagged in ruling 2.
 
@@ -308,7 +310,7 @@ exactly this two-roots confusion. Only a handful are cached; the rest come over 
 root explicitly and log which tiles came from cache vs network.
 
 **⚠ Azimuth wrap.** `SB_SLR_AZ` is directional in [0,360). The existing module warns when a window
-spans > 180° and its linear mean is then wrong. Over 53 tiles this **will** trigger — use circular
+spans > 180° and its linear mean is then wrong. Over 122 tiles this **will** trigger — use circular
 statistics for azimuth, not a linear mean.
 
 **⚠ Zero-padded Murray tile ids** (`E-024_N28`, not `E-24_N28`) — every western tile 404s on the bare
@@ -324,7 +326,7 @@ form. `_padded_tile` handles it; anything new must too.
 - **§3** The other angles: emission, phase, and (circularly) sub-solar azimuth. Azimuth matters most —
   a shadow-driven artifact should track illumination *direction*, and this is the sharpest
   discriminator between "shadows read as boulders" and a radiometric level effect.
-- **§4** Per-frame η² over the union (extending the 26-tile 0.1444 to all 53), and the frame-boundary
+- **§4** Per-frame η² over the union (extending the 26-tile 0.1444 to all 122), and the frame-boundary
   step statistic — how big is the discontinuity across a seam where illumination changes by Δi.
 - **§5** **The deliverable table**: apparent abundance change per 10° of incidence, in calibrated
   units, with the honest statement of what that means for reading the map. Plus: which mapped regions
@@ -391,7 +393,7 @@ would be surprising. Frame the comparison as **rank agreement on where rocky ter
 validation of absolute values. Anything else over-claims.
 
 **Sections:** §1 fetch + co-register all four onto the union grid (`assert_coregistered`, expect
-dx=dy=0); §2 leg 1 re-run over the full union — does the weak +0.05 hold on 53 tiles; §3 **leg 2, the
+dx=dy=0); §2 leg 1 re-run over the full union — does the weak +0.05 hold on 122 tiles; §3 **leg 2, the
 new one** — abundance vs quantitative Fergason TI, at native, ~1.3 km and ~10 km block scales;
 §4 TES TI cross-check; §5 **abundance vs IRTM rock abundance** (Spearman only, at ~8 km blocks — the
 closest thing to an independent estimate of the same variable); §6 multi-scale summary: ρ vs
@@ -433,11 +435,11 @@ stronger claim and needs no perfect digitisation.
 
 | Step | What | Depends on | Notes |
 |---|---|---|---|
-| 1 | `scripts/map_union.py` + `src/map_validation.py` + tests | — | ✅ **DONE 2026-08-29** (DECISIONS 2026-08-29a). Union built at **53 tiles**, footprint closes, 46 tests |
-| 2 | Notebook 30 — geology | 1 | data on disk; no network |
+| 1 | `scripts/map_union.py` + `src/map_validation.py` + tests | — | ✅ **DONE 2026-08-29** (DECISIONS 2026-08-29a). Rebuilt at **122 tiles** after round 2; footprint closes |
+| 2 | Notebook 30 — geology | 1 | ✅ **DONE 2026-08-29** (DECISIONS 2026-08-29b). 75 polygons / 14 units; partition + cell accounts both close |
 | 3 | Notebook 31 — craters | 1 | data on disk; no network |
 | 4 | Notebook 33 — thermal | 1, config + fetch changes | biggest download |
-| 5 | Notebook 32 — illumination | 1 | 53 SeamMap fetches over vsicurl |
+| 5 | Notebook 32 — illumination | 1 | 122 SeamMap fetches over vsicurl |
 | 6 | Notebook 34 — Rodriguez | 1 + manual digitisation | last |
 
 Notebooks 30 and 31 are the fastest to a real result — both datasets are already local.

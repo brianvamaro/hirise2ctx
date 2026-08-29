@@ -24,8 +24,9 @@ pointers**. The full original build spec is preserved verbatim in
 > and links only `{tile}.zip` / `{obs}_RED.JP2`. **Still true and still load-bearing:** the producers
 > have no dry-run mode, so *scripts and notebooks* — which the guard does not cover — must be given
 > explicit absolute scratch roots. A copied YAML is not isolation (`Config` resolves relative paths
-> against `REPO_ROOT`) and `cache_v2_dev` is a junction to the live `cache_v2`. Do not start a rebuild:
-> the remaining gates are in [docs/CODE_REVIEW_AUDIT_2026-08-06.md](docs/CODE_REVIEW_AUDIT_2026-08-06.md).
+> against `REPO_ROOT`) and `cache_v2_dev` is a junction to the live `cache_v2`. A verified backup exists
+> (`D:\HiRISE2CTX Backup`, 125.55 GB, 8/8 roots verified 2026-08-18) — it makes a mistake
+> recoverable, it does not make one safe. The rebuild itself is **done** (all 12 steps, 2026-08-20 → 25).
 
 - **Per-image local-radius CRS (the #1 gotcha).** Detections are equirectangular (`Equidistant_Cylindrical`,
   central meridian 180°) **on a sphere whose radius is the local Mars radius at that image's center
@@ -68,11 +69,10 @@ pointers**. The full original build spec is preserved verbatim in
   regenerate with `python notebooks/_build_NN.py` then `nbconvert --execute --inplace`. **Never run
   two notebooks (or two CTX-heavy jobs) at once** (memory: `feedback_collaboration`).
 - **Logic lives in importable `src/` modules**; notebooks and tests *call* it (nothing important
-  lives only in a notebook). Loop: `pytest -m "not slow"` (**1010 passed / 23 deselected,
-  2026-08-29**); full suite **1033 passed**. The **full suite was verified non-mutating** at the
-  2026-08-06 audit: `pytest` → 581 passed then, with an 11,218-file
-  path/size/mtime manifest over all six artifact roots bit-identical before and after. **`slow` is not
-  the safety control** (20 non-slow tests call a producer); the guard and the static scan are.
+  lives only in a notebook). Loop: `pytest -m "not slow"`. The full suite was verified
+  **non-mutating** at the 2026-08-06 audit (path/size/mtime manifest over all six artifact
+  roots, bit-identical before and after). **`slow` is not the safety control** (20 non-slow
+  tests call a producer); the runtime guard and the static AST scan are.
 - For repeat visual analyses, **download JP2s** rather than `/vsicurl/` each time.
 
 ## Reporting standards (project-specific)
@@ -92,7 +92,8 @@ pointers**. The full original build spec is preserved verbatim in
 - **Config:** `config.yaml` (+ `config_v2.yaml` for the vClaire v2 dataset)
 - **Output column dictionary:** `dataset/DATA_DICTIONARY.md`
 - **Methods writeups (for non-coders):** [docs/methods.md](docs/methods.md), [docs/index.md](docs/index.md)
-- **Current code-review/fixing handoff:**
+- **The gating code-review audit — now a *record*, not a handoff** (all five safety criteria
+  and the mapping gate read CLOSED):
   [docs/CODE_REVIEW_AUDIT_2026-08-06.md](docs/CODE_REVIEW_AUDIT_2026-08-06.md)
 - **The rebuild:** [PLAN_Rebuild.md](PLAN_Rebuild.md) — ✅ **COMPLETE. All 12 steps executed and
   verified (2026-08-20 → 25).** `docs/PENDING_REBUILD.md` is now a *record*, not a plan: row 1
@@ -152,11 +153,14 @@ pointers**. The full original build spec is preserved verbatim in
     high-frequency with the gradient signature of a pure translation, over a small (4.9%-of-variance)
     genuine re-levelling. A1's effect is **33.7%** regional by contrast.
 - **Validating the map against independent data** (PLAN_MapValidation, opened 2026-08-28; step 1
-  built 2026-08-29, DECISIONS 2026-08-29a). Five notebooks 30–34 read **one** deduplicated surface:
-  `reports/map_union`, produced only by `scripts/map_union.py`. **The union is 53 tiles** — 26 + 35
-  − **8 shared** (the plan's "54" was an arithmetic slip); the 8 are sha256-identical on all three
-  layers, so dedup **asserts equality** and a mismatch is a hard failure, not a merge. Notebooks
-  call `src/map_validation.py`, never the arms.
+  + **notebook 30 done** 2026-08-29, DECISIONS 2026-08-29a/b). Five notebooks 30–34 read **one**
+  deduplicated surface: `reports/map_union`, produced only by `scripts/map_union.py`. **The union is
+  122 tiles** since round 2 rendered (26 `map_region` + 104 `map_extended` − **8 shared**; it was 53
+  on the first build, and the plan as written said 54 — an arithmetic slip). The 8 shared tiles are
+  sha256-identical on all three layers, so dedup **asserts equality** and a mismatch is a hard
+  failure, not a merge. **Never hardcode the tile count** — read it from the product
+  (`meta["n_union_tiles"]`); it has changed twice in two days. Notebooks call
+  `src/map_validation.py`, never the arms.
   - ⚠ **Reading an arm mosaic instead of the union is a silent 50%-coverage bug** — it loads, it
     computes, and the answer is about half the footprint. `load_union` refuses a mosaic with no
     `UNION_N_TILES` tag; override only deliberately.
@@ -167,7 +171,19 @@ pointers**. The full original build spec is preserved verbatim in
     craters / CTX source frames and reports `n_groups` *and* `n_cells`. `frame_effective_n`
     deduplicates `PRODUCT_ID` **across tiles** — frames straddle tile boundaries.
   - ⚠ **A median is not the summary for a pooled zonal read**: `abundance` is so zero-inflated that
-    the median over a multi-million-cell region is exactly 0.0 with a zero-width CI (measured).
+    the median over a multi-million-cell region is exactly 0.0 with a zero-width CI (measured). Ruled
+    2026-08-29: the **headline statistic is the rich fraction** (`prob >= 0.5`) with mean abundance
+    beside it, and the reportability floor is **`mv.MIN_CELLS_UNIT` = 50,000 cells** (1,280 km²) —
+    below it a unit is *flagged*, never silently dropped.
+  - ⚠⚠ **SIM3292 (Tanaka geology) cannot be reprojected naively — and it fails SILENTLY.** All 1311
+    polygons are valid in the source Robinson CRS, but the **inverse** Robinson overflows to `inf`
+    for **62** of them, `make_valid` then **crashes**, and `.intersects()` on a non-finite geometry
+    returns *garbage* behind only a `RuntimeWarning`. Use `mv.load_geology`, which selects and clips
+    **in Robinson first**. The plan's planning-stage "67 polygons / 16 units" was measured the naive
+    way and is superseded by **75 polygons / 14 units**.
+  - ⚠ **Cell-weighted ≠ per-polygon ranking** (notebook 30, measured): the two agree only at
+    ρ +0.427, and `lNh` moves from rank 3 to rank 12 because its cell-weighted value is **282×** its
+    typical polygon. Before writing "unit X is boulder-rich", check its per-polygon spread.
 - **Live session state:** the `project_state_*` memory notes (not the stale `HANDOFF_NEXT_SESSION.md`)
 
 When reality diverges from a doc, update DECISIONS (and the relevant PLAN/ROADMAP) in the same change —

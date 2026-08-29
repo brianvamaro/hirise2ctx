@@ -377,3 +377,199 @@ def test_caveat_names_all_four_standing_caveats_and_the_uncorrected_artifact():
     assert "extrapolation" in c
     assert "resample, never index-match" in c
     assert "presence AUC" in c
+
+
+# --------------------------------------------------- notebook 30: geology (SIM3292)
+def test_stratigraphic_rank_parses_every_unit_in_the_union():
+    """The 14 real Tanaka codes over the 122-tile union. An unparsed code would silently
+    move a unit along the very age axis the abundance-vs-age conclusion rests on."""
+    expect = {                       # unit: (rank, spans, terrain)
+        "eNh": (1.0, False, "h"), "mNh": (2.0, False, "h"), "Nhu": (2.0, False, "hu"),
+        "lNh": (3.0, False, "h"), "HNt": (3.5, True, "t"), "ANa": (3.5, True, "a"),
+        "eHh": (4.0, False, "h"), "eHt": (4.0, False, "t"), "Hto": (4.5, False, "to"),
+        "lHl": (5.0, False, "l"), "lHt": (5.0, False, "t"),
+        "AHi": (5.5, True, "i"), "AHv": (5.5, True, "v"), "mAl": (7.0, False, "l"),
+    }
+    for unit, (rank, spans, terrain) in expect.items():
+        got = mv.stratigraphic_rank(unit)
+        assert got["rank"] == rank, (unit, got)
+        assert got["spans"] is spans, (unit, got)
+        assert got["terrain"] == terrain, (unit, got)
+
+
+def test_stratigraphic_rank_orders_noachian_before_hesperian_before_amazonian():
+    order = ["eNh", "mNh", "lNh", "eHt", "lHt", "mAl"]
+    ranks = [mv.stratigraphic_rank(u)["rank"] for u in order]
+    assert ranks == sorted(ranks)
+    assert ranks[0] < ranks[-1]                  # older -> younger, increasing
+
+
+def test_stratigraphic_rank_reports_an_unknown_code_rather_than_guessing():
+    got = mv.stratigraphic_rank("Zzz")
+    assert np.isnan(got["rank"]) and got["epoch"] is None and got["label"] == "unparsed"
+
+
+def test_stratigraphic_rank_flags_two_epoch_units():
+    """An AHi unit is not '5.5 old' -- it is undated within a ~3 Gyr window."""
+    spanning = [u for u in ("AHi", "AHv", "ANa", "HNt")]
+    assert all(mv.stratigraphic_rank(u)["spans"] for u in spanning)
+    assert not any(mv.stratigraphic_rank(u)["spans"] for u in ("mNh", "lHl", "Hto", "mAl"))
+
+
+def test_bounds_lonlat_is_exact_on_the_clon0_sphere():
+    deg = np.pi * 3396190.0 / 180.0
+    got = mv.bounds_lonlat((-56 * deg, 16 * deg, 20 * deg, 48 * deg))
+    assert got == pytest.approx((-56.0, 16.0, 20.0, 48.0))
+
+
+def test_min_cells_unit_is_the_ruled_floor():
+    """50,000 cells = 1,280 km2 at 160 m (ruled 2026-08-29 with the distributions in hand)."""
+    assert mv.MIN_CELLS_UNIT == 50_000
+    assert mv.MIN_CELLS_UNIT * (mv.PX_M / 1000.0) ** 2 == pytest.approx(1280.0)
+
+
+@pytest.mark.slow
+def test_load_geology_closes_the_partition_and_produces_no_nonfinite_geometry():
+    """SIM3292 is a complete partition of Mars, so the clip must tile the window exactly.
+
+    This is the gate on the Robinson recipe: a shortfall means the intermediate cut ate area
+    that belongs inside the window.
+    """
+    import rasterio
+    from rasterio.transform import array_bounds
+
+    union = REPO / "reports" / "map_union" / "regional_abundance_mosaic.tif"
+    if not (union.exists() and Path(mv.SIM3292_ZIP).exists()):
+        pytest.skip("union mosaic or SIM3292 download not present in this checkout")
+    with rasterio.open(union) as ds:
+        bounds = array_bounds(ds.height, ds.width, ds.transform)
+        wkt = ds.crs.to_wkt()
+
+    geo, rep = mv.load_geology(bounds, wkt)
+    assert rep["source_polygons"] == 1311 and rep["source_units"] == 44
+    assert rep["source_crs"].startswith("Robinson")
+    assert rep["source_invalid"] == 0 and rep["source_nonfinite"] == 0
+    assert rep["nonfinite_after_source_clip"] == 0
+    assert rep["nonfinite_after_reprojection"] == 0      # the whole point of the recipe
+    assert rep["invalid_after_repair"] == 0
+    assert rep["partition_closure"] == pytest.approx(1.0, abs=1e-9)
+    assert len(geo) == rep["polygons"] and rep["units"] == geo["Unit"].nunique()
+    assert {"Unit", "UnitDesc", "SphArea_km", "area_km2", "geometry"} <= set(geo.columns)
+    assert all(np.isfinite(mv.stratigraphic_rank(u)["rank"]) for u in geo["Unit"].unique())
+
+
+@pytest.mark.slow
+def test_the_naive_reprojection_really_does_produce_nonfinite_geometry():
+    """Pins the trap `load_geology` exists for, so a library upgrade that changes it is noticed.
+
+    All 1311 SIM3292 polygons are valid in Robinson, but the INVERSE Robinson overflows for 62
+    of them -- and `.intersects()` on a non-finite geometry returns garbage behind only a
+    RuntimeWarning, so the naive path yields a plausible, wrong polygon set.
+    """
+    import geopandas as gpd
+    import shapely
+
+    if not Path(mv.SIM3292_ZIP).exists():
+        pytest.skip("SIM3292 download not present in this checkout")
+    src = gpd.read_file(mv.SIM3292_GDB, layer=mv.SIM3292_LAYER, engine="pyogrio")
+    assert int((~src.geometry.is_valid).sum()) == 0          # valid at source
+
+    geog = src.to_crs(src.crs.geodetic_crs)
+    nonfinite = sum(not np.isfinite(np.asarray(shapely.get_coordinates(g))).all()
+                    for g in geog.geometry)
+    assert nonfinite > 0, ("the inverse Robinson no longer overflows -- re-measure the "
+                          "load_geology recipe before trusting this docstring")
+
+
+# ------------------------------------- moment-based helpers (exact over 265.8 M cells)
+def test_cluster_bootstrap_ratio_ci_is_exact_for_a_mean():
+    """The ratio bootstrap must give the same POINT estimate as pooling the cells."""
+    rng = np.random.default_rng(0)
+    groups = [rng.random(rng.integers(50, 500)) for _ in range(12)]
+    counts = [g.size for g in groups]
+    sums = [g.sum() for g in groups]
+    got = mv.cluster_bootstrap_ratio_ci(counts, sums, n_boot=200, seed=1)
+    assert got["point"] == pytest.approx(np.concatenate(groups).mean())
+    assert got["n_groups"] == 12
+    assert got["n_cells"] == sum(counts)
+    assert got["lo"] < got["point"] < got["hi"]
+
+
+def test_cluster_bootstrap_ratio_ci_matches_the_cellwise_bootstrap_for_a_mean():
+    """Same estimator, same resampling -- so the cheap path must agree with the honest one."""
+    rng = np.random.default_rng(3)
+    groups = [rng.normal(loc=m, scale=0.2, size=200) for m in rng.normal(size=15)]
+    a = mv.cluster_bootstrap_ci(groups, stat=np.mean, n_boot=400, seed=5)
+    b = mv.cluster_bootstrap_ratio_ci([g.size for g in groups], [g.sum() for g in groups],
+                                      n_boot=400, seed=5)
+    assert b["point"] == pytest.approx(a["point"])
+    assert b["lo"] == pytest.approx(a["lo"], rel=0.05)
+    assert b["hi"] == pytest.approx(a["hi"], rel=0.05)
+
+
+def test_cluster_bootstrap_ratio_ci_handles_a_fraction():
+    """Rich fraction = count(prob>=0.5) / n_cells, which is a ratio of sums."""
+    counts = [1000, 2000, 500]
+    rich = [100, 600, 50]
+    got = mv.cluster_bootstrap_ratio_ci(counts, rich, n_boot=200, seed=0)
+    assert got["point"] == pytest.approx(750 / 3500)
+
+
+def test_cluster_bootstrap_ratio_ci_drops_empty_groups_and_guards_one_group():
+    got = mv.cluster_bootstrap_ratio_ci([0, 0, 100], [0.0, 0.0, 25.0], n_boot=50)
+    assert got["n_groups"] == 1 and got["point"] == pytest.approx(0.25)
+    assert np.isnan(got["lo"]) and "undefined" in got["note"]
+    empty = mv.cluster_bootstrap_ratio_ci([0, 0], [0.0, 0.0], n_boot=10)
+    assert empty["n_groups"] == 0 and np.isnan(empty["point"])
+
+
+def test_cluster_bootstrap_ratio_ci_rejects_mismatched_lengths():
+    with pytest.raises(ValueError, match="same length"):
+        mv.cluster_bootstrap_ratio_ci([1, 2, 3], [1.0, 2.0])
+
+
+def test_nested_variance_decomposition_closes_and_matches_the_cellwise_split():
+    rng = np.random.default_rng(7)
+    labels, counts, sums, sumsqs, cells_by_unit = [], [], [], [], {}
+    for unit, unit_mean in (("A", 0.0), ("B", 1.0), ("C", 2.0)):
+        cells_by_unit[unit] = []
+        for _ in range(4):
+            g = rng.normal(loc=unit_mean + rng.normal(scale=0.3), scale=0.5, size=300)
+            labels.append(unit)
+            counts.append(g.size)
+            sums.append(g.sum())
+            sumsqs.append((g ** 2).sum())
+            cells_by_unit[unit].append(g)
+    out = mv.nested_variance_decomposition(labels, counts, sums, sumsqs)
+    assert out["n_units"] == 3 and out["n_polygons"] == 12 and out["n_cells"] == 3600
+    # the three components add to the total by construction
+    assert out["closure_residual_relative"] < 1e-9
+    shares = (out["eta2_between_unit"] + out["eta2_within_unit_between_polygon"]
+              + out["eta2_within_polygon"])
+    assert shares == pytest.approx(1.0)
+    # and the between-unit share agrees with the flat cellwise computation
+    flat = mv.variance_decomposition([np.concatenate(v) for v in cells_by_unit.values()])
+    assert out["eta2_between_unit"] == pytest.approx(flat["eta2"])
+
+
+def test_nested_variance_decomposition_detects_within_unit_dominance():
+    """The publishable-negative case PLAN_MapValidation named in advance."""
+    rng = np.random.default_rng(11)
+    labels, counts, sums, sumsqs = [], [], [], []
+    for unit in ("A", "B"):                     # units identical in mean...
+        for k in range(5):                      # ...but polygons wildly different
+            g = rng.normal(loc=10.0 * k, scale=0.1, size=200)
+            labels.append(unit)
+            counts.append(g.size)
+            sums.append(g.sum())
+            sumsqs.append((g ** 2).sum())
+    out = mv.nested_variance_decomposition(labels, counts, sums, sumsqs)
+    assert out["eta2_within_unit_between_polygon"] > 0.9
+    assert out["eta2_between_unit"] < 0.01
+
+
+def test_nested_variance_decomposition_rejects_mismatched_lengths_and_handles_empty():
+    with pytest.raises(ValueError, match="same length"):
+        mv.nested_variance_decomposition(["A", "B"], [1, 2, 3], [1.0, 2.0, 3.0], [1.0, 2.0, 3.0])
+    out = mv.nested_variance_decomposition(["A"], [0], [0.0], [0.0])
+    assert out["n_polygons"] == 0 and np.isnan(out["eta2_between_unit"])

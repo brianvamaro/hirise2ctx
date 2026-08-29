@@ -1,0 +1,176 @@
+{
+  "union_tiles": 122,
+  "union_finite_cells": 265850879,
+  "geology": {
+    "source_polygons": 1311,
+    "source_units": 44,
+    "polygons": 75,
+    "units": 14,
+    "partition_closure": 0.9999999999999996,
+    "repaired": 0
+  },
+  "min_cells_unit": 50000,
+  "reportable_units": [
+    "AHi",
+    "AHv",
+    "HNt",
+    "Hto",
+    "Nhu",
+    "eHt",
+    "eNh",
+    "lHl",
+    "lHt",
+    "lNh",
+    "mAl",
+    "mNh"
+  ],
+  "flagged_units": [
+    "ANa",
+    "eHh"
+  ],
+  "ranking_on_rich_fraction": [
+    {
+      "unit": "mAl",
+      "rich_frac": 0.28482121202033506,
+      "ab_mean": 0.01086097345626802,
+      "n_cells": 4205540,
+      "age": "Middle Amazonian",
+      "spans_epochs": false
+    },
+    {
+      "unit": "lNh",
+      "rich_frac": 0.2550276956771048,
+      "ab_mean": 0.012265952076474235,
+      "n_cells": 17387190,
+      "age": "Late Noachian",
+      "spans_epochs": false
+    },
+    {
+      "unit": "lHl",
+      "rich_frac": 0.20579427848942777,
+      "ab_mean": 0.008013168086043998,
+      "n_cells": 82467662,
+      "age": "Late Hesperian",
+      "spans_epochs": false
+    },
+    {
+      "unit": "eHt",
+      "rich_frac": 0.11364331198749787,
+      "ab_mean": 0.004912490814279802,
+      "n_cells": 22268200,
+      "age": "Early Hesperian",
+      "spans_epochs": false
+    },
+    {
+      "unit": "Hto",
+      "rich_frac": 0.05804495125178694,
+      "ab_mean": 0.0025901473168963977,
+      "n_cells": 35826544,
+      "age": "Hesperian (undivided)",
+      "spans_epochs": false
+    },
+    {
+      "unit": "lHt",
+      "rich_frac": 0.03319199210930234,
+      "ab_mean": 0.0018552439822343467,
+      "n_cells": 11546761,
+      "age": "Late Hesperian",
+      "spans_epochs": false
+    },
+    {
+      "unit": "mNh",
+      "rich_frac": 0.02442983634858087,
+      "ab_mean": 0.0015371000361559897,
+      "n_cells": 49886949,
+      "age": "Middle Noachian",
+      "spans_epochs": false
+    },
+    {
+      "unit": "AHi",
+      "rich_frac": 0.01724308946496678,
+      "ab_mean": 0.0012094550950410305,
+      "n_cells": 16655078,
+      "age": "Amazonian-Hesperian",
+      "spans_epochs": true
+    },
+    {
+      "unit": "HNt",
+      "rich_frac": 0.011792967252598993,
+      "ab_mean": 0.0011227499744436405,
+      "n_cells": 4745201,
+      "age": "Hesperian-Noachian",
+      "spans_epochs": true
+    },
+    {
+      "unit": "AHv",
+      "rich_frac": 0.0072560905627314645,
+      "ab_mean": 0.0008746334189509314,
+      "n_cells": 1333087,
+      "age": "Amazonian-Hesperian",
+      "spans_epochs": true
+    },
+    {
+      "unit": "Nhu",
+      "rich_frac": 0.003972488047187393,
+      "ab_mean": 0.0006539381091561095,
+      "n_cells": 7652383,
+      "age": "Noachian (undivided)",
+      "spans_epochs": false
+    },
+    {
+      "unit": "eNh",
+      "rich_frac": 0.0012379465711323406,
+      "ab_mean": 0.0003051911090340267,
+      "n_cells": 11827651,
+      "age": "Early Noachian",
+      "spans_epochs": false
+    }
+  ],
+  "variance_decomposition": {
+    "abundance": {
+      "n_units": 13.0,
+      "n_polygons": 63.0,
+      "n_cells": 265850879.0,
+      "grand_mean": 0.004724076189999838,
+      "total_ss": 30097.04804153712,
+      "ss_between_unit": 3452.49156942881,
+      "ss_within_unit_between_polygon": 2110.4718252524344,
+      "ss_within_polygon": 24534.08464685588,
+      "eta2_between_unit": 0.11471196659100936,
+      "eta2_within_unit_between_polygon": 0.0701222200376515,
+      "eta2_within_polygon": 0.8151658133713393,
+      "closure_residual": -7.275957614183426e-12,
+      "closure_residual_relative": 2.4174987540777527e-16
+    },
+    "prob_raw": {
+      "n_units": 13.0,
+      "n_polygons": 63.0,
+      "n_cells": 265850879.0,
+      "grand_mean": 0.1698160902221854,
+      "total_ss": 17466868.450841162,
+      "ss_between_unit": 2704840.0332106254,
+      "ss_within_unit_between_polygon": 1177375.2650294015,
+      "ss_within_polygon": 13584653.152601127,
+      "eta2_between_unit": 0.1548554648375088,
+      "eta2_within_unit_between_polygon": 0.06740620211018432,
+      "eta2_within_polygon": 0.7777383330523063,
+      "closure_residual": 7.450580596923828e-09,
+      "closure_residual_relative": 4.265550300497641e-16
+    },
+    "rich flag": {
+      "n_units": 13.0,
+      "n_polygons": 63.0,
+      "n_cells": 265850879.0,
+      "grand_mean": 0.10995778200906381,
+      "total_ss": 26018046.10205836,
+      "ss_between_unit": 2214277.031035243,
+      "ss_within_unit_between_polygon": 1021959.4572695141,
+      "ss_within_polygon": 22781809.613753602,
+      "eta2_between_unit": 0.08510543114381158,
+      "eta2_within_unit_between_polygon": 0.03927887026030998,
+      "eta2_within_polygon": 0.8756156985958784,
+      "closure_residual": 0.0,
+      "closure_residual_relative": 0.0
+    }
+  }
+}

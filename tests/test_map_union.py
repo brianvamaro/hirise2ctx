@@ -249,8 +249,21 @@ def test_union_manifest_is_not_mistaken_for_a_tile_sidecar():
 
 # --------------------------------------------------- the real products (read-only, skippable)
 @pytest.mark.slow
-def test_the_shipped_arms_really_do_share_8_byte_identical_tiles():
-    """The measured fact the union is built on -- re-checked against the products on disk."""
+def test_the_shipped_arms_share_only_byte_identical_tiles():
+    r"""The property the union is built on, checked against whatever is on disk.
+
+    ⚠ **This deliberately asserts no tile COUNT.** It first read `len(chosen) == 53` and
+    `arm_tiles(extended) == 35`, which was true for about a day: round 2 rendered, the
+    extension went 35 -> 104, the union went 53 -> 122, and the test failed on a change that
+    was entirely correct. That is a snapshot of one rendering round masquerading as an
+    invariant -- the same defect this same commit fixed in
+    `test_plan_map_extent.test_the_shipped_plan_pins_the_rebuild_head`.
+
+    What must hold for *any* round: the union is the set union, the shared tiles are exactly
+    the intersection, every shared tile is byte-identical on every layer, and all three layers
+    cover the same tiles. The actual counts belong in `union_manifest.json`, which records what
+    was built, not in an assertion that has to be edited whenever the map grows.
+    """
     from src.map_manifest import file_sha256
 
     region = REPO / "reports" / "map_region"
@@ -258,19 +271,23 @@ def test_the_shipped_arms_really_do_share_8_byte_identical_tiles():
     if not (region.is_dir() and extended.is_dir()):
         pytest.skip("both shipped arms not present in this checkout")
 
+    per_layer = {}
     for layer in LAYERS:
+        a = set(map_union.arm_tiles(region, layer))
+        b = set(map_union.arm_tiles(extended, layer))
+        assert a and b, f"{layer}: an arm has no tiles"
         chosen, origin = map_union.resolve_union([region, extended], layer)  # asserts equality
-        shared = sorted(t for t in chosen if len(origin[t]) > 1)
-        assert shared == ["E-12_N32", "E-12_N36", "E-12_N40", "E-12_N44",
-                          "E-8_N32", "E-8_N36", "E-8_N40", "E-8_N44"]
-        # 26 + 35 - 8 = 53. PLAN_MapValidation said 54; that was an arithmetic slip, caught
-        # here on the first run against the real products (DECISIONS 2026-08-29a).
-        assert len(chosen) == 53
-        assert len(map_union.arm_tiles(region, layer)) == 26
-        assert len(map_union.arm_tiles(extended, layer)) == 35
-        for t in shared:
+        shared = {t for t in chosen if len(origin[t]) > 1}
+        assert set(chosen) == a | b                  # the union is the set union
+        assert shared == a & b                       # ...and shared is exactly the overlap
+        assert len(chosen) == len(a) + len(b) - len(shared)
+        for t in sorted(shared):
             assert (file_sha256(region / f"{t}_{layer}.tif")
-                    == file_sha256(extended / f"{t}_{layer}.tif"))
+                    == file_sha256(extended / f"{t}_{layer}.tif")), f"{t}/{layer}"
+        per_layer[layer] = frozenset(chosen)
+
+    # the three targets must describe the same tiles, or ruling 3 is not comparable
+    assert len(set(per_layer.values())) == 1, {k: len(v) for k, v in per_layer.items()}
 
 
 @pytest.mark.slow

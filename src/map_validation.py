@@ -442,6 +442,49 @@ def cluster_bootstrap_ci(group_values, *, stat=np.median, n_boot: int = 2000, se
     return {**out, "point": point, "lo": float(lo), "hi": float(hi)}
 
 
+def cluster_bootstrap_ratio_ci(counts, sums, *, n_boot: int = 2000, seed: int = 0,
+                               alpha: float = 0.05) -> dict:
+    """Cluster bootstrap for a **ratio** statistic, from per-group `(count, sum)` pairs only.
+
+    For any statistic that is a ratio of sums over cells -- **mean abundance**
+    (`sum(abundance) / n_cells`) and **rich fraction** (`count(prob>=0.5) / n_cells`) are both
+    exactly that -- the pooled value over a resampled set of groups is
+    `sum(sums[idx]) / sum(counts[idx])`. So this is **exact**, not an approximation, and it
+    needs O(n_groups) memory instead of the cell arrays.
+
+    That matters concretely: the 122-tile union has 265.8 M finite cells, so holding each
+    polygon's values to feed `cluster_bootstrap_ci` would be ~2 GB per target. Subsampling
+    instead would silently change the estimator (it would weight small polygons like large
+    ones); this keeps the exact statistic and drops only the ability to bootstrap a
+    *quantile*, which is not a ratio. Use `cluster_bootstrap_ci` when the statistic is a
+    median or a quantile and the cell arrays are small enough to hold (crater annuli).
+
+    Groups with `count == 0` are dropped -- an empty polygon is not an observation. Returns
+    `point`/`lo`/`hi` plus `n_groups` and `n_cells`; report both n's.
+    """
+    counts = np.asarray(counts, dtype=np.float64).ravel()
+    sums = np.asarray(sums, dtype=np.float64).ravel()
+    if counts.shape != sums.shape:
+        raise ValueError(f"counts {counts.shape} and sums {sums.shape} must be the same length")
+    keep = np.isfinite(counts) & np.isfinite(sums) & (counts > 0)
+    counts, sums = counts[keep], sums[keep]
+    n_groups = int(counts.size)
+    n_cells = int(counts.sum())
+    out = {"n_groups": n_groups, "n_cells": n_cells, "n_boot": int(n_boot),
+           "alpha": float(alpha), "stat": "ratio_of_sums"}
+    if n_groups == 0:
+        return {**out, "point": float("nan"), "lo": float("nan"), "hi": float("nan")}
+    point = float(sums.sum() / counts.sum())
+    if n_groups == 1:
+        return {**out, "point": point, "lo": float("nan"), "hi": float("nan"),
+                "note": "CI undefined: a single group is a single independent sample."}
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, n_groups, size=(int(n_boot), n_groups))
+    reps = sums[idx].sum(axis=1) / counts[idx].sum(axis=1)
+    lo, hi = np.percentile(reps, [100 * alpha / 2, 100 * (1 - alpha / 2)])
+    return {**out, "point": point, "lo": float(lo), "hi": float(hi)}
+
+
 def variance_decomposition(group_values) -> dict:
     """Between-group vs within-group variance over a set of per-group cell distributions.
 
@@ -468,3 +511,230 @@ def variance_decomposition(group_values) -> dict:
     return {"n_groups": len(groups), "n_cells": int(allv.size),
             "eta2": (between / total) if total > 0 else float("nan"),
             "between": between, "within": within, "total": total}
+
+
+def nested_variance_decomposition(labels, counts, sums, sumsqs) -> dict:
+    """Three-level variance split from per-polygon moments: **between-unit**,
+    **within-unit-between-polygon**, **within-polygon**.
+
+    This is the number notebook 30 turns on, and PLAN_MapValidation §10 named the answer in
+    advance: **if within-unit-between-polygon variance dominates between-unit variance, then
+    "geologic unit" is not a useful predictor of boulder abundance at this scale** — a
+    publishable negative rather than a disappointing plot.
+
+    Takes moments, not values, so it is exact over all 265.8 M union cells without holding
+    them: `labels[i]` is polygon i's unit, and `counts`/`sums`/`sumsqs` are its cell count,
+    sum and sum of squares. The three components add to the total sum of squares by
+    construction (the law of total variance applied twice), which the returned
+    `closure_residual` checks — a non-zero residual means the moments are inconsistent.
+
+    Note the shares are of the **sum of squares about the grand mean**, i.e. eta-squared-like
+    fractions directly comparable to `striping.eta2` and to `variance_decomposition`.
+    """
+    labels = np.asarray(labels)
+    n = np.asarray(counts, dtype=np.float64).ravel()
+    s = np.asarray(sums, dtype=np.float64).ravel()
+    q = np.asarray(sumsqs, dtype=np.float64).ravel()
+    if not (labels.shape[0] == n.size == s.size == q.size):
+        raise ValueError("labels, counts, sums and sumsqs must be the same length")
+    keep = (n > 0) & np.isfinite(n) & np.isfinite(s) & np.isfinite(q)
+    labels, n, s, q = labels[keep], n[keep], s[keep], q[keep]
+    if labels.size == 0:
+        return {"n_units": 0, "n_polygons": 0, "n_cells": 0, "eta2_between_unit": float("nan"),
+                "note": "no non-empty polygons."}
+    N = float(n.sum())
+    grand = float(s.sum() / N)
+    total = float(q.sum() - N * grand ** 2)          # SS about the grand mean
+    poly_mean = s / n
+    within_poly = float((q - n * poly_mean ** 2).sum())
+    between_unit = 0.0
+    within_unit = 0.0
+    units = np.unique(labels)
+    for u in units:
+        m = labels == u
+        n_u = float(n[m].sum())
+        mean_u = float(s[m].sum() / n_u)
+        between_unit += n_u * (mean_u - grand) ** 2
+        within_unit += float((n[m] * (poly_mean[m] - mean_u) ** 2).sum())
+    resid = total - (between_unit + within_unit + within_poly)
+    return {"n_units": int(units.size), "n_polygons": int(labels.size), "n_cells": int(N),
+            "grand_mean": grand, "total_ss": total,
+            "ss_between_unit": between_unit,
+            "ss_within_unit_between_polygon": within_unit,
+            "ss_within_polygon": within_poly,
+            "eta2_between_unit": (between_unit / total) if total > 0 else float("nan"),
+            "eta2_within_unit_between_polygon": (within_unit / total) if total > 0
+            else float("nan"),
+            "eta2_within_polygon": (within_poly / total) if total > 0 else float("nan"),
+            "closure_residual": resid,
+            "closure_residual_relative": (abs(resid) / total) if total > 0 else float("nan")}
+
+
+# ------------------------------------------------------- notebook 30: geologic units
+#: Tanaka et al. 2014 global geologic map of Mars, SIM3292 (DOI 10.3133/sim3292), as
+#: downloaded. The `/vsizip/` path needs FORWARD slashes and a SINGLE leading slash -- the
+#: backslash and `//` forms both fail.
+SIM3292_ZIP = "C:/Users/brian/Downloads/sim3292_database.zip"
+SIM3292_GDB = (f"/vsizip/{SIM3292_ZIP}/SIM3292_MarsGlobalGeologicGIS_20M/"
+               "SIM3292_geodatabase.gdb")
+SIM3292_LAYER = "SIM3292_Global_Geology"
+
+#: Reportability floor for a geologic unit / crater stratum, ruled 2026-08-29 with the real
+#: distributions in hand: **50,000 mapped cells** = 1,280 km2 at 160 m. A unit below it is
+#: **flagged and excluded from the headline ranking, never silently dropped** -- 12 of the 75
+#: polygons in the union get 0 cells (they fall in the union's ~20% nodata), and `ANa` has
+#: 63,262 km2 of bbox area with 0 mapped cells, which is a coverage fact worth reporting.
+MIN_CELLS_UNIT = 50_000
+
+#: Mars epoch ordering for the stratigraphic-age axis. Keys are the epoch part of a Tanaka
+#: unit code; values are `(rank, label)` with rank increasing = YOUNGER. Units spanning two
+#: epochs (`HN`, `AH`, `AN`) get the midpoint AND `spans=True`, because placing a two-epoch
+#: unit at a single age is an interpretation, not a measurement.
+_EPOCH_RANKS = {
+    "eN": (1.0, "Early Noachian"), "mN": (2.0, "Middle Noachian"),
+    "lN": (3.0, "Late Noachian"), "N": (2.0, "Noachian (undivided)"),
+    "HN": (3.5, "Hesperian-Noachian"),
+    "eH": (4.0, "Early Hesperian"), "lH": (5.0, "Late Hesperian"),
+    "H": (4.5, "Hesperian (undivided)"),
+    "AH": (5.5, "Amazonian-Hesperian"),
+    "AN": (3.5, "Amazonian-Noachian"),
+    "eA": (6.0, "Early Amazonian"), "mA": (7.0, "Middle Amazonian"),
+    "lA": (8.0, "Late Amazonian"), "A": (7.0, "Amazonian (undivided)"),
+}
+_SPANNING_EPOCHS = ("HN", "AH", "AN")
+
+
+def stratigraphic_rank(unit: str) -> dict:
+    """Parse a Tanaka SIM3292 unit code into a stratigraphic age rank.
+
+    Codes are `[e|m|l]<epoch letters><terrain letter>`, e.g. `mNh` = Middle Noachian highland,
+    `AHi` = Amazonian-and-Hesperian impact, `Hto` = Hesperian transition outflow. Returns
+    `{"unit", "epoch", "rank", "label", "spans", "terrain"}`; `rank` increases with
+    **younger**, and is `nan` for a code this function does not recognise -- reported, not
+    guessed, because a mis-parsed code would silently move a unit along the very age axis the
+    conclusion rests on.
+
+    `spans=True` marks a two-epoch unit (`HNt`, `AHi`, `AHv`, `ANa`). Those carry a midpoint
+    rank so they can be plotted, but a claim about abundance-vs-age must say whether it
+    survives excluding them: an `AHi` unit is not "5.5 old", it is *undated within a ~3 Gyr
+    window*, and `ANa` spans nearly all of Mars history.
+    """
+    u = str(unit)
+    for prefix in ("e", "m", "l"):
+        if u.startswith(prefix) and len(u) > 1 and u[1].isupper():
+            for epoch_len in (2, 1):
+                key = prefix + u[1:1 + epoch_len]
+                if key in _EPOCH_RANKS:
+                    rank, label = _EPOCH_RANKS[key]
+                    return {"unit": u, "epoch": key, "rank": rank, "label": label,
+                            "spans": key[1:] in _SPANNING_EPOCHS,
+                            "terrain": u[1 + epoch_len:]}
+    for epoch_len in (2, 1):                     # no e/m/l prefix: HNt, AHi, Hto, Nhu
+        key = u[:epoch_len]
+        if key in _EPOCH_RANKS:
+            rank, label = _EPOCH_RANKS[key]
+            return {"unit": u, "epoch": key, "rank": rank, "label": label,
+                    "spans": key in _SPANNING_EPOCHS, "terrain": u[epoch_len:]}
+    return {"unit": u, "epoch": None, "rank": float("nan"), "label": "unparsed",
+            "spans": False, "terrain": ""}
+
+
+def bounds_lonlat(bounds, *, radius_m: float = 3396190.0):
+    """Projected `(x0, y0, x1, y1)` metres -> `(lon0, lat0, lon1, lat1)` degrees.
+
+    The map CRS is equirectangular with `standard_parallel_1=0` and `central_meridian=0` on the
+    clon_0 sphere, so degrees are metres / (pi*R/180) exactly -- no pyproj round trip, and no
+    chance of the answer depending on which CRS string a caller happened to pass.
+    """
+    x0, y0, x1, y1 = (float(v) for v in bounds)
+    deg = np.pi * radius_m / 180.0
+    return x0 / deg, y0 / deg, x1 / deg, y1 / deg
+
+
+def load_geology(bounds, crs_wkt: str, *, gdb: str | None = None, layer: str | None = None,
+                 densify_deg: float = 0.25, buffer_m: float = 20_000.0):
+    """SIM3292 geologic polygons clipped to `bounds`, in the map's CRS. Returns `(gdf, report)`.
+
+    `bounds` is `(x0, y0, x1, y1)` in the **map's projected metres** (the union's own
+    `rasterio.transform.array_bounds`). The returned frame carries `Unit`, `UnitDesc`,
+    `SphArea_km` and a reprojected `geometry`, plus `area_km2` computed **after** reprojection.
+
+    **The trap this function exists for: reprojecting SIM3292 out of Robinson produces
+    non-finite coordinates, and `make_valid` then CRASHES** with
+    `CGAlgorithmsDD::orientationIndex encountered NaN/Inf numbers`. Measured 2026-08-29 on the
+    real layer: all 1311 polygons are valid in the source `Robinson_clon0_Mars_2000_Sphere`,
+    but the *inverse* Robinson overflows for **62** of them (vertices at |lon| -> 180 go to
+    `inf`), and a non-finite geometry makes `.intersects()` return garbage behind nothing but a
+    `RuntimeWarning: invalid value encountered in intersects`. So a naive
+    `to_crs(...).clip(...)` yields a *plausible, wrong* polygon set. PLAN_MapValidation's
+    "67 polygons / 16 units" was measured that way and is not trustworthy.
+
+    The order of operations is therefore the method, not an optimisation:
+
+    1. Build the selection window in **lon/lat** and **densify** it (`densify_deg`) -- Robinson
+       curves straight edges, so an undensified rectangle under-covers.
+    2. Project it **forward** into Robinson (the safe direction) and **buffer outward**
+       (`buffer_m`), so the intermediate cut provably removes nothing inside the final bounds.
+    3. Select **and clip in Robinson**, where every geometry is finite and valid. This is what
+       tames the one globe-spanning polygon (`lHl`, 13.4 M km2, 143,524 vertices) that
+       overflows even after selection.
+    4. *Then* reproject the clipped subset, repair, and clip exactly to `bounds`.
+
+    Robinson is neither equal-area nor conformal, so **any area computed in the source CRS is
+    wrong**. `area_km2` is computed after reprojection; `SphArea_km` is the authors' own
+    spherical area for the *whole, unclipped* polygon and is kept for reference only.
+
+    `report` records the counts at each step and the repair tally, so a notebook can state what
+    was fixed rather than implying nothing was.
+    """
+    import geopandas as gpd
+    import shapely
+    from shapely.geometry import box
+
+    gdb = SIM3292_GDB if gdb is None else gdb
+    layer = SIM3292_LAYER if layer is None else layer
+    src = gpd.read_file(gdb, layer=layer, engine="pyogrio")   # fiona is NOT installed here
+
+    def _nonfinite(geoms) -> int:
+        return int(sum(not np.isfinite(np.asarray(shapely.get_coordinates(g))).all()
+                       for g in geoms))
+
+    rep = {"source_polygons": len(src), "source_units": int(src["Unit"].nunique()),
+           "source_crs": src.crs.name,
+           "source_invalid": int((~src.geometry.is_valid).sum()),
+           "source_nonfinite": _nonfinite(src.geometry)}
+
+    x0, y0, x1, y1 = (float(v) for v in bounds)
+    lon0, lat0, lon1, lat1 = bounds_lonlat((x0, y0, x1, y1))
+    rep["window_lonlat"] = [lon0, lat0, lon1, lat1]
+    win_ll = shapely.segmentize(box(lon0, lat0, lon1, lat1), densify_deg)
+    win_rob = gpd.GeoSeries([win_ll], crs=src.crs.geodetic_crs).to_crs(src.crs).iloc[0]
+    win_rob = win_rob.buffer(buffer_m)
+
+    hit = src[src.geometry.intersects(win_rob)].copy()
+    rep["selected_in_source_crs"] = len(hit)
+    cut = gpd.clip(hit, win_rob)
+    cut = cut[~cut.geometry.is_empty].copy()
+    rep["nonfinite_after_source_clip"] = _nonfinite(cut.geometry)
+
+    proj = cut.to_crs(crs_wkt)
+    rep["nonfinite_after_reprojection"] = _nonfinite(proj.geometry)
+    n_invalid = int((~proj.geometry.is_valid).sum())
+    if n_invalid:
+        proj["geometry"] = proj.geometry.make_valid()
+    rep["repaired"] = n_invalid
+    rep["invalid_after_repair"] = int((~proj.geometry.is_valid).sum())
+
+    out = gpd.clip(proj, box(x0, y0, x1, y1))
+    out = out[~out.geometry.is_empty].reset_index(drop=True)
+    out["area_km2"] = out.geometry.area / 1e6
+    rep["polygons"] = len(out)
+    rep["units"] = int(out["Unit"].nunique())
+    rep["area_km2_total"] = float(out["area_km2"].sum())
+    rep["bbox_area_km2"] = (x1 - x0) * (y1 - y0) / 1e6
+    # SIM3292 is a complete PARTITION of Mars, so the clipped polygons must tile the window
+    # exactly. This ratio is a real validity gate, not a summary: it came out at 1.000000 on
+    # the 122-tile union, and a shortfall would mean the Robinson cut ate area that belongs.
+    rep["partition_closure"] = (rep["area_km2_total"] / rep["bbox_area_km2"]
+                                if rep["bbox_area_km2"] else float("nan"))
+    return out, rep

@@ -91,6 +91,15 @@ reports/f_leg_b/h2_frame_emb/
 # cache. Every conclusion drawn from them is in reports/figures/fbuild_* (tracked).
 reports/f_region_logits/
 reports/f_stagec/
+# F leg-B per-cell LOIO prediction dumps (14 variant CSVs, 255 MB; regenerable by
+# scripts/f_leg_b_loio.py, variant selected by --f-store / --tag-suffix). PLAN_FBuild was
+# HARD-ABORTED 2026-07-30, so these are a closed negative result's raw evidence: KEPT ON DISK,
+# untracked 2026-08-29. Every conclusion drawn from them is in the tracked
+# reports/figures/f_leg_b_* summaries, notebook 27 and DECISIONS 2026-07-05b/c + 2026-07-30b.
+# WARNING: f_leg_b_loio_preds_minnaert_center.csv is the fit source for the banked F calibrator
+# (scripts/bank_calibration_f.py), so a fresh clone must regenerate it before re-banking that.
+reports/figures/f_leg_b_loio_preds*.csv
+
 # Gate-5/6 cohort scoring table (5.9M; regenerable by scripts/f_region_gates.py — the derived
 # fbuild_abort_level_vs_labels.csv, which is what the abort call rests on, IS tracked)
 reports/figures/fbuild_cohort_join.parquet

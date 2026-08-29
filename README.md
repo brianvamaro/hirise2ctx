@@ -374,9 +374,10 @@ additionally keys placement on the Murray-tile id.
 
 `reports/map_region` (26 tiles) and `reports/map_extended` (35 tiles) **share 8 tiles**, so pooling
 the two per-arm mosaics double-counts 15% of the footprint. **`scripts/map_union.py` is the sole
-producer of the deduplicated read surface** `reports/map_union` — **53 tiles** (26 + 35 − 8), one
-R01 lattice, one `v2_mixed_floor_2` size-floor basis, footprint closing exactly at 115,647,610
-finite cells. Dedup **asserts sha256-equality** on a shared tile and fails hard on a mismatch; it
+producer of the deduplicated read surface** `reports/map_union` — **122 tiles** (26 + 104 − 8
+shared, after round 2 rendered on 2026-08-29), one
+R01 lattice, one `v2_mixed_floor_2` size-floor basis, footprint closing exactly at 265,850,879
+finite cells (79.7% of an lon[-56,20] lat[16,48] bbox). Dedup **asserts sha256-equality** on a shared tile and fails hard on a mismatch; it
 never picks a winner. The arms themselves stay frozen (`--out` may not be a `--source`).
 
 ```powershell

@@ -11631,3 +11631,130 @@ question) was available and I reached for the destructive one anyway.
 
 Display: external `.ovr`/`.aux.xml` on both products. **Union stretch 0 → 0.0496**;
 `map_extended` 0 → 0.0520. Previews: `reports/figures/map_{extended,union}_preview.png`.
+
+## 2026-08-29b — Notebook 30 (geology) BUILT and EXECUTED: the map varies strongly with mapped geology
+
+**PLAN_MapValidation step 2 done.** Also: **round 2 rendered**, so `reports/map_union` was rebuilt
+and is now **122 tiles** (26 `map_region` + 104 `map_extended` − 8 shared), footprint closing exactly
+at **265,850,879** finite cells = 79.67% of an lon[−56,20] lat[16,48] bbox, 11852×28153.
+The 53-tile figure from 2026-08-29a is superseded; **never hardcode this count** — it has changed
+twice in two days, and the notebook reads it from the product.
+
+### Two decisions ruled at execution (the plan deferred both, §9 Q1)
+
+1. **Reportability floor = 50,000 mapped cells** (`mv.MIN_CELLS_UNIT`, 1,280 km² at 160 m). A unit
+   below it is **flagged and excluded from the headline ranking, never silently dropped**. Two units
+   fall below: `eHh` (48,633 cells, 1 polygon — and the *richest* unit) and `ANa` (0 mapped cells
+   despite 63,262 km² of bbox area; it sits entirely in the union's nodata).
+2. **Headline statistic = rich fraction** (calibrated `prob >= 0.5`), with mean abundance beside it
+   and full survival curves behind both. The pooled *median* `abundance` is exactly **0.0** for most
+   units (zero-cell fraction 1.6%–80.7%), so a median ranking would be mostly ties at zero.
+
+### ⚠⚠ A silent-failure gotcha the plan did not have: SIM3292 cannot be reprojected naively
+
+All 1311 SIM3292 polygons are **valid in the source Robinson CRS**. But the **inverse** Robinson
+overflows to `inf` for **62** of them (vertices at |lon| → 180); `make_valid` then **crashes**
+(`CGAlgorithmsDD::orientationIndex encountered NaN/Inf numbers`); and — the dangerous part —
+`.intersects()` on a non-finite geometry **returns garbage behind nothing louder than a
+`RuntimeWarning`**. A naive `to_crs(...).clip(...)` therefore yields a *plausible, wrong* polygon set.
+**PLAN_MapValidation's planning-stage "67 polygons / 16 units" was measured that way and is
+superseded: the real answer is 75 polygons / 14 units.**
+
+`src.map_validation.load_geology` is the fix, and its order of operations *is* the method: build the
+window in lon/lat, **densify** it (Robinson curves straight edges), project **forward** into
+Robinson and **buffer outward**, **select and clip in Robinson** where everything is finite, and
+*then* reproject, repair, and clip exactly. That third step is what tames the one globe-spanning
+polygon (`lHl`, 13.4 M km², 143,524 vertices) that overflows even after selection. With the recipe:
+**0** non-finite, **0** repairs needed.
+
+### Two accounts that close exactly — the gates, not the summary
+
+| Gate | Result |
+|---|---|
+| **Partition closure** — SIM3292 tiles Mars, so the clip must fill the bbox | 8,541,848 km² of 8,541,848 km² = **1.00000000** |
+| **Cell account** — every mapped cell in exactly one unit | **265,850,879** = the union's finite count, exactly |
+
+12 of the 75 polygons get **0** mapped cells (they fall in the union's ~20% nodata) — reported as a
+coverage fact, not dropped silently.
+
+### The result: geology predicts abundance, and all three targets agree
+
+Ranked on rich fraction over the 12 reportable units:
+
+| Unit | age | cells | mean abundance | rich fraction |
+|---|---|---|---|---|
+| `mAl` Middle Amazonian lowland | mA | 4.21 M | 0.01086 | **0.2848** |
+| `lNh` Late Noachian highland | lN | 17.4 M | 0.01227 | 0.2550 |
+| `lHl` Late Hesperian lowland | lH | 82.5 M | 0.00801 | 0.2058 |
+| `eHt` Early Hesperian transition | eH | 22.3 M | 0.00491 | 0.1136 |
+| `Hto` Hesperian transition outflow | H | 35.8 M | 0.00259 | 0.0580 |
+| … | | | | |
+| `eNh` Early Noachian highland | eN | 11.8 M | 0.00031 | **0.0012** |
+
+- **Spread: rich fraction ×230, mean abundance ×35.6** between richest and poorest reportable unit.
+  (`eHh`, flagged below the floor, is richer still at 0.3892.)
+- **All three targets agree on the order** — Spearman ρ **+0.993** (rich vs mean abundance), **+0.993**
+  (rich vs `prob_raw`), **+0.986** (abundance vs `prob_raw`), n = 12 units. So the ranking is **not**
+  a calibration-curve artifact; ruling 3's robustness check passes decisively.
+- **`lHl` — the Rodriguez megatsunami unit — is the 3rd richest** at 82.5 M cells, the largest unit
+  in the footprint. A direct hook for notebook 34.
+
+### Variance decomposition: the plan's named negative did NOT fire
+
+Shares of total sum of squares (exact from per-polygon moments, closure residual < 5e-16):
+
+| target | between-unit | within-unit, between-polygon | within-polygon |
+|---|---|---|---|
+| `abundance` | **0.1147** | 0.0701 | 0.8152 |
+| `prob_raw` | **0.1549** | 0.0674 | 0.7777 |
+| rich flag | **0.0851** | 0.0393 | 0.8756 |
+
+**Between-unit exceeds within-unit-between-polygon on all three targets** (ratios 0.61 / 0.44 / 0.46),
+so PLAN_MapValidation §10's "geologic unit is not a useful predictor" negative did not fire. But
+between-unit is only 8–15% of total variance and **within-polygon dominates at 78–88% — and that
+share contains the striping artifact**, so it is not evidence of geologic heterogeneity.
+
+### ⚠ The ranking is NOT weighting-robust — the sharpest finding in the notebook
+
+The headline is cell-weighted. Recomputed as a **per-polygon median**, the ranking agrees only at
+Spearman ρ **+0.427 (p = 0.167, n = 12)**:
+
+- **`lNh` moves from rank 3 to rank 12.** Its cell-weighted rich fraction is **282× its typical
+  polygon**: 2 of its 9 polygons (8.09 M cells at 0.4715, 4.79 M at 0.1268) carry it, while the other
+  seven sit at 0.0000–0.0230. **`lNh` is one boulder-rich REGION inside a unit, not a rich unit** —
+  and it was the single biggest counterexample to the age trend, being both old and apparently rich.
+- `mNh` moves 8 → 13 (31×), `eHt` 5 → 7 (20×). `AHi`'s polygons span a **10,859×** range.
+- **Rule added to CLAUDE.md:** before writing "unit X is boulder-rich", check its per-polygon spread.
+
+### Stratigraphic age: younger is rockier, and the trend strengthens under the conservative weighting
+
+| weighting | all reportable units | single-epoch units only |
+|---|---|---|
+| cell-weighted, rich fraction | ρ +0.425 (p 0.168) | ρ **+0.740** (p 0.023) |
+| per-polygon median, rich | ρ +0.608 (p 0.036) | ρ **+0.866** (p 0.003) |
+
+**Younger surfaces are boulder-richer**, consistent with boulder breakdown over time rather than
+exhumation dominance. The trend is *stronger* under per-polygon weighting — exactly because that
+weighting removes the `lNh` "one rich region" effect. Two-epoch units (`AHi`, `AHv`, `ANa`, `HNt`)
+are undated within a ~3 Gyr window and reported separately; the axis is **ordinal**, so a rank
+correlation is the only honest statistic, never a slope.
+
+### ⚠ A prediction for notebook 31, stated before building it
+
+**`AHi` (the Amazonian–Hesperian impact unit) is boulder-POOR** — rich fraction 0.0172, rank 9 of 13,
+with 20 mapped polygons spanning 0.0000–0.0733. PLAN_MapValidation §10 named "no ejecta excess even
+for the freshest craters" as the notebook-31 negative that would show the 5 m/px CTX floor is
+binding. This is advance evidence in that direction, and `AHi` overlaps notebook 31's craters by
+construction, so the two are **not** independent evidence.
+
+### Built
+
+- `src/map_validation.py` grew `load_geology`, `stratigraphic_rank`, `bounds_lonlat`,
+  `cluster_bootstrap_ratio_ci`, `nested_variance_decomposition`, `MIN_CELLS_UNIT`, `SIM3292_*`.
+- The two moment-based helpers are **exact, not approximations**, and exist because the union has
+  265.8 M cells: holding per-polygon cell arrays would be ~2 GB per target, and subsampling would
+  silently change the estimator (weighting small polygons like large ones). Means and rich fractions
+  are ratios of sums, so `(count, sum)` pairs give the exact statistic and the exact cluster
+  bootstrap; `(count, sum, sumsq)` gives the exact three-level variance split.
+- `notebooks/_build_30.py` → `notebooks/30_geology.ipynb`, executed clean: 4 figures, plus
+  `30_geology_perpolygon.csv` and `30_geology_summary.json`.
